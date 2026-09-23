@@ -1,5 +1,7 @@
 [default.extend-words]
 ratatui = "ratatui"
+# The NFS export tool, `exportfs(8)`.
+exportfs = "exportfs"
 
 [files]
 extend-exclude = ["trayd/", "target/", "**/*.snap"]

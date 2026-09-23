@@ -1,4 +1,4 @@
-.PHONY: build run install test static static-aarch64
+.PHONY: build run install test test-fs static static-aarch64
 
 build:
 	cargo build --workspace
@@ -11,6 +11,12 @@ install:
 
 test:
 	cargo test --workspace
+
+# The tests and totals on real filesystems (ext4, XFS, btrfs, f2fs, tmpfs, FAT, exFAT, NTFS) and
+# mount layouts, on loopback images. Needs root or the docker group; see fixtures/fs/README.md.
+# `make test-fs FS="btrfs snapshots"` runs just those.
+test-fs:
+	fixtures/fs/run.sh $(FS)
 
 # Fully static x86_64 binary for any Linux (the release artifact). Needs musl-gcc (`musl-tools`)
 # for jemalloc; see .github/workflows/deploy.yml.

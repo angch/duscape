@@ -220,7 +220,18 @@ Use the **`tracing`** ecosystem for structured logging.
 - Place cross-module and end-to-end tests in `<crate>/tests/`.
 - Use temporary directories and fixtures from `examples/` where applicable.
 
-### 6.3 Coverage expectations
+### 6.3 Filesystem fixtures
+
+What a disk-usage tool reports depends on the filesystem and the mount table under it: hard
+links, reflinks, snapshots, compression, sparse files, bind mounts and network mounts all change
+it, and a temp directory on the development machine exercises none of them. `make test-fs`
+(`fixtures/fs/`) makes ext4, XFS, btrfs, f2fs, tmpfs, FAT32, exFAT and NTFS on loopback images,
+fills them with those quirks, runs both crates' test suites on each, and checks the scan against
+oracles that share no code with it. It needs root or the `docker` group; CI runs it
+(`fs-fixtures.yml`). A change whose behaviour depends on the filesystem comes with a fixture
+there; see `fixtures/fs/README.md`.
+
+### 6.4 Coverage expectations
 
 The project maintains **decent test coverage** across workspace crates. CI uploads coverage reports (see `.github/workflows/test.yml`). When adding modules or behavior:
 
@@ -273,6 +284,7 @@ Justify every new dependency in the change that introduces it. Prefer std and ex
 | Tests (default features) | `cargo test --workspace` |
 | Tests (all features) | `cargo test --workspace --all-features` |
 | Documentation | `cargo doc --workspace --no-deps` |
+| Filesystem fixtures (scan, accounting or mount handling changed) | `make test-fs` |
 
 CI runs the same gates on push and pull request across the **three-level feature matrix** (§1.4): `--no-default-features`, default, and `--all-features`. A green local run should match a green CI run.
 
