@@ -637,10 +637,14 @@ mod linux_walker {
         // Reflink capability is a property of the filesystem, not of the scan root: this is what
         // lets a second XFS volume, or a btrfs subvolume, be probed at all.
         assert!(!classify(Path::new("/proc")).reflinks);
-        assert!(
-            classify(Path::new("/data")).reflinks || !cfg!(target_os = "linux"),
-            "/data is XFS with reflink=1 on this machine"
-        );
+        // As in the `reflink` tests below: only a machine that names an XFS or btrfs directory can
+        // check the positive case.
+        if let Some(dir) = std::env::var_os("DISKONAUT_TEST_REFLINK_DIR") {
+            assert!(
+                classify(Path::new(&dir)).reflinks,
+                "DISKONAUT_TEST_REFLINK_DIR is on a filesystem that shares extents"
+            );
+        }
     }
 
     /// Scanning a pseudo-filesystem asked for by name still works — the skip applies to crossing

@@ -37,7 +37,7 @@ jobs:
           cargo llvm-cov --all-features -p libdiskonaut --lcov --output-path lcov-libdiskonaut.info
       - name: Generate coverage report (diskonaut)
         run: |
-          cargo llvm-cov --all-features -p diskonaut --lcov --output-path lcov-diskonaut.info
+          cargo llvm-cov --all-features -p diskonaut-angch --lcov --output-path lcov-diskonaut.info
       - name: Upload libdiskonaut coverage to Codecov
         uses: codecov/codecov-action@v7
         with:
