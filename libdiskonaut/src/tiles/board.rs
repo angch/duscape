@@ -11,6 +11,8 @@ pub struct Board {
     pub zoom_level: usize,
     area: Area,
     files: Vec<FileMetadata>,
+    /// Every entry of the folder, largest first, whatever the zoom: the list beside the board.
+    listing: Vec<FileMetadata>,
 }
 
 impl Board {
@@ -19,6 +21,7 @@ impl Board {
             tiles: vec![],
             unrenderable_tile_coordinates: None,
             files: files_in_folder(folder, 0),
+            listing: files_in_folder(folder, 0),
             selected_index: None,
             previous_indices_and_zoom_level: vec![],
             zoom_level: 0,
@@ -26,8 +29,25 @@ impl Board {
         }
     }
     pub fn change_files(&mut self, folder: &Folder) {
-        self.files = files_in_folder(folder, self.zoom_level);
+        self.listing = files_in_folder(folder, 0);
+        self.files = if self.zoom_level == 0 {
+            self.listing.clone()
+        } else {
+            files_in_folder(folder, self.zoom_level)
+        };
         self.fill();
+    }
+    /// Every entry of the folder on the board, largest first, including those the zoom leaves
+    /// off it and those too small for a tile of their own.
+    pub fn listing(&self) -> &[FileMetadata] {
+        &self.listing
+    }
+    /// Where the selected tile's entry sits in [`Self::listing`].
+    pub fn selected_listing_index(&self) -> Option<usize> {
+        let selected = &self.currently_selected()?.name;
+        self.listing
+            .iter()
+            .position(|entry| &entry.name == selected)
     }
     pub fn change_area(&mut self, area: &Area) {
         if self.area != *area {

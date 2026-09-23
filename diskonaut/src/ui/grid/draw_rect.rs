@@ -60,17 +60,27 @@ fn tile_second_line(tile: &Tile) -> String {
     }
 }
 
-pub fn tile_style(tile: &Tile, selected: bool) -> (Option<Style>, Style, Style) {
+pub fn tile_style(tile: &Tile, selected: bool, marked: bool) -> (Option<Style>, Style, Style) {
+    // Part of a multi-selection, and not the one under the cursor, which keeps its own look.
+    if marked && !selected {
+        let marked = Style::default().fg(Color::Black).bg(Color::Yellow);
+        return (
+            Some(Style::default().fg(Color::Yellow).bg(Color::Yellow)),
+            marked.add_modifier(Modifier::BOLD),
+            marked,
+        );
+    }
     let (background_style, first_line_style, second_line_style) = match (selected, &tile.file_type)
     {
+        // Black on the light selection: magenta on it is hard to read.
         (true, FileType::File) => (
             Some(Style::default().fg(Color::Gray).bg(Color::Gray)),
             Style::default()
-                .fg(Color::Magenta)
+                .fg(Color::Black)
                 .bg(Color::Gray)
                 .add_modifier(Modifier::BOLD),
             Style::default()
-                .fg(Color::Magenta)
+                .fg(Color::Black)
                 .bg(Color::Gray)
                 .add_modifier(Modifier::BOLD),
         ),
@@ -169,7 +179,7 @@ pub fn draw_filled_rect(buf: &mut Buffer, fill_style: Style, rect: &Rect) {
     }
 }
 
-pub fn draw_tile_text_on_grid(buf: &mut Buffer, tile: &Tile, selected: bool) {
+pub fn draw_tile_text_on_grid(buf: &mut Buffer, tile: &Tile, selected: bool, marked: bool) {
     let first_line = tile_first_line(tile);
     let first_line_length = first_line.width() as u16;
     let first_line_start_position =
@@ -178,7 +188,8 @@ pub fn draw_tile_text_on_grid(buf: &mut Buffer, tile: &Tile, selected: bool) {
     let second_line_length = second_line.width();
     let second_line_start_position =
         ((tile.width - second_line_length as u16) as f64 / 2.0).ceil() as u16 + tile.x;
-    let (background_style, first_line_style, second_line_style) = tile_style(tile, selected);
+    let (background_style, first_line_style, second_line_style) =
+        tile_style(tile, selected, marked);
 
     if let Some(background_style) = background_style {
         for x in tile.x + 1..tile.x + tile.width {

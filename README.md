@@ -11,6 +11,8 @@ This fork exists to **explore further performance optimizations for everyday dis
 ## Features
 
 - **Live scanning** — the treemap updates while the walk is still running
+- **Side-by-side list** — beside the treemap, the folder's size, file count and share of the scan,
+  and every entry in it, largest first, with a bar, size and percentage
 - **Treemap navigation** — proportional tiles for files and folders; zoom for dense directories;
   click a tile to select it, double-click a folder to open it, right-click to copy its path
 - **In-session cleanup** — delete files or folders and track space freed in the title bar
@@ -188,6 +190,44 @@ Optional TOML config (see [example/config.toml](example/config.toml)):
 - Default path: `~/.config/diskonaut/config.toml`
 - Override path: `diskonaut -c /path/to/config.toml`
 
+## The list beside the treemap
+
+On a terminal 80 columns or wider, the left third of the screen lists the current folder: its
+path, size, file count and share of the whole scan, how many folders and files it holds, and at a
+volume root the disk's used space. Below that is every entry, largest first, with a bar, its size
+and its share of the folder. It has no border, so every line and column goes to names; long names
+are cut in the middle, keeping the start and the extension.
+
+The keyboard works one panel at a time — the list, to begin with, on its largest entry — and
+after that on whichever you last clicked. `Tab` switches;
+`←` off the treemap's left edge moves into the list, and `→` from the list moves back. In the
+list, `↑`/`↓` (`k`/`j`) walk every entry in size order, tiles or not, `PgUp`/`PgDn`/`Home`/`End`
+jump, and `Enter`, `Esc` and `d` act on the highlighted row. In the treemap the arrows move
+between tiles as before. The panel with the keyboard has the solid highlight; the other still
+marks the same entry, more quietly.
+
+To pick several entries, `Ctrl`+click them — in the list or on the treemap; a second
+`Ctrl`+click takes one out — or hold `Shift` and press `↑`/`↓` in the list to mark a run of
+rows. Every change copies the marked paths to the clipboard, quoted and separated by spaces in
+the order you picked them, ready to paste after a command: `cp 'my file' notes.txt ~/backup/`.
+The title shows what was copied. Marked entries are black on yellow in both panels. A plain
+click or arrow key, or changing folder, clears the marks.
+
+`d` deletes the marked entries, or the entry in hand when nothing is marked. The prompt says how
+many and how much — `Delete these 3 items (4.2G)?` — and names as many as fit. If one fails, the
+rest are still deleted and the message says which did not and why; only what was really removed
+is counted as freed. A marked NTFS metadata file refuses the whole deletion rather than being
+skipped quietly.
+Some terminals keep `Ctrl`+click for a context menu of their own; `Shift`+arrows work in all of
+them.
+
+The row for the selected tile is highlighted and kept in view. Entries without a tile of their
+own — too small, and folded into the `x` corner, or left off by the zoom — are listed dimmed, and
+are often most of a folder: in a build cache of 30,000 small files the list is the only way to
+see them. Rows take the same clicks as tiles: select, double-click to open, right-click to copy.
+
+Narrower terminals give the whole width to the treemap, as before.
+
 ## Keyboard and mouse
 
 | Key                                | Action                                |
@@ -199,6 +239,10 @@ Optional TOML config (see [example/config.toml](example/config.toml)):
 | `+` / `-`                          | Zoom in / out                         |
 | `0`                                | Reset zoom                            |
 | `q` or `Ctrl+C`                    | Quit (confirm with `y` when prompted) |
+| `Tab`                              | Move the keyboard to the list / map   |
+| `PgUp` `PgDn` `Home` `End`         | Jump through the list                 |
+| `Shift`+`↑` `↓`                    | Mark a run of rows, copy their paths  |
+| `Ctrl`+click                       | Mark or unmark, copy the marked paths |
 | Click                              | Select the tile under the pointer     |
 | Double-click                       | Open that folder                      |
 | Right-click                        | Copy its path, relative to your shell |

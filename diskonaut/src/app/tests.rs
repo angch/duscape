@@ -129,7 +129,7 @@ fn prompt_file_deletion_shows_confirmation() {
     app.prompt_file_deletion();
 
     assert!(target.exists(), "file should remain until user confirms");
-    assert!(matches!(app.ui_mode, UiMode::DeleteFile(_)));
+    assert!(matches!(app.ui_mode, UiMode::DeleteFiles(_)));
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -143,8 +143,8 @@ fn reset_ui_mode_from_error_returns_to_normal() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// A folder `big` holding most of the data, a smaller folder `small`, and a loose file, so each
-/// gets a tile of its own.
+/// A folder `big` holding most of the data, a file `loose.txt`, and a smaller folder `small`, each
+/// large enough for a tile of its own.
 fn app_with_two_folders(name: &str) -> (PathBuf, App<TestBackend>) {
     let dir = temp_app_dir(name);
     for (folder, bytes) in [("big", 64 * 1024), ("small", 16 * 1024)] {
@@ -156,9 +156,11 @@ fn app_with_two_folders(name: &str) -> (PathBuf, App<TestBackend>) {
     }
     File::create(dir.join("loose.txt"))
         .expect("create file")
-        .write_all(&vec![b'x'; 8 * 1024])
+        .write_all(&vec![b'x'; 24 * 1024])
         .expect("write file");
-    let app = app_with_scanned_dir(&dir, 80, 24);
+    // Wide enough that the treemap, two thirds of it beside the side panel, gives each entry a
+    // tile of its own.
+    let app = app_with_scanned_dir(&dir, 120, 30);
     (dir, app)
 }
 
@@ -547,5 +549,645 @@ fn an_unknown_working_directory_copies_the_absolute_path() {
         app.ui_effects.clipboard_flash_at(now),
         Some(format!("absolute path: {absolute}").as_str())
     );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// The side-panel cell showing `name`'s row, as drawn for the app's current selection.
+fn list_row_of(app: &App<TestBackend>, name: &str) -> (u16, u16) {
+    use crate::ui::side_panel::{HEADER_ROWS, list_window, screen_areas};
+    let panel = screen_areas(app.display.size())
+        .side_panel
+        .expect("wide enough for the side panel");
+    let listing = app.board.listing();
+    let index = listing
+        .iter()
+        .position(|entry| entry.name == OsStr::new(name))
+        .unwrap_or_else(|| panic!("{name} is not listed"));
+    let window = list_window(
+        listing.len(),
+        app.highlighted_listing_index(),
+        usize::from(panel.height - HEADER_ROWS),
+    );
+    assert!(window.contains(&index), "{name} is scrolled out of view");
+    let offset = u16::try_from(index - window.start).expect("row");
+    (panel.x + 2, panel.y + HEADER_ROWS + offset)
+}
+
+#[test]
+fn a_click_on_a_list_row_selects_its_tile() {
+    let (dir, mut app) = app_with_two_folders("list_click");
+    let (column, row) = list_row_of(&app, "small");
+    app.click(MouseButton::Left, column, row);
+
+    assert_eq!(selected_name(&app), Some(OsString::from("small")));
+    assert!(app.file_tree.current_folder_names.is_empty());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_double_click_on_a_list_row_enters_the_folder() {
+    let (dir, mut app) = app_with_two_folders("list_double_click");
+    let (column, row) = list_row_of(&app, "small");
+    let start = ::std::time::Instant::now();
+    app.click_at(MouseButton::Left, column, row, start);
+    app.click_at(
+        MouseButton::Left,
+        column,
+        row,
+        start + ::std::time::Duration::from_millis(150),
+    );
+
+    assert_eq!(app.file_tree.get_current_path(), dir.join("small"));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_right_click_on_a_list_row_copies_its_path() {
+    let (dir, mut app) = app_with_two_folders("list_right_click");
+    let recorder = recording(&mut app, &dir);
+    let (column, row) = list_row_of(&app, "loose.txt");
+    app.click(MouseButton::Right, column, row);
+
+    assert_eq!(recorder.copied(), vec!["loose.txt".to_string()]);
+    assert_eq!(selected_name(&app), Some(OsString::from("loose.txt")));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Zoomed in, the largest entry has no tile; its row is still there and can still be entered.
+#[test]
+fn a_folder_off_the_board_can_be_entered_from_the_list() {
+    let (dir, mut app) = app_with_two_folders("list_off_board");
+    app.zoom_in();
+    assert!(
+        !app.board
+            .tiles
+            .iter()
+            .any(|tile| tile.name == OsStr::new("big")),
+        "zooming in leaves the largest entry off the board"
+    );
+    let (column, row) = list_row_of(&app, "big");
+    let start = ::std::time::Instant::now();
+    app.click_at(MouseButton::Left, column, row, start);
+    app.click_at(
+        MouseButton::Left,
+        column,
+        row,
+        start + ::std::time::Duration::from_millis(150),
+    );
+
+    assert_eq!(app.file_tree.get_current_path(), dir.join("big"));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Enter on a file opens nothing, so it must leave nothing for Esc to undo: Esc then goes up from
+/// the folder as it would have anyway, not back to a stale selection.
+#[test]
+fn enter_on_a_file_leaves_nothing_to_go_back_to() {
+    let (dir, mut app) = app_with_two_folders("enter_file");
+    app.switch_focus(); // to the treemap, whose selection Enter then acts on
+    let file = app
+        .board
+        .tiles
+        .iter()
+        .position(|tile| tile.name == OsStr::new("loose.txt"))
+        .expect("file tile");
+    app.board.set_selected_index(&file);
+    app.handle_enter();
+
+    assert!(app.file_tree.current_folder_names.is_empty(), "not entered");
+    assert!(
+        app.board.previous_indices_and_zoom_level.is_empty(),
+        "nothing recorded to go back to"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+fn listed_name(app: &App<TestBackend>, index: usize) -> OsString {
+    app.board.listing()[index].name.clone()
+}
+
+fn list_cursor_name(app: &App<TestBackend>) -> Option<OsString> {
+    app.highlighted_listing_index()
+        .map(|index| listed_name(app, index))
+}
+
+#[test]
+fn a_click_puts_the_keyboard_on_the_panel_clicked() {
+    use super::Focus;
+    let (dir, mut app) = app_with_two_folders("focus_follows_click");
+    assert_eq!(app.focus(), Focus::List, "the list starts with it");
+    let (column, row) = centre_of(&app, "big");
+    app.click(MouseButton::Left, column, row);
+    assert_eq!(app.focus(), Focus::Treemap);
+    let (column, row) = list_row_of(&app, "small");
+    app.click(MouseButton::Left, column, row);
+    assert_eq!(app.focus(), Focus::List);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// With the list in hand, Up and Down walk the list's order, largest first — not the treemap's
+/// geometry — and the treemap's selection follows along.
+#[test]
+fn up_and_down_in_the_list_walk_its_order() {
+    use super::Focus;
+    let (dir, mut app) = app_with_two_folders("list_keys");
+    assert_eq!(app.focus(), Focus::List);
+    assert_eq!(
+        list_cursor_name(&app),
+        Some(listed_name(&app, 0)),
+        "starts at the top"
+    );
+
+    for expected in [1, 2, 2] {
+        app.move_selected_down();
+        assert_eq!(list_cursor_name(&app), Some(listed_name(&app, expected)));
+        assert_eq!(
+            selected_name(&app),
+            Some(listed_name(&app, expected)),
+            "tile follows"
+        );
+    }
+    app.move_selected_up();
+    assert_eq!(list_cursor_name(&app), Some(listed_name(&app, 1)));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// An entry with no tile can be reached from the list, and the treemap then selects nothing
+/// rather than leave some other entry looking selected.
+#[test]
+fn the_list_reaches_entries_without_a_tile() {
+    let (dir, mut app) = app_with_two_folders("list_no_tile");
+    app.zoom_in();
+    app.jump_list(super::ListJump::Home);
+    assert_eq!(list_cursor_name(&app), Some(OsString::from("big")));
+    assert_eq!(selected_name(&app), None, "big has no tile while zoomed in");
+    assert_eq!(
+        app.selected_entry().map(|entry| entry.name),
+        Some(OsString::from("big")),
+        "but it is the entry in hand"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn page_and_end_keys_jump_through_the_list() {
+    use super::ListJump;
+    let dir = temp_app_dir("list_jumps");
+    for index in 0..60 {
+        File::create(dir.join(format!("file{index:02}")))
+            .expect("create file")
+            .write_all(&vec![b'x'; 1024 * (61 - index)])
+            .expect("write file");
+    }
+    let mut app = app_with_scanned_dir(&dir, 120, 30);
+    let last = app.board.listing().len() - 1;
+    app.jump_list(ListJump::End);
+    assert_eq!(app.highlighted_listing_index(), Some(last));
+    app.jump_list(ListJump::Home);
+    assert_eq!(app.highlighted_listing_index(), Some(0));
+    app.jump_list(ListJump::PageDown);
+    let page = app.highlighted_listing_index().expect("moved");
+    assert!(
+        page > 10 && page < last,
+        "a page is most of the panel: {page}"
+    );
+    app.jump_list(ListJump::PageUp);
+    assert_eq!(app.highlighted_listing_index(), Some(0));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Left off the treemap's left edge moves into the list, on the entry that was selected; Right
+/// from the list goes back, on the same entry.
+#[test]
+fn left_off_the_treemap_enters_the_list_and_right_comes_back() {
+    use super::Focus;
+    let (dir, mut app) = app_with_two_folders("edge_keys");
+    app.switch_focus();
+    assert_eq!(app.focus(), Focus::Treemap, "starts on the treemap");
+    let left_edge = app
+        .board
+        .tiles
+        .iter()
+        .map(|tile| tile.x)
+        .min()
+        .expect("tiles");
+    let (index, tile) = app
+        .board
+        .tiles
+        .iter()
+        .enumerate()
+        .find(|(_, tile)| tile.x == left_edge)
+        .map(|(index, tile)| (index, tile.name.clone()))
+        .expect("a tile on the left edge");
+    app.board.set_selected_index(&index);
+    app.move_selected_left();
+
+    assert_eq!(app.focus(), Focus::List);
+    assert_eq!(
+        list_cursor_name(&app),
+        Some(tile.clone()),
+        "same entry, now in the list"
+    );
+    app.move_selected_down();
+    let below = list_cursor_name(&app).expect("moved");
+    app.move_selected_right();
+    assert_eq!(app.focus(), Focus::Treemap);
+    assert_eq!(
+        selected_name(&app),
+        Some(below),
+        "the treemap takes the list's entry"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Enter and Esc with the list in hand: into the highlighted folder, starting at the top of its
+/// list, and back out onto the folder just left.
+#[test]
+fn enter_and_esc_from_the_list() {
+    use super::Focus;
+    let (dir, mut app) = app_with_two_folders("list_enter_esc");
+    let (column, row) = list_row_of(&app, "small");
+    app.click(MouseButton::Left, column, row);
+    app.handle_enter();
+
+    assert_eq!(app.file_tree.get_current_path(), dir.join("small"));
+    assert_eq!(app.focus(), Focus::List);
+    assert_eq!(list_cursor_name(&app), Some(OsString::from("data")));
+    app.go_up();
+    assert_eq!(app.file_tree.get_current_path(), dir);
+    assert_eq!(list_cursor_name(&app), Some(OsString::from("small")));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// `d` with the list in hand offers to delete the list's entry, even one with no tile.
+#[test]
+fn delete_from_the_list_offers_the_listed_entry() {
+    let (dir, mut app) = app_with_two_folders("list_delete");
+    app.zoom_in();
+    app.jump_list(super::ListJump::Home);
+    app.prompt_file_deletion();
+
+    match &app.ui_mode {
+        UiMode::DeleteFiles(files) => {
+            assert_eq!(files.len(), 1);
+            assert_eq!(files[0].path_to_file, vec![OsString::from("big")]);
+        }
+        _ => panic!("expected the delete prompt"),
+    }
+    assert!(
+        dir.join("big").exists(),
+        "nothing deleted before confirming"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A terminal too narrow for the panel keeps the keyboard on the treemap, whatever was last
+/// focused: arrows must move something that can be seen.
+#[test]
+fn without_the_panel_the_keyboard_stays_on_the_treemap() {
+    use super::Focus;
+    let dir = temp_app_dir("narrow_focus");
+    File::create(dir.join("a")).expect("create file");
+    let app = app_with_scanned_dir(&dir, 79, 24);
+    assert_eq!(
+        app.focus(),
+        Focus::Treemap,
+        "the list's default does not apply without it"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// The list has the keyboard from the start, its top entry highlighted, and the treemap shows
+/// that entry selected.
+#[test]
+fn the_list_starts_with_the_keyboard_on_its_top_entry() {
+    use super::Focus;
+    let (dir, mut app) = app_with_two_folders("list_default");
+    app.render();
+    assert_eq!(app.focus(), Focus::List);
+    assert_eq!(app.highlighted_listing_index(), Some(0));
+    assert_eq!(selected_name(&app), Some(listed_name(&app, 0)));
+    app.move_selected_down();
+    assert_eq!(
+        app.highlighted_listing_index(),
+        Some(1),
+        "Down goes to the second row"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+fn marked(app: &App<TestBackend>) -> Vec<String> {
+    app.marked
+        .iter()
+        .map(|name| name.to_string_lossy().into_owned())
+        .collect()
+}
+
+/// Shift+Down marks from where it started to the cursor and copies them; Shift+Up takes back
+/// what it passes over.
+#[test]
+fn shift_arrows_mark_a_range_and_copy_it() {
+    let (dir, mut app) = app_with_two_folders("shift_range");
+    let recorder = recording(&mut app, &dir);
+    let order: Vec<String> = (0..3)
+        .map(|index| listed_name(&app, index).to_string_lossy().into_owned())
+        .collect();
+    let now = ::std::time::Instant::now();
+    app.extend_selection_at(1, now);
+    app.extend_selection_at(1, now);
+    assert_eq!(marked(&app), order);
+    app.extend_selection_at(-1, now);
+    assert_eq!(marked(&app), order[..2].to_vec());
+
+    let copied = recorder.copied();
+    assert_eq!(copied.last(), Some(&order[..2].join(" ")));
+    assert_eq!(copied[1], order.join(" "));
+    assert_eq!(
+        app.ui_effects.clipboard_flash_at(now),
+        Some(format!("2 paths: {}", order[..2].join(" ")).as_str())
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Ctrl+click adds entries from either panel and takes them out again; each change is copied.
+/// With nothing chosen yet, the list's default top entry is not swept in.
+#[test]
+fn ctrl_click_toggles_entries_in_either_panel() {
+    let (dir, mut app) = app_with_two_folders("ctrl_click");
+    let recorder = recording(&mut app, &dir);
+    let now = ::std::time::Instant::now();
+    let (column, row) = list_row_of(&app, "small");
+    app.ctrl_click_at(column, row, now);
+    assert_eq!(marked(&app), vec!["small"]);
+    let (column, row) = centre_of(&app, "big");
+    app.ctrl_click_at(column, row, now);
+    assert_eq!(marked(&app), vec!["small", "big"]);
+    let (column, row) = list_row_of(&app, "small");
+    app.ctrl_click_at(column, row, now);
+    assert_eq!(marked(&app), vec!["big"]);
+
+    assert_eq!(
+        recorder.copied(),
+        vec![
+            "small".to_string(),
+            "small big".to_string(),
+            "big".to_string()
+        ]
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Starting a Ctrl+click selection takes in the entry already chosen, as a file manager does.
+#[test]
+fn ctrl_click_after_a_click_includes_the_first_entry() {
+    let (dir, mut app) = app_with_two_folders("ctrl_after_click");
+    let _recorder = recording(&mut app, &dir);
+    let (column, row) = list_row_of(&app, "loose.txt");
+    app.click(MouseButton::Left, column, row);
+    let (column, row) = list_row_of(&app, "small");
+    app.ctrl_click(column, row);
+    assert_eq!(marked(&app), vec!["loose.txt", "small"]);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A Shift range adds to what Ctrl+click marked, rather than replacing it.
+#[test]
+fn a_shift_range_keeps_earlier_marks() {
+    let (dir, mut app) = app_with_two_folders("shift_after_ctrl");
+    let _recorder = recording(&mut app, &dir);
+    // Listed largest first: big, loose.txt, small.
+    let (column, row) = list_row_of(&app, "small");
+    app.ctrl_click(column, row);
+    let (column, row) = list_row_of(&app, "big");
+    app.ctrl_click(column, row);
+    assert_eq!(marked(&app), vec!["small", "big"]);
+    // From big, Shift+Down takes in loose.txt and keeps what was already marked.
+    app.extend_selection(1);
+    assert_eq!(marked(&app), vec!["small", "big", "loose.txt"]);
+    // Back up again: the range shrinks to big, and small, marked before it, stays.
+    app.extend_selection(-1);
+    assert_eq!(marked(&app), vec!["small", "big"]);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn plain_moves_clicks_and_folder_changes_clear_the_marks() {
+    let (dir, mut app) = app_with_two_folders("clear_marks");
+    let _recorder = recording(&mut app, &dir);
+    app.extend_selection(1);
+    assert_eq!(app.marked.len(), 2);
+    app.move_selected_down();
+    assert!(app.marked.is_empty(), "a plain move clears");
+
+    app.extend_selection(1);
+    app.jump_list(super::ListJump::Home);
+    assert!(app.marked.is_empty(), "a jump is a plain move, and clears");
+
+    app.extend_selection(1);
+    let (column, row) = list_row_of(&app, "small");
+    app.click(MouseButton::Left, column, row);
+    assert!(app.marked.is_empty(), "a plain click clears");
+
+    // `small` is the last entry, so this marks it without moving off it, and Enter opens it.
+    app.extend_selection(1);
+    assert_eq!(marked(&app), vec!["small"]);
+    app.handle_enter();
+    assert_eq!(app.file_tree.get_current_path(), dir.join("small"));
+    assert!(app.marked.is_empty(), "entering a folder clears");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// With the treemap in hand there is no order for a range to follow: Shift+arrows do nothing.
+#[test]
+fn shift_arrows_do_nothing_on_the_treemap() {
+    let (dir, mut app) = app_with_two_folders("shift_treemap");
+    let recorder = recording(&mut app, &dir);
+    app.switch_focus();
+    app.extend_selection(1);
+    assert!(app.marked.is_empty());
+    assert!(recorder.copied().is_empty());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn every_marked_path_is_quoted_on_its_own() {
+    let dir = temp_app_dir("marked_quoting");
+    for (name, size) in [("my file", 8192), ("it's", 4096)] {
+        File::create(dir.join(name))
+            .expect("create file")
+            .write_all(&vec![b'x'; size])
+            .expect("write file");
+    }
+    let mut app = app_with_scanned_dir(&dir, 120, 30);
+    let recorder = recording(&mut app, &dir);
+    app.extend_selection(1);
+    assert_eq!(recorder.copied(), vec![r"'my file' 'it'\''s'".to_string()]);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// The real events: Ctrl+click and Shift+Down through the normal-mode handler.
+#[test]
+fn ctrl_click_and_shift_arrow_events_reach_the_app() {
+    use ratatui::crossterm::event::{
+        Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind,
+    };
+    let (dir, mut app) = app_with_two_folders("modifier_events");
+    let _recorder = recording(&mut app, &dir);
+    let (column, row) = list_row_of(&app, "loose.txt");
+    crate::input::handle_keypress_normal_mode(
+        Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::CONTROL,
+        }),
+        &mut app,
+    );
+    assert_eq!(marked(&app), vec!["loose.txt"]);
+    crate::input::handle_keypress_normal_mode(
+        Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT)),
+        &mut app,
+    );
+    assert_eq!(marked(&app), vec!["loose.txt", "small"]);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+fn press(app: &mut App<TestBackend>, c: char) {
+    use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    let evt = Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    match app.ui_mode.clone() {
+        UiMode::DeleteFiles(files) => {
+            crate::input::handle_keypress_delete_file_mode(evt, app, files);
+        }
+        _ => crate::input::handle_keypress_normal_mode(evt, app),
+    }
+}
+
+/// With entries marked, `d` offers to delete all of them, in the order marked, and `y` does.
+#[test]
+fn d_deletes_every_marked_entry() {
+    let (dir, mut app) = app_with_two_folders("delete_marked");
+    let _recorder = recording(&mut app, &dir);
+    let before = app.file_tree.get_total_size();
+    let (column, row) = list_row_of(&app, "small");
+    app.ctrl_click(column, row);
+    let (column, row) = list_row_of(&app, "loose.txt");
+    app.ctrl_click(column, row);
+    press(&mut app, 'd');
+
+    let UiMode::DeleteFiles(files) = &app.ui_mode else {
+        panic!("expected the delete prompt");
+    };
+    let names: Vec<_> = files.iter().map(|file| file.path_to_file.clone()).collect();
+    assert_eq!(
+        names,
+        vec![
+            vec![OsString::from("small")],
+            vec![OsString::from("loose.txt")]
+        ]
+    );
+    let freed: u128 = files.iter().map(|file| file.size).sum();
+    assert!(
+        dir.join("small").exists() && dir.join("loose.txt").exists(),
+        "not yet"
+    );
+
+    press(&mut app, 'y');
+    assert!(matches!(app.ui_mode, UiMode::Normal));
+    assert!(!dir.join("small").exists());
+    assert!(!dir.join("loose.txt").exists());
+    assert!(dir.join("big").exists(), "the unmarked entry stays");
+    assert_eq!(app.file_tree.space_freed, freed);
+    assert_eq!(app.file_tree.get_total_size(), before - freed);
+    assert!(app.marked.is_empty());
+    assert_eq!(app.board.listing().len(), 1);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn cancelling_a_marked_deletion_deletes_nothing() {
+    let (dir, mut app) = app_with_two_folders("delete_marked_cancel");
+    let _recorder = recording(&mut app, &dir);
+    app.extend_selection(1);
+    press(&mut app, 'd');
+    press(&mut app, 'n');
+    assert!(matches!(app.ui_mode, UiMode::Normal));
+    for name in ["big", "loose.txt", "small"] {
+        assert!(dir.join(name).exists(), "{name}");
+    }
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// One entry failing does not stop the rest, and the error says what happened; only what was
+/// really removed counts as freed.
+#[test]
+fn a_failure_part_way_deletes_the_rest_and_says_so() {
+    let (dir, mut app) = app_with_two_folders("delete_marked_failure");
+    let _recorder = recording(&mut app, &dir);
+    let (column, row) = list_row_of(&app, "loose.txt");
+    app.ctrl_click(column, row);
+    let (column, row) = list_row_of(&app, "small");
+    app.ctrl_click(column, row);
+    press(&mut app, 'd');
+    let UiMode::DeleteFiles(files) = app.ui_mode.clone() else {
+        panic!("expected the delete prompt");
+    };
+    let small = files[1].size;
+    // Something else removes one of them while the prompt is up.
+    fs::remove_file(dir.join("loose.txt")).expect("remove behind the app's back");
+    press(&mut app, 'y');
+
+    let UiMode::ErrorMessage(message) = &app.ui_mode else {
+        panic!("expected an error, got a different mode");
+    };
+    assert!(
+        message.starts_with("Deleted 1 of 2; loose.txt:"),
+        "{message}"
+    );
+    assert!(!dir.join("small").exists(), "the other was still deleted");
+    assert_eq!(app.file_tree.space_freed, small);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A name that is not UTF-8 is drawn lossily in the prompt rather than crashing the app.
+#[cfg(unix)]
+#[test]
+fn a_non_utf8_name_can_be_offered_for_deletion() {
+    use ::std::os::unix::ffi::OsStrExt;
+    let dir = temp_app_dir("delete_non_utf8");
+    let name = OsStr::from_bytes(b"bad\xffname");
+    if File::create(dir.join(name)).is_err() {
+        // APFS and some other filesystems refuse names that are not UTF-8.
+        let _ = fs::remove_dir_all(&dir);
+        return;
+    }
+    let mut app = app_with_scanned_dir(&dir, 120, 30);
+    app.prompt_file_deletion();
+    assert!(matches!(app.ui_mode, UiMode::DeleteFiles(_)));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Where the app put the cursor itself — the top of a folder just entered, the neighbour of what
+/// was just deleted — nothing was chosen, and a Ctrl+click selection must not sweep it in.
+#[test]
+fn ctrl_click_never_sweeps_in_an_entry_nobody_chose() {
+    let (dir, mut app) = app_with_two_folders("ctrl_unchosen");
+    let _recorder = recording(&mut app, &dir);
+    // Delete one entry; the cursor lands on its neighbour without anyone choosing it.
+    let (column, row) = list_row_of(&app, "loose.txt");
+    app.click(MouseButton::Left, column, row);
+    press(&mut app, 'd');
+    press(&mut app, 'y');
+    assert!(!dir.join("loose.txt").exists());
+    let (column, row) = list_row_of(&app, "big");
+    app.ctrl_click(column, row);
+    assert_eq!(marked(&app), vec!["big"], "the neighbour was not swept in");
+
+    // Toggling it back off leaves nothing chosen either.
+    app.ctrl_click(column, row);
+    assert!(app.marked.is_empty());
+    let (column, row) = list_row_of(&app, "small");
+    app.ctrl_click(column, row);
+    assert_eq!(marked(&app), vec!["small"]);
     let _ = fs::remove_dir_all(&dir);
 }

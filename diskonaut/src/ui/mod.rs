@@ -2,6 +2,7 @@ mod bottom_line;
 mod display;
 mod grid;
 mod modals;
+pub mod side_panel;
 mod term_too_small;
 mod title;
 

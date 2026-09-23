@@ -5,11 +5,16 @@ use ::ratatui::widgets::Widget;
 use ::std::path::{Path, PathBuf};
 
 use libdiskonaut::format::{DisplayCount, DisplaySize, truncate_middle};
-use libdiskonaut::tiles::{FileType, Tile};
+use libdiskonaut::tiles::{FileMetadata, FileType};
 
 use crate::config::Keybinds;
 
-fn render_currently_selected(buf: &mut Buffer, currently_selected: &Tile, max_len: u16, y: u16) {
+fn render_currently_selected(
+    buf: &mut Buffer,
+    currently_selected: &FileMetadata,
+    max_len: u16,
+    y: u16,
+) {
     let file_name = currently_selected.name.to_string_lossy();
     let size = DisplaySize(currently_selected.size as f64);
     let descendants = currently_selected.descendants;
@@ -62,7 +67,7 @@ fn render_last_read_path(buf: &mut Buffer, last_read_path: &Path, max_len: u16, 
 }
 
 /// The help line, spelled with the keys actually bound so that it cannot disagree with them.
-fn controls_legend(kb: &Keybinds, hide_delete: bool) -> (String, String) {
+fn controls_legend(kb: &Keybinds, hide_delete: bool, switch_panel: bool) -> (String, String) {
     let delete_long = if hide_delete {
         String::new()
     } else {
@@ -73,10 +78,16 @@ fn controls_legend(kb: &Keybinds, hide_delete: bool) -> (String, String) {
     } else {
         format!(", <{}>: del", kb.delete)
     };
+    let switch_long = if switch_panel {
+        format!("<{}> - list/map, ", kb.switch_panel)
+    } else {
+        String::new()
+    };
     (
         format!(
-            "<arrows> - move around, <{enter}> - enter folder, <{parent}> - parent folder, \
-             {delete_long}<{zoom_in}/{zoom_out}/{reset_zoom}> - zoom in/out/reset, <{quit}> - quit",
+            "<arrows> - move around, {switch_long}<{enter}> - enter folder, <{parent}> - parent \
+             folder, {delete_long}<{zoom_in}/{zoom_out}/{reset_zoom}> - zoom in/out/reset, \
+             <{quit}> - quit",
             enter = kb.enter,
             parent = kb.parent,
             zoom_in = kb.zoom_in,
@@ -85,8 +96,14 @@ fn controls_legend(kb: &Keybinds, hide_delete: bool) -> (String, String) {
             quit = kb.quit,
         ),
         format!(
-            "←↓↑→/<{}>/<{}>: navigate{delete_short}",
-            kb.enter, kb.parent
+            "←↓↑→/<{}>/<{}>{}: navigate{delete_short}",
+            kb.enter,
+            kb.parent,
+            if switch_panel {
+                format!("/<{}>", kb.switch_panel)
+            } else {
+                String::new()
+            }
         ),
     )
 }
@@ -95,10 +112,12 @@ fn render_controls_legend(
     buf: &mut Buffer,
     keybinds: &Keybinds,
     hide_delete: bool,
+    switch_panel: bool,
     max_len: u16,
     y: u16,
 ) {
-    let (long_controls_line, short_controls_line) = controls_legend(keybinds, hide_delete);
+    let (long_controls_line, short_controls_line) =
+        controls_legend(keybinds, hide_delete, switch_panel);
     let too_small_line = "(...)";
     if max_len >= long_controls_line.chars().count() as u16 {
         buf.set_string(
@@ -142,7 +161,9 @@ pub struct BottomLine<'a> {
     keybinds: &'a Keybinds,
     hide_delete: bool,
     hide_small_files_legend: bool,
-    currently_selected: Option<&'a Tile>,
+    currently_selected: Option<&'a FileMetadata>,
+    /// Name the key that moves between the list and the treemap, while there is a list.
+    switch_panel_hint: bool,
     last_read_path: Option<&'a PathBuf>,
 }
 
@@ -153,6 +174,7 @@ impl<'a> BottomLine<'a> {
             hide_delete: false,
             hide_small_files_legend: false,
             currently_selected: None,
+            switch_panel_hint: false,
             last_read_path: None,
         }
     }
@@ -164,8 +186,12 @@ impl<'a> BottomLine<'a> {
         self.hide_small_files_legend = should_hide_small_files_legend;
         self
     }
-    pub fn currently_selected(mut self, currently_selected: Option<&'a Tile>) -> Self {
+    pub fn currently_selected(mut self, currently_selected: Option<&'a FileMetadata>) -> Self {
         self.currently_selected = currently_selected;
+        self
+    }
+    pub fn switch_panel_hint(mut self, show: bool) -> Self {
+        self.switch_panel_hint = show;
         self
     }
     pub fn last_read_path(mut self, last_read_path: Option<&'a PathBuf>) -> Self {
@@ -205,6 +231,7 @@ impl<'a> Widget for BottomLine<'a> {
             buf,
             self.keybinds,
             self.hide_delete,
+            self.switch_panel_hint,
             max_controls_len,
             controls_line_y,
         );
@@ -219,7 +246,7 @@ mod tests {
 
     #[test]
     fn legend_names_the_bound_delete_key() {
-        let (long, short) = controls_legend(&Keybinds::default(), false);
+        let (long, short) = controls_legend(&Keybinds::default(), false, false);
         assert!(long.contains("<d> - delete"), "{long}");
         assert!(short.contains("<d>: del"), "{short}");
         assert!(!long.contains("BACKSPACE"), "{long}");
@@ -231,15 +258,31 @@ mod tests {
             delete: KeyBinding::key(KeyCode::Backspace),
             ..Keybinds::default()
         };
-        let (long, short) = controls_legend(&kb, false);
+        let (long, short) = controls_legend(&kb, false, false);
         assert!(long.contains("<BACKSPACE> - delete"), "{long}");
         assert!(short.contains("<BACKSPACE>: del"), "{short}");
     }
 
     #[test]
     fn legend_omits_delete_when_hidden() {
-        let (long, short) = controls_legend(&Keybinds::default(), true);
+        let (long, short) = controls_legend(&Keybinds::default(), true, false);
         assert!(!long.contains("delete"), "{long}");
         assert!(!short.contains("del"), "{short}");
+    }
+}
+
+#[cfg(test)]
+mod switch_panel_tests {
+    use super::controls_legend;
+    use crate::config::Keybinds;
+
+    #[test]
+    fn legend_names_the_switch_panel_key_while_there_is_a_list() {
+        let (long, short) = controls_legend(&Keybinds::default(), false, true);
+        assert!(long.contains("<TAB> - list/map"), "{long}");
+        assert!(short.contains("/<TAB>: navigate"), "{short}");
+        let (long, short) = controls_legend(&Keybinds::default(), false, false);
+        assert!(!long.contains("TAB"), "{long}");
+        assert!(!short.contains("TAB"), "{short}");
     }
 }

@@ -23,6 +23,8 @@ pub struct Keybinds {
     pub reset_zoom: KeyBinding,
     pub confirm: KeyBinding,
     pub cancel: KeyBinding,
+    /// Move the keyboard between the list and the treemap.
+    pub switch_panel: KeyBinding,
 }
 
 impl Default for Keybinds {
@@ -41,6 +43,7 @@ impl Default for Keybinds {
             reset_zoom: KeyBinding::char('0'),
             confirm: KeyBinding::char('y'),
             cancel: KeyBinding::char('n'),
+            switch_panel: KeyBinding::key(KeyCode::Tab),
         }
     }
 }

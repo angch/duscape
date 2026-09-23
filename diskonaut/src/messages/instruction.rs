@@ -82,9 +82,9 @@ where
                     UiMode::ScreenTooSmall => {
                         handle_keypress_screen_too_small(evt, app);
                     }
-                    UiMode::DeleteFile(file_to_delete) => {
-                        let file_to_delete = file_to_delete.clone();
-                        handle_keypress_delete_file_mode(evt, app, file_to_delete);
+                    UiMode::DeleteFiles(files) => {
+                        let files = files.clone();
+                        handle_keypress_delete_file_mode(evt, app, files);
                     }
                     UiMode::ErrorMessage(_) => {
                         handle_keypress_error_message(evt, app);

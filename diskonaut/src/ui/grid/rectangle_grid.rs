@@ -2,6 +2,7 @@ use ::ratatui::buffer::Buffer;
 use ::ratatui::layout::Rect;
 use ::ratatui::style::{Color, Style};
 use ::ratatui::widgets::Widget;
+use ::std::ffi::OsString;
 
 use crate::ui::grid::{draw_rect_on_grid, draw_tile_text_on_grid};
 use libdiskonaut::tiles::Tile;
@@ -54,6 +55,8 @@ pub struct RectangleGrid<'a> {
     rectangles: &'a [Tile],
     small_files_coordinates: Option<(u16, u16)>,
     selected_rect_index: Option<usize>,
+    /// Names of the entries in a multi-selection, drawn marked.
+    marked: &'a [OsString],
 }
 
 impl<'a> RectangleGrid<'a> {
@@ -66,7 +69,12 @@ impl<'a> RectangleGrid<'a> {
             rectangles,
             small_files_coordinates,
             selected_rect_index,
+            marked: &[],
         }
+    }
+    pub fn marked(mut self, marked: &'a [OsString]) -> Self {
+        self.marked = marked;
+        self
     }
 }
 
@@ -89,7 +97,8 @@ impl<'a> Widget for RectangleGrid<'a> {
                 } else {
                     false
                 };
-                draw_tile_text_on_grid(buf, tile, selected);
+                let marked = self.marked.contains(&tile.name);
+                draw_tile_text_on_grid(buf, tile, selected, marked);
                 draw_rect_on_grid(buf, (tile.x, tile.y), (tile.width, tile.height));
             }
         }

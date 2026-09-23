@@ -92,6 +92,9 @@ builders that share nothing:
 - `input/controls.rs` — per-mode keypress handlers
 - `messages/instruction.rs` — `Instruction` dispatch to `App` methods
 - `ui/display.rs` — ratatui rendering orchestration
+- `ui/side_panel.rs` — the list left of the treemap; `screen_areas` splits the screen (a third to
+  the panel when ≥ 80 columns) and `entry_at` maps a cell to a row — used by both the renderer and
+  the mouse, so they cannot disagree
 - `config/mod.rs` — TOML config (`~/.config/diskonaut/config.toml`)
 - `clipboard.rs` — native clipboard (`pbcopy`, Win32, `wl-copy`/`xclip`/`xsel`), OSC 52 fallback;
   paths are quoted by `libdiskonaut::format::quote_path_for_shell` before they get there
@@ -103,7 +106,7 @@ builders that share nothing:
 Loading                     // Scan in progress
 Normal                      // Main treemap view
 ScreenTooSmall              // Terminal < 50×15
-DeleteFile(FileToDelete)    // Confirmation dialog
+DeleteFiles(Vec<FileToDelete>)  // Confirmation dialog: the marked entries, or the one in hand
 ErrorMessage(String)        // Error display
 Exiting { app_loaded: bool }
 ```
@@ -112,6 +115,26 @@ Exiting { app_loaded: bool }
 
 ## Key Patterns
 
+- **Multi-selection**: `App::marked` holds names in the order picked; `mark_range` is a Shift
+  run's anchor and the marks it started from, so reversing shrinks the range. Every change calls
+  `copy_marked`, which reuses right-click's `shell_path`. Plain moves, jumps, clicks and folder
+  changes clear it. `cursor_chosen` says whether the entry in hand was picked (plain click, arrow,
+  jump) or placed by the app (a folder's top row, a deleted entry's neighbour); only a picked one
+  seeds a Ctrl+click selection, so `d` never deletes an entry nobody chose. `d` deletes every
+  marked entry (`get_files_to_delete`), continuing past failures and naming the first.
+- **Colours**: no dark gray (unreadable on black) and no magenta on the light cursor bar; the
+  cursor is black on gray, marks black on yellow. `side_panel` tests assert both.
+- **Focus**: the list has it by default (`Focus::List`; `list_cursor: None` means its top row,
+  and while the list has focus `render` syncs the treemap's selection to it). `App::focus` says
+  which panel the keyboard drives; it follows the last click, Tab,
+  and Left off the treemap's left edge, and is always `Treemap` while the panel is hidden. The
+  list's cursor is kept by *name* (the listing re-sorts during a scan); moving it selects the
+  entry's tile, or nothing if it has none. Enter, Esc and delete go through `selected_entry`, so
+  an entry without a tile can still be acted on.
+- **One listing, two views**: `Board::listing` is the folder's entries, largest first, unzoomed,
+  sorted once per `change_files`; the side panel draws it every frame without re-sorting. Clicks
+  are keyed by entry *name*, so a tile and a list row are the same target, and an entry with no
+  tile can still be entered or copied.
 - **Render-on-demand**: Render only when an `Instruction` arrives; no continuous loop.
 - **Live treemap update**: while scanning, `Board` recomputes tiles from a folder-only *outline*
   (`Outline` → `FileTree::add_summary`) — every folder to `Outline::DEFAULT_DEPTH` with a running
@@ -152,6 +175,10 @@ Exiting { app_loaded: bool }
 | Go to parent | `Esc` |
 | Select tile | left click |
 | Enter folder | double-click (same tile, within 500 ms) |
+| Switch list / treemap | `Tab` (`←` off the treemap's left edge, `→` from the list) |
+| Jump through list | `PgUp` / `PgDn` / `Home` / `End` |
+| Mark a range (copies) | `Shift`+`↑`/`↓` in the list |
+| Mark / unmark (copies) | `Ctrl`+click, either panel |
 | Copy relative path | right-click |
 | Copy absolute path | double right-click |
 | Zoom in/out | `+` / `-` |

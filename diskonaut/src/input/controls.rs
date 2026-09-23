@@ -1,9 +1,12 @@
 use ::ratatui::backend::Backend;
 use ratatui::crossterm::event::Event;
 use ratatui::crossterm::event::read;
-use ratatui::crossterm::event::{KeyEvent, KeyEventKind, MouseEvent, MouseEventKind};
+use ratatui::crossterm::event::{
+    KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 
 use crate::App;
+use crate::app::ListJump;
 use crate::config::Keybinds;
 use libdiskonaut::FileToDelete;
 
@@ -46,17 +49,62 @@ pub fn is_mouse_noise(event: &Event) -> bool {
     matches!(event, Event::Mouse(mouse) if !matches!(mouse.kind, MouseEventKind::Down(_)))
 }
 
+/// The keys that move the list by more than a row. Fixed, like the arrow keys beside the
+/// configurable movement keys; they do nothing while the treemap has the keyboard.
+fn list_jump(evt: &Event) -> Option<ListJump> {
+    let Event::Key(KeyEvent {
+        code, modifiers, ..
+    }) = evt
+    else {
+        return None;
+    };
+    if !modifiers.is_empty() {
+        return None;
+    }
+    match code {
+        KeyCode::PageUp => Some(ListJump::PageUp),
+        KeyCode::PageDown => Some(ListJump::PageDown),
+        KeyCode::Home => Some(ListJump::Home),
+        KeyCode::End => Some(ListJump::End),
+        _ => None,
+    }
+}
+
+/// Shift+Down (1) or Shift+Up (-1), which extend a selection in the list.
+fn shift_arrow(evt: &Event) -> Option<isize> {
+    match evt {
+        Event::Key(KeyEvent {
+            code: KeyCode::Down,
+            modifiers: KeyModifiers::SHIFT,
+            ..
+        }) => Some(1),
+        Event::Key(KeyEvent {
+            code: KeyCode::Up,
+            modifiers: KeyModifiers::SHIFT,
+            ..
+        }) => Some(-1),
+        _ => None,
+    }
+}
+
 /// Act on a mouse press in a mode that shows the board. Returns whether `evt` was one, so the
 /// caller can stop there.
 fn handle_mouse<B: Backend>(evt: &Event, app: &mut App<B>) -> bool {
     let Event::Mouse(MouseEvent {
-        kind, column, row, ..
+        kind,
+        column,
+        row,
+        modifiers,
     }) = *evt
     else {
         return false;
     };
-    if let MouseEventKind::Down(button) = kind {
-        app.click(button, column, row);
+    match kind {
+        MouseEventKind::Down(MouseButton::Left) if modifiers.contains(KeyModifiers::CONTROL) => {
+            app.ctrl_click(column, row);
+        }
+        MouseEventKind::Down(button) => app.click(button, column, row),
+        _ => {}
     }
     true
 }
@@ -65,9 +113,19 @@ pub fn handle_keypress_loading_mode<B: Backend>(evt: Event, app: &mut App<B>) {
     if handle_mouse(&evt, app) {
         return;
     }
+    if let Some(delta) = shift_arrow(&evt) {
+        app.extend_selection(delta);
+        return;
+    }
+    if let Some(jump) = list_jump(&evt) {
+        app.jump_list(jump);
+        return;
+    }
     let kb = &app.keybinds;
     if kb.is_quit(&evt) {
         app.prompt_exit();
+    } else if kb.switch_panel.matches_event(&evt) {
+        app.switch_focus();
     } else if kb.delete.matches_event(&evt) {
         app.show_warning_modal();
     } else if kb.is_move_right(&evt) {
@@ -95,9 +153,19 @@ pub fn handle_keypress_normal_mode<B: Backend>(evt: Event, app: &mut App<B>) {
     if handle_mouse(&evt, app) {
         return;
     }
+    if let Some(delta) = shift_arrow(&evt) {
+        app.extend_selection(delta);
+        return;
+    }
+    if let Some(jump) = list_jump(&evt) {
+        app.jump_list(jump);
+        return;
+    }
     let kb = &app.keybinds;
     if kb.is_quit(&evt) {
         app.prompt_exit();
+    } else if kb.switch_panel.matches_event(&evt) {
+        app.switch_focus();
     } else if kb.delete.matches_event(&evt) {
         app.prompt_file_deletion();
     } else if kb.is_move_right(&evt) {
@@ -124,13 +192,13 @@ pub fn handle_keypress_normal_mode<B: Backend>(evt: Event, app: &mut App<B>) {
 pub fn handle_keypress_delete_file_mode<B: Backend>(
     evt: Event,
     app: &mut App<B>,
-    file_to_delete: FileToDelete,
+    files: Vec<FileToDelete>,
 ) {
     let kb = &app.keybinds;
     if kb.is_quit(&evt) || kb.is_cancel(&evt) {
         app.normal_mode();
     } else if kb.is_confirm(&evt) {
-        app.delete_file(&file_to_delete);
+        app.delete_files(&files);
     }
 }
 

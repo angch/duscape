@@ -25,3 +25,5 @@ zoom-out = "-"
 reset-zoom = "0"
 confirm = "y"
 cancel = "n"
+# Move the arrow keys between the list on the left and the treemap on the right.
+switch-panel = "tab"

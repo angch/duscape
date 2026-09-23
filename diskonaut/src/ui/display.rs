@@ -1,17 +1,19 @@
 use ::ratatui::Terminal;
 use ::ratatui::backend::Backend;
-use ::ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ::ratatui::layout::Rect;
+use ::std::ffi::OsString;
 use ::std::path::PathBuf;
 use ::std::time::Duration;
 
 use libdiskonaut::FileTree;
-use libdiskonaut::tiles::{Area, Board};
+use libdiskonaut::tiles::{Area, Board, FileMetadata};
 
 use crate::UiMode;
 use crate::config::Keybinds;
 use crate::state::UiEffects;
 use crate::ui::grid::RectangleGrid;
 use crate::ui::modals::{ConfirmBox, ErrorBox, MessageBox, WarningBox};
+use crate::ui::side_panel::{FolderDetails, SidePanel, screen_areas};
 use crate::ui::title::TitleLine;
 use crate::ui::{BottomLine, TermTooSmall};
 
@@ -26,6 +28,22 @@ pub struct FolderInfo<'a> {
 pub struct TitleStatus {
     pub apparent_size: bool,
     pub scan_duration: Option<Duration>,
+}
+
+/// What the app knows about the side panel that the tree does not: which panel has the keyboard,
+/// which entry the list highlights, and the entry in hand for the status line.
+pub struct PanelState {
+    pub list_focused: bool,
+    pub highlighted: Option<usize>,
+    pub selected: Option<FileMetadata>,
+    /// Names of the entries in a multi-selection.
+    pub marked: Vec<OsString>,
+}
+
+/// Everything the frame needs from the app beyond the tree and the board.
+pub struct ViewStatus {
+    pub title: TitleStatus,
+    pub panel: PanelState,
 }
 
 pub struct Display<B>
@@ -56,12 +74,16 @@ where
         ui_mode: &UiMode,
         ui_effects: &UiEffects,
         keybinds: &Keybinds,
-        title_status: TitleStatus,
+        status: ViewStatus,
     ) {
-        let TitleStatus {
-            apparent_size,
-            scan_duration,
-        } = title_status;
+        let ViewStatus {
+            title:
+                TitleStatus {
+                    apparent_size,
+                    scan_duration,
+                },
+            panel: panel_state,
+        } = status;
         let clipboard_flash = ui_effects.clipboard_flash_at(::std::time::Instant::now());
         self.terminal
             .draw(|f| {
@@ -82,32 +104,43 @@ where
                     size: base_path_size,
                     num_descendants: base_path_descendants,
                 };
-                let chunks = Layout::default()
-                    .direction(Direction::Vertical)
-                    .margin(0)
-                    .constraints(
-                        [
-                            Constraint::Length(1),
-                            Constraint::Min(10),
-                            Constraint::Length(2),
-                        ]
-                        .as_ref(),
-                    )
-                    .split(full_screen);
-
-                // -1 cos we draw starting at offset 1 in both x and y directions
-                let grid_area = Rect {
-                    x: chunks[1].x,
-                    y: chunks[1].y,
-                    width: chunks[1].width.saturating_sub(1),
-                    height: chunks[1].height.saturating_sub(1),
-                };
+                let areas = screen_areas(full_screen);
+                let chunks = [areas.title, areas.grid, areas.bottom];
+                let grid_area = areas.grid;
                 board.change_area(&Area {
                     x: grid_area.x,
                     y: grid_area.y,
                     width: grid_area.width,
                     height: grid_area.height,
                 });
+                if let (Some(panel), false) =
+                    (areas.side_panel, matches!(ui_mode, UiMode::ScreenTooSmall))
+                {
+                    let at_root = file_tree.current_folder_names.is_empty();
+                    let scanned = !matches!(ui_mode, UiMode::Loading)
+                        && !matches!(ui_mode, UiMode::Exiting { app_loaded: false });
+                    let details = FolderDetails {
+                        path: &current_path,
+                        size: current_path_size,
+                        descendants: current_path_descendants,
+                        scan_total: (!at_root).then_some(base_path_size),
+                        disk: file_tree
+                            .volume_used
+                            .zip(file_tree.outside_scan())
+                            .filter(|_| at_root && scanned),
+                    };
+                    f.render_widget(
+                        SidePanel::new(
+                            details,
+                            board.listing(),
+                            panel_state.highlighted,
+                            &board.tiles,
+                        )
+                        .focused(panel_state.list_focused)
+                        .marked(&panel_state.marked),
+                        panel,
+                    );
+                }
                 match ui_mode {
                     UiMode::Loading => {
                         f.render_widget(
@@ -132,12 +165,14 @@ where
                                 &board.tiles,
                                 board.unrenderable_tile_coordinates,
                                 board.selected_index,
-                            ),
+                            )
+                            .marked(&panel_state.marked),
                             grid_area,
                         );
                         f.render_widget(
                             BottomLine::new(keybinds)
-                                .currently_selected(board.currently_selected())
+                                .currently_selected(panel_state.selected.as_ref())
+                                .switch_panel_hint(areas.side_panel.is_some())
                                 .last_read_path(ui_effects.last_read_path.as_ref())
                                 .hide_delete()
                                 .hide_small_files_legend(
@@ -168,12 +203,14 @@ where
                                 &board.tiles,
                                 board.unrenderable_tile_coordinates,
                                 board.selected_index,
-                            ),
+                            )
+                            .marked(&panel_state.marked),
                             grid_area,
                         );
                         f.render_widget(
                             BottomLine::new(keybinds)
-                                .currently_selected(board.currently_selected())
+                                .currently_selected(panel_state.selected.as_ref())
+                                .switch_panel_hint(areas.side_panel.is_some())
                                 .hide_small_files_legend(
                                     board.unrenderable_tile_coordinates.is_none(),
                                 ),
@@ -183,7 +220,7 @@ where
                     UiMode::ScreenTooSmall => {
                         f.render_widget(TermTooSmall::new(), full_screen);
                     }
-                    UiMode::DeleteFile(file_to_delete) => {
+                    UiMode::DeleteFiles(files) => {
                         f.render_widget(
                             TitleLine::new(
                                 base_path_info,
@@ -203,19 +240,21 @@ where
                                 &board.tiles,
                                 board.unrenderable_tile_coordinates,
                                 board.selected_index,
-                            ),
+                            )
+                            .marked(&panel_state.marked),
                             grid_area,
                         );
                         f.render_widget(
                             BottomLine::new(keybinds)
-                                .currently_selected(board.currently_selected())
+                                .currently_selected(panel_state.selected.as_ref())
+                                .switch_panel_hint(areas.side_panel.is_some())
                                 .hide_small_files_legend(
                                     board.unrenderable_tile_coordinates.is_none(),
                                 ),
                             chunks[2],
                         );
                         f.render_widget(
-                            MessageBox::new(file_to_delete, ui_effects.deletion_in_progress),
+                            MessageBox::new(files, ui_effects.deletion_in_progress),
                             full_screen,
                         );
                     }
@@ -240,12 +279,14 @@ where
                                 &board.tiles,
                                 board.unrenderable_tile_coordinates,
                                 board.selected_index,
-                            ),
+                            )
+                            .marked(&panel_state.marked),
                             grid_area,
                         );
                         f.render_widget(
                             BottomLine::new(keybinds)
-                                .currently_selected(board.currently_selected())
+                                .currently_selected(panel_state.selected.as_ref())
+                                .switch_panel_hint(areas.side_panel.is_some())
                                 .hide_small_files_legend(
                                     board.unrenderable_tile_coordinates.is_none(),
                                 ),
@@ -273,7 +314,8 @@ where
                             );
                             f.render_widget(
                                 BottomLine::new(keybinds)
-                                    .currently_selected(board.currently_selected())
+                                    .currently_selected(panel_state.selected.as_ref())
+                                    .switch_panel_hint(areas.side_panel.is_some())
                                     .hide_small_files_legend(
                                         board.unrenderable_tile_coordinates.is_none(),
                                     ),
@@ -299,7 +341,8 @@ where
                             );
                             f.render_widget(
                                 BottomLine::new(keybinds)
-                                    .currently_selected(board.currently_selected())
+                                    .currently_selected(panel_state.selected.as_ref())
+                                    .switch_panel_hint(areas.side_panel.is_some())
                                     .last_read_path(ui_effects.last_read_path.as_ref())
                                     .hide_delete()
                                     .hide_small_files_legend(
@@ -314,7 +357,8 @@ where
                                 &board.tiles,
                                 board.unrenderable_tile_coordinates,
                                 board.selected_index,
-                            ),
+                            )
+                            .marked(&panel_state.marked),
                             grid_area,
                         );
                         f.render_widget(ConfirmBox::new(), full_screen);
@@ -340,12 +384,14 @@ where
                                 &board.tiles,
                                 board.unrenderable_tile_coordinates,
                                 board.selected_index,
-                            ),
+                            )
+                            .marked(&panel_state.marked),
                             grid_area,
                         );
                         f.render_widget(
                             BottomLine::new(keybinds)
-                                .currently_selected(board.currently_selected())
+                                .currently_selected(panel_state.selected.as_ref())
+                                .switch_panel_hint(areas.side_panel.is_some())
                                 .last_read_path(ui_effects.last_read_path.as_ref())
                                 .hide_delete()
                                 .hide_small_files_legend(

@@ -52,6 +52,8 @@ pub struct KeybindConfig {
     pub reset_zoom: Option<String>,
     pub confirm: Option<String>,
     pub cancel: Option<String>,
+    #[serde(rename = "switch-panel")]
+    pub switch_panel: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -133,6 +135,11 @@ impl KeybindConfig {
             )?,
             confirm: parse_keybind(self.confirm.as_deref(), "confirm", defaults.confirm)?,
             cancel: parse_keybind(self.cancel.as_deref(), "cancel", defaults.cancel)?,
+            switch_panel: parse_keybind(
+                self.switch_panel.as_deref(),
+                "switch-panel",
+                defaults.switch_panel,
+            )?,
         })
     }
 }

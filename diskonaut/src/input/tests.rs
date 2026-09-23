@@ -75,8 +75,8 @@ fn delete_mode_n_returns_to_normal() {
         num_descendants: None,
         size: 1,
     };
-    app.ui_mode = UiMode::DeleteFile(file.clone());
-    handle_keypress_delete_file_mode(key_char('n'), &mut app, file);
+    app.ui_mode = UiMode::DeleteFiles(vec![file.clone()]);
+    handle_keypress_delete_file_mode(key_char('n'), &mut app, vec![file]);
     assert!(matches!(app.ui_mode, UiMode::Normal));
 }
 

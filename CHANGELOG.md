@@ -17,6 +17,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `d` deletes every marked entry, after one prompt that counts them, totals their size and names
+  as many as fit. A failure part-way does not stop the rest; the message says what failed.
+- Several entries can be marked: `Ctrl`+click in either panel toggles one, and `Shift`+`↑`/`↓`
+  in the list marks a run. Each change copies the marked paths to the clipboard, shell-quoted
+  and space-separated in the order picked, and flashes them in the title.
+- The list has the keyboard when diskonaut starts, on its largest entry.
+- Selections are easier to read: the cursor is black on light gray rather than magenta on gray,
+  and entries listed without a tile are light gray rather than dark gray.
+- The keyboard drives one panel at a time: the one last clicked, switched with `Tab` (new
+  `switch-panel` keybind), or entered with `←` off the treemap's left edge and left with `→`.
+  In the list, `↑`/`↓` walk every entry in size order — including those with no tile —
+  `PgUp`/`PgDn`/`Home`/`End` jump, and `Enter`, `Esc` and `d` act on the highlighted row.
+- A list beside the treemap, in the left third of any terminal 80 columns or wider: the folder's
+  path, size, file count, share of the scan and contents, then every entry largest first with a
+  bar, size and percentage. Borderless, so it gets every line and column. The selected tile's row
+  is highlighted and kept in view; entries too small for a tile are listed dimmed. Rows take the
+  same clicks as tiles.
 - Right-click a tile to copy its path, relative to the directory diskonaut was run from, to the
   clipboard — in `/home/user/foo`, `diskonaut ../bar/` with `baz` selected copies `../bar/baz` —
   and double right-click to copy the absolute path. Paths are quoted for pasting into a shell (PowerShell on
@@ -120,6 +137,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Pressing `d` on a file whose name is not UTF-8 crashed the app: the delete prompt assumed
+  every path was valid UTF-8. Names are now shown lossily, with control characters replaced.
+- Enter on a file no longer records a place for Esc to go back to. It opened nothing, so Esc then
+  restored a stale selection in the parent folder.
 - On Windows, pressing `q` opened the quit prompt and letting go of it answered the prompt, so it
   had to be held down. Windows consoles report key releases as events of their own; they are now
   dropped before any handler sees them.
