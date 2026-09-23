@@ -8,7 +8,7 @@ pub mod scan;
 pub mod tiles;
 
 pub use error::DiskonautError;
-pub use format::{DisplaySize, DisplaySizeRounded, truncate_end, truncate_middle};
+pub use format::{DisplayCount, DisplaySize, DisplaySizeRounded, truncate_end, truncate_middle};
 pub use model::{File, FileOrFolder, FileToDelete, FileTree, Folder};
 pub use scan::{
     DirEntries, DirSummary, EntryMeta, NamedEntry, Outline, ScanItem, ScanOptions, SharedBlocks,

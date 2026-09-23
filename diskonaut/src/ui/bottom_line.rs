@@ -4,7 +4,7 @@ use ::ratatui::style::{Color, Modifier, Style};
 use ::ratatui::widgets::Widget;
 use ::std::path::{Path, PathBuf};
 
-use libdiskonaut::format::{DisplaySize, truncate_middle};
+use libdiskonaut::format::{DisplayCount, DisplaySize, truncate_middle};
 use libdiskonaut::tiles::{FileType, Tile};
 
 use crate::config::Keybinds;
@@ -31,7 +31,7 @@ fn render_currently_selected(buf: &mut Buffer, currently_selected: &Tile, max_le
                     "SELECTED: {} ({}, {} files)",
                     file_name,
                     size,
-                    descendants.expect("a folder should have descendants")
+                    DisplayCount(descendants.expect("a folder should have descendants"))
                 ),
                 format!("SELECTED: {} ({})", file_name, size),
                 format!("SELECTED: {}", file_name),

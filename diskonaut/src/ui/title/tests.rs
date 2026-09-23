@@ -129,3 +129,19 @@ fn title_hides_space_outside_the_scan_when_there_is_none() {
     let title = super::TitleLine::new(scanned(&path), scanned(&path), 0).outside_scan(Some(0));
     assert!(!title_text(title, 160).contains("outside"));
 }
+
+/// Counts in the title are grouped by thousands, so a whole-disk file count is readable at a
+/// glance: 11,341,063 files, not 11341063.
+#[test]
+fn title_separates_thousands_in_counts() {
+    let path = ::std::path::PathBuf::from("/");
+    let info = || crate::ui::FolderInfo {
+        path: &path,
+        size: 766 * 1024 * 1024 * 1024,
+        num_descendants: 11_341_063,
+    };
+    let title = super::TitleLine::new(info(), info(), 0).read_errors(1_296);
+    let line = title_text(title, 160);
+    assert!(line.contains("(11,341,063 files)"), "{line}");
+    assert!(line.contains("failed to read 1,296 files"), "{line}");
+}

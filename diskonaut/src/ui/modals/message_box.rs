@@ -5,7 +5,7 @@ use ::ratatui::widgets::Widget;
 
 use crate::ui::grid::draw_filled_rect;
 use libdiskonaut::FileToDelete;
-use libdiskonaut::format::truncate_middle;
+use libdiskonaut::format::{DisplayCount, truncate_middle};
 use libdiskonaut::tiles::FileType;
 
 fn truncated_file_name_line(file_to_delete: &FileToDelete, max_len: u16) -> String {
@@ -44,9 +44,11 @@ fn render_deletion_prompt(buf: &mut Buffer, message_rect: &Rect, file_to_delete:
             }
         }
         FileType::Folder => {
-            let children = file_to_delete
-                .num_descendants
-                .expect("folder should have descendants");
+            let children = DisplayCount(
+                file_to_delete
+                    .num_descendants
+                    .expect("folder should have descendants"),
+            );
             let full_line = format!("Delete folder with {} children?", children);
             let short_line = "Delete folder?".to_string();
             if max_text_len >= full_line.len() as u16 {

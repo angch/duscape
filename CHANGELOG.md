@@ -49,6 +49,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Counts in the UI are grouped by thousands: `11,341,063 files`, `failed to read 1,296 files`,
+  `(+12,345 descendants)`, `Delete folder with 1,024 children?`, and the Windows GUI's entry
+  counts and rate. Sizes are unchanged.
+- macOS scans with one tree builder and at most six workers, down from four and eight. The macOS
+  walk is bound by metadata reads, so extra builders only added work after it, and workers past
+  six spent their time contending in the kernel. A whole-disk scan of `/` went from ~41.8s to
+  ~39.7s with 37% less system CPU. See `docs/scan-performance.md`.
+- Hard-link accounting no longer slows down on files linked from many folders. The ledger was
+  quadratic in a file's link folders, and macOS has files linked from thousands of them (the
+  system volume's shared `_CodeSignature/CodeResources`, iOS simulator runtimes): on `/` that
+  cost 1.16s, now 0.18s. Sizes are unchanged.
+
 - The benchmark's hard-linked count now counts files seen under more than one name within the
   scan. A file whose other names lie outside the scanned folder is no longer counted. Sizes are
   unchanged.

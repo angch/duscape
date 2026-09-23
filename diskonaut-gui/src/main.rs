@@ -29,7 +29,7 @@ mod gui {
     use libdiskonaut::model::FileToDelete;
     use libdiskonaut::scan::parallel;
     use libdiskonaut::tiles::{Area, Board, FileType};
-    use libdiskonaut::{DisplaySize, FileTree, ScanOptions};
+    use libdiskonaut::{DisplayCount, DisplaySize, FileTree, ScanOptions};
 
     use windows_sys::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
     use windows_sys::Win32::Graphics::Gdi::{
@@ -175,7 +175,7 @@ mod gui {
                 &format!(
                     "Scanning {} — {} entries…",
                     state.root.display(),
-                    state.scanned_entries
+                    DisplayCount(state.scanned_entries as u64)
                 ),
             );
         } else if let Some(tree) = &state.tree {
@@ -190,9 +190,9 @@ mod gui {
                     "{} — {}  |  {} entries in {:.2}s ({} entries/s)",
                     tree.get_current_path().display(),
                     DisplaySize(tree.get_current_folder_size() as f64),
-                    state.scanned_entries,
+                    DisplayCount(state.scanned_entries as u64),
                     state.scan_secs,
-                    rate,
+                    DisplayCount(rate),
                 ),
             );
         }
@@ -305,7 +305,7 @@ mod gui {
                 &format!(
                     "Scanning {}…  {} entries",
                     state.root.display(),
-                    state.scanned_entries
+                    DisplayCount(state.scanned_entries as u64)
                 ),
             );
         }

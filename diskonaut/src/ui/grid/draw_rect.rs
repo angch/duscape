@@ -4,7 +4,7 @@ use ::ratatui::style::{Color, Modifier, Style};
 use ::unicode_width::UnicodeWidthStr;
 
 use crate::ui::grid::{boundaries, draw_next_symbol};
-use libdiskonaut::format::{DisplaySize, DisplaySizeRounded, truncate_middle};
+use libdiskonaut::format::{DisplayCount, DisplaySize, DisplaySizeRounded, truncate_middle};
 use libdiskonaut::tiles::{FileType, Tile};
 
 fn tile_first_line(tile: &Tile) -> String {
@@ -18,7 +18,8 @@ fn tile_first_line(tile: &Tile) -> String {
     match tile.file_type {
         FileType::File => truncate_middle(&filename_text, max_text_length),
         FileType::Folder => {
-            let descendant_count = descendant_count.expect("folder should have descendants");
+            let descendant_count =
+                DisplayCount(descendant_count.expect("folder should have descendants"));
             let short_descendants_indication = format!("(+{})", descendant_count);
             let long_descendants_indication = format!("(+{} descendants)", descendant_count);
             if filename_text.len() + long_descendants_indication.len() <= max_text_length as usize {

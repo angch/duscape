@@ -7,7 +7,7 @@ use ::std::time::Duration;
 
 use crate::ui::FolderInfo;
 use crate::ui::title::{CellSizeOpt, TitleTelescope};
-use libdiskonaut::format::DisplaySize;
+use libdiskonaut::format::{DisplayCount, DisplaySize};
 
 use libdiskonaut::os::is_user_admin;
 
@@ -131,9 +131,9 @@ impl<'a> Widget for TitleLine<'a> {
             format!("{}", ::std::path::MAIN_SEPARATOR)
         };
         let total_size = DisplaySize(self.base_path_info.size as f64);
-        let total_descendants = &self.base_path_info.num_descendants;
+        let total_descendants = DisplayCount(self.base_path_info.num_descendants);
         let current_folder_size = DisplaySize(self.current_path_info.size as f64);
-        let current_folder_descendants = self.current_path_info.num_descendants;
+        let current_folder_descendants = DisplayCount(self.current_path_info.num_descendants);
         let space_freed = DisplaySize(self.space_freed as f64);
 
         let mut default_style = Style::default().fg(Color::Yellow);
@@ -189,6 +189,7 @@ impl<'a> Widget for TitleLine<'a> {
             ]);
         }
         if let Some(read_errors) = self.read_errors {
+            let read_errors = DisplayCount(read_errors);
             title_telescope.append_to_left_side(vec![
                 CellSizeOpt::new(format!(" (failed to read {} files)", read_errors))
                     .style(default_style.fg(Color::Red)),
