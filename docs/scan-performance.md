@@ -2330,6 +2330,48 @@ is always zero.
 The app's real load path is `parallel::build_tree` (the `sharded` stage), not `pipeline`, despite
 an earlier benchmark comment that said otherwise — now corrected.
 
+## A static Linux release: musl, and the allocator it needs (2026-09-23)
+
+The release binary is `x86_64-unknown-linux-musl`, fully static, so it runs on any x86_64 Linux
+regardless of glibc version (checked on CentOS 7's glibc 2.17, Alpine, and a bare busybox image;
+the dynamic glibc build fails on all three). Nothing in the tree compiles C, so a plain musl build
+needs no C toolchain. The only source change was `ioctl`'s request type, which is `c_ulong` on
+glibc and `c_int` on musl (`libc::Ioctl`).
+
+A plain musl build is 7x slower, though. Measured on the 4.2M-entry home directory (Ryzen 9 9950X,
+32 threads, warm cache), `--bench-stage sharded`, with totals identical in every row:
+
+| build | sharded | user | sys |
+| --- | --- | --- | --- |
+| glibc, dynamic | 0.46s | 3.4s | 17s |
+| glibc, `+crt-static` | 0.47s | 3.4s | 17s |
+| musl, its own malloc | 3.4s | 11.5s | 72s |
+| musl + mimalloc | 1.0-1.7s | 4.0s | 35s |
+| glibc + mimalloc | 1.0-1.1s | 3.6s | 38s |
+| musl + jemalloc | 0.45-0.50s | 3.7s | 17s |
+
+- **Static linking costs nothing.** Static glibc matches dynamic glibc.
+- **musl's allocator stops the walk scaling.** Syscall counts are identical, because rustix issues
+  them raw on both. With musl's malloc, `--threads` 1/4/12/24 gives 6.1/3.1/3.5/3.5s against
+  glibc's 5.2/1.4/0.61/0.45s: 18% slower on one thread, and no gain past four.
+- **The allocator is the entire gap, and it shows up as kernel time.** Everything else in musl
+  costs nothing: with jemalloc it matches glibc. glibc plus mimalloc is as slow as musl plus
+  mimalloc. This agrees with [the earlier mimalloc
+  experiment](#an-allocator-experiment-that-failed-usefully). Tuning mimalloc (`PURGE_DELAY=-1`,
+  eager commit, large pages) changed nothing. jemalloc matches glibc on time and RSS.
+
+So musl builds use jemalloc (`tikv-jemallocator`, 64-bit only, the same choice ripgrep makes), and
+glibc builds keep the system allocator. jemalloc is C, so building the release needs `musl-gcc`
+(`musl-tools`; `make static`). With zig as the C compiler instead, cc-rs's `--target=` has to be
+filtered out, and debug builds need `-fno-sanitize=undefined`: zig's default UBSan traps inside
+jemalloc and the tests die with SIGILL.
+
+aarch64 is cross-built with `cargo zigbuild` (which handles both of those itself). jemalloc fixes
+its page size at build time, and aarch64 kernels run 4K, 16K (Asahi) or 64K pages (some RHEL). A
+4K build aborts on the larger two, so the release sets `JEMALLOC_SYS_WITH_LG_PAGE=16`. The binary
+and all tests were run under `qemu-aarch64`, which uses the host's 4K pages. The 64K setting has
+not been run on a 16K or 64K kernel.
+
 ## Known gaps
 
 > The two Linux sections above that end "the model is the bottleneck" are superseded: the model is

@@ -685,7 +685,7 @@ mod reflink {
     use ::std::path::PathBuf;
 
     /// `_IOW(0x94, 9, int)`: make this file share the source file's extents.
-    const FICLONE: libc::c_ulong = 0x4004_9409;
+    const FICLONE: libc::Ioctl = 0x4004_9409;
 
     fn clone_file(from: &File, to: &File) -> bool {
         // SAFETY: both descriptors are open for the duration of the call.

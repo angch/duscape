@@ -42,7 +42,21 @@ Still experimental — no breadcrumb clicks, custom icon, or in-place rescan yet
 
 - Linux/MacOS
 - A terminal with reasonable size (roughly 50×15 cells minimum for the main UI)
-- [Rust](https://www.rust-lang.org/tools/install)
+- [Rust](https://www.rust-lang.org/tools/install), unless you use a release binary
+
+## Linux release binaries
+
+Each [release](https://github.com/angch/diskonaut/releases) has fully static Linux binaries for
+x86_64 and aarch64, `diskonaut-angch-<version>-<arch>-unknown-linux-musl.tar.gz`. They need no
+particular glibc, or any glibc: they run on old distributions, Alpine and busybox alike. Unpack and
+run; `diskonaut` and `diskonaut-angch` are the same program.
+
+```bash
+tar -xzf diskonaut-angch-*-x86_64-unknown-linux-musl.tar.gz && ./diskonaut-angch
+```
+
+To build them yourself: `make static` (needs `musl-tools`) or `make static-aarch64` (needs
+`cargo-zigbuild`).
 
 ## Hard links and folder sizes
 

@@ -35,3 +35,9 @@ thiserror = { workspace = true }
 toml = { workspace = true }
 ratatui = { workspace = true }
 unicode-width = { workspace = true }
+
+# The static musl release needs its own allocator. On the 4.2M-entry benchmark musl's malloc makes
+# the scan 7x slower than glibc's, and mimalloc still 2x (both in kernel time); jemalloc matches
+# glibc. glibc builds keep the system allocator. 32-bit musl is left alone, as ripgrep does.
+[target.'cfg(all(target_env = "musl", target_pointer_width = "64"))'.dependencies]
+tikv-jemallocator = { version = "0.6", default-features = false }

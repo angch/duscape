@@ -263,8 +263,9 @@ mod reflink {
     /// Extents asked for in one go. Enough to describe an unfragmented copy several times over; a
     /// file needing more than this is left counted in full rather than half-understood.
     const MAX_EXTENTS: usize = 64;
-    /// `_IOWR('f', 11, struct fiemap)`, where `struct fiemap` is 32 bytes.
-    const FS_IOC_FIEMAP: libc::c_ulong = 0xC020_660B;
+    /// `_IOWR('f', 11, struct fiemap)`, where `struct fiemap` is 32 bytes. `ioctl`'s request type is
+    /// `c_ulong` on glibc but `c_int` on musl, so the bits are cast into whichever it is.
+    const FS_IOC_FIEMAP: libc::Ioctl = 0xC020_660B_u32 as libc::Ioctl;
 
     /// Below this, a file is not worth an `openat` and an `ioctl` to ask about.
     ///

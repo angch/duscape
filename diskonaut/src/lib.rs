@@ -8,6 +8,11 @@ mod messages;
 mod state;
 mod ui;
 
+/// musl's own allocator is the scan's bottleneck; see the `tikv-jemallocator` dependency.
+#[cfg(all(target_env = "musl", target_pointer_width = "64"))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 use ::std::io;
 use ::std::path::PathBuf;
 use ::std::process;

@@ -11,6 +11,23 @@ permissions:
   contents: read
 
 jobs:
+  # The release binary is static musl (see deploy.yml); keep it building and passing between tags.
+  test-musl:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - name: Install musl toolchain
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Build cache
+        uses: Swatinem/rust-cache@v2
+      - name: Run tests (musl)
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+        run: cargo test -p libdiskonaut -p diskonaut-angch --target x86_64-unknown-linux-musl
+
   test-coverage:
     runs-on: ubuntu-latest
     steps:

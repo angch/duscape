@@ -16,36 +16,107 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  github-release:
-    name: GitHub Release
+  build:
+    name: Build (${{ matrix.target }})
     runs-on: ubuntu-latest
+    # A static musl binary runs on any Linux of its architecture: no glibc version floor, and
+    # Alpine too. jemalloc (the musl build's allocator, see diskonaut/Cargo.toml) is C, so each
+    # target needs a musl C compiler: musl-gcc natively, zig (via cargo-zigbuild) for aarch64.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            cargo: cargo build
+          - target: aarch64-unknown-linux-musl
+            cargo: cargo zigbuild
+            lg_page: 16
     steps:
       - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install musl toolchain
+        if: matrix.cargo == 'cargo build'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      # Pinned: 0.13.0 is the zig the aarch64 build was tested with (under qemu).
+      - name: Install zig
+        if: matrix.cargo == 'cargo zigbuild'
+        run: |
+          curl -sSfL https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz | tar -xJ -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/zig-linux-x86_64-0.13.0" >> "$GITHUB_PATH"
+
+      - name: Install cargo-zigbuild
+        if: matrix.cargo == 'cargo zigbuild'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
 
       - name: Build cache
         uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
 
-      - name: Build release binary (diskonaut)
-        run: cargo build -p diskonaut --release
+      # jemalloc fixes its page size at build time. 2^16 is correct on 4K, 16K and 64K kernels, all
+      # of which aarch64 ships with; a 4K build aborts on the other two.
+      - name: Build static release binary
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+        run: |
+          if [ -n "${{ matrix.lg_page }}" ]; then export JEMALLOC_SYS_WITH_LG_PAGE=${{ matrix.lg_page }}; fi
+          ${{ matrix.cargo }} -p diskonaut-angch --release --locked --target ${{ matrix.target }}
 
-      - name: Strip binary
-        run: strip target/release/diskonaut
+      - name: Check the binary is static
+        run: |
+          file target/${{ matrix.target }}/release/diskonaut-angch | tee /dev/stderr \
+            | grep -qE 'static-pie linked|statically linked'
 
+      # Only the native target can run on the runner.
+      - name: Smoke test
+        if: startsWith(matrix.target, 'x86_64')
+        run: target/${{ matrix.target }}/release/diskonaut-angch --benchmark --bench-stage sharded /usr
+
+      # The release profile already strips; both names are the same program. jemalloc is linked in,
+      # so its BSD-2-Clause notice ships alongside our own licence.
       - name: Package archive
         run: |
           VERSION="${GITHUB_REF_NAME:-dev}"
-          ARCHIVE="diskonaut-${VERSION}-x86_64-linux.tar.gz"
-          tar -czf "$ARCHIVE" -C target/release diskonaut
+          ARCHIVE="diskonaut-angch-${VERSION}-${{ matrix.target }}.tar.gz"
+          STAGE="$(mktemp -d)"
+          cp target/${{ matrix.target }}/release/{diskonaut-angch,diskonaut} LICENSE "$STAGE"/
+          JEMALLOC_SYS="$(cargo metadata --format-version 1 --filter-platform ${{ matrix.target }} \
+            | jq -r '.packages[] | select(.name == "tikv-jemalloc-sys") | .manifest_path')"
+          cp "$(dirname "$JEMALLOC_SYS")/jemalloc/COPYING" "$STAGE/LICENSE-jemalloc"
+          tar -czf "$ARCHIVE" -C "$STAGE" diskonaut-angch diskonaut LICENSE LICENSE-jemalloc
           echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
 
-      # Only runs on real tag pushes; skipped for workflow_dispatch.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ env.ARCHIVE }}
+          if-no-files-found: error
+
+  # One job publishes every archive: two matrix jobs creating the same release race each other.
+  # Only runs on real tag pushes; manual runs stop at the build (artifacts stay downloadable).
+  github-release:
+    name: GitHub Release
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
       - name: Create GitHub Release
-        if: github.event_name == 'push'
         uses: softprops/action-gh-release@v3
         with:
-          files: ${{ env.ARCHIVE }}
+          files: dist/*.tar.gz
+          fail_on_unmatched_files: true
           generate_release_notes: true
 
   # Requires the CARGO_REGISTRY_TOKEN secret.

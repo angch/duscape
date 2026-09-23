@@ -27,6 +27,12 @@ cargo fmt --all                  # Format code
 cargo fmt --all -- --check       # Format check (CI)
 ```
 
+**Static release binaries** (what `deploy.yml` ships; see "Releases" below):
+```bash
+make static           # x86_64-unknown-linux-musl, needs musl-gcc (apt install musl-tools)
+make static-aarch64   # aarch64-unknown-linux-musl, needs zig + cargo-zigbuild
+```
+
 **Run the binary:**
 ```bash
 cargo run --bin diskonaut -- [FOLDER]
@@ -159,6 +165,9 @@ Exiting { app_loaded: bool }
 - **Cross-platform**: Linux, macOS, and Windows supported. Windows consoles report key releases
   as events; `TerminalEvents` drops them, so handlers only ever see presses. CI runs on Linux only
   — check other targets with `cargo clippy --workspace --all-targets --target <triple>`.
+- **musl**: the release is built for musl, and `libc` types differ there. `ioctl`'s request is
+  `c_ulong` on glibc but `c_int` on musl, so request constants are `libc::Ioctl`. CI tests
+  `x86_64-unknown-linux-musl` on every push (`test-musl`).
 
 ---
 
@@ -208,11 +217,29 @@ to `pipeline`'s — that comparison is the correctness check, not just the speed
   marker, whose corner is clamped by `SMALL_FILES_MINIMUM_WIDTH/HEIGHT` so it stays visible even
   when the hidden entries round to zero cells
 
+### Releases
+A `v*` tag runs `deploy.yml`. It builds `diskonaut-angch-<tag>-<target>.tar.gz` for
+`x86_64-unknown-linux-musl` (`musl-gcc`) and `aarch64-unknown-linux-musl` (`cargo zigbuild`,
+zig 0.13.0). The binaries are fully static, so they have no glibc floor and run on Alpine and
+busybox. One job then publishes both tarballs: matrix jobs that each create the release race.
+- **Allocator**: musl builds use jemalloc (`tikv-jemallocator`, 64-bit musl only). musl's own
+  malloc made the scan 7x slower and mimalloc 2x. Do not swap it without rerunning the
+  `--bench-stage sharded` comparison in `docs/scan-performance.md`. glibc builds use the system
+  allocator.
+- **aarch64 page size**: jemalloc fixes its page size at build time. aarch64 builds set
+  `JEMALLOC_SYS_WITH_LG_PAGE=16`, so the binary also runs on 16K- and 64K-page kernels.
+- **Licences**: jemalloc is BSD-2-Clause and linked in, so its `COPYING` ships in each tarball as
+  `LICENSE-jemalloc`.
+- **zig as the musl C compiler without zigbuild**: cc-rs passes a Rust `--target=` that zig
+  rejects, and zig's debug-mode UBSan traps in jemalloc (tests die with SIGILL). Filter the flag
+  and pass `-fno-sanitize=undefined`, or just use `cargo zigbuild`, which does both.
+
 ---
 
 ## CI Checks (must pass)
 
 - `cargo test --workspace`
+- `cargo test -p libdiskonaut -p diskonaut-angch --target x86_64-unknown-linux-musl`
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - `cargo fmt --all -- --check`
 - `cargo deny check`

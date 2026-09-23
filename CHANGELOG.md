@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Fully static Linux releases for x86_64 and aarch64,
+  `diskonaut-angch-<version>-<arch>-unknown-linux-musl.tar.gz`, that run on any Linux of their
+  architecture whatever its glibc (or none: Alpine, busybox). They replace the dynamic glibc
+  tarball, which needed glibc 2.39 and `libgcc_s`. The musl build uses jemalloc, because
+  musl's own allocator made the scan 7x slower; see `docs/scan-performance.md`. `make static`
+  builds it locally (needs `musl-tools`); `make static-aarch64` cross-builds with `cargo-zigbuild`.
 - Windows support. A native walker reads a directory's sizes, allocation and file ids in bulk
   (`GetFileInformationByHandleEx`) instead of opening every file: a 609k-entry `D:\` scans in
   0.4s instead of 34s, a 2M-entry `C:\` in about 8s. Junctions, symbolic links and mounted folders
