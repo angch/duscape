@@ -10,6 +10,7 @@ disk usage via a squarify treemap, supports live scanning, and allows deleting l
 diskonaut/
 ├── libdiskonaut/     # Core library: model, scan, treemap, formatting, os
 ├── diskonaut/        # TUI binary: CLI, UI, app state, input, config
+├── diskonaut-gui/    # Windows GUI binary: windows-sys + GDI treemap, reuses libdiskonaut
 ├── example/config.toml
 └── Cargo.toml        # Workspace root
 ```

@@ -1,6 +1,16 @@
 [workspace]
-members = ["libdiskonaut", "diskonaut"]
+members = ["libdiskonaut", "diskonaut", "diskonaut-gui"]
 resolver = "3"
+
+# Small binaries are a feature of this fork: optimize release for size. `panic = "abort"` drops the
+# unwinding tables; the CLI stays safe because its terminal is restored by a panic hook, not only by
+# unwinding a drop guard (see `diskonaut/src/lib.rs`).
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
 
 [workspace.package]
 edition = "2024"
@@ -17,6 +27,7 @@ clap = { version = "4", features = ["derive"] }
 dua-core = "4"
 libc = "0.2"
 libdiskonaut = { path = "libdiskonaut" }
+windows-sys = "0.59"
 rustix = { version = "1", default-features = false, features = ["std", "process", "fs"] }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"

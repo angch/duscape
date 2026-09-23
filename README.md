@@ -18,6 +18,20 @@ This fork exists to **explore further performance optimizations for everyday dis
 - **Unix-native** — Linux, macOS, and BSD; built on `ratatui` and parallel directory walking
 - **Stays put on request** — `-x` keeps the scan on one filesystem, like `du -x`
 
+## Windows GUI (experimental)
+
+`diskonaut-gui` is a native Windows treemap window that reuses the fast walker and the squarify
+layout from `libdiskonaut` — the scan is the same one the terminal app runs. It is built on
+`windows-sys` and GDI rather than a GUI framework, so the release binary is about **220 KB**.
+
+```sh
+cargo run -p diskonaut-gui --release -- C:\
+```
+
+Left-click a folder tile to descend, right-click to go back up; the title bar shows the current
+folder, its size, and the scan's speed. It is an early MVP — no keyboard navigation, deletion, or
+live scanning yet.
+
 ## Requirements
 
 - Linux/MacOS
