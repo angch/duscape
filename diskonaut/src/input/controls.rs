@@ -1,7 +1,7 @@
 use ::ratatui::backend::Backend;
 use ratatui::crossterm::event::Event;
 use ratatui::crossterm::event::read;
-use ratatui::crossterm::event::{KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::crossterm::event::{KeyEvent, KeyEventKind, MouseEvent, MouseEventKind};
 
 use crate::App;
 use crate::config::Keybinds;
@@ -55,8 +55,8 @@ fn handle_mouse<B: Backend>(evt: &Event, app: &mut App<B>) -> bool {
     else {
         return false;
     };
-    if kind == MouseEventKind::Down(MouseButton::Left) {
-        app.click(column, row);
+    if let MouseEventKind::Down(button) = kind {
+        app.click(button, column, row);
     }
     true
 }

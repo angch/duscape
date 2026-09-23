@@ -12,7 +12,7 @@ This fork exists to **explore further performance optimizations for everyday dis
 
 - **Live scanning** — the treemap updates while the walk is still running
 - **Treemap navigation** — proportional tiles for files and folders; zoom for dense directories;
-  click a tile to select it, double-click a folder to open it
+  click a tile to select it, double-click a folder to open it, right-click to copy its path
 - **In-session cleanup** — delete files or folders and track space freed in the title bar
 - **Apparent or on-disk size** — default shows blocks allocated on disk; `-a` uses logical file size
 - **Hard-link aware** — a file reached by several names counts once in each folder that holds it
@@ -201,9 +201,27 @@ Optional TOML config (see [example/config.toml](example/config.toml)):
 | `q` or `Ctrl+C`                    | Quit (confirm with `y` when prompted) |
 | Click                              | Select the tile under the pointer     |
 | Double-click                       | Open that folder                      |
+| Right-click                        | Copy its path, relative to your shell |
+| Double right-click                 | Copy its absolute path                |
 
 Deletion always asks for `y` / `n` confirmation.
 
-A double click is two clicks on the same tile within half a second. While diskonaut runs it
+A double click is two clicks on the same tile within half a second.
+
+Copied relative paths start from the directory you ran diskonaut in, so they paste straight into
+the same shell: in `/home/user/foo`, `diskonaut ../bar/` with `baz` selected copies `../bar/baz`.
+Both ends are resolved first, so a symlinked directory cannot send `..` somewhere else; where no
+relative path exists (the directory was deleted, or on Windows the scan is on another drive) the
+absolute path is copied, and the title says so. Paths are quoted so they paste into a
+shell as exactly that path — `'my dir/it'\''s here'` — in PowerShell's quoting on Windows. Names
+with a newline, an escape sequence, bytes that are not UTF-8, or an invisible right-to-left
+override come out as `$'…'` escapes rather than raw, so a pasted path cannot run anything and
+what the title shows is what was copied. A relative path starting with `-` gets a leading `./`,
+so a command cannot take it for an option. The title shows what was copied for two seconds.
+
+The copy goes to the system clipboard: `pbcopy` on macOS, the Windows clipboard, and `wl-copy`,
+`xclip` or `xsel` on a Linux desktop. Where none is available, as over SSH, it is sent to the
+terminal instead (OSC 52), which iTerm2, kitty, WezTerm, Windows Terminal, foot and Alacritty put
+on the clipboard of the machine you are sitting at; in tmux that needs `set -g set-clipboard on`. While diskonaut runs it
 captures the mouse, so the terminal's own click-and-drag text selection needs a modifier: `Shift`
 in most terminals, `Option` (`⌥`) in iTerm2 and Terminal.app. Quitting releases the mouse.

@@ -6,6 +6,7 @@ use ::std::sync::mpsc;
 
 use libdiskonaut::{DirEntries, FileTree, Folder, ScanOptions, scan_into_tree};
 use ratatui::backend::TestBackend;
+use ratatui::crossterm::event::MouseButton;
 
 use super::{App, UiMode};
 use crate::config::Keybinds;
@@ -180,7 +181,7 @@ fn selected_name(app: &App<TestBackend>) -> Option<OsString> {
 fn a_click_selects_the_tile_under_the_pointer() {
     let (dir, mut app) = app_with_two_folders("click_selects");
     let (column, row) = centre_of(&app, "small");
-    app.click(column, row);
+    app.click(MouseButton::Left, column, row);
 
     assert_eq!(selected_name(&app), Some(OsString::from("small")));
     assert!(
@@ -195,8 +196,13 @@ fn a_double_click_enters_the_folder() {
     let (dir, mut app) = app_with_two_folders("double_click_enters");
     let (column, row) = centre_of(&app, "small");
     let start = ::std::time::Instant::now();
-    app.click_at(column, row, start);
-    app.click_at(column, row, start + ::std::time::Duration::from_millis(200));
+    app.click_at(MouseButton::Left, column, row, start);
+    app.click_at(
+        MouseButton::Left,
+        column,
+        row,
+        start + ::std::time::Duration::from_millis(200),
+    );
 
     assert_eq!(app.file_tree.get_current_path(), dir.join("small"));
     let _ = fs::remove_dir_all(&dir);
@@ -207,8 +213,13 @@ fn two_slow_clicks_only_select() {
     let (dir, mut app) = app_with_two_folders("slow_clicks");
     let (column, row) = centre_of(&app, "small");
     let start = ::std::time::Instant::now();
-    app.click_at(column, row, start);
-    app.click_at(column, row, start + ::std::time::Duration::from_millis(900));
+    app.click_at(MouseButton::Left, column, row, start);
+    app.click_at(
+        MouseButton::Left,
+        column,
+        row,
+        start + ::std::time::Duration::from_millis(900),
+    );
 
     assert!(app.file_tree.current_folder_names.is_empty());
     assert_eq!(selected_name(&app), Some(OsString::from("small")));
@@ -221,8 +232,9 @@ fn quick_clicks_on_two_tiles_select_the_second() {
     let (small_column, small_row) = centre_of(&app, "small");
     let (big_column, big_row) = centre_of(&app, "big");
     let start = ::std::time::Instant::now();
-    app.click_at(small_column, small_row, start);
+    app.click_at(MouseButton::Left, small_column, small_row, start);
     app.click_at(
+        MouseButton::Left,
         big_column,
         big_row,
         start + ::std::time::Duration::from_millis(100),
@@ -240,12 +252,22 @@ fn a_third_quick_click_after_entering_only_selects() {
     let (dir, mut app) = app_with_two_folders("third_click");
     let (column, row) = centre_of(&app, "big");
     let start = ::std::time::Instant::now();
-    app.click_at(column, row, start);
-    app.click_at(column, row, start + ::std::time::Duration::from_millis(100));
+    app.click_at(MouseButton::Left, column, row, start);
+    app.click_at(
+        MouseButton::Left,
+        column,
+        row,
+        start + ::std::time::Duration::from_millis(100),
+    );
     assert_eq!(app.file_tree.get_current_path(), dir.join("big"));
 
     let (column, row) = centre_of(&app, "data");
-    app.click_at(column, row, start + ::std::time::Duration::from_millis(200));
+    app.click_at(
+        MouseButton::Left,
+        column,
+        row,
+        start + ::std::time::Duration::from_millis(200),
+    );
     assert_eq!(app.file_tree.get_current_path(), dir.join("big"));
     assert_eq!(selected_name(&app), Some(OsString::from("data")));
     let _ = fs::remove_dir_all(&dir);
@@ -256,8 +278,13 @@ fn a_double_click_on_a_file_stays_put() {
     let (dir, mut app) = app_with_two_folders("double_click_file");
     let (column, row) = centre_of(&app, "loose.txt");
     let start = ::std::time::Instant::now();
-    app.click_at(column, row, start);
-    app.click_at(column, row, start + ::std::time::Duration::from_millis(100));
+    app.click_at(MouseButton::Left, column, row, start);
+    app.click_at(
+        MouseButton::Left,
+        column,
+        row,
+        start + ::std::time::Duration::from_millis(100),
+    );
 
     assert!(app.file_tree.current_folder_names.is_empty());
     assert_eq!(selected_name(&app), Some(OsString::from("loose.txt")));
@@ -268,8 +295,8 @@ fn a_double_click_on_a_file_stays_put() {
 fn a_click_outside_every_tile_changes_nothing() {
     let (dir, mut app) = app_with_two_folders("click_outside");
     let (column, row) = centre_of(&app, "small");
-    app.click(column, row);
-    app.click(0, 0); // the title line
+    app.click(MouseButton::Left, column, row);
+    app.click(MouseButton::Left, 0, 0); // the title line
 
     assert_eq!(selected_name(&app), Some(OsString::from("small")));
     let _ = fs::remove_dir_all(&dir);
@@ -303,12 +330,222 @@ fn a_relayout_between_clicks_is_not_a_double_click() {
     let (dir, mut app) = app_with_two_folders("relayout");
     let (column, row) = centre_of(&app, "small");
     let start = ::std::time::Instant::now();
-    app.click_at(column, row, start);
+    app.click_at(MouseButton::Left, column, row, start);
     let index = app.board.get_selected_index().expect("selected");
     // Stand in for the relayout: whatever sits at that index now has another name.
     app.board.tiles[index].name = OsString::from("renamed");
-    app.click_at(column, row, start + ::std::time::Duration::from_millis(100));
+    app.click_at(
+        MouseButton::Left,
+        column,
+        row,
+        start + ::std::time::Duration::from_millis(100),
+    );
 
     assert!(app.file_tree.current_folder_names.is_empty());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Collects what the app copies instead of touching the real clipboard.
+#[derive(Clone, Default)]
+struct Recorder(::std::sync::Arc<::std::sync::Mutex<Vec<String>>>);
+
+impl crate::clipboard::Clipboard for Recorder {
+    fn copy(&mut self, text: &str) {
+        self.0.lock().expect("recorder").push(text.to_string());
+    }
+}
+
+impl Recorder {
+    fn copied(&self) -> Vec<String> {
+        self.0.lock().expect("recorder").clone()
+    }
+}
+
+/// Record copies, as if diskonaut had been started from `working_dir`.
+fn recording(app: &mut App<TestBackend>, working_dir: &Path) -> Recorder {
+    let recorder = Recorder::default();
+    app.set_clipboard(Box::new(recorder.clone()));
+    app.set_working_dir(Some(working_dir.to_path_buf()));
+    recorder
+}
+
+fn right_click(app: &mut App<TestBackend>, name: &str, at: ::std::time::Instant) {
+    let (column, row) = centre_of(app, name);
+    app.click_at(MouseButton::Right, column, row, at);
+}
+
+#[test]
+fn a_right_click_copies_the_relative_path_and_selects() {
+    let (dir, mut app) = app_with_two_folders("right_click");
+    let recorder = recording(&mut app, &dir);
+    let now = ::std::time::Instant::now();
+    right_click(&mut app, "small", now);
+
+    assert_eq!(recorder.copied(), vec!["small".to_string()]);
+    assert_eq!(selected_name(&app), Some(OsString::from("small")));
+    assert!(
+        app.file_tree.current_folder_names.is_empty(),
+        "a right click never enters"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_double_right_click_copies_the_absolute_path() {
+    let (dir, mut app) = app_with_two_folders("double_right_click");
+    let recorder = recording(&mut app, &dir);
+    let start = ::std::time::Instant::now();
+    right_click(&mut app, "small", start);
+    right_click(
+        &mut app,
+        "small",
+        start + ::std::time::Duration::from_millis(150),
+    );
+
+    let absolute = libdiskonaut::format::quote_path_for_shell(&dir.join("small"));
+    assert_eq!(recorder.copied(), vec!["small".to_string(), absolute]);
+    assert!(app.file_tree.current_folder_names.is_empty());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Started from the scan root, a relative path inside a folder includes that folder.
+#[test]
+fn the_relative_path_includes_the_folders_entered() {
+    let (dir, mut app) = app_with_two_folders("right_click_nested");
+    let recorder = recording(&mut app, &dir);
+    app.board.move_to_largest_folder();
+    app.handle_enter();
+    assert_eq!(app.file_tree.get_current_path(), dir.join("big"));
+    right_click(&mut app, "data", ::std::time::Instant::now());
+
+    assert_eq!(recorder.copied(), vec!["big/data".to_string()]);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn copied_paths_are_quoted_for_the_shell() {
+    let dir = temp_app_dir("right_click_quoting");
+    for name in ["it's a file", "-rf"] {
+        File::create(dir.join(name))
+            .expect("create file")
+            .write_all(&[b'x'; 4096])
+            .expect("write file");
+    }
+    let mut app = app_with_scanned_dir(&dir, 80, 24);
+    let recorder = recording(&mut app, &dir);
+    right_click(&mut app, "it's a file", ::std::time::Instant::now());
+    right_click(
+        &mut app,
+        "-rf",
+        ::std::time::Instant::now() + ::std::time::Duration::from_secs(5),
+    );
+
+    assert_eq!(
+        recorder.copied(),
+        vec![r"'it'\''s a file'".to_string(), "./-rf".to_string()]
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A right click then a left click on one tile is not a double click of either kind.
+#[test]
+fn mixed_buttons_are_not_a_double_click() {
+    let (dir, mut app) = app_with_two_folders("mixed_buttons");
+    let recorder = recording(&mut app, &dir);
+    let start = ::std::time::Instant::now();
+    right_click(&mut app, "small", start);
+    let (column, row) = centre_of(&app, "small");
+    app.click_at(
+        MouseButton::Left,
+        column,
+        row,
+        start + ::std::time::Duration::from_millis(100),
+    );
+
+    assert!(
+        app.file_tree.current_folder_names.is_empty(),
+        "did not enter"
+    );
+    assert_eq!(
+        recorder.copied(),
+        vec!["small".to_string()],
+        "no absolute copy"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// The title shows what was copied, then drops it once the flash has run out.
+#[test]
+fn a_copy_flashes_in_the_title_and_then_expires() {
+    let (dir, mut app) = app_with_two_folders("copy_flash");
+    let _recorder = recording(&mut app, &dir);
+    let now = ::std::time::Instant::now();
+    right_click(&mut app, "small", now);
+
+    assert_eq!(
+        app.ui_effects.clipboard_flash_at(now),
+        Some("relative path: small")
+    );
+    assert_eq!(
+        app.ui_effects
+            .clipboard_flash_at(now + ::std::time::Duration::from_secs(3)),
+        None
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// The case that defines "relative": in `/home/user/foo`, `diskonaut ../bar/` with `baz` selected
+/// copies `../bar/baz` — relative to where the command was run, not to the folder it was given.
+#[test]
+fn relative_paths_start_from_the_working_directory() {
+    let base = temp_app_dir("right_click_cwd");
+    let (foo, bar) = (base.join("foo"), base.join("bar"));
+    fs::create_dir_all(&foo).expect("create foo");
+    fs::create_dir_all(bar.join("baz")).expect("create bar/baz");
+    File::create(bar.join("baz").join("data"))
+        .expect("create file")
+        .write_all(&[b'x'; 8192])
+        .expect("write file");
+    let mut app = app_with_scanned_dir(&bar, 80, 24);
+    let recorder = recording(&mut app, &foo);
+    right_click(&mut app, "baz", ::std::time::Instant::now());
+
+    assert_eq!(recorder.copied(), vec!["../bar/baz".to_string()]);
+    assert_eq!(
+        app.ui_effects
+            .clipboard_flash_at(::std::time::Instant::now()),
+        Some("relative path: ../bar/baz")
+    );
+    let _ = fs::remove_dir_all(&base);
+}
+
+/// Started from inside the scanned tree, a relative path can climb out of the working directory
+/// to a sibling.
+#[test]
+fn relative_paths_climb_out_of_a_working_directory_inside_the_scan() {
+    let (dir, mut app) = app_with_two_folders("right_click_cwd_inside");
+    let recorder = recording(&mut app, &dir.join("big"));
+    right_click(&mut app, "small", ::std::time::Instant::now());
+
+    assert_eq!(recorder.copied(), vec!["../small".to_string()]);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// With no working directory to start from, a relative copy is the absolute path, and the title
+/// says it is absolute rather than claim otherwise.
+#[test]
+fn an_unknown_working_directory_copies_the_absolute_path() {
+    let (dir, mut app) = app_with_two_folders("right_click_no_cwd");
+    let recorder = recording(&mut app, &dir);
+    app.set_working_dir(None);
+    let now = ::std::time::Instant::now();
+    right_click(&mut app, "small", now);
+
+    let absolute = libdiskonaut::format::quote_path_for_shell(&dir.join("small"));
+    assert_eq!(recorder.copied(), vec![absolute.clone()]);
+    assert_eq!(
+        app.ui_effects.clipboard_flash_at(now),
+        Some(format!("absolute path: {absolute}").as_str())
+    );
     let _ = fs::remove_dir_all(&dir);
 }

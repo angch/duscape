@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Right-click a tile to copy its path, relative to the directory diskonaut was run from, to the
+  clipboard — in `/home/user/foo`, `diskonaut ../bar/` with `baz` selected copies `../bar/baz` —
+  and double right-click to copy the absolute path. Paths are quoted for pasting into a shell (PowerShell on
+  Windows), with control characters, invisible bidi characters and non-UTF-8 bytes escaped, and a
+  leading `-` made `./-`. The title shows what was copied for two seconds. Copies go to the
+  native clipboard (`pbcopy`, the Windows clipboard, `wl-copy`/`xclip`/`xsel`), or to the
+  terminal by OSC 52 where there is none, as over SSH.
 - Mouse support in the terminal UI: click a tile to select it, double-click a folder to open it
   (two clicks on the same tile within 500 ms). Works while the scan is still running. The mouse
   is captured while diskonaut runs, so the terminal's own text selection needs `Shift` (or

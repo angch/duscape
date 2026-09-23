@@ -337,6 +337,7 @@ dependencies = [
  "tikv-jemallocator",
  "toml",
  "unicode-width",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

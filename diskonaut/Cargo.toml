@@ -36,6 +36,14 @@ toml = { workspace = true }
 ratatui = { workspace = true }
 unicode-width = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+] }
+
 # The static musl release needs its own allocator. On the 4.2M-entry benchmark musl's malloc makes
 # the scan 7x slower than glibc's, and mimalloc still 2x (both in kernel time); jemalloc matches
 # glibc. glibc builds keep the system allocator. 32-bit musl is left alone, as ripgrep does.

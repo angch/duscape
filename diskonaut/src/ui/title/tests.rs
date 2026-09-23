@@ -145,3 +145,28 @@ fn title_separates_thousands_in_counts() {
     assert!(line.contains("(11,341,063 files)"), "{line}");
     assert!(line.contains("failed to read 1,296 files"), "{line}");
 }
+
+/// While a copy is flashing the title is only that, label and all; on a narrow line the label
+/// goes first and then the middle of the path.
+#[test]
+fn title_flashes_what_was_copied() {
+    let path = ::std::path::PathBuf::from("/");
+    let title = super::TitleLine::new(scanned(&path), scanned(&path), 0)
+        .clipboard_flash(Some("relative path: 'my dir/file'"));
+    let line = title_text(title, 80);
+    assert!(
+        line.contains("Copied relative path: 'my dir/file'"),
+        "{line}"
+    );
+    assert!(
+        !line.contains("Total"),
+        "the flash replaces the rest: {line}"
+    );
+
+    let long = format!("absolute path: /{}", "x".repeat(200));
+    let title =
+        super::TitleLine::new(scanned(&path), scanned(&path), 0).clipboard_flash(Some(&long));
+    let line = title_text(title, 60);
+    assert!(!line.contains("Copied"), "{line}");
+    assert!(line.trim_start().starts_with("/x"), "{line}");
+}

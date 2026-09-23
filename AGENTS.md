@@ -53,7 +53,7 @@ builders that share nothing:
 | `stdin_handler` | Reads crossterm events → `Instruction::Keypress` |
 | `hd_scanner` | Drives the walk (its own worker pool). Sends each directory to one `tree_builder` by path prefix, and feeds an `Outline` that sends **main** a folder-only view → `Instruction::AddScannedSummaries` (batched, ~4096 entries). Directories deeper than `Outline::DEFAULT_DEPTH` are rolled up into the frontier folder above them rather than sent, so main does O(visible) work, not O(directories). When the walk ends: merges the builders' trees, replays deferred shared blocks → `Instruction::ScanComplete(tree)`, then `StartUi` |
 | `tree_builder_N` | Owns a private `FileTree` in deferred-sharing mode and adds whatever `hd_scanner` sends it. Never touches another thread's memory |
-| `event_executer` | Converts `Event` → `Instruction` (visual feedback) |
+| `event_executer` | Converts `Event` → `Instruction` (visual feedback). A clipboard flash gets a short-lived `clipboard_flash` thread that asks for a redraw when it expires; the flash carries its own deadline, so a lost redraw cannot leave it on screen |
 | `loading_loop` | Toggles loading indicator while scanning |
 | **main** | App state mutations + ratatui rendering. During the scan it renders from the *outline*; on `ScanComplete` it swaps in the finished tree, keeping the current folder |
 
@@ -93,6 +93,8 @@ builders that share nothing:
 - `messages/instruction.rs` — `Instruction` dispatch to `App` methods
 - `ui/display.rs` — ratatui rendering orchestration
 - `config/mod.rs` — TOML config (`~/.config/diskonaut/config.toml`)
+- `clipboard.rs` — native clipboard (`pbcopy`, Win32, `wl-copy`/`xclip`/`xsel`), OSC 52 fallback;
+  paths are quoted by `libdiskonaut::format::quote_path_for_shell` before they get there
 - `cli/mod.rs` — clap CLI args
 
 ### UI State Machine (`UiMode`)
@@ -150,6 +152,8 @@ Exiting { app_loaded: bool }
 | Go to parent | `Esc` |
 | Select tile | left click |
 | Enter folder | double-click (same tile, within 500 ms) |
+| Copy relative path | right-click |
+| Copy absolute path | double right-click |
 | Zoom in/out | `+` / `-` |
 | Reset zoom | `0` |
 | Confirm | `y` |

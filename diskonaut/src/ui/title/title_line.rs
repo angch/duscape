@@ -7,7 +7,8 @@ use ::std::time::Duration;
 
 use crate::ui::FolderInfo;
 use crate::ui::title::{CellSizeOpt, TitleTelescope};
-use libdiskonaut::format::{DisplayCount, DisplaySize};
+use ::unicode_width::UnicodeWidthStr;
+use libdiskonaut::format::{DisplayCount, DisplaySize, truncate_middle};
 
 use libdiskonaut::os::is_user_admin;
 
@@ -21,7 +22,29 @@ fn format_scan_time(elapsed: Duration) -> String {
     }
 }
 
+/// Fill the title with what was copied: `Copied relative path: 'my dir/file'`, dropping the label
+/// and then eliding the middle of the path when the line is too narrow. The text is already
+/// quoted, which leaves nothing in it that could not be drawn.
+fn render_clipboard_flash(copied: &str, rect: Rect, buf: &mut Buffer) {
+    let style = Style::default()
+        .fg(Color::Black)
+        .bg(Color::Green)
+        .add_modifier(Modifier::BOLD);
+    let width = rect.width.saturating_sub(2);
+    let labelled = format!("Copied {copied}");
+    let text = if UnicodeWidthStr::width(labelled.as_str()) <= usize::from(width) {
+        labelled
+    } else {
+        let bare = copied.split_once(": ").map_or(copied, |(_, path)| path);
+        truncate_middle(bare, width)
+    };
+    buf.set_style(rect, style);
+    buf.set_stringn(rect.x + 1, rect.y, &text, usize::from(width), style);
+}
+
 pub struct TitleLine<'a> {
+    /// What was just copied to the clipboard, shown across the whole line in place of the rest.
+    clipboard_flash: Option<&'a str>,
     base_path_info: FolderInfo<'a>,
     current_path_info: FolderInfo<'a>,
     space_freed: u128,
@@ -55,6 +78,7 @@ impl<'a> TitleLine<'a> {
             outside_scan: None,
             show_loading: false,
             flash_space: false,
+            clipboard_flash: None,
             path_error: false,
             zoom_level: None,
             apparent_size: false,
@@ -71,6 +95,10 @@ impl<'a> TitleLine<'a> {
     }
     pub fn show_loading(mut self) -> Self {
         self.show_loading = true;
+        self
+    }
+    pub fn clipboard_flash(mut self, copied: Option<&'a str>) -> Self {
+        self.clipboard_flash = copied;
         self
     }
     pub fn flash_space(mut self, flash_space: bool) -> Self {
@@ -107,6 +135,10 @@ impl<'a> TitleLine<'a> {
 
 impl<'a> Widget for TitleLine<'a> {
     fn render(self, rect: Rect, buf: &mut Buffer) {
+        if let Some(copied) = self.clipboard_flash {
+            render_clipboard_flash(copied, rect, buf);
+            return;
+        }
         let base_path = &self
             .base_path_info
             .path

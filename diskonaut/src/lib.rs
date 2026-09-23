@@ -1,6 +1,7 @@
 mod app;
 mod bench;
 mod cli;
+mod clipboard;
 mod config;
 mod error;
 mod input;

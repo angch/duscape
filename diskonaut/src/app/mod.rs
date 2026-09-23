@@ -1,17 +1,20 @@
 use ::ratatui::backend::Backend;
-use ::std::ffi::OsString;
+use ::std::ffi::{OsStr, OsString};
 use ::std::fs;
 use ::std::mem::ManuallyDrop;
-use ::std::path::PathBuf;
+use ::std::path::{Path, PathBuf};
 use ::std::sync::mpsc::{Receiver, SyncSender};
 use ::std::time::{Duration, Instant};
 
 use ::std::sync::Arc;
 
+use libdiskonaut::format::{quote_path_for_shell, relative_to};
 use libdiskonaut::tiles::Board;
 use libdiskonaut::{DirSummary, FileOrFolder, FileToDelete, FileTree, Folder};
+use ratatui::crossterm::event::MouseButton;
 
 use crate::Event;
+use crate::clipboard::{Clipboard, SystemClipboard};
 use crate::config::Keybinds;
 use crate::messages::{Instruction, handle_instructions};
 use crate::state::UiEffects;
@@ -54,12 +57,20 @@ where
     /// The tile last clicked — its index and name — and when, so that a second click on it soon
     /// after enters it. The name is kept because the board is laid out again when the finished
     /// tree replaces the scan's outline, and the same index can then be a different tile.
-    last_click: Option<(usize, OsString, Instant)>,
+    last_click: Option<(MouseButton, usize, OsString, Instant)>,
+    /// Where copied paths go: the system clipboard, or a recorder in tests.
+    clipboard: Box<dyn Clipboard>,
+    /// The directory diskonaut was started from, resolved, which copied relative paths start
+    /// from. `None` when it cannot be known (it was deleted); relative copies are absolute then.
+    working_dir: Option<PathBuf>,
 }
 
 /// Two clicks on one tile within this long are a double click. Terminals pass on presses without
 /// the desktop's own double-click setting, so this is the common default.
 const DOUBLE_CLICK: Duration = Duration::from_millis(500);
+
+/// How long the title shows what was just copied to the clipboard.
+const CLIPBOARD_FLASH: Duration = Duration::from_secs(2);
 
 impl<B> App<B>
 where
@@ -92,7 +103,22 @@ where
             scan_start: Instant::now(),
             scan_duration: None,
             last_click: None,
+            clipboard: Box::new(SystemClipboard),
+            // Resolved like the scan root, so that `..` counts real directories on both sides.
+            working_dir: ::std::env::current_dir()
+                .and_then(|dir| dir.canonicalize())
+                .ok(),
         }
+    }
+    /// Send copied paths somewhere other than the system clipboard, for tests.
+    #[cfg(test)]
+    pub(crate) fn set_clipboard(&mut self, clipboard: Box<dyn Clipboard>) {
+        self.clipboard = clipboard;
+    }
+    /// Pretend diskonaut was started from `working_dir`, for tests.
+    #[cfg(test)]
+    pub(crate) fn set_working_dir(&mut self, working_dir: Option<PathBuf>) {
+        self.working_dir = working_dir;
     }
     pub fn start(&mut self, receiver: Receiver<Instruction>) {
         handle_instructions(self, receiver);
@@ -222,27 +248,85 @@ where
         self.board.move_selected_up();
         self.render();
     }
-    /// A left click at a screen cell: select the tile there, and on a second click of the same
-    /// tile within [`DOUBLE_CLICK`], enter it as Enter would. A click on no tile does nothing.
-    pub fn click(&mut self, column: u16, row: u16) {
-        self.click_at(column, row, Instant::now());
+    /// A mouse press at a screen cell, on the tile there. A press on no tile does nothing.
+    ///
+    /// - Left: select the tile; a second left click on it within [`DOUBLE_CLICK`] enters it, as
+    ///   Enter would.
+    /// - Right: select the tile and copy its path, relative to the directory diskonaut was started
+    ///   from, to the clipboard; a second right click on it within [`DOUBLE_CLICK`] copies its
+    ///   absolute path instead.
+    pub fn click(&mut self, button: MouseButton, column: u16, row: u16) {
+        self.click_at(button, column, row, Instant::now());
     }
-    fn click_at(&mut self, column: u16, row: u16, now: Instant) {
+    fn click_at(&mut self, button: MouseButton, column: u16, row: u16, now: Instant) {
         let Some(index) = self.board.tile_at(column, row) else {
             self.last_click = None;
             return;
         };
         let name = self.board.tiles[index].name.clone();
-        let double = self.last_click.take().is_some_and(|(last, last_name, at)| {
-            last == index && last_name == name && now.saturating_duration_since(at) <= DOUBLE_CLICK
-        }) && self.board.get_selected_index() == Some(index);
-        if double {
-            self.enter_selected();
-        } else {
-            self.last_click = Some((index, name, now));
-            self.board.set_selected_index(&index);
-            self.render();
+        let double = self
+            .last_click
+            .take()
+            .is_some_and(|(last_button, last, last_name, at)| {
+                last_button == button
+                    && last == index
+                    && last_name == name
+                    && now.saturating_duration_since(at) <= DOUBLE_CLICK
+            })
+            && self.board.get_selected_index() == Some(index);
+        match (button, double) {
+            (MouseButton::Left, true) => self.enter_selected(),
+            (MouseButton::Left | MouseButton::Right, _) => {
+                if !double {
+                    self.last_click = Some((button, index, name.clone(), now));
+                }
+                self.board.set_selected_index(&index);
+                if button == MouseButton::Right {
+                    self.copy_path(&name, double, now);
+                }
+                self.render();
+            }
+            (MouseButton::Middle, _) => {}
         }
+    }
+    /// Copy the path of `name`, in the current folder, to the clipboard — relative to the working
+    /// directory, or absolute — quoted for the platform's shell, and show what was copied in the
+    /// title.
+    ///
+    /// With no relative path to be had (the working directory is unknown, or on another drive),
+    /// a relative copy is absolute, and the title says so.
+    fn copy_path(&mut self, name: &OsStr, absolute: bool, now: Instant) {
+        let full: PathBuf = self
+            .file_tree
+            .current_folder_names
+            .iter()
+            .map(OsString::as_os_str)
+            .chain(Some(name))
+            .fold(self.file_tree.path_in_filesystem.clone(), |path, part| {
+                path.join(part)
+            });
+        let relative = (!absolute)
+            .then(|| {
+                self.working_dir
+                    .as_deref()
+                    .and_then(|working_dir| relative_to(&full, working_dir))
+            })
+            .flatten();
+        let (kind, path) = match relative {
+            // Pasted after a command, `-rf` is an option however it is quoted; `./-rf` is a path.
+            Some(relative) if relative.as_os_str().as_encoded_bytes().first() == Some(&b'-') => {
+                ("relative", Path::new(".").join(relative))
+            }
+            Some(relative) => ("relative", relative),
+            None => ("absolute", full),
+        };
+        let text = quote_path_for_shell(&path);
+        self.clipboard.copy(&text);
+        self.ui_effects.clipboard_flash =
+            Some((format!("{kind} path: {text}"), now + CLIPBOARD_FLASH));
+        let _ = self
+            .event_sender
+            .try_send(Event::ClipboardFlash(CLIPBOARD_FLASH));
     }
     pub fn enter_selected(&mut self) {
         self.board.record_current_index_and_zoom_level();

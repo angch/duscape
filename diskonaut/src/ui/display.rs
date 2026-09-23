@@ -62,6 +62,7 @@ where
             apparent_size,
             scan_duration,
         } = title_status;
+        let clipboard_flash = ui_effects.clipboard_flash_at(::std::time::Instant::now());
         self.terminal
             .draw(|f| {
                 let full_screen = f.area();
@@ -122,6 +123,7 @@ where
                             .read_errors(file_tree.failed_to_read)
                             .outside_scan(file_tree.outside_scan())
                             .zoom_level(board.zoom_level)
+                            .clipboard_flash(clipboard_flash)
                             .show_loading(),
                             chunks[0],
                         );
@@ -155,6 +157,7 @@ where
                             .scan_duration(scan_duration)
                             .path_error(ui_effects.current_path_is_red)
                             .flash_space(ui_effects.flash_space_freed)
+                            .clipboard_flash(clipboard_flash)
                             .zoom_level(board.zoom_level)
                             .read_errors(file_tree.failed_to_read)
                             .outside_scan(file_tree.outside_scan()),
