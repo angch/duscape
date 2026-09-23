@@ -6,7 +6,7 @@ use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModif
 
 use super::controls::{
     handle_keypress_delete_file_mode, handle_keypress_exiting_mode, handle_keypress_loading_mode,
-    handle_keypress_normal_mode, handle_keypress_screen_too_small, is_key_release,
+    handle_keypress_normal_mode, handle_keypress_screen_too_small, is_key_release, is_mouse_noise,
 };
 use crate::app::{App, UiMode};
 use crate::config::Keybinds;
@@ -96,4 +96,35 @@ fn key_releases_are_not_keypresses() {
         KeyEventKind::Repeat,
     ));
     assert!(!is_key_release(&repeat), "holding a key down still moves");
+}
+
+/// Only mouse presses reach the handlers. Capture reports every movement, and the warning modal
+/// closes on any event, so a stray movement must not get that far.
+#[test]
+fn mouse_movement_is_not_passed_on() {
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let mouse = |kind| {
+        Event::Mouse(MouseEvent {
+            kind,
+            column: 10,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        })
+    };
+    assert!(!is_mouse_noise(&mouse(MouseEventKind::Down(
+        MouseButton::Left
+    ))));
+    assert!(!is_mouse_noise(&mouse(MouseEventKind::Down(
+        MouseButton::Right
+    ))));
+    for kind in [
+        MouseEventKind::Moved,
+        MouseEventKind::Drag(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+        MouseEventKind::ScrollUp,
+        MouseEventKind::ScrollDown,
+    ] {
+        assert!(is_mouse_noise(&mouse(kind)), "{kind:?}");
+    }
+    assert!(!is_mouse_noise(&key_char('q')), "keys are not mouse noise");
 }

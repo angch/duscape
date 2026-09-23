@@ -138,3 +138,51 @@ fn entries_larger_than_the_folder_holding_them_stay_on_the_board() {
         );
     }
 }
+
+/// Every cell inside the board belongs to exactly one tile, borders included, and a tile's own
+/// corner finds that tile.
+#[test]
+fn tile_at_finds_the_one_tile_under_each_cell() {
+    let mut root = Folder::new(Path::new("/tmp/example"));
+    for (name, size) in [("a", 500), ("b", 300), ("c", 150), ("d", 50)] {
+        root.add_file(std::path::PathBuf::from(name), size);
+    }
+    let mut board = Board::new(&root);
+    board.change_area(&Area {
+        x: 0,
+        y: 1,
+        width: 80,
+        height: 22,
+    });
+    board.change_files(&root);
+    assert_eq!(board.tiles.len(), 4);
+
+    for (index, tile) in board.tiles.iter().enumerate() {
+        assert_eq!(
+            board.tile_at(tile.x, tile.y),
+            Some(index),
+            "top-left corner"
+        );
+        let (last_column, last_row) = (tile.x + tile.width - 1, tile.y + tile.height - 1);
+        assert_eq!(
+            board.tile_at(last_column, last_row),
+            Some(index),
+            "inner corner"
+        );
+    }
+    for row in 1..23 {
+        for column in 0..80 {
+            let owners = board
+                .tiles
+                .iter()
+                .filter(|tile| {
+                    (tile.x..tile.x + tile.width).contains(&column)
+                        && (tile.y..tile.y + tile.height).contains(&row)
+                })
+                .count();
+            assert!(owners <= 1, "cell ({column}, {row}) has {owners} owners");
+        }
+    }
+    assert_eq!(board.tile_at(0, 0), None, "the title row is not the board");
+    assert_eq!(board.tile_at(200, 200), None, "off the board");
+}

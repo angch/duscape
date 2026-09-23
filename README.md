@@ -11,7 +11,8 @@ This fork exists to **explore further performance optimizations for everyday dis
 ## Features
 
 - **Live scanning** — the treemap updates while the walk is still running
-- **Treemap navigation** — proportional tiles for files and folders; zoom for dense directories
+- **Treemap navigation** — proportional tiles for files and folders; zoom for dense directories;
+  click a tile to select it, double-click a folder to open it
 - **In-session cleanup** — delete files or folders and track space freed in the title bar
 - **Apparent or on-disk size** — default shows blocks allocated on disk; `-a` uses logical file size
 - **Hard-link aware** — a file reached by several names counts once in each folder that holds it
@@ -187,7 +188,7 @@ Optional TOML config (see [example/config.toml](example/config.toml)):
 - Default path: `~/.config/diskonaut/config.toml`
 - Override path: `diskonaut -c /path/to/config.toml`
 
-## Keyboard shortcuts
+## Keyboard and mouse
 
 | Key                                | Action                                |
 | ---------------------------------- | ------------------------------------- |
@@ -198,5 +199,11 @@ Optional TOML config (see [example/config.toml](example/config.toml)):
 | `+` / `-`                          | Zoom in / out                         |
 | `0`                                | Reset zoom                            |
 | `q` or `Ctrl+C`                    | Quit (confirm with `y` when prompted) |
+| Click                              | Select the tile under the pointer     |
+| Double-click                       | Open that folder                      |
 
 Deletion always asks for `y` / `n` confirmation.
+
+A double click is two clicks on the same tile within half a second. While diskonaut runs it
+captures the mouse, so the terminal's own click-and-drag text selection needs a modifier: `Shift`
+in most terminals, `Option` (`⌥`) in iTerm2 and Terminal.app. Quitting releases the mouse.

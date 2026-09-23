@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Mouse support in the terminal UI: click a tile to select it, double-click a folder to open it
+  (two clicks on the same tile within 500 ms). Works while the scan is still running. The mouse
+  is captured while diskonaut runs, so the terminal's own text selection needs `Shift` (or
+  `Option` in iTerm2 and Terminal.app); it is released on every exit, including a panic.
 - Fully static Linux releases for x86_64 and aarch64,
   `diskonaut-angch-<version>-<arch>-unknown-linux-musl.tar.gz`, that run on any Linux of their
   architecture whatever its glibc (or none: Alpine, busybox). They replace the dynamic glibc

@@ -148,6 +148,8 @@ Exiting { app_loaded: bool }
 | Navigate | `h/j/k/l` or arrow keys |
 | Enter folder | `Enter` |
 | Go to parent | `Esc` |
+| Select tile | left click |
+| Enter folder | double-click (same tile, within 500 ms) |
 | Zoom in/out | `+` / `-` |
 | Reset zoom | `0` |
 | Confirm | `y` |
@@ -163,7 +165,9 @@ Exiting { app_loaded: bool }
 - **Exports**: `pub use` re-exports in `mod.rs` files.
 - **No async runtime**: Threads + channels only.
 - **Cross-platform**: Linux, macOS, and Windows supported. Windows consoles report key releases
-  as events; `TerminalEvents` drops them, so handlers only ever see presses. CI runs on Linux only
+  as events; `TerminalEvents` drops them, so handlers only ever see presses. It drops mouse
+  movement, drags, releases and scrolls too (`is_mouse_noise`): mouse capture reports every
+  movement, and the warning modal closes on any event. CI runs on Linux only
   — check other targets with `cargo clippy --workspace --all-targets --target <triple>`.
 - **musl**: the release is built for musl, and `libc` types differ there. `ioctl`'s request is
   `c_ulong` on glibc but `c_int` on musl, so request constants are `libc::Ioctl`. CI tests

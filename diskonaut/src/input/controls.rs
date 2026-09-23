@@ -1,7 +1,7 @@
 use ::ratatui::backend::Backend;
 use ratatui::crossterm::event::Event;
 use ratatui::crossterm::event::read;
-use ratatui::crossterm::event::{KeyEvent, KeyEventKind};
+use ratatui::crossterm::event::{KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind};
 
 use crate::App;
 use crate::config::Keybinds;
@@ -15,7 +15,7 @@ impl Iterator for TerminalEvents {
     fn next(&mut self) -> Option<Event> {
         loop {
             let event = read().unwrap();
-            if !is_key_release(&event) {
+            if !is_key_release(&event) && !is_mouse_noise(&event) {
                 return Some(event);
             }
         }
@@ -37,7 +37,34 @@ pub fn is_key_release(event: &Event) -> bool {
     )
 }
 
+/// Whether `event` is a mouse event no handler acts on: movement, drags, releases, scrolling.
+///
+/// Mouse capture reports every pointer movement, and some modals close on any event at all, so
+/// passing these on would close a dialog when the mouse merely crossed the window — and flood the
+/// rendering thread with events besides. Only presses get through.
+pub fn is_mouse_noise(event: &Event) -> bool {
+    matches!(event, Event::Mouse(mouse) if !matches!(mouse.kind, MouseEventKind::Down(_)))
+}
+
+/// Act on a mouse press in a mode that shows the board. Returns whether `evt` was one, so the
+/// caller can stop there.
+fn handle_mouse<B: Backend>(evt: &Event, app: &mut App<B>) -> bool {
+    let Event::Mouse(MouseEvent {
+        kind, column, row, ..
+    }) = *evt
+    else {
+        return false;
+    };
+    if kind == MouseEventKind::Down(MouseButton::Left) {
+        app.click(column, row);
+    }
+    true
+}
+
 pub fn handle_keypress_loading_mode<B: Backend>(evt: Event, app: &mut App<B>) {
+    if handle_mouse(&evt, app) {
+        return;
+    }
     let kb = &app.keybinds;
     if kb.is_quit(&evt) {
         app.prompt_exit();
@@ -65,6 +92,9 @@ pub fn handle_keypress_loading_mode<B: Backend>(evt: Event, app: &mut App<B>) {
 }
 
 pub fn handle_keypress_normal_mode<B: Backend>(evt: Event, app: &mut App<B>) {
+    if handle_mouse(&evt, app) {
+        return;
+    }
     let kb = &app.keybinds;
     if kb.is_quit(&evt) {
         app.prompt_exit();

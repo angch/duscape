@@ -1,4 +1,5 @@
 use ::ratatui::backend::Backend;
+use ::std::ffi::OsString;
 use ::std::fs;
 use ::std::mem::ManuallyDrop;
 use ::std::path::PathBuf;
@@ -50,7 +51,15 @@ where
     /// how long the scan took once it completed. The title shows the elapsed time when done.
     scan_start: Instant,
     scan_duration: Option<Duration>,
+    /// The tile last clicked — its index and name — and when, so that a second click on it soon
+    /// after enters it. The name is kept because the board is laid out again when the finished
+    /// tree replaces the scan's outline, and the same index can then be a different tile.
+    last_click: Option<(usize, OsString, Instant)>,
 }
+
+/// Two clicks on one tile within this long are a double click. Terminals pass on presses without
+/// the desktop's own double-click setting, so this is the common default.
+const DOUBLE_CLICK: Duration = Duration::from_millis(500);
 
 impl<B> App<B>
 where
@@ -82,6 +91,7 @@ where
             show_apparent_size,
             scan_start: Instant::now(),
             scan_duration: None,
+            last_click: None,
         }
     }
     pub fn start(&mut self, receiver: Receiver<Instruction>) {
@@ -211,6 +221,28 @@ where
     pub fn move_selected_up(&mut self) {
         self.board.move_selected_up();
         self.render();
+    }
+    /// A left click at a screen cell: select the tile there, and on a second click of the same
+    /// tile within [`DOUBLE_CLICK`], enter it as Enter would. A click on no tile does nothing.
+    pub fn click(&mut self, column: u16, row: u16) {
+        self.click_at(column, row, Instant::now());
+    }
+    fn click_at(&mut self, column: u16, row: u16, now: Instant) {
+        let Some(index) = self.board.tile_at(column, row) else {
+            self.last_click = None;
+            return;
+        };
+        let name = self.board.tiles[index].name.clone();
+        let double = self.last_click.take().is_some_and(|(last, last_name, at)| {
+            last == index && last_name == name && now.saturating_duration_since(at) <= DOUBLE_CLICK
+        }) && self.board.get_selected_index() == Some(index);
+        if double {
+            self.enter_selected();
+        } else {
+            self.last_click = Some((index, name, now));
+            self.board.set_selected_index(&index);
+            self.render();
+        }
     }
     pub fn enter_selected(&mut self) {
         self.board.record_current_index_and_zoom_level();

@@ -141,3 +141,174 @@ fn reset_ui_mode_from_error_returns_to_normal() {
     assert!(matches!(app.ui_mode, UiMode::Normal));
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// A folder `big` holding most of the data, a smaller folder `small`, and a loose file, so each
+/// gets a tile of its own.
+fn app_with_two_folders(name: &str) -> (PathBuf, App<TestBackend>) {
+    let dir = temp_app_dir(name);
+    for (folder, bytes) in [("big", 64 * 1024), ("small", 16 * 1024)] {
+        fs::create_dir(dir.join(folder)).expect("create folder");
+        File::create(dir.join(folder).join("data"))
+            .expect("create file")
+            .write_all(&vec![b'x'; bytes])
+            .expect("write file");
+    }
+    File::create(dir.join("loose.txt"))
+        .expect("create file")
+        .write_all(&vec![b'x'; 8 * 1024])
+        .expect("write file");
+    let app = app_with_scanned_dir(&dir, 80, 24);
+    (dir, app)
+}
+
+/// The middle of the named tile, where a user would click.
+fn centre_of(app: &App<TestBackend>, name: &str) -> (u16, u16) {
+    let tile = app
+        .board
+        .tiles
+        .iter()
+        .find(|tile| tile.name == OsStr::new(name))
+        .unwrap_or_else(|| panic!("no tile for {name}"));
+    (tile.x + tile.width / 2, tile.y + tile.height / 2)
+}
+
+fn selected_name(app: &App<TestBackend>) -> Option<OsString> {
+    app.board.currently_selected().map(|tile| tile.name.clone())
+}
+
+#[test]
+fn a_click_selects_the_tile_under_the_pointer() {
+    let (dir, mut app) = app_with_two_folders("click_selects");
+    let (column, row) = centre_of(&app, "small");
+    app.click(column, row);
+
+    assert_eq!(selected_name(&app), Some(OsString::from("small")));
+    assert!(
+        app.file_tree.current_folder_names.is_empty(),
+        "a single click must not enter the folder"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_double_click_enters_the_folder() {
+    let (dir, mut app) = app_with_two_folders("double_click_enters");
+    let (column, row) = centre_of(&app, "small");
+    let start = ::std::time::Instant::now();
+    app.click_at(column, row, start);
+    app.click_at(column, row, start + ::std::time::Duration::from_millis(200));
+
+    assert_eq!(app.file_tree.get_current_path(), dir.join("small"));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn two_slow_clicks_only_select() {
+    let (dir, mut app) = app_with_two_folders("slow_clicks");
+    let (column, row) = centre_of(&app, "small");
+    let start = ::std::time::Instant::now();
+    app.click_at(column, row, start);
+    app.click_at(column, row, start + ::std::time::Duration::from_millis(900));
+
+    assert!(app.file_tree.current_folder_names.is_empty());
+    assert_eq!(selected_name(&app), Some(OsString::from("small")));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn quick_clicks_on_two_tiles_select_the_second() {
+    let (dir, mut app) = app_with_two_folders("two_tiles");
+    let (small_column, small_row) = centre_of(&app, "small");
+    let (big_column, big_row) = centre_of(&app, "big");
+    let start = ::std::time::Instant::now();
+    app.click_at(small_column, small_row, start);
+    app.click_at(
+        big_column,
+        big_row,
+        start + ::std::time::Duration::from_millis(100),
+    );
+
+    assert!(app.file_tree.current_folder_names.is_empty());
+    assert_eq!(selected_name(&app), Some(OsString::from("big")));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// The press that enters a folder is not the first click of the next double click: a third quick
+/// click lands on whatever tile is now under the pointer and only selects it.
+#[test]
+fn a_third_quick_click_after_entering_only_selects() {
+    let (dir, mut app) = app_with_two_folders("third_click");
+    let (column, row) = centre_of(&app, "big");
+    let start = ::std::time::Instant::now();
+    app.click_at(column, row, start);
+    app.click_at(column, row, start + ::std::time::Duration::from_millis(100));
+    assert_eq!(app.file_tree.get_current_path(), dir.join("big"));
+
+    let (column, row) = centre_of(&app, "data");
+    app.click_at(column, row, start + ::std::time::Duration::from_millis(200));
+    assert_eq!(app.file_tree.get_current_path(), dir.join("big"));
+    assert_eq!(selected_name(&app), Some(OsString::from("data")));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_double_click_on_a_file_stays_put() {
+    let (dir, mut app) = app_with_two_folders("double_click_file");
+    let (column, row) = centre_of(&app, "loose.txt");
+    let start = ::std::time::Instant::now();
+    app.click_at(column, row, start);
+    app.click_at(column, row, start + ::std::time::Duration::from_millis(100));
+
+    assert!(app.file_tree.current_folder_names.is_empty());
+    assert_eq!(selected_name(&app), Some(OsString::from("loose.txt")));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_click_outside_every_tile_changes_nothing() {
+    let (dir, mut app) = app_with_two_folders("click_outside");
+    let (column, row) = centre_of(&app, "small");
+    app.click(column, row);
+    app.click(0, 0); // the title line
+
+    assert_eq!(selected_name(&app), Some(OsString::from("small")));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// The full path a real click takes: a crossterm mouse press through the normal-mode handler.
+#[test]
+fn a_mouse_press_event_reaches_the_board() {
+    use ratatui::crossterm::event::{Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+    let (dir, mut app) = app_with_two_folders("mouse_event");
+    let (column, row) = centre_of(&app, "small");
+    let press = Event::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    });
+    crate::input::handle_keypress_normal_mode(press.clone(), &mut app);
+    assert_eq!(selected_name(&app), Some(OsString::from("small")));
+    crate::input::handle_keypress_normal_mode(press, &mut app);
+    assert_eq!(app.file_tree.get_current_path(), dir.join("small"));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A double click needs both clicks on the same tile. If the board is laid out again between
+/// them — as when the finished tree replaces the scan's outline — a tile at the same index is a
+/// different tile, and the second click only selects it.
+#[test]
+fn a_relayout_between_clicks_is_not_a_double_click() {
+    let (dir, mut app) = app_with_two_folders("relayout");
+    let (column, row) = centre_of(&app, "small");
+    let start = ::std::time::Instant::now();
+    app.click_at(column, row, start);
+    let index = app.board.get_selected_index().expect("selected");
+    // Stand in for the relayout: whatever sits at that index now has another name.
+    app.board.tiles[index].name = OsString::from("renamed");
+    app.click_at(column, row, start + ::std::time::Duration::from_millis(100));
+
+    assert!(app.file_tree.current_folder_names.is_empty());
+    let _ = fs::remove_dir_all(&dir);
+}

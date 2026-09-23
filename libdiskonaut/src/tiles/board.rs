@@ -188,6 +188,18 @@ impl Board {
     pub fn set_zoom_index(&mut self, index: usize) {
         self.zoom_level = index;
     }
+    /// The tile drawn at a screen cell, for mouse selection.
+    ///
+    /// Tiles are laid out in screen coordinates and neighbours share a border line, so each tile
+    /// owns its top and left borders and the half-open span to its right and bottom: every cell
+    /// belongs to at most one tile. Cells outside every tile — past the last border, or in the
+    /// "small files" corner — belong to none.
+    pub fn tile_at(&self, column: u16, row: u16) -> Option<usize> {
+        self.tiles.iter().position(|tile| {
+            (tile.x..tile.x.saturating_add(tile.width)).contains(&column)
+                && (tile.y..tile.y.saturating_add(tile.height)).contains(&row)
+        })
+    }
     pub fn record_current_index_and_zoom_level(&mut self) {
         self.previous_indices_and_zoom_level
             .push((self.get_selected_index(), self.zoom_level));
