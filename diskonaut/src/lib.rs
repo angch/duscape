@@ -26,7 +26,9 @@ use libdiskonaut::{Outline, ScanOptions};
 use ::ratatui::backend::Backend;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::Event as BackEvent;
-use ratatui::crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+use ratatui::crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
 use ratatui::crossterm::{cursor::Show, execute};
 
 use app::{App, UiMode};
@@ -51,11 +53,14 @@ fn get_stdout() -> io::Result<io::Stdout> {
     Ok(io::stdout())
 }
 
-/// Put the terminal back the way it was found: cooked mode, cursor visible. Idempotent, and it
-/// ignores errors because it runs on the way out when there is nothing left to do about them.
+/// Put the terminal back the way it was found: cooked mode, main screen, cursor visible.
+/// Idempotent, and it ignores errors because it runs on the way out when there is nothing left to
+/// do about them. Leaving the alternate screen is what brings back the shell's screen and puts the
+/// cursor back where the prompt left it; without it the prompt resumes wherever the last frame
+/// drew.
 fn restore_terminal() {
     let _ = disable_raw_mode();
-    let _ = execute!(io::stdout(), Show);
+    let _ = execute!(io::stdout(), LeaveAlternateScreen, Show);
 }
 
 /// Restores the terminal when it drops — on a normal quit, an early `?` error, or a panic unwinding
@@ -117,6 +122,7 @@ fn try_main() -> Result<(), Error> {
             // The guard restores the terminal on every ordinary way out; the panic hook does it
             // before the message prints, so a panic in any thread cannot leave the shell wedged.
             let _guard = TerminalGuard;
+            execute!(io::stdout(), EnterAlternateScreen)?;
             let default_hook = std::panic::take_hook();
             std::panic::set_hook(Box::new(move |info| {
                 restore_terminal();
