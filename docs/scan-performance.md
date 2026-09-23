@@ -65,7 +65,7 @@ The stages nest, so subtracting one from the next attributes cost to a layer:
 `dua-*` against the others is a like-for-like walker comparison on the same tree. `walk` against
 `tree` is the cost of the data model. `tree` against `pipeline` is the cost of the channel, and
 `pipeline` against `sharded` the cost of parallelising the build — which is a saving where the build
-is the bottleneck (Linux, macOS) and a small loss where the walk is (Windows, one shard).
+is the bottleneck (Linux) and a small loss where the walk is (Windows and macOS, one shard).
 `tree-only` is the model's cost with the walk taken out of the measurement entirely — use it rather
 than the `walk`/`tree` subtraction, which on Linux conflates the model with the walk stalling
 behind a busy consumer.
@@ -172,6 +172,9 @@ For comparison, `find ~/project | wc -l` over a 3M-entry tree used ~3 cores and 
 time, and finished in 6.3s — less kernel time than our 14-thread run and faster wall-clock.
 
 `thread_count()` therefore caps workers at `min(cores, 8)`.
+
+> **Now `min(cores, 6)` on macOS** — re-measured with a profiler and `iostat` in "macOS,
+> re-benchmarked" below, which also says what the kernel is waiting on.
 
 > **The explanation here does not hold on Linux — see "Linux XFS" below.** On a 32-core Linux box
 > the same cliff appears on both XFS and ext4, but 16 *independent* walker processes scale to 13.3M
@@ -1966,7 +1969,8 @@ still indivisible and now hash into fewer, larger lumps. D=5 is the knee, and th
 
 The whole D∈{4,5,6} × K∈{4,6,8} grid lands within 0.437–0.480s, so the choice is not fragile.
 `SHARD_DEPTH = 5` and `SHARDS = 4` are the constants here, with this table as their reason — on
-Linux and macOS, where the fast walker makes the build the bottleneck. Windows is walk-bound and
+Linux, where the fast walker makes the build the bottleneck. (This once said "Linux and macOS";
+macOS turned out to be walk-bound and uses one shard — see "macOS, re-benchmarked" below.) Windows is walk-bound and
 uses one shard instead, which needs no merge or replay at all; see "The shard count, and why
 Windows uses one" below.
 
@@ -2371,6 +2375,151 @@ its page size at build time, and aarch64 kernels run 4K, 16K (Asahi) or 64K page
 4K build aborts on the larger two, so the release sets `JEMALLOC_SYS_WITH_LG_PAGE=16`. The binary
 and all tests were run under `qemu-aarch64`, which uses the host's 4K pages. The 64K setting has
 not been run on a 16K or 64K kernel.
+
+## macOS, re-benchmarked: the walk is I/O-bound, and the ledger was quadratic (2026-09-23)
+
+The prompt was a whole-disk scan of `/` that had crept from ~36s to ~37s, and the expectation that
+the sharded build ought to be buying something on macOS. It was not, and could not: on this machine
+the tree build is not the bottleneck. What it *was* buying was a serial tail, which a hard-link
+ledger bug had grown to over a second.
+
+### Result
+
+`/`, the app's path (`--bench-stage sharded`, default flags), old and new binaries interleaved,
+three rounds:
+
+| | old: 4 shards, 8 workers | new: 1 shard, 6 workers |
+| --- | --- | --- |
+| scan, as the app waits for it | 41.6 / 41.8 / 42.0s | **39.5 / 40.3 / 39.5s** |
+| of which replay | 1.16–1.18s | — |
+| system time | 211s | **131–138s** |
+| user time | 9.5s | 7.1s |
+
+About **2s (5%) faster, with 37% less kernel CPU**. Totals agree between the binaries to within
+what the machine wrote between paired runs; on two sealed, read-only volumes, where nothing
+changes, `pipeline` and `sharded` from both binaries agree to the byte (below).
+
+The 36s→37s drift was the disk, not the code: the scan now visits 11.2M entries against the 10.4M
+recorded at the top of this file, at the same ~285–290k entries/s.
+
+### The walk is the whole scan
+
+```
+walk         36.750s   10524788 entries      5.84 user   183.87 sys
+pipeline     36.597s   10524801 entries      7.19 user   184.33 sys
+sharded      37.601s   10525101 entries      7.80 user   187.73 sys   (merge 0.009s, replay 0.301s)
+```
+
+`pipeline` — one builder — is the walk to within noise, so there is nothing for more builders to
+hide behind. One builder keeps pace with ~6.5M entries/s on Linux; the macOS walk peaks around
+0.35M/s. This is the Windows situation from the previous section, for a different reason.
+
+What the walk is doing, from `xctrace` (Time Profiler, user-space stacks only — kernel frames need
+root) on a 12-worker scan: **62% of samples in `open`, 33% in `getattrlistbulk`**, everything else
+under 1%. And from `iostat` during a "warm" scan of `/`:
+
+```
+    KB/t  tps  MB/s
+    4.25 36412 151.19
+    4.27 32228 134.39
+    4.01 37338 146.33
+```
+
+The scan is **not warm**. It reads 30–40k 4 KiB metadata blocks a second from the SSD for its
+whole length; APFS's metadata for 11M entries does not stay cached between runs. A single worker
+on a smaller tree runs at 12.4s wall-clock on 4.7s of CPU — mostly blocked. So the walk is bound
+by synchronous 4 KiB reads at a queue depth of about the worker count, and every worker past six
+buys queue depth at the price of kernel contention:
+
+| workers | `walk` | system time |
+| --- | --- | --- |
+| 4 | 42.5s | 78s |
+| **6** | **35.3s** | **112s** |
+| 8 | 36.4s | 183s |
+| 10 | 40.5s | 286s |
+| 12 | 45.1s | 401s |
+
+Interleaved on the app's path, six beat eight in every round (39.1–39.8s against 40.5–41.7s).
+`MAX_SCAN_THREADS` is now 6 on macOS; Windows keeps 8, Linux 24. It is a measurement on one
+14-core M4 Pro and an NVMe SSD, not a law — a slower disk or a different core count may move it.
+
+The vnode cache is small next to the tree: `kern.maxvnodes` is 263,168 and one scan of `/` creates
+and recycles **1.7M vnodes**, one per directory opened. That looked like the contention, but a
+tree that fits the cache (`/Applications`, 124k directories, second run: 4 new vnodes) shows the
+same cliff — 3.05s at six workers, 3.30s at twelve with three times the system time. Raising
+`kern.maxvnodes` (root, system-wide) might still help repeat scans of `/`; unmeasured.
+
+### What did not work: opening directories relative to their parent
+
+Every directory is opened by full path, so every worker resolves `/System/Volumes/Data/Users/…`
+from the root again for every directory, which looked like a way to contend on a few vnodes. A
+prototype kept each directory open until its subdirectories were opened with `openat(parent, name)`
+(bounded by an fd budget). No change: 37.0s at six workers against 35.3s, and system time
+identical at every worker count. Path lookup is cheap next to what `open` does on a directory whose
+inode is not cached — read it. Reverted.
+
+### The ledger was quadratic in a file's link count
+
+With the walk as the floor, the only thing `sharded` added was its tail, and the replay had grown
+from 0.30s to **1.15–1.19s** over the course of the day. Instrumented:
+
+```
+replay: 105,164 directories, 218,462 sightings, 164,214 subtractions
+        ledger 0.972s   interning 0.058s   subtraction 0.099s
+        54,231 files, three of them in 10,572 / 5,799 / 4,079 folders
+```
+
+`HardLinks::charge_in` answered "the deepest folder already charged" by comparing the new link's
+folder with *every folder already holding a link to that file*, an `O(depth)` walk each — so a file
+linked from N folders cost O(N² · depth) to build. Those three files were ~97% of the sum of
+squares. They are real: the sealed system volume dedupes identical `_CodeSignature/CodeResources`
+files into one inode with 5,799 links, and an iOS simulator runtime mounted under
+`/Library/Developer/CoreSimulator/Volumes/` added ~33k more hard-linked files — which is also why
+the hard-linked count went from 21k to 54k.
+
+The fix answers the same question another way. A folder is already charged exactly when it is an
+ancestor of some earlier link, so the answer is the first charged folder found walking up from the
+new one. Past `INDEXED_AT` (32) folders a file keeps that set — every link folder and all of its
+ancestors — and a charge walks up inserting until it finds one already there: O(depth), and O(1)
+amortised for the insertions. Below the threshold the list stays, as it is smaller and no slower.
+
+| | replay, old | replay, new |
+| --- | --- | --- |
+| `/` | 1.16s | 0.18s |
+| simulator runtime volume (728k entries, 32,809 hard-linked) | 0.777s | 0.108s |
+| `/System/Library` (443k entries) | 0.217s | 0.012s |
+
+On both sealed volumes old and new, `pipeline` and `sharded`, report the same total to the byte
+(23,201,353,728 B and 28,655,095,808 B). The inline build pays the same cost, hidden behind the
+walk; `sharded` paid it after. `a_file_linked_from_many_folders_matches_the_reference` checks the
+set against the component-wise reference well past the switch.
+
+### One shard on macOS
+
+With the ledger fixed the tail is ~0.2s on `/`, below the run-to-run noise there, so the choice was
+made on the simulator volume, which is sealed and repeats to ±0.1s:
+
+| | `walk+build` | replay | total |
+| --- | --- | --- | --- |
+| 1 shard, four rounds | 4.16–4.32s | — | 4.16–4.32s |
+| 4 shards, four rounds | 4.21–4.32s | 0.109–0.111s | 4.32–4.43s |
+
+One shard won every round, by the replay it skips. `SHARDS` is now 1 on macOS as on Windows. Four
+builders stay on Linux, where the build really is the bottleneck.
+
+### Reproduce
+
+```sh
+./target/release/diskonaut --benchmark --bench-stage sharded --bench-shards 1 --threads 6 /
+./target/release/diskonaut --benchmark --bench-stage sharded --bench-shards 4 --threads 8 /
+iostat -d -w 5 disk0                                   # alongside: is the "warm" scan reading?
+xcrun xctrace record --template 'Time Profiler' --launch -- \
+  ./target/release/diskonaut --benchmark --bench-stage walk --threads 12 /Users
+sysctl kern.maxvnodes vfs.vnstats.num_newvnode_calls   # before and after, for vnode churn
+```
+
+Spotlight (`mds_stores`) indexing new files moves whole-disk numbers by 2–3s; check `top` before
+trusting a round.
 
 ## Known gaps
 

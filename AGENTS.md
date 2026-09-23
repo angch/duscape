@@ -205,8 +205,10 @@ cargo test -p libdiskonaut --lib -- --ignored fat32
 Read `docs/scan-performance.md` first. It records what was measured, what turned out not to
 matter, and how to reproduce the numbers with `--benchmark`. The short version: on Linux the walk
 is the floor (~0.40s for 4.2M entries, at the kernel's `statx` cost) and the tree build is hidden
-behind it on `parallel::SHARDS` threads. `--bench-stage sharded` is the app's path; `pipeline` is
-the single-threaded build it replaced. Anything you change must keep `sharded`'s totals identical
+behind it on `parallel::SHARDS` threads. On macOS and Windows the walk is the whole scan — macOS
+waits on 4 KiB metadata reads and is fastest at six workers — so `SHARDS` is 1 there and any
+serial work after the walk shows directly in the scan time. `--bench-stage sharded` is the app's
+path; `pipeline` is the single-threaded build it replaced. Anything you change must keep `sharded`'s totals identical
 to `pipeline`'s — that comparison is the correctness check, not just the speed one.
 
 ### Modifying treemap layout

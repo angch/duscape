@@ -396,15 +396,16 @@ pub mod parallel {
 
     /// Builders to run.
     ///
-    /// On fast walkers (Linux, macOS) the tree build is the bottleneck, and four builders hide it
-    /// entirely behind a 24-thread walk on a 32-core machine; the curve is flat from there to
-    /// eight. On Windows the walk is the bottleneck — a handle per directory — so a single builder
+    /// On Linux the tree build is the bottleneck, and four builders hide it entirely behind a
+    /// 24-thread walk on a 32-core machine; the curve is flat from there to eight. On Windows and
+    /// macOS the walk is the bottleneck — a handle per directory on one, synchronous metadata reads
+    /// on the other, both well under a tenth of what one builder can take — so a single builder
     /// keeps pace, and one shard skips the deferral, merge, replay, and per-directory shard hash a
     /// parallel build needs (see [`build_tree`]), matching the plain pipeline instead of paying for
     /// parallelism that a walk-bound volume cannot use. See `docs/scan-performance.md`.
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     pub const SHARDS: usize = 4;
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     pub const SHARDS: usize = 1;
 
     /// Path components that decide a directory's builder.
@@ -744,8 +745,10 @@ fn capped(options: ScanOptions, cap: usize) -> usize {
 ///
 /// The two numbers come from different walkers and do not transfer to each other.
 ///
-/// On macOS the `getattrlistbulk` walk really does contend: a whole-disk scan is fastest around
-/// six to eight workers on a 14-core machine and gets steadily slower beyond that.
+/// On macOS the `getattrlistbulk` walk really does contend: a whole-disk scan is fastest at six
+/// workers on a 14-core machine. Eight is 3% slower and burns 60% more kernel time, and it gets
+/// steadily worse beyond that. The walk is bound by synchronous 4 KiB metadata reads, and past six
+/// the extra queue depth is spent contending in the kernel rather than reading.
 ///
 /// On Linux the old cap of eight was a property of the `dua-core` walk, which collapsed past it —
 /// not of the kernel, which serves sixteen concurrent walkers at near-linear throughput. With the
@@ -753,7 +756,9 @@ fn capped(options: ScanOptions, cap: usize) -> usize {
 /// bottom out around twenty-four and give up only a few percent by thirty-two.
 #[cfg(target_os = "linux")]
 const MAX_SCAN_THREADS: usize = 24;
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
+const MAX_SCAN_THREADS: usize = 6;
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 const MAX_SCAN_THREADS: usize = 8;
 
 /// Worker cap for the `dua-core` walk, which collapses past eight on every machine measured.
