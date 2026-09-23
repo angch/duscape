@@ -100,7 +100,9 @@ Six kinds of thread communicate via `mpsc` channels (bounded, except the preview
 - `preview.rs` — the preview thread, file sniffing, and kitty graphics output (`Graphics`:
   `KittyGraphics` writes after each frame, only on change; `q=2` so the terminal never answers
   on stdin, `z=-1` so dialogs cover it). `side_panel::screen_areas` sizes the preview 16:9 from
-  the cell pixel size `Display` measures each frame
+  the cell pixel size `Display` measures each frame. `kitty_supported` decides once: env vars
+  (kitty, Ghostty, WezTerm; tmux never), else a graphics query + DA1 read straight off stdin —
+  what finds it over ssh. It must first run in raw mode before any thread reads stdin (`try_main`)
 - `clipboard.rs` — native clipboard (`pbcopy`, Win32, `wl-copy`/`xclip`/`xsel`), OSC 52 fallback;
   paths are quoted by `libdiskonaut::format::quote_path_for_shell` before they get there
 - `cli/mod.rs` — clap CLI args

@@ -69,7 +69,7 @@ fn get_stdout() -> io::Result<io::Stdout> {
 fn restore_terminal() {
     let _ = disable_raw_mode();
     // A picture in the preview would otherwise stay in the terminal's memory.
-    if preview::kitty_supported() {
+    if preview::kitty_known() {
         let _ = preview::kitty_delete(&mut io::stdout());
     }
     let _ = execute!(
@@ -140,6 +140,10 @@ fn try_main() -> Result<(), Error> {
             // before the message prints, so a panic in any thread cannot leave the shell wedged.
             let _guard = TerminalGuard;
             execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
+            // Asked now, in raw mode and before anything reads stdin, because it may query the
+            // terminal and read the answer; on the alternate screen, so a terminal that prints
+            // the query instead of answering it leaves nothing behind once `App::new` clears it.
+            preview::kitty_supported();
             let default_hook = std::panic::take_hook();
             std::panic::set_hook(Box::new(move |info| {
                 restore_terminal();

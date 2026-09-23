@@ -8,8 +8,8 @@
 use ::std::fs::File;
 use ::std::io::{self, Read, Write};
 use ::std::path::{Path, PathBuf};
-use ::std::sync::Arc;
 use ::std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
+use ::std::sync::{Arc, OnceLock};
 use ::std::thread;
 use ::std::time::Duration;
 
@@ -292,11 +292,25 @@ fn run(incoming: &Receiver<Request>, on_ready: &impl Fn(u64, Preview)) {
     }
 }
 
-/// Whether the terminal speaks the kitty graphics protocol, judged from the environment: kitty,
-/// Ghostty and WezTerm do. Inside tmux the sequences would need a passthrough tmux does not
-/// reliably give, so pictures are described there instead. `DISKONAUT_GRAPHICS=kitty` or `none`
-/// overrides the guess.
+/// Whether the terminal speaks the kitty graphics protocol. Decided once, by [`detect_kitty`] on
+/// the first call, which must come in raw mode and before anything else reads stdin.
 pub fn kitty_supported() -> bool {
+    *KITTY_SUPPORTED.get_or_init(detect_kitty)
+}
+
+/// What [`kitty_supported`] decided, without asking the terminal if nothing has yet: on the way
+/// out a query would be answered into the shell.
+pub fn kitty_known() -> bool {
+    KITTY_SUPPORTED.get().copied().unwrap_or(false)
+}
+
+static KITTY_SUPPORTED: OnceLock<bool> = OnceLock::new();
+
+/// Judged from the environment first: kitty, Ghostty and WezTerm say who they are. ssh forwards
+/// none of that but `TERM`, and that is often `xterm-256color`, so otherwise the terminal is
+/// asked. Inside tmux the sequences would need a passthrough tmux does not reliably give, so
+/// pictures are described there instead. `DISKONAUT_GRAPHICS=kitty` or `none` overrides.
+fn detect_kitty() -> bool {
     let var = |name| ::std::env::var(name).unwrap_or_default();
     match var("DISKONAUT_GRAPHICS").as_str() {
         "kitty" => return true,
@@ -306,10 +320,87 @@ pub fn kitty_supported() -> bool {
     if !var("TMUX").is_empty() {
         return false;
     }
-    var("TERM") == "xterm-kitty"
-        || !var("KITTY_WINDOW_ID").is_empty()
+    matches!(
+        var("TERM").as_str(),
+        "xterm-kitty" | "xterm-ghostty" | "wezterm"
+    ) || !var("KITTY_WINDOW_ID").is_empty()
         || !var("GHOSTTY_RESOURCES_DIR").is_empty()
         || matches!(var("TERM_PROGRAM").as_str(), "WezTerm" | "ghostty")
+        || query_kitty()
+}
+
+/// How long to wait for the terminal to answer [`query_kitty`]. Every terminal answers the
+/// device attributes request, which ends the wait early; this only bounds one that does not, or
+/// a slow link. An answer later than this reaches the input thread as stray keys.
+const KITTY_QUERY_TIMEOUT: Duration = Duration::from_millis(1000);
+
+/// Ask the terminal: a graphics query for a 1x1 picture (`a=q`, which stores nothing) followed by
+/// a primary device attributes request. A terminal with the protocol answers the first before
+/// the second; one without answers only the second. Keys typed while it waits are dropped.
+#[cfg(unix)]
+fn query_kitty() -> bool {
+    use ::std::time::Instant;
+
+    // SAFETY: isatty only inspects the descriptors.
+    if unsafe { libc::isatty(0) != 1 || libc::isatty(1) != 1 } {
+        return false;
+    }
+    let mut out = io::stdout();
+    if out
+        .write_all(b"\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[c")
+        .and_then(|()| out.flush())
+        .is_err()
+    {
+        return false;
+    }
+    let deadline = Instant::now() + KITTY_QUERY_TIMEOUT;
+    let mut reply = Vec::new();
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        let mut fd = libc::pollfd {
+            fd: 0,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one valid pollfd, and a timeout under a second fits an int.
+        let ready = unsafe { libc::poll(&mut fd, 1, left.as_millis() as libc::c_int) };
+        if ready < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+            continue;
+        }
+        if ready <= 0 {
+            break;
+        }
+        let mut buf = [0u8; 256];
+        // SAFETY: reads into a buffer of the length given.
+        let n = unsafe { libc::read(0, buf.as_mut_ptr().cast(), buf.len()) };
+        if n <= 0 {
+            break;
+        }
+        reply.extend_from_slice(&buf[..n as usize]);
+        if kitty_reply(&reply).is_some() {
+            break;
+        }
+    }
+    kitty_reply(&reply).unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn query_kitty() -> bool {
+    false
+}
+
+/// Read the answer to [`query_kitty`]: `None` until the device attributes reply
+/// (`ESC [ ? … c`) has arrived, then whether an `OK` graphics reply for id 31 came before it. An
+/// error reply means the terminal parses the protocol but would not show our pictures.
+fn kitty_reply(reply: &[u8]) -> Option<bool> {
+    let da = reply.windows(3).position(|w| w == b"\x1b[?")?;
+    reply[da..].iter().position(|&b| b == b'c')?;
+    let id = b"\x1b_Gi=31;OK";
+    let graphics = reply[..da].windows(id.len()).any(|w| w == id);
+    Some(graphics)
 }
 
 /// The id the preview's picture goes by in the terminal, so that it and only it is replaced.
@@ -420,7 +511,7 @@ mod tests {
 
     use super::{
         IMAGE_DEBOUNCE, Kind, Placement, PreparedImage, Preview, Previewer, Request, kitty_delete,
-        kitty_place, sniff, text_lines,
+        kitty_place, kitty_reply, sniff, text_lines,
     };
 
     fn temp_dir(name: &str) -> PathBuf {
@@ -524,6 +615,20 @@ mod tests {
         let mut out = Vec::new();
         kitty_delete(&mut out).expect("write");
         assert_eq!(out, b"\x1b_Ga=d,d=I,i=53596,q=2\x1b\\");
+    }
+
+    /// The answer to the graphics query counts only once the device attributes reply ends it.
+    #[test]
+    fn kitty_reply_waits_for_device_attributes() {
+        assert_eq!(kitty_reply(b""), None);
+        assert_eq!(kitty_reply(b"\x1b_Gi=31;OK\x1b\\"), None);
+        assert_eq!(kitty_reply(b"\x1b_Gi=31;OK\x1b\\\x1b[?62;"), None);
+        assert_eq!(kitty_reply(b"\x1b_Gi=31;OK\x1b\\\x1b[?62;22c"), Some(true));
+        assert_eq!(kitty_reply(b"\x1b[?1;2c"), Some(false));
+        assert_eq!(
+            kitty_reply(b"\x1b_Gi=31;EINVAL:bad\x1b\\\x1b[?62;22c"),
+            Some(false)
+        );
     }
 
     fn request(generation: u64, path: PathBuf, graphics: bool) -> Request {

@@ -19,7 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A preview below the list, 16:9 and at most half the panel: the first lines of a text file, or
   a PNG or JPEG (detected by magic bytes) drawn with the kitty graphics protocol after a 100 ms
-  debounce, scaled to fit. Terminals without it, and tmux, get a description instead.
+  debounce, scaled to fit. Support is read from the environment, or else asked of the terminal
+  (a graphics query then a device attributes request), so it is found over ssh too. Terminals
+  without it, and tmux, get a description instead.
   `DISKONAUT_GRAPHICS=kitty|none` overrides the detection. Files are read on a thread of their
   own; only regular files are opened, and iCloud-only files on macOS are left undownloaded.
 - `d` deletes every marked entry, after one prompt that counts them, totals their size and names

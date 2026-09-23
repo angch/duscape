@@ -38,6 +38,10 @@ unicode-width = { workspace = true }
 # Previews: PNG and JPEG only, decoded to be scaled down before they are sent to the terminal.
 image = { workspace = true }
 
+[target.'cfg(unix)'.dependencies]
+# Asking the terminal whether it shows pictures, and reading the answer before crossterm does.
+libc = { workspace = true }
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
