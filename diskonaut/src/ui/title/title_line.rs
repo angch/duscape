@@ -163,7 +163,10 @@ impl<'a> Widget for TitleLine<'a> {
                     "{}: {} ({} files), freed: {}",
                     total_label, total_size, total_descendants, space_freed
                 )),
-                CellSizeOpt::new(format!("{}: {}, freed: {}", total_label, total_size, space_freed)),
+                CellSizeOpt::new(format!(
+                    "{}: {}, freed: {}",
+                    total_label, total_size, space_freed
+                )),
                 CellSizeOpt::new(format!("Total: {}", total_size)),
                 CellSizeOpt::new(format!("{}", total_size)),
             ]);

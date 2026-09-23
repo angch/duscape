@@ -33,10 +33,10 @@ mod gui {
 
     use windows_sys::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
     use windows_sys::Win32::Graphics::Gdi::{
-        BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush, DEFAULT_GUI_FONT,
-        DeleteDC, DeleteObject, EndPaint, FillRect, FrameRect, GetStockObject, HDC, InvalidateRect,
-        PAINTSTRUCT, SRCCOPY, SelectObject, SetBkMode, SetTextColor, TRANSPARENT, TextOutW,
-        BeginPaint,
+        BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush,
+        DEFAULT_GUI_FONT, DeleteDC, DeleteObject, EndPaint, FillRect, FrameRect, GetStockObject,
+        HDC, InvalidateRect, PAINTSTRUCT, SRCCOPY, SelectObject, SetBkMode, SetTextColor,
+        TRANSPARENT, TextOutW,
     };
     use windows_sys::Win32::System::Com::CoTaskMemFree;
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -52,8 +52,8 @@ mod gui {
         IDYES, LoadCursorW, LoadIconW, MB_ICONWARNING, MB_YESNO, MSG, MessageBoxW, PostMessageW,
         PostQuitMessage, RegisterClassW, SW_SHOW, SetProcessDPIAware, SetWindowLongPtrW,
         SetWindowTextW, ShowWindow, TranslateMessage, WM_APP, WM_CREATE, WM_DESTROY, WM_KEYDOWN,
-        WM_LBUTTONDOWN, WM_MOUSEMOVE,
-        WM_PAINT, WM_RBUTTONDOWN, WM_SIZE, WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+        WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONDOWN, WM_SIZE, WNDCLASSW,
+        WS_OVERLAPPEDWINDOW, WS_VISIBLE,
     };
 
     /// Pixel size of a virtual layout cell. The 2.5:1 ratio matches the treemap's internal
@@ -92,10 +92,18 @@ mod gui {
 
     /// A stable colour per tile: folders in blues, files in warm tones, cycling by index.
     fn tile_color(index: usize, is_dir: bool) -> COLORREF {
-        const FOLDERS: [(u8, u8, u8); 4] =
-            [(52, 101, 164), (60, 120, 190), (44, 88, 140), (72, 138, 210)];
-        const FILES: [(u8, u8, u8); 4] =
-            [(120, 120, 120), (150, 130, 96), (110, 140, 110), (150, 110, 110)];
+        const FOLDERS: [(u8, u8, u8); 4] = [
+            (52, 101, 164),
+            (60, 120, 190),
+            (44, 88, 140),
+            (72, 138, 210),
+        ];
+        const FILES: [(u8, u8, u8); 4] = [
+            (120, 120, 120),
+            (150, 130, 96),
+            (110, 140, 110),
+            (150, 110, 110),
+        ];
         let (r, g, b) = if is_dir {
             FOLDERS[index % FOLDERS.len()]
         } else {
@@ -149,9 +157,10 @@ mod gui {
     fn tile_at(board: &Board, px: i32, py: i32) -> Option<usize> {
         let cx = (px / CELL_W) as u16;
         let cy = ((py - TOP_BAR) / CELL_H) as u16;
-        board.tiles.iter().position(|t| {
-            cx >= t.x && cx < t.x + t.width && cy >= t.y && cy < t.y + t.height
-        })
+        board
+            .tiles
+            .iter()
+            .position(|t| cx >= t.x && cx < t.x + t.width && cy >= t.y && cy < t.y + t.height)
     }
 
     fn set_title(hwnd: HWND, text: &str) {
@@ -242,8 +251,11 @@ mod gui {
                     DeleteObject(border as _);
                 }
                 if rect.right - rect.left > 60 && rect.bottom - rect.top > 18 {
-                    let label =
-                        format!("{}  {}", tile.name.to_string_lossy(), DisplaySize(tile.size as f64));
+                    let label = format!(
+                        "{}  {}",
+                        tile.name.to_string_lossy(),
+                        DisplaySize(tile.size as f64)
+                    );
                     draw_text(mem, rect.left + 4, rect.top + 3, rgb(240, 240, 240), &label);
                 }
             }
@@ -262,7 +274,13 @@ mod gui {
                     FrameRect(mem, &rect, border);
                     DeleteObject(border as _);
                 }
-                draw_text(mem, rect.left + 4, rect.top + 3, rgb(200, 200, 200), "small files");
+                draw_text(
+                    mem,
+                    rect.left + 4,
+                    rect.top + 3,
+                    rgb(200, 200, 200),
+                    "small files",
+                );
             }
             // Selected tile: a bright frame, drawn thick by insetting.
             if let Some(tile) = board.currently_selected() {
@@ -284,7 +302,11 @@ mod gui {
                 16,
                 TOP_BAR + 16,
                 rgb(220, 220, 220),
-                &format!("Scanning {}…  {} entries", state.root.display(), state.scanned_entries),
+                &format!(
+                    "Scanning {}…  {} entries",
+                    state.root.display(),
+                    state.scanned_entries
+                ),
             );
         }
 
@@ -297,7 +319,13 @@ mod gui {
         };
         fill(mem, &top, rgb(40, 40, 40));
         fill(mem, &BACK_BTN, rgb(70, 70, 70));
-        draw_text(mem, BACK_BTN.left + 10, BACK_BTN.top + 4, rgb(235, 235, 235), "◄ Up");
+        draw_text(
+            mem,
+            BACK_BTN.left + 10,
+            BACK_BTN.top + 4,
+            rgb(235, 235, 235),
+            "◄ Up",
+        );
         if let Some(tree) = &state.tree {
             draw_text(
                 mem,
@@ -397,8 +425,14 @@ mod gui {
             DisplaySize(to_delete.size as f64),
         ));
         let caption = wide("Confirm delete");
-        let answer =
-            unsafe { MessageBoxW(hwnd, prompt.as_ptr(), caption.as_ptr(), MB_YESNO | MB_ICONWARNING) };
+        let answer = unsafe {
+            MessageBoxW(
+                hwnd,
+                prompt.as_ptr(),
+                caption.as_ptr(),
+                MB_YESNO | MB_ICONWARNING,
+            )
+        };
         if answer != IDYES {
             return;
         }

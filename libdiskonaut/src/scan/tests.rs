@@ -963,10 +963,7 @@ fn windows_threshold_skips_smaller_files() {
 /// return `(on_disk, apparent, logical_length_of `path`)`. The tree's own root is canonical, so
 /// `path` is looked up only for its length.
 #[cfg(any(windows, target_os = "linux"))]
-fn on_disk_and_apparent(
-    root: &std::path::Path,
-    path: &std::path::Path,
-) -> (u128, u128, u128) {
+fn on_disk_and_apparent(root: &std::path::Path, path: &std::path::Path) -> (u128, u128, u128) {
     let logical = u128::from(std::fs::metadata(path).expect("stat the test file").len());
     let (on_disk, _) = scan_into_tree(root, ScanOptions::default());
     let (apparent, _) = scan_into_tree(
