@@ -1548,6 +1548,46 @@ much does each subvolume hold" instantly, and `zfs list -o space` does the same 
 are far coarser than a treemap needs — they stop at the subvolume or dataset, not at the directory
 — so neither substitutes for a walk.
 
+### Measured on btrfs (2026-09-23): snapshots were counted once each
+
+With a loopback btrfs now available (`fixtures/fs`, in a privileged container), the report that
+btrfs double counted was reproduced at once: a subvolume of 43.1 MiB with two snapshots scanned as
+129.4 MiB. The extent identity folded in the device so that equal offsets on two volumes would not
+merge — but a snapshot *is* another device over the same address space, so its files never matched
+the live ones they share every extent with. The identity now folds in the filesystem's UUID on
+btrfs, from `BTRFS_IOC_FS_INFO`, which any user may call and which agrees across the top level,
+subvolumes and snapshots (`f_fsid` differs per subvolume like `st_dev`; `FS_IOC_GETFSUUID` is not
+implemented by btrfs). XFS keeps the device. After: 49.4 MiB, and the large-file snapshot fixture
+is byte-exact against btrfs's *data used*.
+
+What remains, measured on the same volume:
+
+- **Small files.** Nothing under `PROBE_ABOVE_BYTES` (64 KiB) is probed, so each snapshot counts
+  its small files again. FIEMAP answers them correctly (a 4 KiB file in a snapshot is `SHARED` at
+  the live copy's offset), and a build probing everything from 4 KiB matched btrfs exactly on 40k
+  files with a snapshot, but took 0.159 s against 0.018 s — about 2 µs a file, which on a 4M-file
+  btrfs root would be seconds. On `/usr` here 96% of files and 13.6% of bytes are under 64 KiB, so
+  a snapshot of `/` is overstated by roughly an eighth of itself. **Resolved** by a second pass:
+  the walk notes these files instead of probing them, and they are probed once the tree is on
+  screen, so the walk's time is unchanged (`scan::refine`). The fixtures' small-file snapshot case
+  now matches btrfs's data figure exactly.
+- **Inline files** (up to ~2 KiB) live in metadata: FIEMAP says `DATA_INLINE` at offset 0 and
+  never `SHARED`, and `st_blocks` claims 4 KiB. They cannot be matched this way at all.
+- **Compression is invisible to `stat`**: 64 MiB of text under `compress-force=zstd` holds 2 MiB
+  of data and `stx_blocks` says 64 MiB. That settles `probes/btrfs_compression_check.sh`: no.
+  Only `BTRFS_IOC_TREE_SEARCH_V2` sees compressed extent sizes, and it returns `EPERM` to a user
+  (checked). **As root it is now used**: one search per file on the directory's descriptor, no
+  open. Measured on 40k files of 4–60 KiB: 0.014 s as a user, 0.052 s as root on a `compress`
+  mount — about 1 µs a file — and 0.014 s as root on an uncompressed one, where only files
+  `statx` marks compressed are searched. The fixtures' compressed volume (text, random, mixed,
+  preallocated, sparse) comes out at btrfs's data used to the byte.
+- **Long extent maps**: the FIEMAP probe read 64 extents and gave up on more. A compressed file has
+  an extent per 128 KiB, so every compressed file over 8 MiB was counted once per snapshot; it
+  now pages through the map.
+- A reflink clone rewritten in part leaves the *source* wholly `SHARED` on btrfs — the original
+  extent stays whole, referenced by the clone's unchanged ends — where XFS splits it. Totals are
+  unaffected; the reflinked count can be one higher.
+
 ### ZFS
 
 Nothing here is measured: OpenZFS is not installed on this machine, so the following is reasoning,

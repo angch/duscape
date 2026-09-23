@@ -24,12 +24,14 @@ fn temp_app_dir(name: &str) -> PathBuf {
 
 fn app_with_scanned_dir(dir: &Path, width: u16, height: u16) -> App<TestBackend> {
     let (tx, _rx) = mpsc::sync_channel(1);
+    // Apparent sizes throughout, so that the figures the tests expect are the files' lengths
+    // whatever filesystem the temp dir is on.
     let mut app = App::new(
         TestBackend::new(width, height),
         dir.to_path_buf(),
         tx,
         Keybinds::default(),
-        false,
+        true,
     );
     let options = ScanOptions {
         parallel: false,
@@ -1099,7 +1101,7 @@ fn d_deletes_every_marked_entry() {
     assert!(!dir.join("small").exists());
     assert!(!dir.join("loose.txt").exists());
     assert!(dir.join("big").exists(), "the unmarked entry stays");
-    assert_eq!(app.file_tree.space_freed, freed);
+    assert_eq!(app.file_tree.space_freed.get(app.file_tree.shown), freed);
     assert_eq!(app.file_tree.get_total_size(), before - freed);
     assert!(app.marked.is_empty());
     assert_eq!(app.board.listing().len(), 1);
@@ -1147,7 +1149,7 @@ fn a_failure_part_way_deletes_the_rest_and_says_so() {
         "{message}"
     );
     assert!(!dir.join("small").exists(), "the other was still deleted");
-    assert_eq!(app.file_tree.space_freed, small);
+    assert_eq!(app.file_tree.space_freed.get(app.file_tree.shown), small);
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -1401,5 +1403,296 @@ fn the_first_preview_is_asked_for_once() {
     assert_eq!(app.preview_generation, asked, "no second request");
     deliver(&mut app, &answers);
     assert!(matches!(app.preview, crate::preview::Preview::Text(_)));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+mod rescans {
+    use super::*;
+    use crate::rescan::{Outcome, Rescanner};
+    use ::std::sync::Arc;
+    use ::std::sync::atomic::AtomicBool;
+    use ::std::time::{Duration, Instant};
+
+    fn write(path: &Path, bytes: usize) {
+        File::create(path)
+            .expect("create file")
+            .write_all(&vec![b'x'; bytes])
+            .expect("write file");
+    }
+
+    /// An app over `dir` whose rescans report on the returned channel instead of to a thread.
+    fn app_with_rescans(dir: &Path) -> (App<TestBackend>, mpsc::Receiver<(u64, Outcome)>) {
+        let mut app = app_with_scanned_dir(dir, 100, 30);
+        let (tx, rx) = mpsc::channel();
+        let tx = ::std::sync::Mutex::new(tx);
+        app.enable_rescans(Rescanner::new(
+            ScanOptions {
+                parallel: false,
+                show_apparent_size: true,
+                ..ScanOptions::default()
+            },
+            Arc::new(AtomicBool::new(true)),
+            move |id, outcome| {
+                let _ = tx.lock().unwrap().send((id, outcome));
+            },
+        ));
+        app.render();
+        (app, rx)
+    }
+
+    fn finish(app: &mut App<TestBackend>, rx: &mpsc::Receiver<(u64, Outcome)>) {
+        let (id, outcome) = rx
+            .recv_timeout(Duration::from_secs(20))
+            .expect("the rescan reports back");
+        app.rescan_done(id, outcome);
+    }
+
+    fn size_of(app: &App<TestBackend>, name: &str) -> u128 {
+        app.file_tree
+            .item_in_current_folder(OsStr::new(name))
+            .expect("entry is in the tree")
+            .size(app.file_tree.shown)
+    }
+
+    #[test]
+    fn r_rescans_the_selected_folder() {
+        let dir = temp_app_dir("rescan_selected");
+        fs::create_dir(dir.join("sub")).unwrap();
+        write(&dir.join("sub/a"), 1000);
+        write(&dir.join("small"), 10);
+        let (mut app, rx) = app_with_rescans(&dir);
+        assert_eq!(size_of(&app, "sub"), 1000);
+
+        write(&dir.join("sub/b"), 3000);
+        write(&dir.join("unseen"), 50);
+        // The list's top row, the largest entry, is in hand.
+        app.rescan_selected();
+        assert!(
+            app.ui_effects.rescanning.as_deref() == Some("sub"),
+            "{:?}",
+            app.ui_effects.rescanning
+        );
+        finish(&mut app, &rx);
+        assert!(app.ui_effects.rescanning.is_none());
+        assert_eq!(size_of(&app, "sub"), 4000);
+        assert_eq!(app.file_tree.get_total_size(), 4010);
+        // Only the folder was scanned again.
+        assert!(
+            app.file_tree
+                .item_in_current_folder(OsStr::new("unseen"))
+                .is_none()
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn shift_r_rescans_everything() {
+        let dir = temp_app_dir("rescan_all");
+        write(&dir.join("a"), 100);
+        let (mut app, rx) = app_with_rescans(&dir);
+        write(&dir.join("b"), 200);
+        fs::remove_file(dir.join("a")).unwrap();
+        app.rescan_all();
+        finish(&mut app, &rx);
+        assert_eq!(app.file_tree.get_total_size(), 200);
+        assert!(app.board.listing().iter().any(|entry| entry.name == "b"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_rescanned_folder_gone_from_disk_is_left() {
+        let dir = temp_app_dir("rescan_gone");
+        fs::create_dir(dir.join("sub")).unwrap();
+        write(&dir.join("sub/a"), 1000);
+        write(&dir.join("other"), 10);
+        let (mut app, rx) = app_with_rescans(&dir);
+        app.handle_enter();
+        assert_eq!(
+            app.file_tree.current_folder_names,
+            vec![OsString::from("sub")]
+        );
+
+        fs::remove_dir_all(dir.join("sub")).unwrap();
+        // A file is in hand, so the folder shown is rescanned.
+        app.rescan_selected();
+        finish(&mut app, &rx);
+        assert!(app.file_tree.current_folder_names.is_empty());
+        assert_eq!(app.file_tree.get_total_size(), 10);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_rescan_covered_by_one_under_way_is_not_started_and_one_it_covers_is_stopped() {
+        let dir = temp_app_dir("rescan_covered");
+        fs::create_dir(dir.join("sub")).unwrap();
+        write(&dir.join("sub/a"), 1000);
+        let (mut app, rx) = app_with_rescans(&dir);
+        app.rescan_selected();
+        app.rescan_selected();
+        assert_eq!(app.rescans.len(), 1);
+        app.rescan_all();
+        assert_eq!(app.rescans.len(), 1);
+        assert!(app.rescans[0].relative.is_empty());
+        // Whatever the stopped one reports is dropped; the whole-tree one lands.
+        while !app.rescans.is_empty() {
+            finish(&mut app, &rx);
+        }
+        assert_eq!(app.file_tree.get_total_size(), 1000);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_whole_rescan_that_moves_the_user_to_the_root_forgets_the_old_folders_marks() {
+        let dir = temp_app_dir("rescan_moves_to_root");
+        fs::create_dir_all(dir.join("sub/deep")).unwrap();
+        write(&dir.join("sub/deep/a"), 1000);
+        write(&dir.join("sub/b"), 500);
+        write(&dir.join("other"), 10);
+        let (mut app, rx) = app_with_rescans(&dir);
+        app.handle_enter();
+        assert_eq!(
+            app.file_tree.current_folder_names,
+            vec![OsString::from("sub")]
+        );
+        app.extend_selection(1);
+        assert!(!app.marked.is_empty());
+
+        fs::remove_dir_all(dir.join("sub")).unwrap();
+        app.rescan_all();
+        finish(&mut app, &rx);
+        assert!(app.file_tree.current_folder_names.is_empty());
+        assert!(
+            app.marked.is_empty(),
+            "marks named entries of a folder that is gone"
+        );
+        assert!(app.board.previous_indices_and_zoom_level.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_delete_during_a_rescan_of_its_folder_starts_the_rescan_again() {
+        let dir = temp_app_dir("delete_during_rescan");
+        fs::create_dir(dir.join("sub")).unwrap();
+        write(&dir.join("sub/doomed"), 3000);
+        write(&dir.join("sub/kept"), 1000);
+        let (mut app, rx) = app_with_rescans(&dir);
+        app.rescan_selected();
+        let first = app.rescans[0].id;
+        // Delete sub/doomed while the rescan may already have listed it.
+        app.handle_enter();
+        let doomed = app
+            .board
+            .listing()
+            .iter()
+            .position(|entry| entry.name == "doomed")
+            .unwrap();
+        app.jump_list(crate::app::ListJump::Home);
+        for _ in 0..doomed {
+            app.move_selected_down();
+        }
+        let files = app.get_files_to_delete();
+        app.delete_files(&files);
+        assert_eq!(app.rescans.len(), 1);
+        assert_ne!(app.rescans[0].id, first, "started again after the delete");
+        while !app.rescans.is_empty() {
+            finish(&mut app, &rx);
+        }
+        assert!(
+            app.file_tree
+                .item_in_current_folder(OsStr::new("doomed"))
+                .is_none()
+        );
+        assert_eq!(app.file_tree.get_current_folder_size(), 1000);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn help_line_rests_five_quiet_seconds_and_ticks_fast_only_while_sliding() {
+        use ::std::sync::atomic::Ordering;
+        let dir = temp_app_dir("ticker_idle");
+        let mut app = app_with_scanned_dir(&dir, 100, 30);
+        let fast = app.ticker_pace();
+        let start = app.ui_effects.ticker;
+        let now = Instant::now();
+        app.last_input = now;
+        app.tick_at(now + Duration::from_millis(4900));
+        assert_eq!(app.ui_effects.ticker, start);
+        assert!(!fast.load(Ordering::Acquire));
+        app.tick_at(now + crate::ui::REST);
+        assert!(app.ui_effects.ticker.sliding());
+        assert!(fast.load(Ordering::Acquire));
+        // Done within 100 ms, and back to slow ticks.
+        app.tick_at(now + crate::ui::REST + Duration::from_millis(100));
+        assert!(!app.ui_effects.ticker.sliding());
+        assert!(!fast.load(Ordering::Acquire));
+        assert_ne!(app.ui_effects.ticker, start);
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+mod refining {
+    use super::*;
+    use ::std::sync::Arc;
+    use libdiskonaut::scan::refine::Found;
+
+    fn found(dir: &Path, name: &str, size: u64) -> Found {
+        Found {
+            dir: Arc::from(dir),
+            files: vec![libdiskonaut::scan::refine::FoundFile {
+                name: OsString::from(name),
+                sizes: libdiskonaut::model::Sizes::new(u128::from(size), u128::from(size)),
+                identity: 7,
+            }],
+        }
+    }
+
+    #[test]
+    fn findings_are_applied_once_and_stale_or_rescanned_ones_dropped() {
+        let dir = temp_app_dir("refine_findings");
+        fs::create_dir_all(dir.join("a")).unwrap();
+        fs::create_dir_all(dir.join("b")).unwrap();
+        fs::write(dir.join("a/one"), vec![1u8; 8192]).unwrap();
+        fs::write(dir.join("b/two"), vec![1u8; 8192]).unwrap();
+        let mut app = app_with_scanned_dir(&dir, 100, 30);
+        app.refine_generation = 3;
+        app.refining = Some(2);
+
+        // An older generation's answer is about a tree that has been replaced.
+        app.refined(2, vec![found(&dir.join("a"), "one", 8192)], Some(1));
+        assert_eq!(app.file_tree.get_total_size(), 16384);
+        assert_eq!(app.refining, Some(2));
+
+        app.refined(3, vec![found(&dir.join("a"), "one", 8192)], Some(1));
+        // A folder rescanned since had a second pass of its own.
+        app.refine_skip.push(dir.join("b"));
+        app.refined(3, vec![found(&dir.join("b"), "two", 8192)], None);
+        assert_eq!(app.file_tree.get_total_size(), 16384);
+        assert_eq!(app.refining, None, "finished");
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
+fn a_toggles_between_apparent_and_on_disk_sizes_without_a_scan() {
+    let dir = temp_app_dir("toggle_size");
+    let sparse = File::create(dir.join("sparse")).unwrap();
+    sparse.set_len(4 << 20).unwrap();
+    drop(sparse);
+    fs::write(dir.join("small"), vec![1u8; 10_000]).unwrap();
+    let mut app = app_with_scanned_dir(&dir, 100, 30);
+    // Apparent to begin with: the sparse file is the larger.
+    assert_eq!(app.file_tree.get_total_size(), (4 << 20) + 10_000);
+    assert_eq!(app.board.listing()[0].name, "sparse");
+
+    app.toggle_size();
+    assert_eq!(app.file_tree.shown, libdiskonaut::model::SizeKind::Disk);
+    assert!(app.file_tree.get_total_size() < 4 << 20);
+    // On disk the hole takes nothing, so the small file is the larger.
+    assert_eq!(app.board.listing()[0].name, "small");
+    let title = app.display.screen_text()[0].clone();
+    assert!(!title.contains("apparent"), "{title}");
+
+    app.toggle_size();
+    assert_eq!(app.file_tree.get_total_size(), (4 << 20) + 10_000);
     let _ = fs::remove_dir_all(&dir);
 }

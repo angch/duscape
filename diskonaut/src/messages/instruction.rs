@@ -19,8 +19,9 @@ pub enum Instruction {
     UnflashSpaceFreed,
     /// Outlines of scanned directories, for the live view while the tree is built elsewhere.
     AddScannedSummaries(Vec<DirSummary>),
-    /// The finished tree, which replaces the live view's outline.
-    ScanComplete(Box<FileTree>),
+    /// The finished tree, which replaces the live view's outline, and the small files left for
+    /// the second pass.
+    ScanComplete(Box<FileTree>, libdiskonaut::scan::refine::SmallFiles),
     StartUi,
     ToggleScanningVisualIndicator,
     RenderAndUpdateBoard,
@@ -29,6 +30,13 @@ pub enum Instruction {
     Keypress(BackEvent),
     /// A preview has been read, for the request of this generation.
     PreviewReady(u64, crate::preview::Preview),
+    /// The rescan started under this id has finished.
+    Rescanned(u64, crate::rescan::Outcome),
+    /// Second-pass findings for the refine of this generation, and how many files are left to
+    /// probe; `None` once it has finished.
+    Refined(u64, Vec<libdiskonaut::scan::refine::Found>, Option<usize>),
+    /// Time for the help line to scroll, if nobody is pressing keys.
+    Tick,
 }
 
 pub fn handle_instructions<B>(app: &mut App<B>, receiver: Receiver<Instruction>)
@@ -55,8 +63,12 @@ where
             Instruction::AddScannedSummaries(summaries) => {
                 app.add_scanned_summaries(summaries);
             }
-            Instruction::ScanComplete(tree) => {
+            Instruction::ScanComplete(tree, small) => {
                 app.finish_scan(*tree);
+                app.start_refining(small);
+            }
+            Instruction::Refined(generation, found, left) => {
+                app.refined(generation, found, left);
             }
             Instruction::StartUi => {
                 app.start_ui();
@@ -76,7 +88,14 @@ where
             Instruction::PreviewReady(generation, preview) => {
                 app.preview_ready(generation, preview);
             }
+            Instruction::Rescanned(id, outcome) => {
+                app.rescan_done(id, outcome);
+            }
+            Instruction::Tick => {
+                app.tick();
+            }
             Instruction::Keypress(evt) => {
+                app.note_input();
                 match &app.ui_mode {
                     UiMode::Loading => {
                         handle_keypress_loading_mode(evt, app);

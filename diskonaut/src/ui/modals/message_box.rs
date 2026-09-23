@@ -228,6 +228,7 @@ mod tests {
             file_type: FileType::File,
             num_descendants: None,
             size,
+            sizes: libdiskonaut::model::Sizes::new(size, size),
         }
     }
 

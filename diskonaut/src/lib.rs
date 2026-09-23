@@ -7,6 +7,7 @@ mod error;
 mod input;
 mod messages;
 mod preview;
+mod rescan;
 mod state;
 mod ui;
 
@@ -211,6 +212,26 @@ fn start<B>(
         };
         app.enable_previews(previewer, pictures, graphics);
     }
+    {
+        let instruction_sender = instruction_sender.clone();
+        app.enable_rescans(rescan::Rescanner::new(
+            scan_options,
+            running.clone(),
+            move |id, outcome| {
+                let _ = instruction_sender.send(Instruction::Rescanned(id, outcome));
+            },
+        ));
+    }
+    {
+        let instruction_sender = instruction_sender.clone();
+        app.enable_refining(rescan::Refiner::new(
+            libdiskonaut::scan::thread_count(scan_options),
+            running.clone(),
+            move |generation, found, left| {
+                let _ = instruction_sender.send(Instruction::Refined(generation, found, left));
+            },
+        ));
+    }
 
     active_threads.push(
         thread::Builder::new()
@@ -299,15 +320,15 @@ fn start<B>(
                         },
                     );
                     if running.load(Ordering::Acquire) {
-                        if let Some((mut tree, failed, _)) = built {
+                        if let Some((mut tree, failed, _, small)) = built {
                             let rest = outline.finish();
                             if !rest.is_empty() {
                                 let _ =
                                     instruction_sender.send(Instruction::AddScannedSummaries(rest));
                             }
                             tree.failed_to_read = failed;
-                            let _ =
-                                instruction_sender.send(Instruction::ScanComplete(Box::new(tree)));
+                            let _ = instruction_sender
+                                .send(Instruction::ScanComplete(Box::new(tree), small));
                             let _ = instruction_sender.send(Instruction::StartUi);
                         }
                         loaded.store(true, Ordering::Release);
@@ -328,6 +349,38 @@ fn start<B>(
                         let _ = instruction_sender.send(Instruction::ToggleScanningVisualIndicator);
                         let _ = instruction_sender.send(Instruction::RenderAndUpdateBoard);
                         park_timeout(time::Duration::from_millis(100));
+                    }
+                }
+            })
+            .unwrap(),
+    );
+
+    active_threads.push(
+        thread::Builder::new()
+            .name("ticker".to_string())
+            .spawn({
+                let instruction_sender = instruction_sender.clone();
+                let running = running.clone();
+                let fast = app.ticker_pace();
+                move || {
+                    // Drives the help line: a frame's worth apart while it slides, a few a second
+                    // while it rests. Dropped rather than queued when the rendering thread is
+                    // behind: a late tick is worth nothing.
+                    //
+                    // A slide begins on a resting tick, so the flag is looked at again a frame after
+                    // each: sleeping the whole resting interval would miss the start of the slide.
+                    // Twice per resting interval, not sixty times a second.
+                    while running.load(Ordering::Acquire) {
+                        if let Err(mpsc::TrySendError::Disconnected(_)) =
+                            instruction_sender.try_send(Instruction::Tick)
+                        {
+                            break;
+                        }
+                        park_timeout(ui::FRAME);
+                        if fast.load(Ordering::Acquire) {
+                            continue;
+                        }
+                        park_timeout(ui::IDLE_TICK.saturating_sub(ui::FRAME));
                     }
                 }
             })

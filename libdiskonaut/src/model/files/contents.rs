@@ -280,12 +280,14 @@ mod tests {
     use ::std::ffi::OsString;
 
     fn file(size: u64) -> FileOrFolder {
-        FileOrFolder::File(File { size })
+        FileOrFolder::File(File::sized(size))
     }
 
     /// The size a `FileOrFolder` reports, as a `u64` so the assertions read plainly.
     fn size(node: Option<&FileOrFolder>) -> Option<u64> {
-        node.map(|node| u64::try_from(node.size()).expect("test sizes are small"))
+        node.map(|node| {
+            u64::try_from(node.size(crate::model::SizeKind::Disk)).expect("test sizes are small")
+        })
     }
 
     #[test]

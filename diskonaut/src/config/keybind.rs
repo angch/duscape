@@ -25,6 +25,12 @@ pub struct Keybinds {
     pub cancel: KeyBinding,
     /// Move the keyboard between the list and the treemap.
     pub switch_panel: KeyBinding,
+    /// Scan the selected folder again, or the folder shown when a file is selected.
+    pub rescan: KeyBinding,
+    /// Scan everything again.
+    pub rescan_all: KeyBinding,
+    /// Show sizes on disk or apparent sizes (lengths).
+    pub toggle_size: KeyBinding,
 }
 
 impl Default for Keybinds {
@@ -44,6 +50,9 @@ impl Default for Keybinds {
             confirm: KeyBinding::char('y'),
             cancel: KeyBinding::char('n'),
             switch_panel: KeyBinding::key(KeyCode::Tab),
+            rescan: KeyBinding::char('r'),
+            rescan_all: KeyBinding::char('R'),
+            toggle_size: KeyBinding::char('a'),
         }
     }
 }
@@ -116,6 +125,9 @@ impl KeyBinding {
         Ok(Self::key(code))
     }
 
+    /// Whether `evt` is this key. A character's case already says whether Shift was held, and
+    /// terminals report `R` with Shift as well, so a character bound without Shift matches with
+    /// it too; `shift+x` still asks for Shift explicitly.
     pub fn matches_event(&self, evt: &Event) -> bool {
         matches!(
             evt,
@@ -123,7 +135,11 @@ impl KeyBinding {
                 code,
                 modifiers,
                 ..
-            }) if *code == self.code && *modifiers == self.modifiers
+            }) if *code == self.code
+                && (*modifiers == self.modifiers
+                    || (matches!(self.code, KeyCode::Char(_))
+                        && !self.modifiers.contains(KeyModifiers::SHIFT)
+                        && *modifiers == self.modifiers | KeyModifiers::SHIFT))
         )
     }
 }

@@ -128,6 +128,8 @@ pub fn handle_keypress_loading_mode<B: Backend>(evt: Event, app: &mut App<B>) {
         app.switch_focus();
     } else if kb.delete.matches_event(&evt) {
         app.show_warning_modal();
+    } else if kb.toggle_size.matches_event(&evt) {
+        app.toggle_size();
     } else if kb.is_move_right(&evt) {
         app.move_selected_right();
     } else if kb.is_move_left(&evt) {
@@ -168,6 +170,12 @@ pub fn handle_keypress_normal_mode<B: Backend>(evt: Event, app: &mut App<B>) {
         app.switch_focus();
     } else if kb.delete.matches_event(&evt) {
         app.prompt_file_deletion();
+    } else if kb.rescan.matches_event(&evt) {
+        app.rescan_selected();
+    } else if kb.rescan_all.matches_event(&evt) {
+        app.rescan_all();
+    } else if kb.toggle_size.matches_event(&evt) {
+        app.toggle_size();
     } else if kb.is_move_right(&evt) {
         app.move_selected_right();
     } else if kb.is_move_left(&evt) {

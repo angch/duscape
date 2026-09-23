@@ -313,7 +313,7 @@ fn hard_links_count_once_per_folder() {
         .path(vec![std::ffi::OsString::from(name)])
         .unwrap_or_else(|| panic!("{name} should exist"))
     {
-        crate::FileOrFolder::Folder(folder) => folder.size,
+        crate::FileOrFolder::Folder(folder) => folder.sizes.get(tree.shown),
         crate::FileOrFolder::File(_) => panic!("{name} should be a folder"),
     };
 
@@ -369,8 +369,8 @@ fn hard_links_count_once_per_folder_when_nested() {
             .path(names)
             .unwrap_or_else(|| panic!("{path:?} should exist"))
         {
-            crate::FileOrFolder::Folder(folder) => folder.size,
-            crate::FileOrFolder::File(file) => u128::from(file.size),
+            crate::FileOrFolder::Folder(folder) => folder.sizes.get(tree.shown),
+            crate::FileOrFolder::File(file) => file.sizes().get(tree.shown),
         }
     };
 
@@ -425,6 +425,7 @@ fn deleting_every_link_in_a_folder_does_not_underflow() {
             file_type: crate::tiles::FileType::File,
             num_descendants: None,
             size: 512,
+            sizes: crate::model::Sizes::ZERO,
         });
     }
     assert_eq!(tree.get_total_size(), 0);
@@ -564,20 +565,21 @@ mod linux_walker {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Both sizes, whatever is shown: the length as the apparent size, blocks as the size.
     #[test]
-    fn apparent_size_reports_file_length() {
+    fn the_walk_reports_length_and_blocks_both() {
         let root = tree("linux_apparent");
-        let options = ScanOptions {
-            show_apparent_size: true,
-            ..ScanOptions::default()
-        };
-        let total: u64 = walk(&root, 4, options)
+        let files: Vec<_> = walk(&root, 4, ScanOptions::default())
             .iter()
-            .flat_map(|group| &group.entries)
+            .flat_map(|group| group.entries.clone())
             .filter(|entry| !entry.meta.is_dir)
-            .map(|entry| entry.meta.size)
-            .sum();
-        assert_eq!(total, 3 * 1024);
+            .collect();
+        let apparent: u64 = files.iter().map(|entry| entry.meta.apparent).sum();
+        assert_eq!(apparent, 3 * 1024);
+        assert!(
+            files.iter().all(|entry| entry.meta.size % 512 == 0),
+            "whole blocks"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -645,6 +647,194 @@ mod linux_walker {
                 "DISKONAUT_TEST_REFLINK_DIR is on a filesystem that shares extents"
             );
         }
+    }
+
+    /// FUSE serves local and remote filesystems alike; the mount table's subtype tells them apart,
+    /// and its superblock options say whether btrfs compresses.
+    #[test]
+    fn the_mount_table_names_types_subtypes_and_options() {
+        use crate::scan::linux::mounts::parse;
+        let table = parse(
+            "\
+22 1 259:2 / / rw,relatime shared:1 - ext4 /dev/nvme0n1p2 rw
+97 22 0:52 / /home/u/remote rw,nosuid,nodev,relatime shared:50 - fuse.sshfs u@host:/srv rw,user_id=1000
+98 22 0:53 / /media/u/usb rw,relatime - fuseblk /dev/sdb1 rw,user_id=0
+99 22 0:54 / /mnt/cloud rw,relatime shared:51 master:3 - fuse.rclone remote: rw
+40 22 0:45 /@home /home rw,relatime shared:3 - btrfs /dev/nvme0n1p3 rw,compress=zstd:3,ssd,subvol=/@home
+",
+        );
+        let by_id = |id: u64| table.iter().find(|mount| mount.id == id).unwrap();
+        assert_eq!(by_id(97).fuse_subtype(), Some("sshfs"));
+        assert_eq!(
+            by_id(99).fuse_subtype(),
+            Some("rclone"),
+            "optional fields before the -"
+        );
+        assert_eq!(
+            by_id(98).fuse_subtype(),
+            None,
+            "ntfs-3g and friends name no subtype"
+        );
+        assert_eq!(by_id(22).fuse_subtype(), None, "not FUSE");
+        assert_eq!(by_id(40).fstype, "btrfs");
+        assert!(by_id(40).options.contains("compress=zstd:3"));
+        assert_eq!(by_id(40).root, Path::new("/@home"));
+    }
+
+    /// Local filesystems are walked into; the machine's own root is not a network mount.
+    #[test]
+    fn local_filesystems_are_not_network_mounts() {
+        use crate::scan::linux::filesystem::classify;
+        for path in ["/", "/proc", "/tmp"] {
+            assert!(!classify(Path::new(path)).network, "{path}");
+        }
+        if let Some(dir) = std::env::var_os("DISKONAUT_TEST_NETWORK_DIR") {
+            assert!(
+                classify(Path::new(&dir)).network,
+                "DISKONAUT_TEST_NETWORK_DIR is on a network filesystem"
+            );
+        }
+    }
+
+    /// A bind mount of a folder the scan reaches anyway is recognised from the mount table; one
+    /// whose source is outside the scan, or hidden, is not.
+    #[test]
+    fn a_bind_mount_of_a_folder_inside_the_scan_is_reached_elsewhere() {
+        use crate::scan::linux::mounts::{parse, reached_elsewhere};
+        let table = parse(
+            "\
+22 1 259:2 / / rw,relatime shared:1 - ext4 /dev/nvme0n1p2 rw
+30 22 259:2 /home/u/data /srv/data rw,relatime shared:1 - ext4 /dev/nvme0n1p2 rw
+31 22 8:17 / /mnt/usb rw,relatime - vfat /dev/sdb1 rw
+32 22 8:17 / /media/usb\\040again rw,relatime - vfat /dev/sdb1 rw
+33 22 259:2 /opt/secret /srv/opt rw - ext4 /dev/nvme0n1p2 rw
+",
+        );
+        assert_eq!(
+            table[3].point,
+            Path::new("/media/usb again"),
+            "octal escapes"
+        );
+        let everything = |_: &Path| true;
+        // The bind mount at /srv/data shows /home/u/data, which a scan of / reaches.
+        assert!(reached_elsewhere(
+            &table,
+            30,
+            Path::new("/srv/data"),
+            Path::new("/"),
+            everything
+        ));
+        // Scanning only /srv, the source is outside the scan: the bind mount is all there is.
+        assert!(!reached_elsewhere(
+            &table,
+            30,
+            Path::new("/srv/data"),
+            Path::new("/srv"),
+            everything
+        ));
+        // The second mount of one filesystem is the duplicate, never the first.
+        assert!(reached_elsewhere(
+            &table,
+            32,
+            Path::new("/media/usb again"),
+            Path::new("/"),
+            everything
+        ));
+        assert!(!reached_elsewhere(
+            &table,
+            31,
+            Path::new("/mnt/usb"),
+            Path::new("/"),
+            everything
+        ));
+        // A source that is not the same directory any more (hidden under another mount) is not.
+        assert!(!reached_elsewhere(
+            &table,
+            33,
+            Path::new("/srv/opt"),
+            Path::new("/"),
+            |_| false
+        ));
+        // The root filesystem itself is nobody's duplicate.
+        assert!(!reached_elsewhere(
+            &table,
+            22,
+            Path::new("/"),
+            Path::new("/"),
+            everything
+        ));
+    }
+
+    /// btrfs file-extent items, as `BTRFS_IOC_TREE_SEARCH_V2` returns them: what each occupies.
+    #[test]
+    fn btrfs_extent_items_are_summed_as_stored() {
+        use crate::scan::linux::btrfs_extents::parse;
+        // header: transid, objectid, offset, type, len; then the item.
+        fn item(offset: u64, extent: &[u8]) -> Vec<u8> {
+            let mut out = Vec::new();
+            for value in [1u64, 257, offset] {
+                out.extend_from_slice(&value.to_ne_bytes());
+            }
+            out.extend_from_slice(&108u32.to_ne_bytes());
+            out.extend_from_slice(&(extent.len() as u32).to_ne_bytes());
+            out.extend_from_slice(extent);
+            out
+        }
+        // generation, ram_bytes, compression, encryption, other_encoding(2), type
+        fn head(ram: u64, compression: u8, kind: u8) -> Vec<u8> {
+            let mut out = 7u64.to_ne_bytes().to_vec();
+            out.extend_from_slice(&ram.to_ne_bytes());
+            out.extend_from_slice(&[compression, 0, 0, 0, kind]);
+            out
+        }
+        fn regular(ram: u64, compression: u8, bytenr: u64, disk: u64, num: u64) -> Vec<u8> {
+            let mut out = head(ram, compression, 1);
+            for value in [bytenr, disk, 0, num] {
+                out.extend_from_slice(&value.to_ne_bytes());
+            }
+            out
+        }
+        let mut buffer = Vec::new();
+        // 128 KiB compressed into 4 KiB, wholly referred to.
+        buffer.extend(item(0, &regular(131_072, 3, 1 << 20, 4096, 131_072)));
+        // The same, of which this file refers to half.
+        buffer.extend(item(131_072, &regular(131_072, 3, 2 << 20, 8192, 65_536)));
+        // Uncompressed: what the file refers to.
+        buffer.extend(item(
+            196_608,
+            &regular(524_288, 0, 3 << 20, 524_288, 100_000),
+        ));
+        // A hole.
+        buffer.extend(item(296_608, &regular(4096, 0, 0, 0, 4096)));
+        // Inline: the bytes stored in the item.
+        let mut inline = head(1500, 3, 0);
+        inline.extend_from_slice(&[9u8; 700]);
+        buffer.extend(item(300_704, &inline));
+
+        let parsed = parse(&buffer, 5).expect("well formed");
+        assert_eq!(parsed.bytes, 4096 + 4096 + 100_000 + 700);
+        assert_eq!(parsed.last, Some(300_704));
+        assert_eq!(parsed.used, buffer.len());
+        assert!(
+            parse(&buffer[..40], 1).is_none(),
+            "a truncated item is refused"
+        );
+    }
+
+    /// A rescan of one folder asks the walk's rules of it first: `/proc` under `/` is not entered,
+    /// so it is not rescanned either; an ordinary folder is.
+    #[test]
+    fn a_rescan_follows_the_walks_rules_at_its_own_root() {
+        use crate::scan::walk_would_enter;
+        let options = ScanOptions::default();
+        assert!(!walk_would_enter(
+            Path::new("/"),
+            Path::new("/proc"),
+            options
+        ));
+        let root = tree("rescan_rules");
+        assert!(walk_would_enter(&root, &root.join("a"), options));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Scanning a pseudo-filesystem asked for by name still works — the skip applies to crossing
@@ -746,13 +936,17 @@ mod reflink {
         let _ = ::std::fs::remove_dir_all(&root);
 
         assert_eq!(
-            reflinked, 0,
-            "a partly shared file is not a copy of anything"
-        );
-        assert_eq!(
             total,
             2 * 256 * 1024,
             "both files are held in full, so both are counted"
+        );
+        // The copy is never merged with anything. XFS splits the source's extent where the copy
+        // was rewritten, so neither file is wholly shared; btrfs keeps the source's extent whole
+        // and still referenced by the copy's unchanged ends, so the source alone is, and is
+        // counted as reflinked with nothing to merge with.
+        assert!(
+            reflinked <= 1,
+            "a partly shared file is not a copy of anything, got {reflinked}"
         );
     }
 
@@ -801,6 +995,119 @@ mod reflink {
     }
 }
 
+/// btrfs snapshots, on a real btrfs volume.
+///
+/// Every subvolume and snapshot has its own `st_dev`, so anything keyed on the device sees a
+/// snapshot's files as unrelated to the live ones they share every extent with — which is how a
+/// scan of a volume with snapshots used to count the same data once per snapshot. Point
+/// `DISKONAUT_TEST_BTRFS_DIR` at a directory on btrfs where this user can make subvolumes, with
+/// `btrfs` on the `PATH`; `docs/probes/btrfs/run.sh` sets one up in a container.
+#[cfg(target_os = "linux")]
+mod btrfs {
+    use super::{ScanOptions, scan_into_tree};
+    use crate::scan::linux::filesystem::classify;
+    use ::std::path::{Path, PathBuf};
+    use ::std::process::Command;
+
+    fn btrfs(args: &[&str], path: &Path) -> bool {
+        Command::new("btrfs")
+            .args(args)
+            .arg(path)
+            .output()
+            .is_ok_and(|output| output.status.success())
+    }
+
+    /// A fresh `root` holding a subvolume `live`, or `None` when this cannot be done here.
+    fn fixture(name: &str) -> Option<PathBuf> {
+        let base = PathBuf::from(::std::env::var_os("DISKONAUT_TEST_BTRFS_DIR")?);
+        let root = base.join(format!("diskonaut_btrfs_test_{name}"));
+        remove(&root);
+        ::std::fs::create_dir_all(&root).ok()?;
+        assert!(
+            btrfs(&["-q", "subvolume", "create"], &root.join("live")),
+            "DISKONAUT_TEST_BTRFS_DIR is set, so making a subvolume there has to work"
+        );
+        Some(root)
+    }
+
+    /// Snapshots are subvolumes, which `remove_dir_all` cannot take away on its own.
+    fn remove(root: &Path) {
+        if let Ok(entries) = ::std::fs::read_dir(root) {
+            for entry in entries.flatten() {
+                btrfs(&["-q", "subvolume", "delete"], &entry.path());
+            }
+        }
+        let _ = ::std::fs::remove_dir_all(root);
+    }
+
+    fn snapshot(root: &Path, name: &str) {
+        assert!(
+            Command::new("btrfs")
+                .args(["-q", "subvolume", "snapshot", "-r"])
+                .arg(root.join("live"))
+                .arg(root.join(name))
+                .status()
+                .is_ok_and(|status| status.success()),
+            "snapshot {name}"
+        );
+    }
+
+    fn write(path: &Path, bytes: usize, seed: u8) {
+        // Not all one byte, so that compression, if the volume has it on, does not make the test
+        // about compression.
+        let data: Vec<u8> = (0..bytes)
+            .map(|index| (index as u8).wrapping_mul(31).wrapping_add(seed) ^ (index >> 8) as u8)
+            .collect();
+        ::std::fs::write(path, data).expect("write");
+    }
+
+    #[test]
+    fn every_subvolume_and_snapshot_names_the_same_extent_space() {
+        let Some(root) = fixture("extent_space") else {
+            return;
+        };
+        snapshot(&root, "snap");
+        let spaces: Vec<Option<u64>> = [root.clone(), root.join("live"), root.join("snap")]
+            .iter()
+            .map(|path| classify(path).extent_space)
+            .collect();
+        remove(&root);
+        assert!(spaces[0].is_some(), "btrfs names its filesystem");
+        assert!(
+            spaces.iter().all(|space| *space == spaces[0]),
+            "one filesystem, one address space, whatever st_dev says: {spaces:?}"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_of_a_large_file_is_counted_once() {
+        let Some(root) = fixture("snapshot_large") else {
+            return;
+        };
+        let size = 1024 * 1024;
+        write(&root.join("live/big"), size, 1);
+        snapshot(&root, "snap1");
+        snapshot(&root, "snap2");
+        // Changed after the snapshots: now two different files, both held in full.
+        write(&root.join("live/changed"), size, 2);
+        snapshot(&root, "snap3");
+        write(&root.join("live/changed"), size, 3);
+
+        let (tree, failed) = scan_into_tree(&root, ScanOptions::default());
+        let total = tree.get_total_size();
+        remove(&root);
+
+        assert_eq!(failed, 0);
+        // `big` once, and `changed` twice: the live copy and the one in snap3.
+        let held = 3 * size as u128;
+        assert!(
+            total >= held && total < held + 64 * 1024,
+            "expected about {held}, got {total}: a snapshot counted again is {} more",
+            size
+        );
+    }
+}
+
 /// The parallel build is what the app uses; it has to agree with the single-threaded tree on a
 /// real directory, not only on synthetic groups.
 #[test]
@@ -814,7 +1121,7 @@ fn parallel_build_matches_the_single_threaded_tree() {
     let directories = expected.iter().filter(|path| path.is_dir()).count() + 1;
 
     let mut seen = 0usize;
-    let (parallel, failed, _) = crate::scan::parallel::build_tree(&dir, options, 3, 1, |_| {
+    let (parallel, failed, _, _) = crate::scan::parallel::build_tree(&dir, options, 3, 1, |_| {
         seen += 1;
         true
     })
@@ -856,7 +1163,7 @@ fn single_shard_build_matches_the_single_threaded_tree() {
         ..ScanOptions::default()
     };
     let (single, single_failed) = scan_into_tree(&dir, options);
-    let (sharded, failed, _) = crate::scan::parallel::build_tree(&dir, options, 1, 1, |_| true)
+    let (sharded, failed, _, _) = crate::scan::parallel::build_tree(&dir, options, 1, 1, |_| true)
         .expect("nothing asked the scan to stop");
     let _ = std::fs::remove_dir_all(&dir);
 
@@ -1153,8 +1460,9 @@ fn outside_scan_is_recorded_for_volume_roots_and_holds_across_deletes() {
         file_type: crate::tiles::FileType::File,
         num_descendants: None,
         size: total,
+        sizes: crate::model::Sizes::ZERO,
     });
-    tree.space_freed += total;
+    tree.note_freed(crate::model::Sizes::new(total, total));
     assert_eq!(
         tree.outside_scan(),
         Some(500),

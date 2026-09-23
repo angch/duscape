@@ -409,6 +409,10 @@ mod gui {
         let Some(tree) = state.tree.as_ref() else {
             return;
         };
+        let sizes = tree
+            .item_in_current_folder(&tile.name)
+            .map(libdiskonaut::FileOrFolder::sizes)
+            .unwrap_or_default();
         let mut path_to_file = tree.current_folder_names.clone();
         path_to_file.push(tile.name.clone());
         let to_delete = FileToDelete {
@@ -417,6 +421,7 @@ mod gui {
             file_type: tile.file_type,
             num_descendants: tile.descendants,
             size: tile.size,
+            sizes,
         };
 
         let prompt = wide(&format!(
@@ -685,7 +690,7 @@ mod gui {
                     true
                 },
             );
-            if let Some((tree, _failed, _timings)) = built {
+            if let Some((tree, _failed, _timings, _small)) = built {
                 let boxed = Box::into_raw(Box::new(tree));
                 unsafe { PostMessageW(hwnd, WM_APP_DONE, 0, boxed as LPARAM) };
             }

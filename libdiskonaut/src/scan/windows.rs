@@ -362,9 +362,12 @@ mod metafiles {
         }
     }
 
+    /// A metadata file: blocks of the volume's, with no length a user would recognise — so no
+    /// apparent size, which leaves apparent totals what they would be without them.
     fn file(size: u64) -> EntryMeta {
         EntryMeta {
             size,
+            apparent: 0,
             inode: 0,
             links: 1,
             is_dir: false,
@@ -696,11 +699,6 @@ fn read_directory(
                 };
 
                 let name = OsString::from_wide(&name_wide);
-                let size = if options.show_apparent_size {
-                    end_of_file
-                } else {
-                    allocated
-                };
                 let links =
                     if !is_dir && job.track && file_id != 0 && allocated >= shared.track_from {
                         LINKS_UNKNOWN
@@ -723,7 +721,8 @@ fn read_directory(
                 directory.push(
                     &name,
                     EntryMeta {
-                        size,
+                        size: allocated,
+                        apparent: end_of_file,
                         inode: file_id,
                         links,
                         is_dir,
@@ -797,10 +796,10 @@ pub fn walk_windows(root: &Path, threads: usize, options: ScanOptions) -> Window
     let (volume, stable_ids) = Handle::open(&root, ffi::FILE_READ_ATTRIBUTES, false)
         .map_or((0, false), |handle| volume_of(&handle));
 
-    // Only a whole-volume scan in disk-usage mode: the files belong to the volume, not to any
-    // folder, and they are blocks, not lengths.
+    // Only a whole-volume scan: the files belong to the volume, not to any folder. They are
+    // blocks, not lengths, so they are given no apparent size.
     let volume_root = crate::os::volume_used(&root).is_some();
-    let metafiles = (volume_root && !options.show_apparent_size)
+    let metafiles = volume_root
         .then(|| metafiles::collect(&root, options.max_depth.is_none_or(|max| max > 1)))
         .flatten();
 

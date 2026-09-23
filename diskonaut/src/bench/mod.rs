@@ -41,6 +41,9 @@ pub enum BenchStage {
     /// The walk feeding several tree builders at once, by directory, merged and reconciled at
     /// the end. What a parallel model would cost before it is wired into the app.
     Sharded,
+    /// `sharded`, then the second pass over small files that may share extents: what the app
+    /// shows once it has finished refining.
+    Refined,
     /// Run every stage in order.
     All,
 }
@@ -53,6 +56,7 @@ const ALL_STAGES: &[BenchStage] = &[
     BenchStage::TreeOnly,
     BenchStage::Pipeline,
     BenchStage::Sharded,
+    BenchStage::Refined,
 ];
 
 /// Outcome of one benchmark run.
@@ -275,21 +279,48 @@ fn bench_pipeline(path: &Path, options: ScanOptions) -> StageResult {
 
 /// The walk feeding several tree builders at once, then one merge and one reconciliation —
 /// the parallel model the app uses, timed phase by phase on stderr.
-fn bench_sharded(path: &Path, options: ScanOptions, shards: usize, depth: usize) -> StageResult {
+fn bench_sharded(
+    path: &Path,
+    options: ScanOptions,
+    shards: usize,
+    depth: usize,
+    refined: bool,
+) -> StageResult {
     let start = Instant::now();
     let mut entries = 0u64;
-    let (tree, failed, timings) = parallel::build_tree(path, options, shards, depth, |directory| {
-        entries += directory.len() as u64;
-        true
-    })
-    .expect("nothing asked the scan to stop");
+    let (mut tree, failed, timings, small) =
+        parallel::build_tree(path, options, shards, depth, |directory| {
+            entries += directory.len() as u64;
+            true
+        })
+        .expect("nothing asked the scan to stop");
     eprintln!(
         "  sharded x{shards} depth {depth}: walk+build {:.3}s  merge {:.3}s  replay {:.3}s",
         timings.built.as_secs_f64(),
         timings.merged.as_secs_f64(),
         timings.replayed.as_secs_f64(),
     );
-    finish("sharded", start, entries, failed, tree)
+    if !refined {
+        return finish("sharded", start, entries, failed, tree);
+    }
+    let files = small.len();
+    let second = Instant::now();
+    let mut charged = 0;
+    libdiskonaut::scan::refine::refine(
+        small,
+        thread_count(options),
+        &::std::sync::Mutex::new(None),
+        &|| true,
+        |found, _| {
+            charged += tree.apply_found(&found);
+            true
+        },
+    );
+    eprintln!(
+        "  second pass: {files} small files probed, {charged} shared, {:.3}s",
+        second.elapsed().as_secs_f64()
+    );
+    finish("refined", start, entries, failed, tree)
 }
 
 /// Run the requested benchmark stages against `path` and print a report.
@@ -335,7 +366,8 @@ pub fn run(
                 BenchStage::Tree => bench_scan(path, options, true),
                 BenchStage::TreeOnly => bench_tree_only(path, options),
                 BenchStage::Pipeline | BenchStage::All => bench_pipeline(path, options),
-                BenchStage::Sharded => bench_sharded(path, options, shards, shard_depth),
+                BenchStage::Sharded => bench_sharded(path, options, shards, shard_depth, false),
+                BenchStage::Refined => bench_sharded(path, options, shards, shard_depth, true),
             };
             result.report();
         }

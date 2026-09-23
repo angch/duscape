@@ -17,23 +17,155 @@ pub enum FileOrFolder {
 }
 
 impl FileOrFolder {
-    pub fn size(&self) -> u128 {
+    /// Both of its sizes.
+    pub fn sizes(&self) -> Sizes {
         match self {
-            FileOrFolder::Folder(folder) => folder.size,
-            FileOrFolder::File(file) => u128::from(file.size),
+            FileOrFolder::Folder(folder) => folder.sizes,
+            FileOrFolder::File(file) => file.sizes(),
+        }
+    }
+    /// The size of the kind asked for.
+    pub fn size(&self, kind: SizeKind) -> u128 {
+        self.sizes().get(kind)
+    }
+}
+
+/// Which of an entry's two sizes is meant: the space it takes on disk (blocks allocated), or its
+/// length (`du --apparent-size`, `-a`). The tree keeps both, so the view can switch between them
+/// without scanning again.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SizeKind {
+    #[default]
+    Disk,
+    Apparent,
+}
+
+impl SizeKind {
+    #[must_use]
+    pub fn other(self) -> Self {
+        match self {
+            SizeKind::Disk => SizeKind::Apparent,
+            SizeKind::Apparent => SizeKind::Disk,
         }
     }
 }
 
-/// A file, as the tree holds it.
+/// An amount of both kinds, as a folder's total or a change to one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Sizes {
+    pub disk: u128,
+    pub apparent: u128,
+}
+
+impl Sizes {
+    pub const ZERO: Sizes = Sizes {
+        disk: 0,
+        apparent: 0,
+    };
+    #[must_use]
+    pub fn new(disk: u128, apparent: u128) -> Self {
+        Self { disk, apparent }
+    }
+    #[must_use]
+    pub fn of(disk: u64, apparent: u64) -> Self {
+        Self::new(u128::from(disk), u128::from(apparent))
+    }
+    #[must_use]
+    pub fn get(self, kind: SizeKind) -> u128 {
+        match kind {
+            SizeKind::Disk => self.disk,
+            SizeKind::Apparent => self.apparent,
+        }
+    }
+    #[must_use]
+    pub fn saturating_sub(self, other: Sizes) -> Sizes {
+        Sizes::new(
+            self.disk.saturating_sub(other.disk),
+            self.apparent.saturating_sub(other.apparent),
+        )
+    }
+    pub fn is_zero(self) -> bool {
+        self == Sizes::ZERO
+    }
+}
+
+impl ::std::ops::Add for Sizes {
+    type Output = Sizes;
+    fn add(self, other: Sizes) -> Sizes {
+        Sizes::new(self.disk + other.disk, self.apparent + other.apparent)
+    }
+}
+
+impl ::std::ops::AddAssign for Sizes {
+    fn add_assign(&mut self, other: Sizes) {
+        *self = *self + other;
+    }
+}
+
+impl ::std::iter::Sum for Sizes {
+    fn sum<I: Iterator<Item = Sizes>>(iter: I) -> Sizes {
+        iter.fold(Sizes::ZERO, |sum, sizes| sum + sizes)
+    }
+}
+
+/// A file, as the tree holds it: its size on disk, and its length as a difference from that.
 ///
-/// `size` is a `u64` and not a `u128` deliberately. It is the single most repeated field in the
-/// model — one per file, millions of them — and it decides the size of `FileOrFolder`, which is
-/// what every slot in every folder costs. At `u128` the enum is 24 bytes; at `u64` it is 16. A
-/// `u64` counts to 16 EiB, which no file and no volume reaches.
-#[derive(Debug, Clone, Copy)]
-pub struct File {
-    pub size: u64,
+/// This is the single most repeated value in the model — one per file, millions of them — and it
+/// decides the size of `FileOrFolder`, which is what every slot in every folder costs: 16 bytes,
+/// tested in `model::tests`. A second `u64` would make it 24. But a file's two sizes are nearly
+/// always within a block of each other, so the length is kept as a signed 32-bit difference from
+/// the size on disk, in bytes, which fits beside the `u64` in the space the enum's tag leaves.
+///
+/// The few files whose sizes differ by 2 GiB or more — a huge sparse file (`/var/log/lastlog`),
+/// a large file that compresses well — keep both sizes in a box of their own instead, so both are
+/// exact for every file.
+#[derive(Debug, Clone)]
+pub struct File(FileSizes);
+
+#[derive(Debug, Clone)]
+enum FileSizes {
+    Near { disk: u64, apparent_minus_disk: i32 },
+    Far(Box<(u64, u64)>),
+}
+
+impl File {
+    #[must_use]
+    pub fn new(disk: u64, apparent: u64) -> Self {
+        let difference = i128::from(apparent) - i128::from(disk);
+        File(match i32::try_from(difference) {
+            Ok(apparent_minus_disk) => FileSizes::Near {
+                disk,
+                apparent_minus_disk,
+            },
+            Err(_) => FileSizes::Far(Box::new((disk, apparent))),
+        })
+    }
+    /// A file whose two sizes agree, as in tests that do not care which is shown.
+    #[must_use]
+    pub fn sized(size: u64) -> Self {
+        Self::new(size, size)
+    }
+    #[must_use]
+    pub fn disk(&self) -> u64 {
+        match &self.0 {
+            FileSizes::Near { disk, .. } => *disk,
+            FileSizes::Far(both) => both.0,
+        }
+    }
+    #[must_use]
+    pub fn apparent(&self) -> u64 {
+        match &self.0 {
+            FileSizes::Near {
+                disk,
+                apparent_minus_disk,
+            } => disk.saturating_add_signed(i64::from(*apparent_minus_disk)),
+            FileSizes::Far(both) => both.1,
+        }
+    }
+    #[must_use]
+    pub fn sizes(&self) -> Sizes {
+        Sizes::of(self.disk(), self.apparent())
+    }
 }
 
 /// A directory in the tree.
@@ -44,7 +176,7 @@ pub struct File {
 #[derive(Debug, Clone, Default)]
 pub struct Folder {
     pub contents: ContentsMap,
-    pub size: u128,
+    pub sizes: Sizes,
     pub num_descendants: u64,
 }
 impl Folder {
@@ -53,7 +185,7 @@ impl Folder {
     pub fn new(_path: &Path) -> Self {
         Self {
             contents: ContentsMap::default(),
-            size: 0,
+            sizes: Sizes::ZERO,
             num_descendants: 0,
         }
     }
@@ -68,8 +200,7 @@ impl Folder {
         let mut folder = self;
         while let Some(name) = components.next() {
             let name = name.as_ref();
-            let size = u128::from(meta.size);
-            folder.size += size;
+            folder.sizes += Sizes::of(meta.size, meta.apparent);
             folder.num_descendants += 1;
             if components.peek().is_some() {
                 folder = folder.contents.folder_or_insert(name);
@@ -79,9 +210,10 @@ impl Folder {
                     .contents
                     .insert_if_absent(name, || FileOrFolder::Folder(Box::default()));
             } else {
-                folder
-                    .contents
-                    .insert(name, FileOrFolder::File(File { size: meta.size }));
+                folder.contents.insert(
+                    name,
+                    FileOrFolder::File(File::new(meta.size, meta.apparent)),
+                );
             }
         }
     }
@@ -100,18 +232,18 @@ impl Folder {
         dir_path: impl Iterator<Item = &'a OsStr>,
         names: Vec<u8>,
         entries: Vec<NamedEntry>,
-        size_at_depth: &[u128],
+        size_at_depth: &[Sizes],
         extra_descendants: u64,
     ) {
         let contained_count = entries.len() as u64 + extra_descendants;
-        let size_at = |depth: usize| size_at_depth.get(depth).copied().unwrap_or(0);
+        let size_at = |depth: usize| size_at_depth.get(depth).copied().unwrap_or(Sizes::ZERO);
 
         let mut folder = self;
-        folder.size += size_at(0);
+        folder.sizes += size_at(0);
         folder.num_descendants += contained_count;
         for (depth, name) in dir_path.enumerate() {
             folder = folder.contents.folder_or_insert(name);
-            folder.size += size_at(depth + 1);
+            folder.sizes += size_at(depth + 1);
             folder.num_descendants += contained_count;
         }
 
@@ -133,9 +265,7 @@ impl Folder {
                 folder.contents.place(
                     offset,
                     len,
-                    FileOrFolder::File(File {
-                        size: entry.meta.size,
-                    }),
+                    FileOrFolder::File(File::new(entry.meta.size, entry.meta.apparent)),
                     false,
                 );
             }
@@ -147,12 +277,12 @@ impl Folder {
     /// Sizes and counts add, because each side counted disjoint groups of entries; where both
     /// sides hold a folder of the same name, that folder is merged in turn.
     pub fn merge_from(&mut self, other: Folder) {
-        self.size += other.size;
+        self.sizes += other.sizes;
         self.num_descendants += other.num_descendants;
         self.contents.merge_from(other.contents);
     }
 
-    /// Take `size` back from this folder and from the first `down_to` folders along `path`.
+    /// Take `sizes` back from this folder and from the first `down_to` folders along `path`.
     ///
     /// This is the second half of deferred shared-block accounting: a file whose blocks had
     /// already been counted by some folder was nonetheless added in full to every ancestor during
@@ -162,10 +292,10 @@ impl Folder {
         &mut self,
         mut path: impl Iterator<Item = &'a OsStr>,
         down_to: usize,
-        size: u128,
+        sizes: Sizes,
     ) {
         let mut folder = self;
-        folder.size = folder.size.saturating_sub(size);
+        folder.sizes = folder.sizes.saturating_sub(sizes);
         for _ in 0..down_to {
             let Some(name) = path.next() else {
                 return;
@@ -174,14 +304,13 @@ impl Folder {
                 Some(FileOrFolder::Folder(next)) => next,
                 _ => return,
             };
-            folder.size = folder.size.saturating_sub(size);
+            folder.sizes = folder.sizes.saturating_sub(sizes);
         }
     }
 
     pub fn add_folder(&mut self, path: PathBuf) {
         self.add_entry(
             EntryMeta {
-                size: 0,
                 is_dir: true,
                 ..EntryMeta::default()
             },
@@ -192,6 +321,7 @@ impl Folder {
         self.add_entry(
             EntryMeta {
                 size: u64::try_from(size).unwrap_or(u64::MAX),
+                apparent: u64::try_from(size).unwrap_or(u64::MAX),
                 links: 1,
                 is_dir: false,
                 ..EntryMeta::default()
@@ -234,13 +364,13 @@ impl Folder {
                 .contents
                 .get(name)
                 .expect("could not find folder")
-                .size();
+                .sizes();
             let removed_descendents = Self::delete_path_removed_descendants(
                 self.contents.get(name).expect("could not find folder"),
             );
             // Saturating because a hard-linked file's size was charged to this folder only once
             // however many links it has here, so removing each link would otherwise underflow.
-            self.size = self.size.saturating_sub(*removed_size);
+            self.sizes = self.sizes.saturating_sub(*removed_size);
             self.num_descendants = self.num_descendants.saturating_sub(removed_descendents);
             self.contents.remove(name);
         } else {
@@ -248,7 +378,7 @@ impl Folder {
                 let item_to_remove = self
                     .path(Vec::from(folders_to_traverse.clone()))
                     .expect("could not find item to delete");
-                let removed_size = item_to_remove.size();
+                let removed_size = item_to_remove.sizes();
                 (
                     removed_size,
                     Self::delete_path_removed_descendants(item_to_remove),
@@ -263,7 +393,7 @@ impl Folder {
                 .expect("could not find folder in path");
             match next_item {
                 FileOrFolder::Folder(folder) => {
-                    self.size = self.size.saturating_sub(removed_size);
+                    self.sizes = self.sizes.saturating_sub(removed_size);
                     self.num_descendants = self.num_descendants.saturating_sub(removed_descendents);
                     folder.delete_path(&Vec::from(folders_to_traverse));
                 }

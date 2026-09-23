@@ -55,6 +55,9 @@ Six kinds of thread communicate via `mpsc` channels (bounded, except the preview
 | `tree_builder_N` | Owns a private `FileTree` in deferred-sharing mode and adds whatever `hd_scanner` sends it. Never touches another thread's memory |
 | `event_executer` | Converts `Event` → `Instruction` (visual feedback). A clipboard flash gets a short-lived `clipboard_flash` thread that asks for a redraw when it expires; the flash carries its own deadline, so a lost redraw cannot leave it on screen |
 | `loading_loop` | Toggles loading indicator while scanning |
+| `ticker` | Sends `Instruction::Tick` with `try_send` (late ticks are dropped): every `ui::FRAME` (16 ms) while `App::ticker_pace` says the help line is sliding, else every `ui::IDLE_TICK` (250 ms), looking again one frame after each resting tick since a slide begins on one — twice per resting interval, not at frame rate. `App::tick` moves the help line (`ui::Ticker`/`Strip`) |
+| `refine_N` | The second pass (`rescan::Refiner` → `scan::refine::refine`, a few `refine_*` workers): FIEMAP on the small files the walk noted (`SmallFiles`, 4–64 KiB, `nlink == 1`, XFS/btrfs), directories under `App::refine_focus` (the folder shown) first → `Instruction::Refined(generation, Found, left)`; `FileTree::apply_found` charges them to the ledger. A new whole tree cancels it; folders rescanned meanwhile are skipped (`refine_skip`), since a folder rescan refines its own tree before grafting |
+| `rescan_N` | One per `r`/`R` (`rescan::Rescanner`). A folder the whole scan would not enter (`scan::walk_would_enter`: pseudo, network, `-x`, bind duplicate) or past `--max-depth` (counted from the scan root) is not rescanned (`Outcome::NotWalked`); a delete inside a folder being rescanned restarts that rescan. `parallel::build_tree` on the folder → `Instruction::Rescanned(id, Outcome)`. `App::rescan_done` grafts it (`FileTree::graft`, ancestors corrected by the difference) and leaks the old folder like `finish_scan` does. A rescan that another under way covers is not started; one the new rescan covers is cancelled and its result dropped |
 | `previewer` | Reads the file in hand for the preview: first 64 KB as text, or a PNG/JPEG decoded and scaled after a 100 ms debounce (a newer request supersedes it) → `Instruction::PreviewReady(generation, _)`; answers to an older generation are dropped |
 | **main** | App state mutations + ratatui rendering. During the scan it renders from the *outline*; on `ScanComplete` it swaps in the finished tree, keeping the current folder |
 
@@ -131,6 +134,12 @@ Exiting { app_loaded: bool }
   jump) or placed by the app (a folder's top row, a deleted entry's neighbour); only a picked one
   seeds a Ctrl+click selection, so `d` never deletes an entry nobody chose. `d` deletes every
   marked entry (`get_files_to_delete`), continuing past failures and naming the first.
+- **Help line**: an endless strip, legend and tips alternating (`ui::bottom_line::Strip`). It
+  rests `REST` (5 s, from arrival or the last key, whichever is later) at each stop — one per
+  segment, or a page at a time for one wider than the screen — and slides to the next in `SLIDE`
+  (80 ms, eased), so every move finishes within 100 ms. The position is kept *within a segment*
+  (`Ticker`), so a legend that changes length (scan done) does not make what is on screen jump.
+  Keys named in it come from `Keybinds`, never literals.
 - **Colours**: no dark gray (unreadable on black) and no magenta on the light cursor bar; the
   cursor is black on gray, marks black on yellow. `side_panel` tests assert both.
 - **Focus**: the list has it by default (`Focus::List`; `list_cursor: None` means its top row,
@@ -156,6 +165,12 @@ Exiting { app_loaded: bool }
   the same per-folder sizes as charging inline. Tested folder-by-folder against the inline tree
   (`model::tests::sharded`). Shard by `SHARD_DEPTH` path components, not the whole path — see
   `docs/scan-performance.md` for why the merge otherwise costs more than the parallelism saves.
+- **Two sizes everywhere**: `EntryMeta` carries `size` (on disk) and `apparent` (length); every
+  walker fills both. `model::File` stores disk as `u64` plus apparent as an `i32` difference
+  (`FileSizes::Far` boxes both when they are ≥ 2 GiB apart), keeping `FileOrFolder` at 16 bytes —
+  asserted in `model::tests`; do not grow it. Folders hold `sizes: Sizes`. `FileTree::shown` and
+  `Board::show` pick which is displayed; the ledger charges both kinds to the same ancestors and
+  identifies files by the disk size. `ScanOptions::show_apparent_size` only sets the initial view.
 - **Sizes are not additive**: a folder's size counts each distinct *set of blocks* once, so hard
   links and XFS/btrfs reflinks both make it smaller than the sum of its entries. See
   `docs/scan-performance.md`.
@@ -169,6 +184,23 @@ Exiting { app_loaded: bool }
   attribute is chosen per device. See `docs/scan-performance.md`.
 - **Pseudo-filesystems**: crossing a mount point into `/proc`, `/sys`, cgroup, debugfs and friends
   is refused (by `statfs` magic); naming one as the scan root still scans it.
+- **Bind mounts**: a mount root (`STATX_ATTR_MOUNT_ROOT`) is looked up in `/proc/self/mountinfo`
+  by `stx_mnt_id` (`linux::mounts`); if an earlier mount of the same device shows the same
+  directory at a path inside the scan — checked by device and inode — the mount is left empty.
+- **btrfs compression (root only)**: `linux::btrfs_extents::on_disk` reads a file's
+  `EXTENT_DATA` items with `BTRFS_IOC_TREE_SEARCH_V2` on the directory fd (tree 0 = its
+  subvolume) and sums what they occupy; it replaces `stx_blocks` as the disk size. Gated by
+  `filesystem::Compressed` (decided per mount: `Maybe` if the superblock options say `compress`,
+  `Marked` for `STATX_ATTR_COMPRESSED` files only, `Never` if not btrfs or not permitted), since
+  it costs ~1 µs a file. The FIEMAP identity pages through long extent maps (compressed files have
+  one extent per 128 KiB).
+- **Two passes**: the walk probes shared extents only from 64 KiB; smaller files are noted in
+  `DirEntries::later` and probed after the tree is shown (see the `refine_N` thread). The
+  benchmark's `refined` stage is walk + second pass, and is what the fixtures measure.
+- **Network filesystems**: refused the same way, whatever `-x` says — NFS, SMB, 9p, Ceph, AFS… by
+  magic (`linux::filesystem::NETWORK`), and FUSE by its subtype in `/proc/self/mountinfo`, found by
+  `stx_mnt_id` (`NETWORK_FUSE`: sshfs, rclone, s3fs…), since FUSE also serves local filesystems.
+  macOS skips a mount point without `MNT_LOCAL`. Another machine's files are not this disk's space.
 - **ManuallyDrop on FileTree**: Avoids slow recursive drop on exit.
 
 ---
@@ -191,6 +223,8 @@ Exiting { app_loaded: bool }
 | Copy relative path | right-click |
 | Copy absolute path | double right-click |
 | Zoom in/out | `+` / `-` |
+| Disk usage / apparent size | `a` (no rescan) |
+| Rescan selected folder / everything | `r` / `R` (not during the first scan) |
 | Reset zoom | `0` |
 | Confirm | `y` |
 | Cancel | `n` |
@@ -236,6 +270,17 @@ Exiting { app_loaded: bool }
    ever run by its tests here — do not assume compiling it means it works.
 3. Expose via CLI in `diskonaut/src/cli/mod.rs` and config if persistent
 4. Add a `--benchmark` stage if it changes how the walk performs
+
+### Filesystem fixtures — the standard for scan and accounting changes
+`make test-fs` (root or the `docker` group) makes ext4, XFS, btrfs, f2fs, tmpfs, FAT32, exFAT and
+NTFS on loopback images, fills them with hard links, sparse files, reflinks, snapshots and
+compression, builds mount layouts (nested, `proc`, `tmpfs`, bind mounts, loopback NFS,
+`fuse.rclone`), runs both test suites on
+each with `TMPDIR` there, and checks totals against oracles that share no code with diskonaut.
+See `fixtures/fs/README.md`. Any change to the walkers, `EntryMeta`, the hard-link/reflink ledger
+or mount handling must pass it, and a behaviour that depends on the filesystem or the mount table
+gets a fixture there. CI runs it (`fs-fixtures.yml`). Remember: every btrfs subvolume and snapshot
+has its own `st_dev` and `f_fsid` — never key anything cross-file on the device alone there.
 
 ### Touching filesystem attributes
 Test against FAT as well as APFS — it is the filesystem that misreports. `docs/scan-performance.md`
@@ -290,6 +335,7 @@ busybox. One job then publishes both tarballs: matrix jobs that each create the 
 - `cargo fmt --all -- --check`
 - `cargo deny check`
 - typos check
+- `fixtures/fs/run.sh` (`fs-fixtures.yml`)
 
 ---
 

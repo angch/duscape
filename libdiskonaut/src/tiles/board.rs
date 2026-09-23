@@ -1,4 +1,4 @@
-use crate::model::Folder;
+use crate::model::{Folder, SizeKind};
 use crate::tiles::Area;
 use crate::tiles::files_in_folder::FileType;
 use crate::tiles::{FileMetadata, Tile, TreeMap, files_in_folder};
@@ -13,6 +13,8 @@ pub struct Board {
     files: Vec<FileMetadata>,
     /// Every entry of the folder, largest first, whatever the zoom: the list beside the board.
     listing: Vec<FileMetadata>,
+    /// Which size the tiles are drawn by; see [`Self::show`].
+    kind: SizeKind,
 }
 
 impl Board {
@@ -20,20 +22,25 @@ impl Board {
         Board {
             tiles: vec![],
             unrenderable_tile_coordinates: None,
-            files: files_in_folder(folder, 0),
-            listing: files_in_folder(folder, 0),
+            files: files_in_folder(folder, 0, SizeKind::Disk),
+            listing: files_in_folder(folder, 0, SizeKind::Disk),
+            kind: SizeKind::Disk,
             selected_index: None,
             previous_indices_and_zoom_level: vec![],
             zoom_level: 0,
             area: Area::default(),
         }
     }
+    /// Draw tiles by the size of `kind` from the next [`Self::change_files`] on.
+    pub fn show(&mut self, kind: SizeKind) {
+        self.kind = kind;
+    }
     pub fn change_files(&mut self, folder: &Folder) {
-        self.listing = files_in_folder(folder, 0);
+        self.listing = files_in_folder(folder, 0, self.kind);
         self.files = if self.zoom_level == 0 {
             self.listing.clone()
         } else {
-            files_in_folder(folder, self.zoom_level)
+            files_in_folder(folder, self.zoom_level, self.kind)
         };
         self.fill();
     }
@@ -186,20 +193,20 @@ impl Board {
     pub fn zoom_in(&mut self, folder: &Folder) {
         if self.zoom_level < self.files.len() {
             self.zoom_level += 1;
-            self.files = files_in_folder(folder, self.zoom_level);
+            self.files = files_in_folder(folder, self.zoom_level, self.kind);
             self.fill();
         }
     }
     pub fn zoom_out(&mut self, folder: &Folder) {
         if self.zoom_level > 0 {
             self.zoom_level -= 1;
-            self.files = files_in_folder(folder, self.zoom_level);
+            self.files = files_in_folder(folder, self.zoom_level, self.kind);
             self.fill();
         }
     }
     pub fn reset_zoom(&mut self, folder: &Folder) {
         self.zoom_level = 0;
-        self.files = files_in_folder(folder, self.zoom_level);
+        self.files = files_in_folder(folder, self.zoom_level, self.kind);
         self.fill();
     }
     pub fn reset_zoom_index(&mut self) {

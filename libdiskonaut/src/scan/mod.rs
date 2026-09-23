@@ -23,6 +23,8 @@ pub mod windows;
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod ntfs;
 
+pub mod refine;
+
 /// Options controlling filesystem traversal.
 #[derive(Clone, Copy, Debug)]
 pub struct ScanOptions {
@@ -30,14 +32,20 @@ pub struct ScanOptions {
     pub parallel: bool,
     /// Override the worker count. `None` uses one thread per core (or one if `parallel` is off).
     pub threads: Option<usize>,
-    /// Report logical file length rather than blocks allocated on disk.
+    /// Show logical file length rather than blocks allocated on disk, to begin with. The tree
+    /// holds both either way.
     pub show_apparent_size: bool,
     /// Stop descending below this depth (the root is depth 0). `None` means no limit.
     pub max_depth: Option<usize>,
     /// Do not cross filesystem boundaries (like `du -x`).
     ///
-    /// The scan always declines to enter a filesystem it is already walking by another path,
-    /// whatever this is set to, since that would count the same files twice.
+    /// Whatever this is set to, the scan never crosses into a pseudo filesystem (`/proc`, `/sys`)
+    /// or a network one (NFS, SMB, sshfs and other remote FUSE filesystems), since neither holds
+    /// this disk's space; either can still be scanned by naming it as the root. Nor does it walk a
+    /// second route to files it already reaches: on Linux a bind mount of a folder inside the scan
+    /// (or a second mount of a filesystem in it), on macOS the starting volume through another
+    /// mount point. On macOS a network share is recognised only once its root is opened and
+    /// listed, so a server that has gone away can still hold the scan up there.
     pub one_file_system: bool,
     /// Which files Windows tracks by id in case they are hard links, since its directory listings
     /// carry no link count (see `windows::links`).
@@ -47,6 +55,18 @@ pub struct ScanOptions {
     /// was not drawn from. `Some(bytes)` tracks every file at least that large, wherever it is.
     /// Ignored elsewhere: Unix walks get the link count for free.
     pub hard_link_threshold: Option<u64>,
+}
+
+impl ScanOptions {
+    /// Which size a tree built with these options shows first.
+    #[must_use]
+    pub fn shown(&self) -> crate::model::SizeKind {
+        if self.show_apparent_size {
+            crate::model::SizeKind::Apparent
+        } else {
+            crate::model::SizeKind::Disk
+        }
+    }
 }
 
 impl Default for ScanOptions {
@@ -69,8 +89,11 @@ impl Default for ScanOptions {
 /// magnitude larger) never travels with it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EntryMeta {
-    /// Size already resolved according to [`ScanOptions::show_apparent_size`].
+    /// Space taken on disk: blocks allocated, in bytes.
     pub size: u64,
+    /// Length in bytes, as `du --apparent-size` counts it. The tree keeps both, so the view can
+    /// switch between them; see `model::File` for how it keeps them in the space of one.
+    pub apparent: u64,
     /// Filesystem identity, used to charge a hard-linked file to a folder only once.
     pub inode: u64,
     /// Directory entries pointing at this file; `1` for an ordinary file, [`LINKS_UNKNOWN`] when
@@ -173,6 +196,11 @@ pub struct DirEntries {
     names: Vec<u8>,
     entries: Vec<NamedEntry>,
     pub failed: u64,
+    /// Entries left for the second pass ([`refine`]): small files that may share extents but were
+    /// not worth probing during the walk. Indices into `entries`.
+    pub(crate) later: Vec<u32>,
+    /// What those entries' extent offsets index; see `linux::Job::extent_space`.
+    pub(crate) extent_space: u64,
 }
 
 impl DirEntries {
@@ -183,6 +211,8 @@ impl DirEntries {
             names: Vec::new(),
             entries: Vec::new(),
             failed: 0,
+            later: Vec::new(),
+            extent_space: 0,
         }
     }
 
@@ -194,6 +224,8 @@ impl DirEntries {
             names: Vec::with_capacity(name_bytes),
             entries: Vec::with_capacity(entries),
             failed: 0,
+            later: Vec::new(),
+            extent_space: 0,
         }
     }
 
@@ -270,8 +302,10 @@ impl DirEntries {
 pub struct DirSummary {
     /// The directory's subdirectory entries only.
     pub dirs: DirEntries,
-    /// What the files directly inside add up to, shared blocks counted in full.
+    /// What the files directly inside add up to on disk, shared blocks counted in full.
     pub files_size: u64,
+    /// The same files' lengths.
+    pub files_apparent: u64,
     /// How many entries of any kind the directory holds.
     pub entries: u64,
 }
@@ -281,17 +315,20 @@ impl DirSummary {
     pub fn of(directory: &DirEntries) -> Self {
         let mut dirs = DirEntries::new(Arc::clone(&directory.path));
         let mut files_size = 0u64;
+        let mut files_apparent = 0u64;
         for (name, meta) in directory.iter() {
             if meta.is_dir {
                 dirs.push(name, *meta);
             } else {
                 files_size = files_size.saturating_add(meta.size);
+                files_apparent = files_apparent.saturating_add(meta.apparent);
             }
         }
         dirs.failed = directory.failed;
         Self {
             dirs,
             files_size,
+            files_apparent,
             entries: directory.len() as u64,
         }
     }
@@ -314,7 +351,8 @@ pub struct Outline {
     batch: Vec<DirSummary>,
     batched_entries: usize,
     /// Frontier folder (relative to the root) → rolled-up (file bytes, entries, failed).
-    rolled: ::std::collections::HashMap<PathBuf, (u64, u64, u64)>,
+    /// Per frontier folder: files on disk, their lengths, entries, unreadable entries.
+    rolled: ::std::collections::HashMap<PathBuf, (u64, u64, u64, u64)>,
 }
 
 impl Outline {
@@ -345,15 +383,20 @@ impl Outline {
             self.batch.push(DirSummary::of(directory));
         } else {
             let frontier: PathBuf = relative.components().take(self.depth + 1).collect();
-            let files: u64 = directory
-                .iter()
-                .filter(|(_, meta)| !meta.is_dir)
-                .map(|(_, meta)| meta.size)
-                .sum();
-            let slot = self.rolled.entry(frontier).or_insert((0, 0, 0));
-            slot.0 = slot.0.saturating_add(files);
-            slot.1 += directory.len() as u64;
-            slot.2 += directory.failed;
+            let (disk, apparent) = directory.iter().filter(|(_, meta)| !meta.is_dir).fold(
+                (0u64, 0u64),
+                |(disk, apparent), (_, meta)| {
+                    (
+                        disk.saturating_add(meta.size),
+                        apparent.saturating_add(meta.apparent),
+                    )
+                },
+            );
+            let slot = self.rolled.entry(frontier).or_insert((0, 0, 0, 0));
+            slot.0 = slot.0.saturating_add(disk);
+            slot.1 = slot.1.saturating_add(apparent);
+            slot.2 += directory.len() as u64;
+            slot.3 += directory.failed;
         }
         (self.batched_entries >= self.batch_size).then(|| self.take_batch())
     }
@@ -366,12 +409,13 @@ impl Outline {
 
     fn take_batch(&mut self) -> Vec<DirSummary> {
         self.batched_entries = 0;
-        for (frontier, (files_size, entries, failed)) in self.rolled.drain() {
+        for (frontier, (files_size, files_apparent, entries, failed)) in self.rolled.drain() {
             let mut dirs = DirEntries::new(Arc::from(self.root.join(frontier).as_path()));
             dirs.failed = failed;
             self.batch.push(DirSummary {
                 dirs,
                 files_size,
+                files_apparent,
                 entries,
             });
         }
@@ -446,14 +490,15 @@ pub mod parallel {
     ///
     /// `progress` sees every directory as it is dispatched, before any builder has it, and may
     /// return `false` to stop the scan — in which case nothing is merged and `None` comes back.
-    /// Otherwise the merged, reconciled tree and the count of unreadable entries.
+    /// Otherwise the merged, reconciled tree, the count of unreadable entries, and the small
+    /// files left for the second pass ([`super::refine`]).
     pub fn build_tree(
         root: &Path,
         options: ScanOptions,
         shards: usize,
         depth: usize,
         mut progress: impl FnMut(&DirEntries) -> bool,
-    ) -> Option<(FileTree, u64, Timings)> {
+    ) -> Option<(FileTree, u64, Timings, super::refine::SmallFiles)> {
         let shards = shards.max(1);
         let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
         let start = Instant::now();
@@ -494,12 +539,14 @@ pub mod parallel {
         let mut queued = 0usize;
         let mut failed = 0u64;
         let mut stopped = false;
+        let mut small = super::refine::SmallFiles::default();
         for directory in scan_directories(&root, options) {
             if !progress(&directory) {
                 stopped = true;
                 break;
             }
             failed += directory.failed;
+            small.note(&directory);
             // One shard means one builder: skip hashing the path to choose it — the hash runs per
             // directory and always lands on zero, so on a walk-bound volume it is pure overhead.
             let shard = if shards == 1 {
@@ -544,6 +591,7 @@ pub mod parallel {
 
         tree.replay_deferred();
         tree.volume_used = super::comparable_volume_used(&root, options);
+        tree.shown = options.shown();
         let replayed = Instant::now();
 
         Some((
@@ -554,15 +602,32 @@ pub mod parallel {
                 merged: merged - built,
                 replayed: replayed - merged,
             },
+            small,
         ))
+    }
+}
+
+/// Whether a walk of `scan_root` goes into `folder`, a folder inside it: what a rescan of that
+/// folder alone has to ask first, since a walk starting there applies no rule to its own root.
+/// On Linux it asks what the walk would at a mount point; elsewhere every folder is entered.
+#[must_use]
+pub fn walk_would_enter(scan_root: &Path, folder: &Path, options: ScanOptions) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        linux::walk_would_enter(scan_root, folder, options)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (scan_root, folder, options);
+        true
     }
 }
 
 /// Walk `root`, yielding the contents of one directory at a time.
 ///
-/// On macOS this uses [`macos`], which asks the kernel only for the attributes disk usage needs.
+/// On macOS this uses `macos`, which asks the kernel only for the attributes disk usage needs.
 /// On Linux it uses [`linux`], which owns its own thread pool because `dua-core`'s stops scaling
-/// well before the kernel does. On Windows it uses [`windows`], which reads a directory's sizes
+/// well before the kernel does. On Windows it uses `windows`, which reads a directory's sizes
 /// in bulk rather than opening every file. Elsewhere it groups the `dua-core` walk, which reports a
 /// directory's entries consecutively.
 pub fn scan_directories(root: &Path, options: ScanOptions) -> impl Iterator<Item = DirEntries> {
@@ -571,7 +636,6 @@ pub fn scan_directories(root: &Path, options: ScanOptions) -> impl Iterator<Item
         macos::walk_macos(
             root,
             thread_count(options),
-            options.show_apparent_size,
             options.max_depth,
             options.one_file_system,
         )
@@ -614,7 +678,6 @@ mod fallback {
         root: &Path,
         options: ScanOptions,
     ) -> impl Iterator<Item = DirEntries> {
-        let apparent = options.show_apparent_size;
         let root_canon = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
         let root: Arc<Path> = Arc::from(root_canon.as_path());
         let descend = descend_predicate(&root, options);
@@ -670,7 +733,8 @@ mod fallback {
                         &metadata,
                     );
                     EntryMeta {
-                        size: entry_size(&metadata, apparent),
+                        size: entry_size(&metadata, false),
+                        apparent: entry_size(&metadata, true),
                         inode,
                         links,
                         is_dir: file_type.is_dir(),
@@ -771,7 +835,6 @@ pub fn scan_folder(root: impl AsRef<Path>, options: ScanOptions) -> impl Iterato
         .canonicalize()
         .unwrap_or_else(|_| root.as_ref().to_path_buf());
     let threads = dua_thread_count(options);
-    let apparent = options.show_apparent_size;
     let descend = descend_predicate(&root, options);
 
     walk(
@@ -791,7 +854,8 @@ pub fn scan_folder(root: impl AsRef<Path>, options: ScanOptions) -> impl Iterato
                     ScanItem::Entry {
                         path,
                         meta: EntryMeta {
-                            size: entry_size(&metadata, apparent),
+                            size: entry_size(&metadata, false),
+                            apparent: entry_size(&metadata, true),
                             inode,
                             links,
                             is_dir: entry.file_type.is_dir(),
@@ -928,6 +992,7 @@ pub fn scan_into_tree(root: impl AsRef<Path>, options: ScanOptions) -> (FileTree
         tree.add_dir_entries(directory);
     }
     tree.volume_used = comparable_volume_used(&root_path, options);
+    tree.shown = options.shown();
 
     (tree, failed_to_read)
 }
@@ -939,8 +1004,9 @@ pub fn scan_into_tree(root: impl AsRef<Path>, options: ScanOptions) -> (FileTree
 /// Unix only `-x` promises that, and a scan of `/` that crossed into `/home` would otherwise be
 /// set against the root filesystem's usage alone.
 fn comparable_volume_used(root: &Path, options: ScanOptions) -> Option<u128> {
+    // Blocks either way; `FileTree::outside_scan` hides it while lengths are shown.
     let stays = cfg!(windows) || options.one_file_system;
-    if options.show_apparent_size || !stays {
+    if !stays {
         return None;
     }
     crate::os::volume_used(root).map(u128::from)

@@ -54,6 +54,11 @@ pub struct KeybindConfig {
     pub cancel: Option<String>,
     #[serde(rename = "switch-panel")]
     pub switch_panel: Option<String>,
+    pub rescan: Option<String>,
+    #[serde(rename = "rescan-all")]
+    pub rescan_all: Option<String>,
+    #[serde(rename = "toggle-size")]
+    pub toggle_size: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -139,6 +144,17 @@ impl KeybindConfig {
                 self.switch_panel.as_deref(),
                 "switch-panel",
                 defaults.switch_panel,
+            )?,
+            rescan: parse_keybind(self.rescan.as_deref(), "rescan", defaults.rescan)?,
+            rescan_all: parse_keybind(
+                self.rescan_all.as_deref(),
+                "rescan-all",
+                defaults.rescan_all,
+            )?,
+            toggle_size: parse_keybind(
+                self.toggle_size.as_deref(),
+                "toggle-size",
+                defaults.toggle_size,
             )?,
         })
     }

@@ -5,7 +5,7 @@ use ::std::path::{Path, PathBuf};
 use super::hash::{FastMap, FastSet};
 use crate::scan::SharedBlocks;
 
-/// A directory known to the ledger, addressed by its position in [`HardLinks::dirs`].
+/// A directory known to the ledger, addressed by its position in `HardLinks::dirs`.
 ///
 /// Directories are interned so that the per-link work is integer comparison and pointer chasing
 /// rather than path parsing: with a few hundred thousand hard links, several of which live in

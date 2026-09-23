@@ -252,6 +252,9 @@ Narrower terminals give the whole width to the treemap, as before.
 | `d`                                | Delete selected file or folder        |
 | `+` / `-`                          | Zoom in / out                         |
 | `0`                                | Reset zoom                            |
+| `a`                                | Disk usage / apparent size            |
+| `r`                                | Rescan the selected folder            |
+| `R`                                | Rescan everything                     |
 | `q` or `Ctrl+C`                    | Quit (confirm with `y` when prompted) |
 | `Tab`                              | Move the keyboard to the list / map   |
 | `PgUp` `PgDn` `Home` `End`         | Jump through the list                 |
@@ -263,6 +266,23 @@ Narrower terminals give the whole width to the treemap, as before.
 | Double right-click                 | Copy its absolute path                |
 
 Deletion always asks for `y` / `n` confirmation.
+
+`a` switches between the space files take on disk and their apparent size (their length, as
+`du --apparent-size` counts it) at once, without scanning again: every file keeps both. `-a` or
+`apparent-size = true` in the config only chooses which is shown first.
+
+`r` scans the selected folder again (the folder shown, when a file is selected) and `R` the whole
+tree, in the background: the old figures stay up, and can be browsed, until the new ones replace
+them. A folder that has gone from disk is taken out of the view. Hard links between the rescanned
+folder and the rest are counted on both sides until the next `R`.
+
+On XFS and btrfs, small files are checked for blocks they share with other files (reflink copies,
+btrfs snapshots) after the treemap is up, the folder you are looking at first; the title says
+"refining" meanwhile, and sizes can go down a little as it finds them.
+
+The help line at the bottom moves on by itself: the key legend, then a tip, then the legend again
+and the next tip. Each rests at least five seconds, counted from your last key press, and then
+slides to the next in under 100 ms. A legend wider than the terminal is shown a page at a time.
 
 A double click is two clicks on the same tile within half a second.
 

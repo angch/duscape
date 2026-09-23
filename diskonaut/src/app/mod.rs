@@ -7,8 +7,10 @@ use ::std::sync::mpsc::{Receiver, SyncSender};
 use ::std::time::{Duration, Instant};
 
 use ::std::sync::Arc;
+use ::std::sync::atomic::{AtomicBool, Ordering};
 
 use libdiskonaut::format::{DisplayCount, quote_path_for_shell, relative_to};
+use libdiskonaut::model::SizeKind;
 use libdiskonaut::tiles::Board;
 use libdiskonaut::{DirSummary, FileOrFolder, FileToDelete, FileTree, Folder};
 use ratatui::crossterm::event::MouseButton;
@@ -18,9 +20,11 @@ use crate::clipboard::{Clipboard, SystemClipboard};
 use crate::config::Keybinds;
 use crate::messages::{Instruction, handle_instructions};
 use crate::preview::{Graphics, NoGraphics, Pictures, Preview, Previewer, Request, placement_in};
+use crate::rescan::{Outcome, Refiner, Rescanner};
 use crate::state::UiEffects;
-use crate::ui::Display;
 use crate::ui::side_panel::{self, picture_area};
+use crate::ui::{Display, Strip};
+use libdiskonaut::scan::refine::{Found, SmallFiles};
 
 /// Which panel the arrow keys, Enter, Esc and delete act on: the list beside the treemap, or the
 /// treemap itself. It follows the last click, Tab, and Left off the treemap's left edge.
@@ -111,6 +115,42 @@ where
     /// The directory diskonaut was started from, resolved, which copied relative paths start
     /// from. `None` when it cannot be known (it was deleted); relative copies are absolute then.
     working_dir: Option<PathBuf>,
+    /// What starts rescans; without one, `r` and `R` do nothing.
+    rescanner: Option<Rescanner>,
+    /// Rescans under way, oldest first.
+    rescans: Vec<Rescan>,
+    next_rescan_id: u64,
+    /// The last key or mouse press. The help line rests at least [`crate::ui::REST`] from it.
+    last_input: Instant,
+    /// Set while the help line slides, for the ticker thread to tick at frame rate.
+    ticker_fast: Arc<AtomicBool>,
+    /// What runs the second pass over small files; without one there is none.
+    refiner: Option<Refiner>,
+    /// The second pass under way, if one is: its generation (answers from an older one are
+    /// dropped), what stops it, and how many files it has left.
+    refine_generation: u64,
+    refine_cancel: Option<Arc<AtomicBool>>,
+    pub(crate) refining: Option<usize>,
+    /// The folder the user is in, for the second pass to take first.
+    refine_focus: Arc<::std::sync::Mutex<Option<PathBuf>>>,
+    /// Folders rescanned since the second pass began: they had a second pass of their own, and
+    /// the whole tree's findings in them are about files that have been replaced.
+    refine_skip: Vec<PathBuf>,
+}
+
+/// A rescan under way: its id, the folder's path from the scan root, and what stops it.
+struct Rescan {
+    id: u64,
+    relative: Vec<OsString>,
+    cancel: Arc<AtomicBool>,
+}
+
+impl Rescan {
+    /// Whether this rescan's folder is `relative` or holds it, so that it will bring back
+    /// `relative` too.
+    fn covers(&self, relative: &[OsString]) -> bool {
+        relative.starts_with(&self.relative)
+    }
 }
 
 /// Two clicks on one tile within this long are a double click. Terminals pass on presses without
@@ -144,9 +184,16 @@ where
         show_apparent_size: bool,
     ) -> Self {
         let display = Display::new(terminal_backend);
-        let board = Board::new(&Folder::new(&path_in_filesystem));
+        let shown = if show_apparent_size {
+            SizeKind::Apparent
+        } else {
+            SizeKind::Disk
+        };
+        let mut board = Board::new(&Folder::new(&path_in_filesystem));
+        board.show(shown);
         let base_folder = Folder::new(&path_in_filesystem);
-        let file_tree = ManuallyDrop::new(FileTree::new(base_folder, path_in_filesystem));
+        let mut file_tree = ManuallyDrop::new(FileTree::new(base_folder, path_in_filesystem));
+        file_tree.shown = shown;
         // we use ManuallyDrop here because otherwise the app takes forever to exit
         let ui_effects = UiEffects::new();
         App {
@@ -179,6 +226,17 @@ where
             working_dir: ::std::env::current_dir()
                 .and_then(|dir| dir.canonicalize())
                 .ok(),
+            rescanner: None,
+            rescans: Vec::new(),
+            next_rescan_id: 0,
+            last_input: Instant::now(),
+            ticker_fast: Arc::new(AtomicBool::new(false)),
+            refiner: None,
+            refine_generation: 0,
+            refine_cancel: None,
+            refining: None,
+            refine_focus: Arc::new(::std::sync::Mutex::new(None)),
+            refine_skip: Vec::new(),
         }
     }
     /// Start previewing files: `previewer` reads them, and pictures are shown as `pictures`
@@ -192,6 +250,280 @@ where
         self.previewer = Some(previewer);
         self.pictures = pictures;
         self.graphics = graphics;
+    }
+    /// Allow rescans, which `rescanner` runs.
+    pub fn enable_rescans(&mut self, rescanner: Rescanner) {
+        self.rescanner = Some(rescanner);
+    }
+    /// Set while the help line is sliding and wants ticks every frame, rather than a few a second.
+    pub fn ticker_pace(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.ticker_fast)
+    }
+    /// A key or mouse button was pressed: the help line stops where it is for a while.
+    pub fn note_input(&mut self) {
+        self.last_input = Instant::now();
+    }
+    /// Move the help line on: another frame of a slide, or the start of one once it has rested.
+    pub fn tick(&mut self) {
+        self.tick_at(Instant::now());
+    }
+    fn tick_at(&mut self, now: Instant) {
+        if matches!(self.ui_mode, UiMode::ScreenTooSmall) {
+            return;
+        }
+        let strip = Strip::new(&self.keybinds, !self.loaded, self.side_panel_visible());
+        // The width the bottom line draws it in.
+        let width = self.display.size().width.saturating_sub(2);
+        let moved = strip.advance(&mut self.ui_effects.ticker, width, self.last_input, now);
+        self.ticker_fast
+            .store(self.ui_effects.ticker.sliding(), Ordering::Release);
+        if moved {
+            self.render();
+        }
+    }
+    /// Scan the selected folder again — or the folder shown, when what is selected is a file or
+    /// nothing — and put what is on disk now in place of what the tree says.
+    pub fn rescan_selected(&mut self) {
+        let mut relative = self.file_tree.current_folder_names.clone();
+        if let Some(entry) = self.selected_entry()
+            && entry.file_type == libdiskonaut::tiles::FileType::Folder
+        {
+            relative.push(entry.name);
+        }
+        self.start_rescan(relative);
+    }
+    /// Scan everything again.
+    pub fn rescan_all(&mut self) {
+        self.start_rescan(Vec::new());
+    }
+    /// Start rescanning the folder at `relative`, from the scan root. Not while the first scan
+    /// runs, which is reading all of it anyway; and not when a rescan under way already covers
+    /// it. One that it covers is stopped, as this one brings that folder back as well.
+    fn start_rescan(&mut self, relative: Vec<OsString>) {
+        if !self.loaded || self.rescans.iter().any(|rescan| rescan.covers(&relative)) {
+            return;
+        }
+        let Some(rescanner) = &self.rescanner else {
+            return;
+        };
+        self.rescans.retain(|rescan| {
+            let covered = rescan.relative.starts_with(&relative);
+            if covered {
+                rescan.cancel.store(true, Ordering::Release);
+            }
+            !covered
+        });
+        self.next_rescan_id += 1;
+        let id = self.next_rescan_id;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let path = relative
+            .iter()
+            .fold(self.file_tree.path_in_filesystem.clone(), |path, name| {
+                path.join(name)
+            });
+        rescanner.spawn(
+            id,
+            self.file_tree.path_in_filesystem.clone(),
+            path,
+            relative.len(),
+            Arc::clone(&cancel),
+            !relative.is_empty(),
+        );
+        self.rescans.push(Rescan {
+            id,
+            relative,
+            cancel,
+        });
+        self.describe_rescans();
+        self.render();
+    }
+    /// Start again every rescan whose folder holds one of `files`: one that listed a file before
+    /// it was deleted would otherwise put it back, counted as present and as freed both.
+    fn restart_rescans_under(&mut self, files: &[FileToDelete]) {
+        let mut restart = Vec::new();
+        self.rescans.retain(|rescan| {
+            let holds = files
+                .iter()
+                .any(|file| file.path_to_file.starts_with(&rescan.relative));
+            if holds {
+                rescan.cancel.store(true, Ordering::Release);
+                restart.push(rescan.relative.clone());
+            }
+            !holds
+        });
+        for relative in restart {
+            self.start_rescan(relative);
+        }
+    }
+    /// Say in the status line what is being rescanned.
+    fn describe_rescans(&mut self) {
+        self.ui_effects.rescanning = match self.rescans.as_slice() {
+            [] => None,
+            [one] if one.relative.is_empty() => Some(format!(
+                "{} (everything)",
+                self.file_tree.path_in_filesystem.to_string_lossy()
+            )),
+            [one] => Some(
+                one.relative
+                    .iter()
+                    .collect::<PathBuf>()
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            many => Some(format!("{} folders", DisplayCount(many.len() as u64))),
+        };
+    }
+    /// Switch between sizes on disk and apparent sizes. The tree holds both, so nothing is scanned
+    /// again: the board is laid out anew and the entry in hand stays in hand.
+    pub fn toggle_size(&mut self) {
+        let kind = self.file_tree.shown.other();
+        self.file_tree.shown = kind;
+        self.show_apparent_size = kind == SizeKind::Apparent;
+        self.board.show(kind);
+        let selected = self
+            .board
+            .currently_selected()
+            .map(|tile| tile.name.clone());
+        let current_folder = self.file_tree.get_current_folder();
+        self.board.change_files(current_folder);
+        if let Some(tile) =
+            selected.and_then(|name| self.board.tiles.iter().position(|tile| tile.name == name))
+        {
+            self.board.set_selected_index(&tile);
+        }
+        self.render();
+    }
+    /// Allow the second pass, which `refiner` runs.
+    pub fn enable_refining(&mut self, refiner: Refiner) {
+        self.refiner = Some(refiner);
+    }
+    /// Start the second pass over the whole tree's small files, stopping any already under way:
+    /// a new whole tree has just replaced the one it was refining.
+    pub fn start_refining(&mut self, small: SmallFiles) {
+        if let Some(cancel) = self.refine_cancel.take() {
+            cancel.store(true, Ordering::Release);
+        }
+        self.refine_generation += 1;
+        self.refine_skip.clear();
+        self.refining = None;
+        let Some(refiner) = &self.refiner else {
+            return;
+        };
+        if small.is_empty() {
+            return;
+        }
+        self.refining = Some(small.len());
+        let cancel = Arc::new(AtomicBool::new(false));
+        refiner.spawn(
+            self.refine_generation,
+            small,
+            Arc::clone(&self.refine_focus),
+            Arc::clone(&cancel),
+        );
+        self.refine_cancel = Some(cancel);
+    }
+    /// Findings of the second pass: fold them in and redraw, keeping the entry in hand.
+    pub fn refined(&mut self, generation: u64, mut found: Vec<Found>, left: Option<usize>) {
+        if generation != self.refine_generation {
+            return;
+        }
+        self.refining = left;
+        if left.is_none() {
+            self.refine_cancel = None;
+        }
+        found.retain(|found| {
+            !self
+                .refine_skip
+                .iter()
+                .any(|skipped| found.dir.starts_with(skipped))
+        });
+        let here = self.file_tree.get_current_path();
+        let on_screen = found.iter().any(|found| found.dir.starts_with(&here));
+        // Findings elsewhere change only totals above the folder shown, which the title draws.
+        if self.file_tree.apply_found(&found) > 0 && on_screen {
+            let selected = self
+                .board
+                .currently_selected()
+                .map(|tile| tile.name.clone());
+            let current_folder = self.file_tree.get_current_folder();
+            self.board.change_files(current_folder);
+            if let Some(tile) =
+                selected.and_then(|name| self.board.tiles.iter().position(|tile| tile.name == name))
+            {
+                self.board.set_selected_index(&tile);
+            }
+        }
+        self.render();
+    }
+    /// A rescan has finished: put what it found in the tree. One stopped in the meantime is
+    /// dropped.
+    pub fn rescan_done(&mut self, id: u64, outcome: Outcome) {
+        let Some(index) = self.rescans.iter().position(|rescan| rescan.id == id) else {
+            return;
+        };
+        let rescan = self.rescans.remove(index);
+        self.describe_rescans();
+        let selected = self
+            .board
+            .currently_selected()
+            .map(|tile| tile.name.clone());
+        let navigated_to = self.file_tree.current_folder_names.clone();
+        let changed = match outcome {
+            Outcome::NotWalked => false,
+            Outcome::Scanned(tree, duration, small) => {
+                let old = self.file_tree.graft(&rescan.relative, *tree);
+                let grafted = old.is_some();
+                // Leaked, for the reason `file_tree` is `ManuallyDrop`: dropping a folder walks
+                // everything in it, here on the thread that draws the screen.
+                ::std::mem::forget(old);
+                if rescan.relative.is_empty() {
+                    self.scan_duration = Some(duration);
+                    self.start_refining(small);
+                } else if grafted {
+                    self.refine_skip.push(
+                        rescan
+                            .relative
+                            .iter()
+                            .fold(self.file_tree.path_in_filesystem.clone(), |path, name| {
+                                path.join(name)
+                            }),
+                    );
+                }
+                grafted
+            }
+            Outcome::Gone => self.file_tree.remove_path(&rescan.relative),
+        };
+        if changed {
+            // A whole rescan puts the user back at the root if their folder has gone; what was
+            // chosen there, and the way back up from it, belong to the old place.
+            if self.file_tree.current_folder_names != navigated_to {
+                self.board.previous_indices_and_zoom_level.clear();
+                self.board.reset_zoom_index();
+                self.list_cursor = None;
+                self.cursor_chosen = false;
+                self.clear_marks();
+            }
+            // Out of a folder that is no longer there, to the nearest one that is.
+            while !self.file_tree.current_folder_exists() && self.file_tree.leave_folder() {
+                self.board.pop_previous_index_and_zoom_level();
+                self.board.reset_zoom_index();
+                self.list_cursor = None;
+                self.cursor_chosen = false;
+                self.clear_marks();
+            }
+            // The file in hand may have changed on disk too.
+            self.preview_key = None;
+            self.board.reset_selected_index();
+            let current_folder = self.file_tree.get_current_folder();
+            self.board.change_files(current_folder);
+            // The same entry stays in hand, wherever the new sizes put its tile.
+            if let Some(tile) =
+                selected.and_then(|name| self.board.tiles.iter().position(|tile| tile.name == name))
+            {
+                self.board.set_selected_index(&tile);
+            }
+        }
+        self.render();
     }
     /// A preview has been read. Kept only if it answers the latest request.
     pub fn preview_ready(&mut self, generation: u64, preview: Preview) {
@@ -296,6 +628,13 @@ where
         self.display.clear();
     }
     pub fn render_and_update_board(&mut self) {
+        // Wherever the user has gone, the second pass goes there next.
+        let here = self.file_tree.get_current_path();
+        if let Ok(mut focus) = self.refine_focus.lock()
+            && focus.as_ref() != Some(&here)
+        {
+            *focus = Some(here);
+        }
         let current_folder = self.file_tree.get_current_folder();
         self.board.change_files(current_folder);
         self.render();
@@ -335,6 +674,7 @@ where
                 title: crate::ui::TitleStatus {
                     apparent_size: self.show_apparent_size,
                     scan_duration: self.scan_duration,
+                    refining: self.refining,
                 },
                 panel: panel_state,
             },
@@ -926,6 +1266,11 @@ where
     }
     /// Describe the entry `entry` of the current folder for deletion.
     fn file_to_delete(&self, entry: libdiskonaut::tiles::FileMetadata) -> FileToDelete {
+        let sizes = self
+            .file_tree
+            .item_in_current_folder(&entry.name)
+            .map(FileOrFolder::sizes)
+            .unwrap_or_default();
         let mut path_to_file = self.file_tree.current_folder_names.clone();
         path_to_file.push(entry.name);
         FileToDelete {
@@ -934,6 +1279,7 @@ where
             file_type: entry.file_type,
             num_descendants: entry.descendants,
             size: entry.size,
+            sizes,
         }
     }
     /// What `d` would delete: every marked entry, in the order marked, or else the one in hand.
@@ -999,6 +1345,9 @@ where
             }
         }
         let deleted = files.len() - failures.len();
+        if deleted > 0 {
+            self.restart_rescans_under(files);
+        }
         self.clear_marks();
         self.cursor_chosen = false;
         self.ui_mode = match failures.as_slice() {
@@ -1052,7 +1401,7 @@ where
         self.render();
     }
     fn remove_file_from_ui(&mut self, file_to_delete: &FileToDelete) {
-        self.file_tree.space_freed += file_to_delete.size;
+        self.file_tree.note_freed(file_to_delete.sizes);
         self.file_tree.delete_file(file_to_delete);
         self.board.reset_selected_index();
     }

@@ -36,6 +36,14 @@ struct Job {
     /// entered it. Not a property of the scan root: on btrfs every subvolume and snapshot is its
     /// own `st_dev`, and they are precisely where the sharing is.
     reflinks: bool,
+    /// What this filesystem's physical extent offsets are offsets *into*, for telling apart the
+    /// same offset on two filesystems. The device, except on btrfs: there every subvolume and
+    /// snapshot has a device of its own over one shared address space, and a snapshot's files
+    /// are the live ones' extents under another `st_dev`.
+    extent_space: u64,
+    /// Whether this filesystem will say what a file's extents occupy after compression: btrfs,
+    /// to a caller with `CAP_SYS_ADMIN`. See [`btrfs_extents`].
+    compressed_sizes: filesystem::Compressed,
 }
 
 struct Shared {
@@ -55,9 +63,20 @@ struct Shared {
     /// Draining the channel on drop is not enough on its own: draining makes every send succeed,
     /// so the workers happily finish the whole scan while the consumer waits to join them.
     stop: AtomicBool,
+    /// The scan root, for deciding whether a bind mount's source is inside the scan.
+    root: Arc<Path>,
+    /// The mount table, read the first time the walk meets a mount root, which most walks of a
+    /// home directory never do.
+    mounts: ::std::sync::OnceLock<Vec<mounts::Mount>>,
 }
 
 impl Shared {
+    /// The mount table, read once per walk, the first time it is needed.
+    fn mount_table(&self) -> &[mounts::Mount] {
+        self.mounts
+            .get_or_init(|| mounts::read().unwrap_or_default())
+    }
+
     /// Wait for a directory published by another worker, or for the walk to end.
     fn steal(&self) -> Option<Job> {
         let mut jobs = self.jobs.lock().expect("scan queue poisoned");
@@ -110,11 +129,19 @@ const WANTED: StatxFlags = StatxFlags::TYPE
     .union(StatxFlags::INO)
     .union(StatxFlags::NLINK)
     .union(StatxFlags::SIZE)
-    .union(StatxFlags::BLOCKS);
+    .union(StatxFlags::BLOCKS)
+    // Free with the rest, and only looked at on a mount root: see `mounts`.
+    .union(StatxFlags::MNT_ID);
 
 /// Read one directory, returning its entries and the subdirectories to descend into.
-fn read_directory(job: &Job, options: &ScanOptions, scan_device: u64) -> (DirEntries, Vec<Job>) {
+fn read_directory(
+    job: &Job,
+    options: &ScanOptions,
+    scan_device: u64,
+    shared: &Shared,
+) -> (DirEntries, Vec<Job>) {
     let mut directory = DirEntries::new(Arc::clone(&job.path));
+    directory.extent_space = job.extent_space;
     let mut children = Vec::new();
 
     let dir = match openat(
@@ -178,8 +205,18 @@ fn read_directory(job: &Job, options: &ScanOptions, scan_device: u64) -> (DirEnt
         let kind = FileType::from_raw_mode(u32::from(stat.stx_mode));
         let is_dir = kind == FileType::Directory;
         let allocated = stat.stx_blocks.saturating_mul(512);
-        let size = if options.show_apparent_size {
-            stat.stx_size
+        // `stx_blocks` on btrfs is the size before compression. Where the extents can be read,
+        // what they occupy is the size on disk. A single block cannot be made smaller, so a file
+        // of one block (or an inline one) is not asked about.
+        let compressed = match job.compressed_sizes {
+            filesystem::Compressed::Never => false,
+            filesystem::Compressed::Marked => stat
+                .stx_attributes
+                .contains(::rustix::fs::StatxAttributes::COMPRESSED),
+            filesystem::Compressed::Maybe => true,
+        };
+        let on_disk = if compressed && kind == FileType::RegularFile && allocated > 4096 {
+            btrfs_extents::on_disk(dir.as_fd(), stat.stx_ino).unwrap_or(allocated)
         } else {
             allocated
         };
@@ -190,47 +227,89 @@ fn read_directory(job: &Job, options: &ScanOptions, scan_device: u64) -> (DirEnt
         // or FUSE mount reached part-way through a scan must not be probed: those are excluded by
         // magic number rather than by device, which also lets btrfs subvolumes and a second XFS
         // volume be probed, and they are exactly where the sharing lives.
-        let shared_extent = if job.reflinks
-            && device == job.device
-            && kind == FileType::RegularFile
-            && allocated >= reflink::PROBE_ABOVE_BYTES
-        {
-            reflink::shared_identity(dir.as_fd(), name, device).unwrap_or(0)
+        let may_share = job.reflinks && device == job.device && kind == FileType::RegularFile;
+        let shared_extent = if may_share && allocated >= reflink::PROBE_ABOVE_BYTES {
+            reflink::shared_identity(dir.as_fd(), name, job.extent_space).unwrap_or(0)
         } else {
             0
         };
+        // Too small to probe now, but not too small to matter across a snapshot: left for the
+        // second pass (`refine`). A hard-linked one is already held once by its inode, and one of
+        // 2 KiB or less is likely inline on btrfs, where there is no extent to share.
+        let later = may_share
+            && (super::refine::REFINE_ABOVE_BYTES..reflink::PROBE_ABOVE_BYTES).contains(&allocated)
+            && stat.stx_size > 2048
+            && stat.stx_nlink == 1;
 
         if is_dir && descend {
             let child = job.path.join(OsStr::from_bytes(name.to_bytes()));
+            // A mount root showing a directory the walk reaches anyway — a bind mount of a folder
+            // inside the scan, or a second mount of a filesystem already in it — is left empty:
+            // same `st_dev`, often, so nothing below would notice the files were seen already.
+            let mount_root = stat
+                .stx_attributes_mask
+                .contains(::rustix::fs::StatxAttributes::MOUNT_ROOT)
+                && stat
+                    .stx_attributes
+                    .contains(::rustix::fs::StatxAttributes::MOUNT_ROOT);
+            let duplicate = mount_root && {
+                mounts::reached_elsewhere(
+                    shared.mount_table(),
+                    stat.stx_mnt_id,
+                    &child,
+                    &shared.root,
+                    |path| {
+                        statx(
+                            rustix::fs::CWD,
+                            path.as_os_str(),
+                            AtFlags::NO_AUTOMOUNT,
+                            StatxFlags::INO,
+                        )
+                        .is_ok_and(|other| {
+                            device_of(&other) == device && other.stx_ino == stat.stx_ino
+                        })
+                    },
+                )
+            };
             // A different device means this entry is a mount point, and the only point at which
             // the walk has a decision to make. Everything below it is on one filesystem, already
             // judged, so the `statfs` costs one call per mount rather than one per directory.
             let crossing = device != job.device;
-            let (allowed, reflinks) = if crossing {
+            let (allowed, reflinks, extent_space, compressed_sizes) = if crossing {
                 let same_filesystem = device == scan_device;
-                let kind = filesystem::classify(&child);
+                let kind = filesystem::classify_with(&child, shared.mount_table());
                 (
-                    (!options.one_file_system || same_filesystem) && !kind.pseudo,
+                    (!options.one_file_system || same_filesystem) && !kind.pseudo && !kind.network,
                     kind.reflinks,
+                    kind.extent_space.unwrap_or(device),
+                    kind.compressed_sizes,
                 )
             } else {
-                (true, job.reflinks)
+                (true, job.reflinks, job.extent_space, job.compressed_sizes)
             };
-            if allowed {
+            if allowed && !duplicate {
                 children.push(Job {
                     path: Arc::from(child.as_path()),
                     depth: job.depth + 1,
                     device,
                     reflinks,
+                    extent_space,
+                    compressed_sizes,
                 });
             }
         }
 
+        if later {
+            directory
+                .later
+                .push(u32::try_from(directory.len()).unwrap_or(u32::MAX));
+        }
         // Straight from the `getdents64` buffer into the packed one: no allocation per entry.
         directory.push(
             OsStr::from_bytes(name.to_bytes()),
             EntryMeta {
-                size,
+                size: on_disk,
+                apparent: stat.stx_size,
                 inode: stat.stx_ino,
                 links: u64::from(stat.stx_nlink),
                 is_dir,
@@ -242,6 +321,8 @@ fn read_directory(job: &Job, options: &ScanOptions, scan_device: u64) -> (DirEnt
     directory.shrink();
     (directory, children)
 }
+
+pub(crate) use reflink::shared_identity;
 
 /// Copy-on-write sharing, asked about one file at a time.
 ///
@@ -260,9 +341,11 @@ mod reflink {
     const FIEMAP_EXTENT_SHARED: u32 = 0x0000_2000;
     /// The last extent of the file; there is nothing beyond it.
     const FIEMAP_EXTENT_LAST: u32 = 0x0000_0001;
-    /// Extents asked for in one go. Enough to describe an unfragmented copy several times over; a
-    /// file needing more than this is left counted in full rather than half-understood.
+    /// Extents asked for in one go; a longer map is read a page at a time.
     const MAX_EXTENTS: usize = 64;
+    /// Extents read before giving up on a file, a page of [`MAX_EXTENTS`] at a time: a 32 GiB
+    /// file compressed in 128 KiB extents.
+    const MAX_EXTENTS_IN_ALL: usize = 1 << 18;
     /// `_IOWR('f', 11, struct fiemap)`, where `struct fiemap` is 32 bytes. `ioctl`'s request type is
     /// `c_ulong` on glibc but `c_int` on musl, so the bits are cast into whichever it is.
     const FS_IOC_FIEMAP: libc::Ioctl = 0xC020_660B_u32 as libc::Ioctl;
@@ -311,7 +394,7 @@ mod reflink {
     ///
     /// Two files agreeing on this identity have the same extents at the same places, so they are
     /// the same blocks. The size check in the ledger still applies on top.
-    pub fn shared_identity(dir: BorrowedFd<'_>, name: &CStr, device: u64) -> Option<u64> {
+    pub fn shared_identity(dir: BorrowedFd<'_>, name: &CStr, extent_space: u64) -> Option<u64> {
         let file = openat(
             dir,
             name,
@@ -320,46 +403,61 @@ mod reflink {
         )
         .ok()?;
 
-        let mut request = Request {
-            start: 0,
-            length: u64::MAX,
-            flags: 0,
-            mapped_extents: 0,
-            extent_count: MAX_EXTENTS as u32,
-            reserved: 0,
-            extents: [Extent::default(); MAX_EXTENTS],
-        };
-
-        // SAFETY: `request` is a live, correctly shaped `struct fiemap` with room for the
-        // `extent_count` extents it promises, and `file` is open for the duration of the call.
-        let result = unsafe { libc::ioctl(file.as_raw_fd(), FS_IOC_FIEMAP, &raw mut request) };
-        let mapped = request.mapped_extents as usize;
-        if result != 0 || mapped == 0 || mapped > MAX_EXTENTS {
-            return None;
-        }
-
-        // FNV-1a over the device and then the extent map. The device has to be in there: a
-        // physical block offset means nothing without the filesystem it indexes, and the walk now
+        // FNV-1a over the filesystem and then the extent map. The filesystem has to be in there:
+        // a physical block offset means nothing without the address space it indexes, and the walk
         // probes every sharing filesystem it meets rather than only the scan root's. Two unrelated
         // files on two volumes sharing an offset and a size is otherwise an easy collision, and it
-        // would merge them — the same undercount that keying on one extent used to cause.
+        // would merge them — the same undercount that keying on one extent used to cause. It is
+        // the filesystem and not the device: see `Job::extent_space`.
         let mut identity: u64 = 0xcbf2_9ce4_8422_2325;
         let mut fold = |value: u64| {
             identity = (identity ^ value).wrapping_mul(0x0000_0100_0000_01b3);
         };
-        fold(device);
+        fold(extent_space);
 
-        let mut saw_last = false;
-        for extent in &request.extents[..mapped] {
-            if extent.flags & FIEMAP_EXTENT_SHARED == 0 {
+        // A page of extents at a time, until the last. btrfs compresses in 128 KiB extents, so a
+        // compressed file has one per 128 KiB of it: stopping at the first page would leave every
+        // compressed file over 8 MiB counted once per snapshot.
+        let mut start = 0u64;
+        let mut seen = 0usize;
+        loop {
+            let mut request = Request {
+                start,
+                length: u64::MAX - start,
+                flags: 0,
+                mapped_extents: 0,
+                extent_count: MAX_EXTENTS as u32,
+                reserved: 0,
+                extents: [Extent::default(); MAX_EXTENTS],
+            };
+            // SAFETY: `request` is a live, correctly shaped `struct fiemap` with room for the
+            // `extent_count` extents it promises, and `file` is open for the duration of the call.
+            let result = unsafe { libc::ioctl(file.as_raw_fd(), FS_IOC_FIEMAP, &raw mut request) };
+            let mapped = request.mapped_extents as usize;
+            if result != 0 || mapped == 0 || mapped > MAX_EXTENTS {
                 return None;
             }
-            fold(extent.physical);
-            fold(extent.length);
-            saw_last |= extent.flags & FIEMAP_EXTENT_LAST != 0;
-        }
-        if !saw_last {
-            return None;
+            let mut saw_last = false;
+            for extent in &request.extents[..mapped] {
+                if extent.flags & FIEMAP_EXTENT_SHARED == 0 {
+                    return None;
+                }
+                fold(extent.physical);
+                fold(extent.length);
+                saw_last |= extent.flags & FIEMAP_EXTENT_LAST != 0;
+            }
+            if saw_last {
+                break;
+            }
+            seen += mapped;
+            let last = &request.extents[mapped - 1];
+            let next = last.logical.saturating_add(last.length);
+            // What was not seen cannot be vouched for: a file past the cap, or a map that does not
+            // move forward, is counted in full.
+            if seen >= MAX_EXTENTS_IN_ALL || next <= start {
+                return None;
+            }
+            start = next;
         }
 
         // Zero is how `EntryMeta` spells "not shared", so it cannot also mean an identity.
@@ -410,10 +508,86 @@ pub(crate) mod filesystem {
     // different argument and does not belong in the same list. Merely *stating* an autofs
     // placeholder does not mount it, because the walk passes `AT_NO_AUTOMOUNT`.
 
+    /// Magic numbers of filesystems whose files are on another machine.
+    ///
+    /// What they hold is not using this disk, so it does not answer where this disk's space went;
+    /// and walking one costs a round trip per directory, a dead server can hang the scan, and a
+    /// share holding terabytes swamps the treemap with someone else's files. A scan never crosses
+    /// into one, whatever `-x` says; naming one as the scan root still scans it, as with `/proc`.
+    const NETWORK: &[u32] = &[
+        0x6969,      // nfs
+        0x517b,      // smb (the old smbfs)
+        0xff53_4d42, // cifs
+        0xfe53_4d42, // smb2/smb3
+        0x7375_7245, // coda
+        0x5346_414f, // afs (OpenAFS)
+        0x6b41_4653, // kafs
+        0x00c3_6400, // ceph
+        0x0102_1997, // 9p — also WSL2's view of the Windows drives, which are not this disk either
+        0x564c,      // ncp
+        0x0bd0_0bd0, // lustre
+        0x4750_4653, // gpfs
+        0x1366_1366, // orangefs
+        0x1983_0326, // beegfs
+    ];
+
+    /// FUSE, which serves local filesystems (ntfs-3g, exFAT, mergerfs) as well as remote ones, so
+    /// its subtype decides.
+    const FUSE_MAGIC: u32 = 0x6573_5546;
+
+    /// FUSE filesystems, by the subtype `/proc/self/mountinfo` names (`fuse.sshfs`), that reach
+    /// another machine or a cloud store.
+    const NETWORK_FUSE: &[&str] = &[
+        "sshfs",
+        "rclone",
+        "s3fs",
+        "gcsfuse",
+        "goofys",
+        "mountpoint-s3",
+        "blobfuse",
+        "blobfuse2",
+        "juicefs",
+        "glusterfs",
+        "ceph-fuse",
+        "davfs",
+        "curlftpfs",
+        "gvfsd-fuse",
+        "google-drive-ocamlfuse",
+        "onedriver",
+        "seaweedfs",
+        "cvmfs",
+        "moosefs",
+        "lizardfs",
+    ];
+
+    /// The mount `path` is the root of, in `table`, found by mount id so that no path has to be
+    /// matched. Asked only at a mount point, which is rare.
+    fn mount_at<'a>(
+        path: &Path,
+        table: &'a [super::mounts::Mount],
+    ) -> Option<&'a super::mounts::Mount> {
+        let stat = ::rustix::fs::statx(
+            ::rustix::fs::CWD,
+            path,
+            ::rustix::fs::AtFlags::NO_AUTOMOUNT,
+            ::rustix::fs::StatxFlags::MNT_ID,
+        )
+        .ok()?;
+        table.iter().find(|mount| mount.id == stat.stx_mnt_id)
+    }
+
+    /// Whether the FUSE filesystem mounted at `path` is one of [`NETWORK_FUSE`]: `statfs` says only
+    /// "FUSE", and the subtype is in the mount table.
+    fn fuse_is_network(path: &Path, table: &[super::mounts::Mount]) -> bool {
+        mount_at(path, table)
+            .and_then(super::mounts::Mount::fuse_subtype)
+            .is_some_and(|subtype| NETWORK_FUSE.contains(&subtype))
+    }
+
     /// Magic numbers of filesystems that can share extents between files.
     const REFLINK: &[u32] = &[
         0x5846_5342, // xfs
-        0x9123_683e, // btrfs
+        BTRFS_MAGIC,
     ];
 
     /// What the walk needs to know about a filesystem, from one `statfs`.
@@ -421,25 +595,118 @@ pub(crate) mod filesystem {
     pub struct Kind {
         /// Reports no meaningful disk usage; not worth descending into.
         pub pseudo: bool,
+        /// On another machine: not this disk's space, and not worth descending into.
+        pub network: bool,
         /// Can share extents between files, so reflinks are worth looking for.
         pub reflinks: bool,
+        /// Names the address space extent offsets index, when it is not just the device; see
+        /// [`btrfs_fsid`].
+        pub extent_space: Option<u64>,
+        /// Which files to ask what their extents occupy after compression (btrfs, as root).
+        pub compressed_sizes: Compressed,
+    }
+
+    /// Which files of a filesystem may be compressed, and so are worth reading the extents of.
+    ///
+    /// Reading them costs about a microsecond a file — several seconds on a whole btrfs root —
+    /// so it is paid only where compression can be: on a filesystem mounted with `compress` or
+    /// `compress-force`, every file; elsewhere on btrfs, the files marked for it (`chattr +c`,
+    /// which `statx` reports). What was written compressed under an earlier mount option, on a
+    /// volume since mounted without it, is not found.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Compressed {
+        /// Not btrfs, or not root: `st_blocks` it is.
+        Never,
+        /// Files `statx` says are compressed.
+        Marked,
+        /// Every file.
+        Maybe,
+    }
+
+    /// Whether the filesystem mounted at `path` has compression on for everything written: the
+    /// `compress` or `compress-force` superblock option.
+    fn mounted_compressed(path: &Path, table: &[super::mounts::Mount]) -> bool {
+        mount_at(path, table).is_some_and(|mount| {
+            mount
+                .options
+                .split(',')
+                .any(|option| option.starts_with("compress") && !option.ends_with("=no"))
+        })
+    }
+
+    const BTRFS_MAGIC: u32 = 0x9123_683e;
+
+    /// `_IOR(0x94, 31, struct btrfs_ioctl_fs_info_args)`, a 1024-byte struct.
+    const BTRFS_IOC_FS_INFO: libc::Ioctl = 0x8400_941f_u32 as libc::Ioctl;
+
+    /// The btrfs filesystem `path` is on, from its UUID, folded to 64 bits.
+    ///
+    /// btrfs gives every subvolume and snapshot its own `st_dev` — and its own `f_fsid` — though
+    /// they all index one address space, so neither says which extents are the same. The UUID
+    /// does, and `BTRFS_IOC_FS_INFO` hands it to any user who can open the directory (checked on
+    /// kernel 7.0: the top level, a subvolume, a folder in it and a snapshot of it all agree,
+    /// where `st_dev` and `f_fsid` differ). The generic `FS_IOC_GETFSUUID` is not implemented by
+    /// btrfs.
+    fn btrfs_fsid(path: &Path) -> Option<u64> {
+        use ::rustix::fs::{Mode, OFlags, open};
+        use ::std::os::fd::AsRawFd;
+        let dir = open(
+            path,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NONBLOCK,
+            Mode::empty(),
+        )
+        .ok()?;
+        // `max_id` and `num_devices`, then the 16-byte `fsid`, then fields not needed here.
+        let mut args = [0u8; 1024];
+        // SAFETY: `args` is the 1024 bytes the request's size says it writes, and `dir` is open
+        // for the duration of the call.
+        let result = unsafe { libc::ioctl(dir.as_raw_fd(), BTRFS_IOC_FS_INFO, args.as_mut_ptr()) };
+        if result != 0 {
+            return None;
+        }
+        let mut id: u64 = 0xcbf2_9ce4_8422_2325;
+        for &byte in &args[16..32] {
+            id = (id ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        Some(id)
     }
 
     /// Classify the filesystem `path` sits on.
     ///
     /// Asked once per mount point crossed, never per entry. A filesystem that cannot be asked is
     /// treated as ordinary and non-sharing, which descends into it but does not open its files.
+    /// Reads the mount table afresh; the walk uses [`classify_with`] and its own copy.
     pub fn classify(path: &Path) -> Kind {
+        classify_with(path, &super::mounts::read().unwrap_or_default())
+    }
+
+    /// [`classify`], with the mount table already read.
+    pub fn classify_with(path: &Path, table: &[super::mounts::Mount]) -> Kind {
         ::rustix::fs::statfs(path).map_or(
             Kind {
                 pseudo: false,
+                network: false,
                 reflinks: false,
+                extent_space: None,
+                compressed_sizes: Compressed::Never,
             },
             |fs| {
                 let magic = magic_of(&fs);
                 Kind {
                     pseudo: PSEUDO.contains(&magic),
+                    network: NETWORK.contains(&magic)
+                        || (magic == FUSE_MAGIC && fuse_is_network(path, table)),
                     reflinks: REFLINK.contains(&magic),
+                    extent_space: (magic == BTRFS_MAGIC).then(|| btrfs_fsid(path)).flatten(),
+                    compressed_sizes: if magic != BTRFS_MAGIC
+                        || !super::btrfs_extents::allowed(path)
+                    {
+                        Compressed::Never
+                    } else if mounted_compressed(path, table) {
+                        Compressed::Maybe
+                    } else {
+                        Compressed::Marked
+                    },
                 }
             },
         )
@@ -453,6 +720,366 @@ pub(crate) mod filesystem {
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     pub fn magic_of(fs: &::rustix::fs::StatFs) -> u32 {
         fs.f_type as u32
+    }
+}
+
+/// What a btrfs file's extents occupy on disk, compression and holes accounted for.
+///
+/// `stat` cannot say: btrfs reports `st_blocks` as the uncompressed size, so 64 MiB of text under
+/// `compress-force=zstd` that holds 2 MiB of data reads as 64 MiB. The file-extent items in the
+/// filesystem tree carry the answer — `disk_num_bytes` for what an extent takes, `num_bytes` for
+/// how much of it this file refers to — and `BTRFS_IOC_TREE_SEARCH_V2` reads them, one call per
+/// file on the directory's descriptor, without opening the file. It needs `CAP_SYS_ADMIN`, so an
+/// ordinary user's scan keeps `st_blocks`; this is what `compsize` reads too.
+pub(crate) mod btrfs_extents {
+    use ::std::os::fd::{AsRawFd, BorrowedFd};
+    use ::std::path::Path;
+
+    /// `_IOWR(0x94, 17, struct btrfs_ioctl_search_args_v2)`, a 112-byte header before the buffer.
+    const BTRFS_IOC_TREE_SEARCH_V2: libc::Ioctl = 0xc070_9411_u32 as libc::Ioctl;
+    const EXTENT_DATA_KEY: u32 = 108;
+    /// `struct btrfs_ioctl_search_key`, then `buf_size`.
+    const ARGS: usize = 112;
+    const HEADER: usize = 32;
+    /// Bytes of a file-extent item before `disk_bytenr`: all an inline extent has before its data.
+    const EXTENT_HEAD: usize = 21;
+    /// A regular or preallocated extent item: the head and four `u64`s.
+    const EXTENT_ITEM: usize = EXTENT_HEAD + 32;
+    const BUFFER: usize = 16 * 1024;
+
+    /// Whether this caller may search the tree `path` is on: `CAP_SYS_ADMIN`, in practice root.
+    pub fn allowed(path: &Path) -> bool {
+        use ::rustix::fs::{Mode, OFlags, open};
+        let Ok(dir) = open(
+            path,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NONBLOCK,
+            Mode::empty(),
+        ) else {
+            return false;
+        };
+        let mut args = Args::new(0, 0);
+        args.set_items(1);
+        // SAFETY: `args` is laid out as the kernel expects and holds `BUFFER` bytes after it.
+        unsafe {
+            libc::ioctl(
+                dir.as_raw_fd(),
+                BTRFS_IOC_TREE_SEARCH_V2,
+                args.bytes.as_mut_ptr(),
+            ) == 0
+        }
+    }
+
+    /// What the extents of inode `inode`, in the subvolume `dir` is in, occupy on disk; `None` if
+    /// they cannot be read.
+    pub fn on_disk(dir: BorrowedFd<'_>, inode: u64) -> Option<u64> {
+        // One buffer per walker thread, reused for every file: this runs once a file.
+        thread_local! {
+            static ARGS_BUFFER: ::std::cell::RefCell<Args> =
+                ::std::cell::RefCell::new(Args::new(0, 0));
+        }
+        ARGS_BUFFER.with(|args| on_disk_with(dir, inode, &mut args.borrow_mut()))
+    }
+
+    fn on_disk_with(dir: BorrowedFd<'_>, inode: u64, args: &mut Args) -> Option<u64> {
+        let mut total = 0u64;
+        let mut from = 0u64;
+        loop {
+            args.ask(inode, from);
+            // SAFETY: `args` is laid out as the kernel expects and holds `BUFFER` bytes after it.
+            let result = unsafe {
+                libc::ioctl(
+                    dir.as_raw_fd(),
+                    BTRFS_IOC_TREE_SEARCH_V2,
+                    args.bytes.as_mut_ptr(),
+                )
+            };
+            if result != 0 {
+                return None;
+            }
+            let parsed = parse(&args.bytes[ARGS..], args.items())?;
+            total = total.saturating_add(parsed.bytes);
+            // The kernel stops when the items run out or the buffer fills. Room left for another
+            // item means they ran out — most files, answered in one call.
+            let room_for_more = parsed.used + HEADER + EXTENT_ITEM <= BUFFER;
+            match parsed.last {
+                Some(offset) if offset < u64::MAX && !room_for_more => from = offset + 1,
+                _ => return Some(total),
+            }
+        }
+    }
+
+    /// What one search returned: what its extents occupy, the file offset of the last one (to
+    /// continue from), and how much of the buffer the items filled.
+    pub(crate) struct Parsed {
+        pub bytes: u64,
+        pub last: Option<u64>,
+        pub used: usize,
+    }
+
+    /// Sum what the extent items in `buffer` occupy.
+    pub(crate) fn parse(buffer: &[u8], items: u32) -> Option<Parsed> {
+        let u64_at = |at: usize| -> Option<u64> {
+            Some(u64::from_ne_bytes(buffer.get(at..at + 8)?.try_into().ok()?))
+        };
+        let mut at = 0usize;
+        let mut total = 0u64;
+        let mut last = None;
+        for _ in 0..items {
+            let offset = u64_at(at + 16)?;
+            let len = u32::from_ne_bytes(buffer.get(at + 28..at + 32)?.try_into().ok()?) as usize;
+            let item = buffer.get(at + HEADER..at + HEADER + len)?;
+            at += HEADER + len;
+            last = Some(offset);
+            let ram_bytes = u64::from_ne_bytes(item.get(8..16)?.try_into().ok()?);
+            let compression = *item.get(16)?;
+            let kind = *item.get(20)?;
+            if kind == 0 {
+                // Inline: the data is in the item itself, compressed or not.
+                total = total.saturating_add((len - EXTENT_HEAD.min(len)) as u64);
+                continue;
+            }
+            let field = |index: usize| -> Option<u64> {
+                Some(u64::from_ne_bytes(
+                    item.get(EXTENT_HEAD + index * 8..EXTENT_HEAD + index * 8 + 8)?
+                        .try_into()
+                        .ok()?,
+                ))
+            };
+            let (disk_bytenr, disk_num_bytes, num_bytes) = (field(0)?, field(1)?, field(3)?);
+            if disk_bytenr == 0 {
+                continue; // a hole
+            }
+            total = total.saturating_add(if compression == 0 || ram_bytes == 0 {
+                num_bytes
+            } else {
+                // A compressed extent is stored whole; this file's share is the part it refers to.
+                (u128::from(disk_num_bytes) * u128::from(num_bytes)).div_ceil(u128::from(ram_bytes))
+                    as u64
+            });
+        }
+        Some(Parsed {
+            bytes: total,
+            last,
+            used: at,
+        })
+    }
+
+    /// `struct btrfs_ioctl_search_args_v2` with its buffer, asking for inode `inode`'s extent
+    /// items from file offset `from` on, in the subvolume of the descriptor it is used on.
+    struct Args {
+        bytes: Vec<u8>,
+    }
+
+    impl Args {
+        fn new(inode: u64, from: u64) -> Self {
+            let mut args = Self {
+                bytes: vec![0u8; ARGS + BUFFER],
+            };
+            args.ask(inode, from);
+            args
+        }
+        /// Set the key to ask for inode `inode`'s extent items from file offset `from` on. Only
+        /// the key is rewritten; the next answer overwrites what the last one left in the buffer.
+        fn ask(&mut self, inode: u64, from: u64) {
+            let bytes = &mut self.bytes;
+            let mut put =
+                |at: usize, value: u64| bytes[at..at + 8].copy_from_slice(&value.to_ne_bytes());
+            put(0, 0); // tree_id: the descriptor's subvolume
+            put(8, inode); // min_objectid
+            put(16, inode); // max_objectid
+            put(24, from); // min_offset
+            put(32, u64::MAX); // max_offset
+            put(40, 0); // min_transid
+            put(48, u64::MAX); // max_transid
+            put(104, BUFFER as u64); // buf_size
+            bytes[56..60].copy_from_slice(&EXTENT_DATA_KEY.to_ne_bytes()); // min_type
+            bytes[60..64].copy_from_slice(&EXTENT_DATA_KEY.to_ne_bytes()); // max_type
+            self.set_items(u32::MAX);
+        }
+        fn set_items(&mut self, items: u32) {
+            self.bytes[64..68].copy_from_slice(&items.to_ne_bytes());
+        }
+        /// How many items the kernel returned.
+        fn items(&self) -> u32 {
+            u32::from_ne_bytes(self.bytes[64..68].try_into().expect("four bytes"))
+        }
+    }
+}
+
+/// Whether a walk of `scan_root` goes into the folder `folder` inside it, which a rescan of that
+/// folder alone must respect: its own walk starts there, and would otherwise skip every rule the
+/// walk applies at a mount point — pseudo and network filesystems, `-x`, bind mounts of folders
+/// the walk reaches anyway. Its ancestors were walked, or it would not be in the tree.
+pub fn walk_would_enter(scan_root: &Path, folder: &Path, options: ScanOptions) -> bool {
+    let wanted = StatxFlags::INO.union(StatxFlags::MNT_ID);
+    let stat_of = |path: &Path| {
+        statx(
+            rustix::fs::CWD,
+            path.as_os_str(),
+            AtFlags::NO_AUTOMOUNT,
+            wanted,
+        )
+    };
+    let (Ok(stat), Ok(parent), Ok(root)) = (
+        stat_of(folder),
+        stat_of(folder.parent().unwrap_or(folder)),
+        stat_of(scan_root),
+    ) else {
+        return true;
+    };
+    let device = device_of(&stat);
+    let mount_root = stat
+        .stx_attributes_mask
+        .contains(::rustix::fs::StatxAttributes::MOUNT_ROOT)
+        && stat
+            .stx_attributes
+            .contains(::rustix::fs::StatxAttributes::MOUNT_ROOT);
+    if device == device_of(&parent) && !mount_root {
+        return true;
+    }
+    let table = mounts::read().unwrap_or_default();
+    let kind = filesystem::classify_with(folder, &table);
+    let crossing_allowed =
+        (!options.one_file_system || device == device_of(&root)) && !kind.pseudo && !kind.network;
+    let duplicate = mount_root
+        && mounts::reached_elsewhere(&table, stat.stx_mnt_id, folder, scan_root, |path| {
+            stat_of(path)
+                .is_ok_and(|other| device_of(&other) == device && other.stx_ino == stat.stx_ino)
+        });
+    crossing_allowed && !duplicate
+}
+
+/// The mount table, for recognising a bind mount: a mount root whose directory the walk reaches by
+/// another path as well.
+///
+/// `st_dev` cannot say so. A bind mount of a folder has the same device as the folder, so to the
+/// walk it looks like any other subdirectory and everything under it is counted a second time —
+/// and `-x` does not help, since it never sees a boundary. `du` gets away with it by remembering
+/// every directory's inode; a mount root is rare enough to afford the question properly instead.
+pub(crate) mod mounts {
+    use ::std::path::{Path, PathBuf};
+
+    /// One line of `/proc/self/mountinfo`.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Mount {
+        pub id: u64,
+        /// `st_dev` of what is mounted.
+        pub device: u64,
+        /// Which directory of that filesystem is shown: `/` for a whole filesystem, the source
+        /// folder for a bind mount of one.
+        pub root: PathBuf,
+        /// Where it is shown.
+        pub point: PathBuf,
+        /// The filesystem type: `ext4`, `fuse.sshfs`.
+        pub fstype: String,
+        /// The superblock's options: `rw,compress=zstd:3,…`.
+        pub options: String,
+    }
+
+    impl Mount {
+        /// For FUSE, the subtype: `sshfs` for `fuse.sshfs`.
+        pub fn fuse_subtype(&self) -> Option<&str> {
+            self.fstype
+                .strip_prefix("fuse.")
+                .or_else(|| self.fstype.strip_prefix("fuseblk."))
+        }
+    }
+
+    pub fn read() -> Option<Vec<Mount>> {
+        ::std::fs::read_to_string("/proc/self/mountinfo")
+            .ok()
+            .map(|table| parse(&table))
+    }
+
+    /// Parse a `mountinfo` table, in its order, which is the order things were mounted.
+    pub fn parse(table: &str) -> Vec<Mount> {
+        table
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split(' ');
+                let id = fields.next()?.parse().ok()?;
+                let _parent = fields.next()?;
+                let (major, minor) = fields.next()?.split_once(':')?;
+                let device = ::rustix::fs::makedev(major.parse().ok()?, minor.parse().ok()?);
+                let root = unescape(fields.next()?);
+                let point = unescape(fields.next()?);
+                // Optional fields end at a lone `-`: then the type, the source, the options.
+                let mut after = fields.skip_while(|field| *field != "-").skip(1);
+                let fstype = after.next().unwrap_or_default().to_string();
+                let _source = after.next();
+                let options = after.next().unwrap_or_default().to_string();
+                Some(Mount {
+                    id,
+                    device,
+                    root,
+                    point,
+                    fstype,
+                    options,
+                })
+            })
+            .collect()
+    }
+
+    /// `mountinfo` writes space, tab, newline and backslash in paths as `\040`, `\011`, `\012`
+    /// and `\134`.
+    fn unescape(field: &str) -> PathBuf {
+        use ::std::os::unix::ffi::OsStringExt;
+        let bytes = field.as_bytes();
+        let mut out = Vec::with_capacity(bytes.len());
+        let mut index = 0;
+        while index < bytes.len() {
+            if bytes[index] == b'\\'
+                && index + 3 < bytes.len()
+                && bytes[index + 1..index + 4]
+                    .iter()
+                    .all(|b| (b'0'..=b'7').contains(b))
+            {
+                let octal = &bytes[index + 1..index + 4];
+                out.push((octal[0] - b'0') * 64 + (octal[1] - b'0') * 8 + (octal[2] - b'0'));
+                index += 4;
+            } else {
+                out.push(bytes[index]);
+                index += 1;
+            }
+        }
+        PathBuf::from(::std::ffi::OsString::from_vec(out))
+    }
+
+    /// Whether mount `id`, reached at `at`, shows a directory the walk of `scan_root` reaches by
+    /// another path: through an *earlier* mount of the same filesystem whose view contains it.
+    /// The earlier one is kept, so of a folder and its bind mount it is the bind mount that is
+    /// left out, and of two mounts of one filesystem the second.
+    ///
+    /// `same_directory(path)` is asked of each candidate path, and must say whether it is the very
+    /// directory at `at` — which also rules out a source hidden under another mount since.
+    pub fn reached_elsewhere(
+        table: &[Mount],
+        id: u64,
+        at: &Path,
+        scan_root: &Path,
+        same_directory: impl Fn(&Path) -> bool,
+    ) -> bool {
+        let Some(position) = table.iter().position(|mount| mount.id == id) else {
+            return false;
+        };
+        let this = &table[position];
+        table[..position].iter().any(|earlier| {
+            if earlier.device != this.device {
+                return false;
+            }
+            let Ok(within) = this.root.strip_prefix(&earlier.root) else {
+                return false;
+            };
+            let there = if within.as_os_str().is_empty() {
+                earlier.point.clone()
+            } else {
+                earlier.point.join(within)
+            };
+            there.starts_with(scan_root)
+                && there != at
+                && !there.starts_with(at)
+                && same_directory(&there)
+        })
     }
 }
 
@@ -517,17 +1144,22 @@ pub fn walk_linux(root: &Path, threads: usize, options: ScanOptions) -> LinuxWal
     .map(|stat| device_of(&stat))
     .unwrap_or_default();
 
+    let root_kind = filesystem::classify(&root);
     let shared = Arc::new(Shared {
         jobs: Mutex::new(vec![Job {
             path: Arc::clone(&root),
             depth: 0,
             device: scan_device,
-            reflinks: filesystem::classify(&root).reflinks,
+            reflinks: root_kind.reflinks,
+            extent_space: root_kind.extent_space.unwrap_or(scan_device),
+            compressed_sizes: root_kind.compressed_sizes,
         }]),
         ready: Condvar::new(),
         queued: AtomicUsize::new(1),
         pending: AtomicUsize::new(1),
         stop: AtomicBool::new(false),
+        root: Arc::clone(&root),
+        mounts: ::std::sync::OnceLock::new(),
     });
 
     // Bounded so a slow consumer bounds the walk's memory rather than letting it run ahead of the
@@ -583,7 +1215,7 @@ fn worker(
     }
 
     while let Some(job) = local.pop().or_else(|| shared.steal()) {
-        let (directory, children) = read_directory(&job, &options, scan_device);
+        let (directory, children) = read_directory(&job, &options, scan_device, shared);
 
         // `max(1)` so that a run of empty directories still flushes. Counting only entries, a
         // worker walking a wide tree of empty directories would hold every one of them until it

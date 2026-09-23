@@ -31,6 +31,8 @@ pub struct FolderInfo<'a> {
 pub struct TitleStatus {
     pub apparent_size: bool,
     pub scan_duration: Option<Duration>,
+    /// Small files the second pass has still to probe, while it runs.
+    pub refining: Option<usize>,
 }
 
 /// What the app knows about the side panel that the tree does not: which panel has the keyboard,
@@ -120,6 +122,7 @@ where
                 TitleStatus {
                     apparent_size,
                     scan_duration,
+                    refining,
                 },
             panel: panel_state,
         } = status;
@@ -194,10 +197,11 @@ where
                             TitleLine::new(
                                 base_path_info,
                                 current_path_info,
-                                file_tree.space_freed,
+                                file_tree.space_freed.get(file_tree.shown),
                             )
                             .apparent_size(apparent_size)
                             .scan_duration(scan_duration)
+                            .refining(refining)
                             .progress_indicator(ui_effects.loading_progress_indicator)
                             .path_error(ui_effects.current_path_is_red)
                             .read_errors(file_tree.failed_to_read)
@@ -217,11 +221,11 @@ where
                             grid_area,
                         );
                         f.render_widget(
-                            BottomLine::new(keybinds)
+                            BottomLine::new(keybinds, ui_effects)
                                 .currently_selected(panel_state.selected.as_ref())
                                 .switch_panel_hint(areas.side_panel.is_some())
                                 .last_read_path(ui_effects.last_read_path.as_ref())
-                                .hide_delete()
+                                .scanning()
                                 .hide_small_files_legend(
                                     board.unrenderable_tile_coordinates.is_none(),
                                 ),
@@ -233,10 +237,11 @@ where
                             TitleLine::new(
                                 base_path_info,
                                 current_path_info,
-                                file_tree.space_freed,
+                                file_tree.space_freed.get(file_tree.shown),
                             )
                             .apparent_size(apparent_size)
                             .scan_duration(scan_duration)
+                            .refining(refining)
                             .path_error(ui_effects.current_path_is_red)
                             .flash_space(ui_effects.flash_space_freed)
                             .clipboard_flash(clipboard_flash)
@@ -255,7 +260,7 @@ where
                             grid_area,
                         );
                         f.render_widget(
-                            BottomLine::new(keybinds)
+                            BottomLine::new(keybinds, ui_effects)
                                 .currently_selected(panel_state.selected.as_ref())
                                 .switch_panel_hint(areas.side_panel.is_some())
                                 .hide_small_files_legend(
@@ -272,10 +277,11 @@ where
                             TitleLine::new(
                                 base_path_info,
                                 current_path_info,
-                                file_tree.space_freed,
+                                file_tree.space_freed.get(file_tree.shown),
                             )
                             .apparent_size(apparent_size)
                             .scan_duration(scan_duration)
+                            .refining(refining)
                             .path_error(ui_effects.current_path_is_red)
                             .zoom_level(board.zoom_level)
                             .read_errors(file_tree.failed_to_read)
@@ -292,7 +298,7 @@ where
                             grid_area,
                         );
                         f.render_widget(
-                            BottomLine::new(keybinds)
+                            BottomLine::new(keybinds, ui_effects)
                                 .currently_selected(panel_state.selected.as_ref())
                                 .switch_panel_hint(areas.side_panel.is_some())
                                 .hide_small_files_legend(
@@ -310,10 +316,11 @@ where
                             TitleLine::new(
                                 base_path_info,
                                 current_path_info,
-                                file_tree.space_freed,
+                                file_tree.space_freed.get(file_tree.shown),
                             )
                             .apparent_size(apparent_size)
                             .scan_duration(scan_duration)
+                            .refining(refining)
                             .path_error(ui_effects.current_path_is_red)
                             .flash_space(ui_effects.flash_space_freed)
                             .zoom_level(board.zoom_level)
@@ -331,7 +338,7 @@ where
                             grid_area,
                         );
                         f.render_widget(
-                            BottomLine::new(keybinds)
+                            BottomLine::new(keybinds, ui_effects)
                                 .currently_selected(panel_state.selected.as_ref())
                                 .switch_panel_hint(areas.side_panel.is_some())
                                 .hide_small_files_legend(
@@ -348,10 +355,11 @@ where
                                 TitleLine::new(
                                     base_path_info,
                                     current_path_info,
-                                    file_tree.space_freed,
+                                    file_tree.space_freed.get(file_tree.shown),
                                 )
                                 .apparent_size(apparent_size)
                                 .scan_duration(scan_duration)
+                                .refining(refining)
                                 .path_error(ui_effects.current_path_is_red)
                                 .flash_space(ui_effects.flash_space_freed)
                                 .zoom_level(board.zoom_level)
@@ -360,7 +368,7 @@ where
                                 chunks[0],
                             );
                             f.render_widget(
-                                BottomLine::new(keybinds)
+                                BottomLine::new(keybinds, ui_effects)
                                     .currently_selected(panel_state.selected.as_ref())
                                     .switch_panel_hint(areas.side_panel.is_some())
                                     .hide_small_files_legend(
@@ -374,10 +382,11 @@ where
                                 TitleLine::new(
                                     base_path_info,
                                     current_path_info,
-                                    file_tree.space_freed,
+                                    file_tree.space_freed.get(file_tree.shown),
                                 )
                                 .apparent_size(apparent_size)
                                 .scan_duration(scan_duration)
+                                .refining(refining)
                                 .progress_indicator(ui_effects.loading_progress_indicator)
                                 .path_error(ui_effects.current_path_is_red)
                                 .zoom_level(board.zoom_level)
@@ -387,11 +396,11 @@ where
                                 chunks[0],
                             );
                             f.render_widget(
-                                BottomLine::new(keybinds)
+                                BottomLine::new(keybinds, ui_effects)
                                     .currently_selected(panel_state.selected.as_ref())
                                     .switch_panel_hint(areas.side_panel.is_some())
                                     .last_read_path(ui_effects.last_read_path.as_ref())
-                                    .hide_delete()
+                                    .scanning()
                                     .hide_small_files_legend(
                                         board.unrenderable_tile_coordinates.is_none(),
                                     ),
@@ -415,10 +424,11 @@ where
                             TitleLine::new(
                                 base_path_info,
                                 current_path_info,
-                                file_tree.space_freed,
+                                file_tree.space_freed.get(file_tree.shown),
                             )
                             .apparent_size(apparent_size)
                             .scan_duration(scan_duration)
+                            .refining(refining)
                             .progress_indicator(ui_effects.loading_progress_indicator)
                             .path_error(ui_effects.current_path_is_red)
                             .read_errors(file_tree.failed_to_read)
@@ -436,11 +446,11 @@ where
                             grid_area,
                         );
                         f.render_widget(
-                            BottomLine::new(keybinds)
+                            BottomLine::new(keybinds, ui_effects)
                                 .currently_selected(panel_state.selected.as_ref())
                                 .switch_panel_hint(areas.side_panel.is_some())
                                 .last_read_path(ui_effects.last_read_path.as_ref())
-                                .hide_delete()
+                                .scanning()
                                 .hide_small_files_legend(
                                     board.unrenderable_tile_coordinates.is_none(),
                                 ),

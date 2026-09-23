@@ -13,6 +13,10 @@ pub struct UiEffects {
     /// a frame drawn after it passes never shows a stale copy — whatever else is drawn meanwhile,
     /// and even if the redraw asked for at the deadline is lost.
     pub clipboard_flash: Option<(String, Instant)>,
+    /// What is being rescanned, for the status line, while a rescan runs.
+    pub rescanning: Option<String>,
+    /// How far the help line has scrolled.
+    pub ticker: crate::ui::Ticker,
 }
 
 impl UiEffects {
@@ -24,6 +28,8 @@ impl UiEffects {
             loading_progress_indicator: 0,
             last_read_path: None,
             clipboard_flash: None,
+            rescanning: None,
+            ticker: crate::ui::Ticker::default(),
         }
     }
     /// The copied text to show in the title at `now`, if its flash has not yet expired.

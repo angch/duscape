@@ -74,6 +74,7 @@ fn delete_mode_n_returns_to_normal() {
         file_type: libdiskonaut::tiles::FileType::File,
         num_descendants: None,
         size: 1,
+        sizes: libdiskonaut::model::Sizes::new(1, 1),
     };
     app.ui_mode = UiMode::DeleteFiles(vec![file.clone()]);
     handle_keypress_delete_file_mode(key_char('n'), &mut app, vec![file]);

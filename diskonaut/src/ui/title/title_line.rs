@@ -61,6 +61,8 @@ pub struct TitleLine<'a> {
     /// How long the scan took, once it finished. `None` while still scanning; shown in the title
     /// when the scan is complete.
     scan_duration: Option<Duration>,
+    /// Small files the second pass has still to probe for shared blocks.
+    refining: Option<usize>,
 }
 
 impl<'a> TitleLine<'a> {
@@ -83,6 +85,7 @@ impl<'a> TitleLine<'a> {
             zoom_level: None,
             apparent_size: false,
             scan_duration: None,
+            refining: None,
         }
     }
     pub fn apparent_size(mut self, apparent_size: bool) -> Self {
@@ -91,6 +94,10 @@ impl<'a> TitleLine<'a> {
     }
     pub fn scan_duration(mut self, scan_duration: Option<Duration>) -> Self {
         self.scan_duration = scan_duration;
+        self
+    }
+    pub fn refining(mut self, refining: Option<usize>) -> Self {
+        self.refining = refining;
         self
     }
     pub fn show_loading(mut self) -> Self {
@@ -208,6 +215,17 @@ impl<'a> Widget for TitleLine<'a> {
             title_telescope.append_to_left_side(vec![
                 CellSizeOpt::new(format!(", scanned in {scanned}")),
                 CellSizeOpt::new(format!(" ({scanned})")),
+            ]);
+        }
+        if let (false, Some(left)) = (self.show_loading, self.refining) {
+            // Sizes can still fall a little as shared small files are found; say so.
+            let left = DisplayCount(left as u64);
+            title_telescope.append_to_left_side(vec![
+                CellSizeOpt::new(format!(", refining: {left} small files to check"))
+                    .style(default_style.fg(Color::Yellow)),
+                CellSizeOpt::new(format!(" (refining {left})"))
+                    .style(default_style.fg(Color::Yellow)),
+                CellSizeOpt::new(" (refining)".to_string()).style(default_style.fg(Color::Yellow)),
             ]);
         }
         if let (false, Some(outside)) = (self.show_loading, self.outside_scan) {

@@ -10,7 +10,7 @@ fn folder_add_file_updates_size() {
     let mut folder = Folder::default();
     folder.add_file(PathBuf::from("a.txt"), 100);
     folder.add_file(PathBuf::from("b.txt"), 250);
-    assert_eq!(folder.size, 350);
+    assert_eq!(folder.sizes.disk, 350);
     assert_eq!(folder.num_descendants, 2);
 }
 
@@ -18,11 +18,11 @@ fn folder_add_file_updates_size() {
 fn folder_nested_path() {
     let mut folder = Folder::default();
     folder.add_file(PathBuf::from("sub/file.txt"), 42);
-    assert_eq!(folder.size, 42);
+    assert_eq!(folder.sizes.disk, 42);
     let sub = folder.path(vec!["sub".into()]).expect("subfolder exists");
     match sub {
         FileOrFolder::Folder(subfolder) => {
-            assert_eq!(subfolder.size, 42);
+            assert_eq!(subfolder.sizes.disk, 42);
         }
         FileOrFolder::File(_) => panic!("expected folder"),
     }
@@ -61,6 +61,7 @@ fn file_tree_delete_path() {
         file_type: crate::tiles::FileType::File,
         num_descendants: None,
         size: metadata.len().into(),
+        sizes: crate::model::Sizes::ZERO,
     };
     tree.delete_file(&to_delete);
     assert_eq!(tree.get_total_descendants(), 0);
@@ -80,12 +81,12 @@ fn deleting_a_folder_removes_the_folder_itself_from_the_count() {
     root.add_file(PathBuf::from("sub/deeper/three.txt"), 40);
     // keep.txt, sub, sub/one.txt, sub/two.txt, sub/deeper, sub/deeper/three.txt
     assert_eq!(root.num_descendants, 6);
-    assert_eq!(root.size, 100);
+    assert_eq!(root.sizes.disk, 100);
 
     root.delete_path(&[OsString::from("sub")]);
 
     // Only keep.txt is left, and "sub" itself is gone along with its four descendants.
-    assert_eq!(root.size, 10);
+    assert_eq!(root.sizes.disk, 10);
     assert_eq!(
         root.num_descendants, 1,
         "the deleted folder itself must be subtracted too, not just its contents"
@@ -107,12 +108,12 @@ fn deleting_a_nested_folder_updates_every_ancestor() {
 
     // a and a/other.txt remain; b, b/c and b/c/file.txt are gone.
     assert_eq!(root.num_descendants, 2);
-    assert_eq!(root.size, 8);
+    assert_eq!(root.sizes.disk, 8);
     let a = root.path(vec!["a".into()]).expect("a still exists");
     match a {
         FileOrFolder::Folder(a) => {
             assert_eq!(a.num_descendants, 1);
-            assert_eq!(a.size, 8);
+            assert_eq!(a.sizes.disk, 8);
         }
         FileOrFolder::File(_) => panic!("expected folder"),
     }
@@ -412,8 +413,12 @@ mod sharded {
     use crate::model::{FileOrFolder, FileTree, Folder};
     use crate::scan::{DirEntries, EntryMeta};
 
-    fn folder_sizes(folder: &Folder, at: PathBuf, out: &mut BTreeMap<PathBuf, (u128, u64)>) {
-        out.insert(at.clone(), (folder.size, folder.num_descendants));
+    fn folder_sizes(
+        folder: &Folder,
+        at: PathBuf,
+        out: &mut BTreeMap<PathBuf, (crate::model::Sizes, u64)>,
+    ) {
+        out.insert(at.clone(), (folder.sizes, folder.num_descendants));
         for (name, node) in folder.contents.iter() {
             if let FileOrFolder::Folder(child) = node {
                 folder_sizes(child, at.join(name), out);
@@ -596,9 +601,9 @@ mod sharded {
 
         let mut sizes = BTreeMap::new();
         folder_sizes(shard_a.get_current_folder(), PathBuf::new(), &mut sizes);
-        assert_eq!(sizes[&PathBuf::from("")].0, 500);
-        assert_eq!(sizes[&PathBuf::from("top")].0, 500);
-        assert_eq!(sizes[&PathBuf::from("top/inner")].0, 300);
+        assert_eq!(sizes[&PathBuf::from("")].0.disk, 500);
+        assert_eq!(sizes[&PathBuf::from("top")].0.disk, 500);
+        assert_eq!(sizes[&PathBuf::from("top/inner")].0.disk, 300);
         assert_eq!(
             sizes.len(),
             3,
@@ -664,14 +669,17 @@ mod outline {
 
         assert_eq!(tree.get_total_size(), 175);
         let a = folder(&tree, &["a"]);
-        assert_eq!(a.size, 175, "a holds its own file and everything under b");
+        assert_eq!(
+            a.sizes.disk, 175,
+            "a holds its own file and everything under b"
+        );
         assert_eq!(
             a.contents.len(),
             1,
             "the subfolder is there; the file is not"
         );
         let b = folder(&tree, &["a", "b"]);
-        assert_eq!(b.size, 75);
+        assert_eq!(b.sizes.disk, 75);
         assert!(b.contents.is_empty(), "files are not part of the outline");
 
         // Descendants count files too, so the tile labels read right during the scan.
@@ -756,7 +764,7 @@ mod outline {
                 Some(FileOrFolder::Folder(folder)) => folder,
                 _ => panic!("{shown} should exist in the capped outline"),
             };
-            assert_eq!(got.size, want.size, "{shown} size");
+            assert_eq!(got.sizes, want.sizes, "{shown} size");
             assert_eq!(
                 got.num_descendants, want.num_descendants,
                 "{shown} descendants"
@@ -797,4 +805,194 @@ mod outline {
             "a folder that does not exist here falls back to the root"
         );
     }
+}
+
+fn tree_of(files: &[(&str, u128)]) -> FileTree {
+    let mut folder = Folder::default();
+    for (path, size) in files {
+        folder.add_file(PathBuf::from(path), *size);
+    }
+    FileTree::new(folder, PathBuf::from("/nonexistent/graft_root"))
+}
+
+fn folder_at<'a>(tree: &'a FileTree, path: &[&str]) -> &'a Folder {
+    if path.is_empty() {
+        return tree.get_current_folder();
+    }
+    match tree
+        .get_current_folder()
+        .path(path.iter().map(OsString::from).collect())
+    {
+        Some(FileOrFolder::Folder(folder)) => folder,
+        _ => panic!("no folder at {path:?}"),
+    }
+}
+
+#[test]
+fn graft_replaces_a_folder_and_corrects_every_ancestor() {
+    let mut tree = tree_of(&[
+        ("a/b/old1", 100),
+        ("a/b/old2", 50),
+        ("a/other", 7),
+        ("top", 3),
+    ]);
+    // The folder as it now is on disk: one file gone, one grown, one new.
+    let rescanned = tree_of(&[("old1", 400), ("new/deep", 10)]);
+    let old = tree.graft(&["a".into(), "b".into()], rescanned);
+    assert_eq!(old.map(|folder| folder.sizes.disk), Some(150));
+
+    // `add_file` counts files alone as descendants, not the folders made on the way to them.
+    let b = folder_at(&tree, &["a", "b"]);
+    assert_eq!((b.sizes.disk, b.num_descendants), (410, 2));
+    let a = folder_at(&tree, &["a"]);
+    assert_eq!((a.sizes.disk, a.num_descendants), (417, 3));
+    let root = folder_at(&tree, &[]);
+    assert_eq!((root.sizes.disk, root.num_descendants), (420, 4));
+}
+
+#[test]
+fn graft_of_a_folder_no_longer_in_the_tree_changes_nothing() {
+    let mut tree = tree_of(&[("a/file", 5)]);
+    assert!(tree.graft(&["gone".into()], tree_of(&[("x", 1)])).is_none());
+    assert!(
+        tree.graft(&["a".into(), "file".into()], tree_of(&[("x", 1)]))
+            .is_none()
+    );
+    assert_eq!(tree.get_total_size(), 5);
+}
+
+#[test]
+fn graft_at_the_root_replaces_the_tree_but_keeps_where_the_user_is() {
+    let mut tree = tree_of(&[("a/b/file", 5)]);
+    tree.enter_folder("a".as_ref());
+    tree.space_freed = crate::model::Sizes::new(9, 9);
+    tree.graft(&[], tree_of(&[("a/c", 20)]));
+    assert_eq!(tree.get_total_size(), 20);
+    assert_eq!(tree.current_folder_names, vec![OsString::from("a")]);
+    assert_eq!(tree.space_freed, crate::model::Sizes::new(9, 9));
+}
+
+#[test]
+fn a_removed_path_leaves_the_current_folder_missing() {
+    let mut tree = tree_of(&[("a/b/file", 5), ("c", 1)]);
+    tree.enter_folder("a".as_ref());
+    tree.enter_folder("b".as_ref());
+    assert!(tree.remove_path(&["a".into()]));
+    assert!(!tree.remove_path(&["a".into()]));
+    assert_eq!(tree.get_total_size(), 1);
+    assert!(!tree.current_folder_exists());
+}
+
+#[test]
+fn found_small_files_are_charged_once_and_only_to_the_files_they_name() {
+    use crate::scan::refine::Found;
+    use ::std::sync::Arc;
+    let mut tree = tree_of(&[("a/one", 8192), ("b/copy", 8192), ("b/other", 4096)]);
+    let root = tree.path_in_filesystem.clone();
+    let found = |dir: &str, name: &str, size: u64| Found {
+        dir: Arc::from(root.join(dir).as_path()),
+        files: vec![crate::scan::refine::FoundFile {
+            name: OsString::from(name),
+            sizes: crate::model::Sizes::new(u128::from(size), u128::from(size)),
+            identity: 42,
+        }],
+    };
+    // The first sighting of the blocks keeps them; the second gives them back.
+    assert_eq!(
+        tree.apply_found(&[found("a", "one", 8192)]),
+        0,
+        "nothing to take back yet"
+    );
+    assert_eq!(tree.get_total_size(), 20480);
+    assert_eq!(tree.apply_found(&[found("b", "copy", 8192)]), 1);
+    assert_eq!(tree.get_total_size(), 12288);
+    // Each folder counts the blocks once: both still hold them, only their common parent had
+    // counted them twice.
+    assert_eq!(folder_at(&tree, &["b"]).sizes.disk, 12288);
+    assert_eq!(folder_at(&tree, &["a"]).sizes.disk, 8192);
+    // Gone since, or changed size: left alone.
+    assert_eq!(tree.apply_found(&[found("b", "deleted", 8192)]), 0);
+    assert_eq!(tree.apply_found(&[found("b", "other", 9999)]), 0);
+    assert_eq!(tree.apply_found(&[found("nowhere", "x", 1)]), 0);
+    assert_eq!(tree.get_total_size(), 12288);
+}
+
+/// What every entry of every folder costs: two sizes must not make it grow.
+#[test]
+fn a_tree_entry_holds_both_sizes_in_sixteen_bytes() {
+    assert_eq!(::std::mem::size_of::<FileOrFolder>(), 16);
+}
+
+#[test]
+fn both_sizes_are_exact_however_far_apart() {
+    use crate::model::File;
+    for (disk, apparent) in [
+        (4096, 1),
+        (0, 0),
+        (4096, 4096),
+        // Sparse: a 64 MiB file with 1 MiB written.
+        (1 << 20, 64 << 20),
+        // Further apart than an `i32` of bytes: lastlog, a compressed disk image.
+        (0, 1_200_000_000_000),
+        (5_000_000_000, 1),
+        (u64::MAX, 0),
+        (0, u64::MAX),
+    ] {
+        let file = File::new(disk, apparent);
+        assert_eq!((file.disk(), file.apparent()), (disk, apparent));
+    }
+}
+
+#[test]
+fn a_scanned_tree_shows_either_size_without_scanning_again() {
+    use crate::model::SizeKind;
+    use crate::scan::{ScanOptions, scan_into_tree};
+    let dir = std::env::temp_dir().join("diskonaut_model_test_both_sizes");
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let dir = dir.canonicalize().unwrap();
+    // Sparse where the filesystem allows it: long, with a little written.
+    let sparse = fs::File::create(dir.join("sparse")).unwrap();
+    sparse.set_len(8 << 20).unwrap();
+    drop(sparse);
+    fs::write(dir.join("small"), [1u8; 100]).unwrap();
+
+    let (mut tree, _) = scan_into_tree(&dir, ScanOptions::default());
+    let disk = tree.get_total_size();
+    tree.shown = SizeKind::Apparent;
+    let apparent = tree.get_total_size();
+    let _ = fs::remove_dir_all(&dir);
+
+    assert_eq!(apparent, (8 << 20) + 100);
+    assert_eq!(tree.total_sizes().disk, disk);
+    assert_eq!(disk % 512, 0, "whole blocks");
+    assert!(disk < apparent, "the hole takes no space on disk");
+}
+
+#[test]
+fn a_whole_rescan_does_not_count_earlier_frees_against_the_volume_again() {
+    use crate::model::Sizes;
+    let mut tree = tree_of(&[("big", 1000), ("small", 10)]);
+    tree.volume_used = Some(1010);
+    tree.delete_file(&crate::FileToDelete {
+        path_in_filesystem: tree.path_in_filesystem.clone(),
+        path_to_file: vec![OsString::from("big")],
+        file_type: crate::tiles::FileType::File,
+        num_descendants: None,
+        size: 1000,
+        sizes: Sizes::new(1000, 1000),
+    });
+    tree.note_freed(Sizes::new(1000, 1000));
+    assert_eq!(tree.outside_scan(), Some(0));
+
+    // Scanned again: the volume is measured after the delete, and the file is not in the tree.
+    let mut rescanned = tree_of(&[("small", 10)]);
+    rescanned.volume_used = Some(10);
+    tree.graft(&[], rescanned);
+    assert_eq!(tree.outside_scan(), Some(0), "not -1000");
+    assert_eq!(
+        tree.space_freed,
+        Sizes::new(1000, 1000),
+        "the session's total carries over"
+    );
 }

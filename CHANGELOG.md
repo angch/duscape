@@ -15,8 +15,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The binary is still named `diskonaut`, so the command and docs are unchanged. Entries below this
   line predate the rename.
 
+### Fixed
+
+- btrfs snapshots were counted once per snapshot. Every subvolume and snapshot has its own
+  `st_dev`, which was folded into the identity of shared extents, so a snapshot's files never
+  matched the live ones they share. On btrfs the identity now uses the filesystem's UUID
+  (`BTRFS_IOC_FS_INFO`, no privileges needed).
+- btrfs compression was invisible: `stat` reports the uncompressed size, so 64 MiB of text that
+  holds 2 MiB read as 64 MiB. Run as root, the walk now reads each file's extent items
+  (`BTRFS_IOC_TREE_SEARCH_V2`, on the directory, no file opened) and counts what they occupy on
+  disk: compressed extents at their stored size (a partly referenced one pro rata), holes as
+  nothing, inline data as its bytes. About a microsecond a file, so only on btrfs mounted with
+  `compress`/`compress-force`, or for files marked compressed (`chattr +c`). As a user, sizes stay
+  uncompressed: the search needs `CAP_SYS_ADMIN`.
+- Compressed files over 8 MiB on btrfs, and any file of more than 64 extents on XFS or btrfs, were
+  never recognised as shared, so each snapshot or reflink copy of one counted again: the FIEMAP
+  probe read one page of 64 extents and gave up on longer maps. It now reads the whole map (to
+  256Ki extents).
+- Small files in btrfs snapshots, and small reflink copies on XFS and btrfs, were counted once per
+  copy: the walk only checks files of 64 KiB and up for shared blocks, to stay fast. It now notes
+  the smaller ones (4 KiB and up, not hard-linked) and checks them in a second pass after the
+  treemap is up, the folder being looked at first; the title says "refining" while it runs and
+  sizes settle as it goes. A folder rescan runs its own second pass before it is shown.
+- A folder rescan (`r`) walks under the same rules as the whole scan: a folder the scan left
+  empty — `/proc`, a network mount, another filesystem under `-x`, a bind mount it reaches anyway,
+  a folder past `--max-depth` — is not rescanned into life. Deleting something inside a folder
+  that is being rescanned starts the rescan again, so the deleted entry cannot come back. After
+  `R`, "outside the scan" no longer counts space freed before the rescan a second time, and if
+  the folder shown has gone, the marks and zoom history of it go too.
+- A bind mount of a folder inside the scan was counted twice, `-x` or not: it has the same device
+  as the folder, so nothing marked a boundary. At a mount root the walk now reads the mount table
+  and leaves the mount empty when an earlier mount shows the same directory inside the scan (the
+  same directory by device and inode, so a source since hidden under another mount is kept). A
+  second mount of the same filesystem is handled the same way. Scanning a bind mount on its own is
+  unaffected.
+
+### Changed
+
+- Scans no longer walk into network filesystems: NFS, SMB/CIFS, 9p, Ceph, AFS, Lustre, GPFS and
+  others by `statfs` magic, and remote FUSE filesystems (sshfs, rclone, s3fs, gcsfuse, GVfs …) by
+  their subtype in the mount table, so local FUSE filesystems such as ntfs-3g are still counted.
+  Another machine's files are not where this disk's space went, and a slow or dead server no
+  longer slows or hangs the scan. Named as the scan root, a network mount is still scanned. On
+  macOS, a mount point without `MNT_LOCAL` is skipped the same way.
+
 ### Added
 
+- `a` switches between size on disk and apparent size without scanning again (new `toggle-size`
+  keybind); `-a` now only chooses which is shown first. The tree keeps both sizes: a file holds its
+  size on disk and its length as a 32-bit difference from it, in the padding its 16-byte slot
+  already had, so the tree is no larger per file; the rare file whose two sizes are 2 GiB or more
+  apart (a huge sparse file) keeps both in a box of its own, so both are exact. Folders hold both
+  totals. Every walker now reads both sizes; on macOS the bulk listing asks for the allocation
+  and the data length together, the data length standing in for the allocation on FAT as before.
+- `make test-fs` / `fixtures/fs/`: ext4, XFS, btrfs, f2fs, tmpfs, FAT32, exFAT and NTFS on loopback
+  images, with hard links, sparse files, reflinks, snapshots, compression, mount layouts and
+  network mounts (loopback NFS, `fuse.rclone`), checked
+  against independent oracles and run in CI. Needs root or the docker group.
+- `r` rescans the selected folder (the one shown when a file is selected) and `R` everything,
+  in the background, with the old view browsable until the result is grafted in; ancestors'
+  sizes and counts are corrected by the difference. New `rescan` and `rescan-all` keybinds. A
+  character bound without Shift now also matches with it, since terminals report `R` with Shift.
+- The help line moves on by itself: the key legend, then a tip (Ctrl+click, right-click copy,
+  rescans…), then the legend again. Each rests at least five seconds, restarted by any key press,
+  then slides to the next in 80 ms, eased, at 60 frames a second. A legend wider than the terminal
+  is shown a page at a time, which replaces the abbreviated legend narrow terminals used to get.
 - A preview below the list, 16:9 and at most half the panel: the first lines of a text file, or
   a PNG or JPEG (detected by magic bytes) drawn with the kitty graphics protocol after a 100 ms
   debounce, scaled to fit. Support is read from the environment, or else asked of the terminal

@@ -88,7 +88,7 @@ impl<'a> Cursor<'a> {
 ///
 /// `ATTR_FILE_*` attributes apply only to non-directories and are left out of a directory's record
 /// altogether, which is why the returned bitmap has to be consulted before reading the size.
-fn requested_attributes(size_attribute: libc::attrgroup_t) -> libc::attrlist {
+fn requested_attributes() -> libc::attrlist {
     libc::attrlist {
         bitmapcount: libc::ATTR_BIT_MAP_COUNT,
         reserved: 0,
@@ -100,7 +100,11 @@ fn requested_attributes(size_attribute: libc::attrgroup_t) -> libc::attrlist {
             | libc::ATTR_CMN_FILEID,
         volattr: 0,
         dirattr: 0,
-        fileattr: libc::ATTR_FILE_LINKCOUNT | size_attribute,
+        // Both sizes, which the tree keeps side by side: blocks allocated, and length. Packed in
+        // bit order, so the allocation comes first.
+        fileattr: libc::ATTR_FILE_LINKCOUNT
+            | libc::ATTR_FILE_ALLOCSIZE
+            | libc::ATTR_FILE_DATALENGTH,
         forkattr: 0,
     }
 }
@@ -118,37 +122,46 @@ fn requested_attributes(size_attribute: libc::attrgroup_t) -> libc::attrlist {
 /// what an `--apparent-size` scan of the same volume already reports. exFAT vends a true
 /// allocation size and is left alone.
 struct SizeAttribute {
-    /// The scan asked for apparent size, so the data length is requested regardless.
-    apparent: bool,
-    /// What each filesystem seen so far turned out to need, keyed by device.
-    per_device: HashMap<u64, libc::attrgroup_t>,
+    /// Whether each filesystem seen so far is FAT, keyed by device.
+    per_device: HashMap<u64, bool>,
 }
 
 impl SizeAttribute {
-    fn new(apparent: bool) -> Self {
+    fn new() -> Self {
         Self {
-            apparent,
             per_device: HashMap::new(),
         }
     }
 
-    /// The attribute to request for entries of the directory open on `fd`, which lives on `device`.
+    /// Whether entries of the directory open on `fd`, which lives on `device`, must take their
+    /// size on disk from the data length, `ATTR_FILE_ALLOCSIZE` being zero there.
     ///
     /// The filesystem is identified once per device rather than once per directory: a scan can
     /// span a FAT stick and an APFS disk, so one answer for the whole walk would be wrong, but an
     /// `fstatfs` per directory would be paid everywhere to catch a rare case.
-    fn for_device(&mut self, fd: RawFd, device: u64) -> libc::attrgroup_t {
-        if self.apparent {
-            return libc::ATTR_FILE_DATALENGTH;
-        }
-        *self.per_device.entry(device).or_insert_with(|| {
-            if is_msdos(fd) {
-                libc::ATTR_FILE_DATALENGTH
-            } else {
-                libc::ATTR_FILE_ALLOCSIZE
-            }
-        })
+    fn length_for_disk(&mut self, fd: RawFd, device: u64) -> bool {
+        *self
+            .per_device
+            .entry(device)
+            .or_insert_with(|| is_msdos(fd))
     }
+}
+
+/// Whether the filesystem mounted at `path` is on another machine: SMB, NFS, AFP, WebDAV and the
+/// like, which the kernel marks by leaving out `MNT_LOCAL`. Unknown counts as local.
+fn is_remote(path: &Path) -> bool {
+    use ::std::os::unix::ffi::OsStrExt;
+    let Ok(path) = ::std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return false;
+    };
+    let mut status = std::mem::MaybeUninit::<libc::statfs>::uninit();
+    // SAFETY: `path` is NUL-terminated and `status` is a writable `statfs` allocation.
+    if unsafe { libc::statfs(path.as_ptr(), status.as_mut_ptr()) } != 0 {
+        return false;
+    }
+    // SAFETY: `statfs` returning zero means it initialized the structure.
+    let status = unsafe { status.assume_init() };
+    status.f_flags & libc::MNT_LOCAL as u32 == 0
 }
 
 /// Whether the filesystem behind `fd` is the macOS FAT driver, whose `ATTR_FILE_ALLOCSIZE` is zero.
@@ -199,7 +212,7 @@ struct ParsedRecord {
 ///
 /// Attributes appear in the fixed order of their bits — common attributes first, then file
 /// attributes — so each field sits at a position determined by the request.
-fn parse_record(record: &[u8], size_attribute: libc::attrgroup_t) -> Option<ParsedRecord> {
+fn parse_record(record: &[u8], length_for_disk: bool) -> Option<ParsedRecord> {
     let mut cursor = Cursor { bytes: record };
     let _length = cursor.u32()?;
     let returned_common = cursor.u32()?;
@@ -227,11 +240,17 @@ fn parse_record(record: &[u8], size_attribute: libc::attrgroup_t) -> Option<Pars
     } else {
         1
     };
-    let size = if returned_file & size_attribute != 0 {
+    let allocated = if returned_file & libc::ATTR_FILE_ALLOCSIZE != 0 {
         cursor.u64()?
     } else {
         0
     };
+    let length = if returned_file & libc::ATTR_FILE_DATALENGTH != 0 {
+        cursor.u64()?
+    } else {
+        0
+    };
+    let size = if length_for_disk { length } else { allocated };
 
     if error != 0 {
         return None;
@@ -251,6 +270,7 @@ fn parse_record(record: &[u8], size_attribute: libc::attrgroup_t) -> Option<Pars
             name: OsString::from_vec(name.to_vec()),
             meta: EntryMeta {
                 size,
+                apparent: length,
                 inode,
                 links,
                 is_dir: object_type == VDIR,
@@ -307,12 +327,12 @@ fn read_dir_bulk(
         (status.st_ino, status.st_dev as u64)
     };
 
-    let size_attribute = size.for_device(directory.as_raw_fd(), device);
+    let length_for_disk = size.length_for_disk(directory.as_raw_fd(), device);
     let mut entries = Vec::new();
     let mut listed = Vec::new();
     let mut failed = 0u64;
     loop {
-        let mut attributes = requested_attributes(size_attribute);
+        let mut attributes = requested_attributes();
         // SAFETY: the descriptor is owned and open, `attributes` is a valid initialized attrlist,
         // and the buffer is writable, eight-byte aligned, and described by its own length.
         let count = unsafe {
@@ -352,9 +372,9 @@ fn read_dir_bulk(
                 && record_common_attributes(&buffer.0[offset..offset + length])
                     .is_none_or(|returned| returned & REQUIRED_COMMON != REQUIRED_COMMON)
             {
-                return read_dir_stat(path, size.apparent, inode, device);
+                return read_dir_stat(path, inode, device);
             }
-            match parse_record(&buffer.0[offset..offset + length], size_attribute) {
+            match parse_record(&buffer.0[offset..offset + length], length_for_disk) {
                 Some(record) => {
                     entries.push(record.entry);
                     listed.push(ListedAs {
@@ -382,7 +402,7 @@ fn read_dir_bulk(
 /// `lstat` resolves through a mount point, so the inodes recorded here cannot distinguish a
 /// mounted directory from the directory it covers. Nothing reachable this way has firmlinks, and
 /// nested mounts on such volumes are unusual, so the walk simply descends.
-fn read_dir_stat(path: &Path, apparent_size: bool, inode: u64, device: u64) -> io::Result<DirRead> {
+fn read_dir_stat(path: &Path, inode: u64, device: u64) -> io::Result<DirRead> {
     use ::std::os::unix::fs::MetadataExt;
 
     let mut entries = Vec::new();
@@ -397,15 +417,12 @@ fn read_dir_stat(path: &Path, apparent_size: bool, inode: u64, device: u64) -> i
             failed += 1;
             continue;
         };
-        let size = if apparent_size {
-            metadata.len()
-        } else {
-            crate::os::size_on_disk_fast(&metadata)
-        };
+        let size = crate::os::size_on_disk_fast(&metadata);
         entries.push(MacosEntry {
             name: entry.file_name(),
             meta: EntryMeta {
                 size: if metadata.is_dir() { 0 } else { size },
+                apparent: if metadata.is_dir() { 0 } else { metadata.len() },
                 inode: metadata.ino(),
                 links: metadata.nlink(),
                 is_dir: metadata.is_dir(),
@@ -515,7 +532,6 @@ impl Queue {
 pub fn walk_macos(
     root: &Path,
     threads: usize,
-    apparent_size: bool,
     max_depth: Option<usize>,
     one_file_system: bool,
 ) -> impl Iterator<Item = DirEntries> {
@@ -549,7 +565,7 @@ pub fn walk_macos(
                 .name("macos_scanner".to_string())
                 .spawn(move || {
                     let mut buffer = AlignedBuffer([0; BUFFER_BYTES]);
-                    let mut size = SizeAttribute::new(apparent_size);
+                    let mut size = SizeAttribute::new();
                     while let Some(job) = queue.pop() {
                         // `dua-core` descends into a directory entry whose own depth is below the
                         // limit; a job's depth is that same depth, so the test matches it. Only
@@ -570,7 +586,11 @@ pub fn walk_macos(
                                 // grafts it into `/` with firmlinks -- so descending would count
                                 // everything twice.
                                 let already_counted = read.device == root_device;
-                                if mounted && (one_file_system || already_counted) {
+                                // A network share holds another machine's files, not this disk's
+                                // (see `linux::filesystem::NETWORK`). Asked only at a mount point.
+                                if mounted
+                                    && (one_file_system || already_counted || is_remote(&job.path))
+                                {
                                     queue.finish();
                                     continue;
                                 }
@@ -722,31 +742,13 @@ mod tests {
     }
 
     #[test]
-    fn apparent_size_always_asks_for_the_data_length() {
+    fn an_ordinary_filesystem_takes_its_size_on_disk_from_the_allocation() {
         let (directory, device) = open_dir(&::std::env::temp_dir());
-        let mut size = SizeAttribute::new(true);
-        assert_eq!(
-            size.for_device(directory.as_raw_fd(), device),
-            libc::ATTR_FILE_DATALENGTH
-        );
-        // Nothing is probed, so no filesystem is remembered.
-        assert!(size.per_device.is_empty());
-    }
-
-    #[test]
-    fn an_ordinary_filesystem_asks_for_the_allocated_size() {
-        let (directory, device) = open_dir(&::std::env::temp_dir());
-        let mut size = SizeAttribute::new(false);
-        assert_eq!(
-            size.for_device(directory.as_raw_fd(), device),
-            libc::ATTR_FILE_ALLOCSIZE
-        );
+        let mut size = SizeAttribute::new();
+        assert!(!size.length_for_disk(directory.as_raw_fd(), device));
         // The answer is cached per device, so a second directory on it costs no `fstatfs`.
         assert_eq!(size.per_device.len(), 1);
-        assert_eq!(
-            size.for_device(directory.as_raw_fd(), device),
-            libc::ATTR_FILE_ALLOCSIZE
-        );
+        assert!(!size.length_for_disk(directory.as_raw_fd(), device));
         assert_eq!(size.per_device.len(), 1);
     }
 
@@ -804,7 +806,7 @@ mod tests {
         ::std::fs::create_dir(mount.join("nested")).expect("create nested");
         ::std::fs::write(mount.join("nested/b.bin"), vec![0u8; 24 * 1024]).expect("write b.bin");
 
-        let total: u64 = walk_macos(&mount, 2, false, None, false)
+        let total: u64 = walk_macos(&mount, 2, None, false)
             .flat_map(|directory| {
                 directory
                     .entries()

@@ -33,7 +33,7 @@ fn files_in_folder_percentages_sum_to_one() {
     root.add_file("x".into(), 75);
     root.add_file("y".into(), 25);
 
-    let files = files_in_folder(&root, 0);
+    let files = files_in_folder(&root, 0, crate::model::SizeKind::Disk);
     assert_eq!(files.len(), 2);
     let sum: f64 = files.iter().map(|f| f.percentage).sum();
     assert!((sum - 1.0).abs() < f64::EPSILON);
@@ -105,9 +105,9 @@ fn entries_larger_than_the_folder_holding_them_stay_on_the_board() {
     }
     // What deduplication does: four entries of 1 MB each, all the same blocks, so the folder holds
     // 1 MB rather than 4 MB.
-    root.size = 1_000_000;
+    root.sizes = crate::model::Sizes::new(1_000_000, 1_000_000);
 
-    let files = files_in_folder(&root, 0);
+    let files = files_in_folder(&root, 0, crate::model::SizeKind::Disk);
     let sum: f64 = files.iter().map(|file| file.percentage).sum();
     assert!(
         sum <= 1.0 + 1e-9,

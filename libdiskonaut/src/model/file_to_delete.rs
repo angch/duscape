@@ -1,6 +1,7 @@
 use ::std::ffi::OsString;
 use ::std::path::PathBuf;
 
+use crate::model::Sizes;
 use crate::tiles::FileType;
 
 #[derive(Clone)]
@@ -9,7 +10,10 @@ pub struct FileToDelete {
     pub path_to_file: Vec<OsString>,
     pub file_type: FileType,
     pub num_descendants: Option<u64>,
+    /// The size shown, of whichever kind the view shows, for the confirmation dialog.
     pub size: u128,
+    /// Both of its sizes, for what deleting it frees.
+    pub sizes: Sizes,
 }
 
 impl FileToDelete {

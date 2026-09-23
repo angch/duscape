@@ -54,3 +54,16 @@ delete = "not-a-real-key-name-here"
     let err = cfg.keybinds().unwrap_err();
     assert!(matches!(err, ConfigError::InvalidKeybind { .. }));
 }
+
+#[test]
+fn rescan_keys_default_to_r_and_shift_r() {
+    use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    let kb = DiskonautConfig::default().keybinds().unwrap();
+    // Terminals report an upper-case letter with Shift held; the binding is the letter alone.
+    let shifted_r = Event::Key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT));
+    let plain_r = Event::Key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+    assert!(kb.rescan_all.matches_event(&shifted_r));
+    assert!(!kb.rescan.matches_event(&shifted_r));
+    assert!(kb.rescan.matches_event(&plain_r));
+    assert!(!kb.rescan_all.matches_event(&plain_r));
+}
