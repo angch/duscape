@@ -2,7 +2,7 @@ use ::std::collections::hash_map::Entry;
 use ::std::ffi::OsStr;
 use ::std::path::{Path, PathBuf};
 
-use super::hash::FastMap;
+use super::hash::{FastMap, FastSet};
 use crate::scan::SharedBlocks;
 
 /// A directory known to the ledger, addressed by its position in [`HardLinks::dirs`].
@@ -11,7 +11,7 @@ use crate::scan::SharedBlocks;
 /// rather than path parsing: with a few hundred thousand hard links, several of which live in
 /// dozens of folders each, comparing paths component by component was most of the cost of
 /// building the tree.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct DirRef(u32);
 
 struct Dir {
@@ -19,11 +19,24 @@ struct Dir {
     depth: u32,
 }
 
+/// Folders holding links to one file, past which [`LinkedFile`] keeps the folders they charge as
+/// a set instead.
+///
+/// Charging a link against a list compares it with every folder already holding one, so a file
+/// linked from N folders costs O(N² · depth) to build. A few files are linked from thousands of
+/// folders — three on one whole-disk scan of macOS were linked from 20,000 folders between them —
+/// and those alone took nearly a second. Below this, the list is smaller and no slower.
+const INDEXED_AT: usize = 32;
+
 /// A file reachable by more than one path, and where those paths were.
 struct LinkedFile {
     size: u64,
-    /// One entry per distinct folder holding a link, in the order they were found.
+    /// One entry per distinct folder holding a link, in the order they were found. Emptied when
+    /// `charged` takes over.
     directories: Vec<DirRef>,
+    /// Every folder already charged for this file — each folder holding a link, and all of its
+    /// ancestors — once `directories` outgrows [`INDEXED_AT`].
+    charged: Option<FastSet<DirRef>>,
     /// Whether a second name has been seen. A file whose link count was not known
     /// ([`crate::scan::LINKS_UNKNOWN`]) is tracked from its first name, and may have no other.
     linked: bool,
@@ -89,6 +102,19 @@ fn shared_depth(dirs: &[Dir], mut left: DirRef, mut right: DirRef) -> u32 {
         left_depth -= 1;
     }
     left_depth
+}
+
+/// Mark `directory` and its ancestors as charged, returning the depth of the deepest of them that
+/// already was.
+///
+/// That is the answer the list gives: a folder is already charged exactly when it is an ancestor
+/// of some earlier link, so the deepest folder `directory` shares with any of them is the first
+/// charged one found walking up. The root is charged by the first link, so the walk always stops.
+fn charge_ancestors(dirs: &[Dir], charged: &mut FastSet<DirRef>, mut directory: DirRef) -> u32 {
+    while charged.insert(directory) {
+        directory = dirs[directory.0 as usize].parent;
+    }
+    dirs[directory.0 as usize].depth
 }
 
 impl HardLinks {
@@ -174,6 +200,9 @@ impl HardLinks {
                     return None;
                 }
                 seen.linked = true;
+                if let Some(charged) = &mut seen.charged {
+                    return Some(charge_ancestors(dirs, charged, directory) as usize);
+                }
                 let mut deepest = 0;
                 for &existing in &seen.directories {
                     if existing == directory {
@@ -184,12 +213,20 @@ impl HardLinks {
                     deepest = deepest.max(shared_depth(dirs, existing, directory));
                 }
                 seen.directories.push(directory);
+                if seen.directories.len() > INDEXED_AT {
+                    let mut charged = FastSet::default();
+                    for existing in ::std::mem::take(&mut seen.directories) {
+                        charge_ancestors(dirs, &mut charged, existing);
+                    }
+                    seen.charged = Some(charged);
+                }
                 Some(deepest as usize)
             }
             Entry::Vacant(slot) => {
                 slot.insert(LinkedFile {
                     size,
                     directories: vec![directory],
+                    charged: None,
                     linked: false,
                 });
                 None

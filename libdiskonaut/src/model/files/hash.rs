@@ -10,7 +10,7 @@
 //! quadratic. Every hasher therefore starts from a seed drawn once per process, which is enough to
 //! make such names impossible to compute in advance.
 
-use ::std::collections::HashMap;
+use ::std::collections::{HashMap, HashSet};
 use ::std::hash::{BuildHasher, Hasher, RandomState};
 use ::std::sync::OnceLock;
 
@@ -92,3 +92,6 @@ impl Hasher for FastHasher {
 
 /// A `HashMap` using [`FastHasher`].
 pub type FastMap<K, V> = HashMap<K, V, FastBuildHasher>;
+
+/// A `HashSet` using [`FastHasher`].
+pub type FastSet<T> = HashSet<T, FastBuildHasher>;

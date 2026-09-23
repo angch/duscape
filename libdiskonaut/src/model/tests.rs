@@ -194,6 +194,37 @@ mod hard_links {
         assert_eq!(links.tracked(), reference.len());
     }
 
+    /// A file linked from hundreds of folders is charged from a set rather than a list; it must
+    /// still answer as the reference does, before the switch and after it.
+    #[test]
+    fn a_file_linked_from_many_folders_matches_the_reference() {
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move |bound: u64| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 33) % bound
+        };
+        let mut links = HardLinks::default();
+        let mut reference = Vec::new();
+        for _ in 0..5_000 {
+            let dir: PathBuf = (0..next(8))
+                .map(|_| ["a", "b", "c", "d"][next(4) as usize])
+                .collect();
+            let inode = next(2);
+            assert_eq!(
+                links.charge(SharedBlocks::Inode(inode), 1024, &dir),
+                reference_charge(&mut reference, inode, 1024, &dir),
+                "inode {inode} in {}",
+                dir.display()
+            );
+        }
+        assert!(
+            reference.iter().all(|(_, _, dirs)| dirs.len() > 100),
+            "both files should be well past the switch to a set"
+        );
+    }
+
     /// A reflinked file is the hard-link rule again: the same blocks reached twice inside one
     /// folder count once, while siblings each hold them in full.
     #[test]
