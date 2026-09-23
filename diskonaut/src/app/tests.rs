@@ -554,8 +554,10 @@ fn an_unknown_working_directory_copies_the_absolute_path() {
 
 /// The side-panel cell showing `name`'s row, as drawn for the app's current selection.
 fn list_row_of(app: &App<TestBackend>, name: &str) -> (u16, u16) {
-    use crate::ui::side_panel::{HEADER_ROWS, list_window, screen_areas};
-    let panel = screen_areas(app.display.size())
+    use crate::ui::side_panel::{HEADER_ROWS, list_window};
+    let panel = app
+        .display
+        .areas()
         .side_panel
         .expect("wide enough for the side panel");
     let listing = app.board.listing();
@@ -1189,5 +1191,177 @@ fn ctrl_click_never_sweeps_in_an_entry_nobody_chose() {
     let (column, row) = list_row_of(&app, "small");
     app.ctrl_click(column, row);
     assert_eq!(marked(&app), vec!["small"]);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Remembers every placement the app asks for.
+#[derive(Clone, Default)]
+struct PictureRecorder(
+    ::std::sync::Arc<::std::sync::Mutex<Vec<Option<crate::preview::Placement>>>>,
+);
+
+impl crate::preview::Graphics for PictureRecorder {
+    fn show(&mut self, placement: Option<crate::preview::Placement>) {
+        self.0.lock().expect("recorder").push(placement);
+    }
+}
+
+impl PictureRecorder {
+    fn last(&self) -> Option<Option<crate::preview::Placement>> {
+        self.0.lock().expect("recorder").last().cloned()
+    }
+}
+
+type Answers = ::std::sync::mpsc::Receiver<(u64, crate::preview::Preview)>;
+
+/// Previews on, with answers collected for the test to hand back, as the event loop would.
+fn previewing(app: &mut App<TestBackend>, graphics: bool) -> (Answers, PictureRecorder) {
+    let (sender, answers) = mpsc::channel();
+    let sender = ::std::sync::Mutex::new(sender);
+    let previewer = crate::preview::Previewer::spawn(move |generation, preview| {
+        let _ = sender.lock().expect("sender").send((generation, preview));
+    });
+    let recorder = PictureRecorder::default();
+    app.enable_previews(previewer, graphics, Box::new(recorder.clone()));
+    (answers, recorder)
+}
+
+fn deliver(app: &mut App<TestBackend>, answers: &Answers) {
+    let (generation, preview) = answers
+        .recv_timeout(::std::time::Duration::from_secs(10))
+        .expect("a preview");
+    app.preview_ready(generation, preview);
+}
+
+fn preview_fixture(name: &str) -> PathBuf {
+    let dir = temp_app_dir(name);
+    fs::create_dir(dir.join("folder")).expect("create folder");
+    File::create(dir.join("folder").join("inside"))
+        .expect("create file")
+        .write_all(&vec![b'x'; 64 * 1024])
+        .expect("write file");
+    fs::write(
+        dir.join("readme.txt"),
+        "first line\nsecond line\n".repeat(900),
+    )
+    .expect("write");
+    image::RgbImage::from_pixel(800, 450, image::Rgb([200, 30, 30]))
+        .save(dir.join("photo.png"))
+        .expect("write picture");
+    dir
+}
+
+/// A text file in hand shows its first lines below the list, under a caption naming it.
+#[test]
+fn a_text_file_is_previewed_below_the_list() {
+    let dir = preview_fixture("preview_text");
+    let mut app = app_with_scanned_dir(&dir, 120, 30);
+    let (answers, _recorder) = previewing(&mut app, false);
+    let (column, row) = list_row_of(&app, "readme.txt");
+    app.click(MouseButton::Left, column, row);
+    deliver(&mut app, &answers);
+
+    let preview = app.display.areas().preview.expect("room for a preview");
+    let screen = app.display.screen_text();
+    let caption = &screen[usize::from(preview.y)];
+    assert!(caption.starts_with("readme.txt · "), "{caption:?}");
+    assert!(screen[usize::from(preview.y) + 1].starts_with("first line"));
+    assert!(screen[usize::from(preview.y) + 2].starts_with("second line"));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A picture is placed in the preview area once read, and taken away when the selection moves
+/// to something that is not one.
+#[test]
+fn a_picture_is_placed_and_taken_away() {
+    let dir = preview_fixture("preview_picture");
+    let mut app = app_with_scanned_dir(&dir, 120, 30);
+    let (answers, recorder) = previewing(&mut app, true);
+    let (column, row) = list_row_of(&app, "photo.png");
+    app.click(MouseButton::Left, column, row);
+    deliver(&mut app, &answers);
+
+    let placement = recorder.last().flatten().expect("a picture placed");
+    let area = crate::ui::side_panel::picture_area(app.display.areas().preview.expect("preview"));
+    assert!(area.contains(ratatui::layout::Position::new(
+        placement.column,
+        placement.row
+    )));
+    assert!(placement.column + placement.image.columns <= area.x + area.width);
+    assert!(placement.row + placement.image.rows <= area.y + area.height);
+    let screen = app.display.screen_text();
+    assert!(
+        screen[usize::from(area.y) - 1].contains("PNG 800×450"),
+        "caption: {:?}",
+        screen[usize::from(area.y) - 1]
+    );
+
+    let (column, row) = list_row_of(&app, "folder");
+    app.click(MouseButton::Left, column, row);
+    assert_eq!(recorder.last(), Some(None), "a folder has no picture");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Folders and multi-selections are not previewed, and nothing is read for them.
+#[test]
+fn folders_and_selections_are_not_previewed() {
+    use crate::preview::Preview;
+    let dir = preview_fixture("preview_none");
+    let mut app = app_with_scanned_dir(&dir, 120, 30);
+    let (answers, _recorder) = previewing(&mut app, false);
+    let (column, row) = list_row_of(&app, "folder");
+    app.click(MouseButton::Left, column, row);
+    assert_eq!(app.preview, Preview::None);
+
+    app.extend_selection(1);
+    assert!(app.marked.len() > 1);
+    assert_eq!(app.preview, Preview::None);
+    let screen = app.display.screen_text();
+    let preview = app.display.areas().preview.expect("preview");
+    assert!(
+        screen[usize::from(preview.y)].contains("marked"),
+        "caption counts them"
+    );
+    assert!(
+        answers
+            .recv_timeout(::std::time::Duration::from_millis(300))
+            .is_err(),
+        "nothing was read"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// An answer to a request the selection has moved past is dropped.
+#[test]
+fn a_stale_preview_is_dropped() {
+    use crate::preview::Preview;
+    let dir = preview_fixture("preview_stale");
+    let mut app = app_with_scanned_dir(&dir, 120, 30);
+    let (_answers, _recorder) = previewing(&mut app, false);
+    let (column, row) = list_row_of(&app, "readme.txt");
+    app.click(MouseButton::Left, column, row);
+    let stale = app.preview_generation;
+    let (column, row) = list_row_of(&app, "photo.png");
+    app.click(MouseButton::Left, column, row);
+    app.preview_ready(stale, Preview::Text(vec!["old".into()]));
+    assert_eq!(app.preview, Preview::Loading, "still waiting for the photo");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Showing the first file asks for its preview once: the request is sized for the cells the
+/// frame is drawn with, so drawing that frame does not make it out of date.
+#[test]
+fn the_first_preview_is_asked_for_once() {
+    let dir = preview_fixture("preview_once");
+    let mut app = app_with_scanned_dir(&dir, 120, 30);
+    let (answers, _recorder) = previewing(&mut app, false);
+    let (column, row) = list_row_of(&app, "readme.txt");
+    app.click(MouseButton::Left, column, row);
+    let asked = app.preview_generation;
+    app.render();
+    app.render();
+    assert_eq!(app.preview_generation, asked, "no second request");
+    deliver(&mut app, &answers);
+    assert!(matches!(app.preview, crate::preview::Preview::Text(_)));
     let _ = fs::remove_dir_all(&dir);
 }

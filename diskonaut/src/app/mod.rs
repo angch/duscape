@@ -17,9 +17,10 @@ use crate::Event;
 use crate::clipboard::{Clipboard, SystemClipboard};
 use crate::config::Keybinds;
 use crate::messages::{Instruction, handle_instructions};
+use crate::preview::{Graphics, NoGraphics, Preview, Previewer, Request, placement_in};
 use crate::state::UiEffects;
 use crate::ui::Display;
-use crate::ui::side_panel::{self, screen_areas};
+use crate::ui::side_panel::{self, picture_area};
 
 /// Which panel the arrow keys, Enter, Esc and delete act on: the list beside the treemap, or the
 /// treemap itself. It follows the last click, Tab, and Left off the treemap's left edge.
@@ -94,6 +95,17 @@ where
     /// A Shift+Up/Down range in progress: where it started, and what was marked before it.
     /// Reversing direction shrinks the range back towards the anchor, leaving the rest alone.
     mark_range: Option<(OsString, Vec<OsString>)>,
+    /// The thread that reads files for the preview, once started; without one nothing is read.
+    previewer: Option<Previewer>,
+    /// Whether the terminal can show pictures, and what draws them.
+    graphics_supported: bool,
+    graphics: Box<dyn Graphics>,
+    /// What the preview was last asked for — the file, the picture area and the cell size — so
+    /// it is asked again only when one of them changes.
+    preview_key: Option<PreviewKey>,
+    /// Counts requests, so an answer to one the selection has since moved past is dropped.
+    preview_generation: u64,
+    preview: Preview,
     /// Where copied paths go: the system clipboard, or a recorder in tests.
     clipboard: Box<dyn Clipboard>,
     /// The directory diskonaut was started from, resolved, which copied relative paths start
@@ -107,6 +119,9 @@ const DOUBLE_CLICK: Duration = Duration::from_millis(500);
 
 /// How long the title shows what was just copied to the clipboard.
 const CLIPBOARD_FLASH: Duration = Duration::from_secs(2);
+
+/// What a preview was asked for: the file, the picture area in cells, and the cell size in pixels.
+type PreviewKey = (PathBuf, (u16, u16), (u16, u16));
 
 /// Remove a file, or a folder and everything in it.
 fn remove_from_disk(path: &Path) -> ::std::io::Result<()> {
@@ -153,12 +168,118 @@ where
             marked: Vec::new(),
             cursor_chosen: false,
             mark_range: None,
+            previewer: None,
+            graphics_supported: false,
+            graphics: Box::new(NoGraphics),
+            preview_key: None,
+            preview_generation: 0,
+            preview: Preview::None,
             clipboard: Box::new(SystemClipboard),
             // Resolved like the scan root, so that `..` counts real directories on both sides.
             working_dir: ::std::env::current_dir()
                 .and_then(|dir| dir.canonicalize())
                 .ok(),
         }
+    }
+    /// Start previewing files: `previewer` reads them, and `graphics` draws pictures if the
+    /// terminal can (`graphics_supported`); otherwise pictures are described in words.
+    pub fn enable_previews(
+        &mut self,
+        previewer: Previewer,
+        graphics_supported: bool,
+        graphics: Box<dyn Graphics>,
+    ) {
+        self.previewer = Some(previewer);
+        self.graphics_supported = graphics_supported;
+        self.graphics = graphics;
+    }
+    /// A preview has been read. Kept only if it answers the latest request.
+    pub fn preview_ready(&mut self, generation: u64, preview: Preview) {
+        if generation == self.preview_generation {
+            self.preview = preview;
+            self.render();
+        }
+    }
+    /// The file to preview: the entry in hand, when it is a file and it is the only one chosen.
+    fn preview_target(&self) -> Option<PathBuf> {
+        if self.marked.len() > 1 {
+            return None;
+        }
+        let entry = self.selected_entry()?;
+        if entry.file_type != libdiskonaut::tiles::FileType::File {
+            return None;
+        }
+        let mut path = self.file_tree.get_current_path();
+        path.push(&entry.name);
+        Some(path)
+    }
+    /// Ask for a preview if what should be shown has changed since it was last asked for.
+    fn update_preview(&mut self) {
+        let cell_pixels = self.display.cell_pixels();
+        let key = self
+            .display
+            .areas()
+            .preview
+            .map(picture_area)
+            .zip(self.preview_target())
+            .map(|(area, path)| (path, (area.width, area.height), cell_pixels));
+        if key == self.preview_key {
+            return;
+        }
+        self.preview_key = key.clone();
+        self.preview_generation += 1;
+        self.preview = match (key, &self.previewer) {
+            (Some((path, cells, cell_pixels)), Some(previewer)) => {
+                previewer.request(Request {
+                    generation: self.preview_generation,
+                    path,
+                    cells,
+                    cell_pixels,
+                    graphics: self.graphics_supported,
+                });
+                Preview::Loading
+            }
+            _ => Preview::None,
+        };
+    }
+    /// The line above the preview: what is in hand, and how big.
+    fn preview_caption(&self) -> String {
+        if self.marked.len() > 1 {
+            let size: u128 = self
+                .get_files_to_delete()
+                .iter()
+                .map(|file| file.size)
+                .sum();
+            return format!(
+                "{} marked · {}",
+                DisplayCount(self.marked.len() as u64),
+                libdiskonaut::format::DisplaySize(size as f64)
+            );
+        }
+        let Some(entry) = self.selected_entry() else {
+            return String::new();
+        };
+        let mut caption = entry.name.to_string_lossy().into_owned();
+        if entry.file_type == libdiskonaut::tiles::FileType::Folder {
+            caption.push('/');
+        }
+        caption.push_str(&format!(
+            " · {}",
+            libdiskonaut::format::DisplaySize(entry.size as f64)
+        ));
+        if let Preview::Image(image) = &self.preview {
+            caption.push_str(&format!(" · {}", image.description));
+        }
+        caption
+    }
+    /// Draw the picture over the frame just drawn, or take it away.
+    fn show_picture(&mut self) {
+        let placement = match (&self.preview, self.display.areas().preview, &self.ui_mode) {
+            (_, _, UiMode::ScreenTooSmall) => None,
+            (Preview::Image(image), Some(area), _) => Some(placement_in(picture_area(area), image)),
+            _ => None,
+        };
+        self.graphics.show(placement);
     }
     /// Send copied paths somewhere other than the system clipboard, for tests.
     #[cfg(test)]
@@ -192,11 +313,17 @@ where
         if self.focus() == Focus::List {
             self.sync_board_to_list();
         }
+        // Measured before the preview is asked for, so the very first request is sized for the
+        // real cells and is not superseded by a second one as soon as the frame is drawn.
+        self.display.refresh_cell_pixels();
+        self.update_preview();
         let panel_state = crate::ui::PanelState {
             list_focused: self.focus() == Focus::List,
             highlighted: self.highlighted_listing_index(),
             selected: self.selected_entry(),
             marked: self.marked.clone(),
+            preview: self.preview.clone(),
+            caption: self.preview_caption(),
         };
         self.display.render(
             &mut self.file_tree,
@@ -212,6 +339,7 @@ where
                 panel: panel_state,
             },
         );
+        self.show_picture();
     }
     pub fn flash_space_freed(&mut self) {
         self.ui_effects.flash_space_freed = true;
@@ -500,15 +628,13 @@ where
         }
     }
     fn side_panel_visible(&self) -> bool {
-        screen_areas(self.display.size()).side_panel.is_some()
+        self.display.areas().side_panel.is_some()
     }
     /// Rows the side panel has for entries.
     fn list_rows(&self) -> usize {
-        screen_areas(self.display.size())
-            .side_panel
-            .map_or(0, |panel| {
-                usize::from(panel.height.saturating_sub(side_panel::HEADER_ROWS))
-            })
+        self.display.areas().side_panel.map_or(0, |panel| {
+            usize::from(panel.height.saturating_sub(side_panel::HEADER_ROWS))
+        })
     }
     fn focus_list(&mut self) {
         self.focus = Focus::List;
@@ -664,7 +790,7 @@ where
     }
     /// The entry whose row in the side panel is at a screen cell, if the panel is showing.
     fn side_panel_entry_at(&self, column: u16, row: u16) -> Option<OsString> {
-        let panel = screen_areas(self.display.size()).side_panel?;
+        let panel = self.display.areas().side_panel?;
         let listing = self.board.listing();
         let index = side_panel::entry_at(
             listing,

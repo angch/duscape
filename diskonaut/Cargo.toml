@@ -35,6 +35,8 @@ thiserror = { workspace = true }
 toml = { workspace = true }
 ratatui = { workspace = true }
 unicode-width = { workspace = true }
+# Previews: PNG and JPEG only, decoded to be scaled down before they are sent to the terminal.
+image = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [

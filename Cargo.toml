@@ -34,3 +34,4 @@ thiserror = "2"
 toml = "1"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 unicode-width = "0.2"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }

@@ -226,6 +226,16 @@ own — too small, and folded into the `x` corner, or left off by the zoom — a
 are often most of a folder: in a build cache of 30,000 small files the list is the only way to
 see them. Rows take the same clicks as tiles: select, double-click to open, right-click to copy.
 
+Below the list is a preview of the file in hand, 16:9 in shape (worked out from the terminal's
+cell size in pixels, where it reports one) and never more than half the panel. A text file shows
+its first lines, with escape sequences and other control characters shown as `?` rather than
+passed to the terminal. A PNG or JPEG — recognised by its first bytes, not its name — is drawn
+as a picture in terminals that speak the kitty graphics protocol (kitty, Ghostty, WezTerm), once
+the selection has rested on it for 100 ms, so moving quickly through a folder of photos decodes
+none of them. Elsewhere, and inside tmux, a picture is described instead: `PNG image · 1920×1080`.
+`DISKONAUT_GRAPHICS=kitty` or `none` overrides the guess. Only regular files are read, and on
+macOS files that are only in iCloud are not, since reading one would download it.
+
 Narrower terminals give the whole width to the treemap, as before.
 
 ## Keyboard and mouse

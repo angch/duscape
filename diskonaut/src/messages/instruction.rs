@@ -27,6 +27,8 @@ pub enum Instruction {
     Render,
     ResetUiMode,
     Keypress(BackEvent),
+    /// A preview has been read, for the request of this generation.
+    PreviewReady(u64, crate::preview::Preview),
 }
 
 pub fn handle_instructions<B>(app: &mut App<B>, receiver: Receiver<Instruction>)
@@ -70,6 +72,9 @@ where
             }
             Instruction::ResetUiMode => {
                 app.reset_ui_mode();
+            }
+            Instruction::PreviewReady(generation, preview) => {
+                app.preview_ready(generation, preview);
             }
             Instruction::Keypress(evt) => {
                 match &app.ui_mode {

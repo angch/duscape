@@ -45,8 +45,8 @@ cargo run --bin diskonaut -- -a  # apparent size mode
 
 ### Thread Model
 
-Five kinds of thread communicate via bounded `mpsc` channels, plus `parallel::SHARDS` tree
-builders that share nothing:
+Six kinds of thread communicate via `mpsc` channels (bounded, except the previewer's inbox), plus
+`parallel::SHARDS` tree builders that share nothing:
 
 | Thread | Role |
 |--------|------|
@@ -55,6 +55,7 @@ builders that share nothing:
 | `tree_builder_N` | Owns a private `FileTree` in deferred-sharing mode and adds whatever `hd_scanner` sends it. Never touches another thread's memory |
 | `event_executer` | Converts `Event` → `Instruction` (visual feedback). A clipboard flash gets a short-lived `clipboard_flash` thread that asks for a redraw when it expires; the flash carries its own deadline, so a lost redraw cannot leave it on screen |
 | `loading_loop` | Toggles loading indicator while scanning |
+| `previewer` | Reads the file in hand for the preview: first 64 KB as text, or a PNG/JPEG decoded and scaled after a 100 ms debounce (a newer request supersedes it) → `Instruction::PreviewReady(generation, _)`; answers to an older generation are dropped |
 | **main** | App state mutations + ratatui rendering. During the scan it renders from the *outline*; on `ScanComplete` it swaps in the finished tree, keeping the current folder |
 
 **Synchronization**: `Arc<AtomicBool>` for `running`/`loaded` flags; bounded sync channels (capacity 1–100).
@@ -96,6 +97,10 @@ builders that share nothing:
   the panel when ≥ 80 columns) and `entry_at` maps a cell to a row — used by both the renderer and
   the mouse, so they cannot disagree
 - `config/mod.rs` — TOML config (`~/.config/diskonaut/config.toml`)
+- `preview.rs` — the preview thread, file sniffing, and kitty graphics output (`Graphics`:
+  `KittyGraphics` writes after each frame, only on change; `q=2` so the terminal never answers
+  on stdin, `z=-1` so dialogs cover it). `side_panel::screen_areas` sizes the preview 16:9 from
+  the cell pixel size `Display` measures each frame
 - `clipboard.rs` — native clipboard (`pbcopy`, Win32, `wl-copy`/`xclip`/`xsel`), OSC 52 fallback;
   paths are quoted by `libdiskonaut::format::quote_path_for_shell` before they get there
 - `cli/mod.rs` — clap CLI args

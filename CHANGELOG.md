@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A preview below the list, 16:9 and at most half the panel: the first lines of a text file, or
+  a PNG or JPEG (detected by magic bytes) drawn with the kitty graphics protocol after a 100 ms
+  debounce, scaled to fit. Terminals without it, and tmux, get a description instead.
+  `DISKONAUT_GRAPHICS=kitty|none` overrides the detection. Files are read on a thread of their
+  own; only regular files are opened, and iCloud-only files on macOS are left undownloaded.
 - `d` deletes every marked entry, after one prompt that counts them, totals their size and names
   as many as fit. A failure part-way does not stop the rest; the message says what failed.
 - Several entries can be marked: `Ctrl`+click in either panel toggles one, and `Shift`+`↑`/`↓`

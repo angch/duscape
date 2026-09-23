@@ -10,10 +10,13 @@ use libdiskonaut::tiles::{Area, Board, FileMetadata};
 
 use crate::UiMode;
 use crate::config::Keybinds;
+use crate::preview::Preview;
 use crate::state::UiEffects;
 use crate::ui::grid::RectangleGrid;
 use crate::ui::modals::{ConfirmBox, ErrorBox, MessageBox, WarningBox};
-use crate::ui::side_panel::{FolderDetails, SidePanel, screen_areas};
+use crate::ui::side_panel::{
+    DEFAULT_CELL_PIXELS, FolderDetails, PreviewPanel, ScreenAreas, SidePanel, screen_areas,
+};
 use crate::ui::title::TitleLine;
 use crate::ui::{BottomLine, TermTooSmall};
 
@@ -38,6 +41,9 @@ pub struct PanelState {
     pub selected: Option<FileMetadata>,
     /// Names of the entries in a multi-selection.
     pub marked: Vec<OsString>,
+    /// What the preview below the list shows, and its caption.
+    pub preview: Preview,
+    pub caption: String,
 }
 
 /// Everything the frame needs from the app beyond the tree and the board.
@@ -51,6 +57,8 @@ where
     B: Backend,
 {
     terminal: Terminal<B>,
+    /// The terminal's cell size in pixels, from the last frame; it sizes the 16:9 preview.
+    cell_pixels: (u16, u16),
 }
 
 impl<B> Display<B>
@@ -61,7 +69,38 @@ where
         let mut terminal = Terminal::new(terminal_backend).expect("failed to create terminal");
         terminal.clear().expect("failed to clear terminal");
         terminal.hide_cursor().expect("failed to hide cursor");
-        Display { terminal }
+        Display {
+            terminal,
+            cell_pixels: DEFAULT_CELL_PIXELS,
+        }
+    }
+    /// The cell size in pixels, as the terminal reports it, or the usual 1:2 if it does not.
+    fn measure_cell_pixels(&mut self) -> (u16, u16) {
+        match self.terminal.backend_mut().window_size() {
+            Ok(size)
+                if size.pixels.width > 0
+                    && size.pixels.height > 0
+                    && size.columns_rows.width > 0
+                    && size.columns_rows.height > 0 =>
+            {
+                (
+                    (size.pixels.width / size.columns_rows.width).max(1),
+                    (size.pixels.height / size.columns_rows.height).max(1),
+                )
+            }
+            _ => DEFAULT_CELL_PIXELS,
+        }
+    }
+    pub fn cell_pixels(&self) -> (u16, u16) {
+        self.cell_pixels
+    }
+    /// Measure the cell size now, so what is worked out before the next frame uses the real one.
+    pub fn refresh_cell_pixels(&mut self) {
+        self.cell_pixels = self.measure_cell_pixels();
+    }
+    /// Where everything goes on the screen as it now is.
+    pub fn areas(&self) -> ScreenAreas {
+        screen_areas(self.size(), self.cell_pixels)
     }
     pub fn size(&self) -> Rect {
         let size = self.terminal.size().expect("could not get terminal size");
@@ -85,6 +124,8 @@ where
             panel: panel_state,
         } = status;
         let clipboard_flash = ui_effects.clipboard_flash_at(::std::time::Instant::now());
+        self.cell_pixels = self.measure_cell_pixels();
+        let cell_pixels = self.cell_pixels;
         self.terminal
             .draw(|f| {
                 let full_screen = f.area();
@@ -104,7 +145,7 @@ where
                     size: base_path_size,
                     num_descendants: base_path_descendants,
                 };
-                let areas = screen_areas(full_screen);
+                let areas = screen_areas(full_screen, cell_pixels);
                 let chunks = [areas.title, areas.grid, areas.bottom];
                 let grid_area = areas.grid;
                 board.change_area(&Area {
@@ -140,6 +181,12 @@ where
                         .marked(&panel_state.marked),
                         panel,
                     );
+                    if let Some(preview) = areas.preview {
+                        f.render_widget(
+                            PreviewPanel::new(&panel_state.caption, &panel_state.preview),
+                            preview,
+                        );
+                    }
                 }
                 match ui_mode {
                     UiMode::Loading => {
@@ -408,5 +455,21 @@ where
     pub fn clear(&mut self) {
         self.terminal.clear().expect("failed to clear terminal");
         self.terminal.show_cursor().expect("failed to show cursor");
+    }
+}
+
+#[cfg(test)]
+impl Display<::ratatui::backend::TestBackend> {
+    /// The last frame drawn, as text, one line per row.
+    pub fn screen_text(&self) -> Vec<String> {
+        let buffer = self.terminal.backend().buffer();
+        let area = buffer.area;
+        (area.y..area.y + area.height)
+            .map(|y| {
+                (area.x..area.x + area.width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect()
+            })
+            .collect()
     }
 }

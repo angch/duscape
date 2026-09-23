@@ -6,6 +6,7 @@ mod config;
 mod error;
 mod input;
 mod messages;
+mod preview;
 mod state;
 mod ui;
 
@@ -67,6 +68,10 @@ fn get_stdout() -> io::Result<io::Stdout> {
 /// drew.
 fn restore_terminal() {
     let _ = disable_raw_mode();
+    // A picture in the preview would otherwise stay in the terminal's memory.
+    if preview::kitty_supported() {
+        let _ = preview::kitty_delete(&mut io::stdout());
+    }
     let _ = execute!(
         io::stdout(),
         DisableMouseCapture,
@@ -189,6 +194,19 @@ fn start<B>(
         keybinds.clone(),
         scan_options.show_apparent_size,
     );
+    {
+        let instruction_sender = instruction_sender.clone();
+        let previewer = preview::Previewer::spawn(move |generation, preview| {
+            let _ = instruction_sender.send(Instruction::PreviewReady(generation, preview));
+        });
+        let kitty = preview::kitty_supported();
+        let graphics: Box<dyn preview::Graphics> = if kitty {
+            Box::new(preview::KittyGraphics::default())
+        } else {
+            Box::new(preview::NoGraphics)
+        };
+        app.enable_previews(previewer, kitty, graphics);
+    }
 
     active_threads.push(
         thread::Builder::new()

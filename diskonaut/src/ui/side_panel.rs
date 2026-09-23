@@ -18,6 +18,8 @@ use ::unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use libdiskonaut::format::{DisplayCount, DisplaySize};
 use libdiskonaut::tiles::{FileMetadata, FileType, Tile};
 
+use crate::preview::Preview;
+
 /// Terminals narrower than this give the whole width to the treemap: a third of anything less
 /// is too narrow for a name and a size, and what it took would cramp the treemap.
 pub const SIDE_PANEL_MIN_WIDTH: u16 = 80;
@@ -25,20 +27,33 @@ pub const SIDE_PANEL_MIN_WIDTH: u16 = 80;
 /// Rows above the list: path, size, contents, disk usage.
 pub const HEADER_ROWS: u16 = 4;
 
+/// Cell size assumed when the terminal does not report one, in pixels: the common 1:2.
+pub const DEFAULT_CELL_PIXELS: (u16, u16) = (8, 16);
+
+/// The preview is a 16:9 picture, whatever the cells' own shape.
+const PREVIEW_ASPECT: (u32, u32) = (16, 9);
+
+/// Rows the list keeps however tall the preview would like to be.
+const MIN_LIST_ROWS: u16 = 3;
+
 /// Where each part of the screen goes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScreenAreas {
     pub title: Rect,
-    /// The panel beside the treemap, when the terminal is wide enough for one.
+    /// The list beside the treemap — its header and entries — when the terminal is wide enough
+    /// for one.
     pub side_panel: Option<Rect>,
+    /// Below the list: a caption row, then a 16:9 area for the preview.
+    pub preview: Option<Rect>,
     /// The treemap, borders included.
     pub grid: Rect,
     pub bottom: Rect,
 }
 
 /// Split the screen: a title line, the panel and the treemap side by side, and two bottom lines.
-/// The panel takes a third of the width; the treemap the rest.
-pub fn screen_areas(full_screen: Rect) -> ScreenAreas {
+/// The panel takes a third of the width, the treemap the rest; the bottom of the panel is the
+/// preview, sized for a 16:9 picture with cells of `cell_pixels`, and never more than half.
+pub fn screen_areas(full_screen: Rect, cell_pixels: (u16, u16)) -> ScreenAreas {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(0)
@@ -71,12 +86,44 @@ pub fn screen_areas(full_screen: Rect) -> ScreenAreas {
         height: treemap.height.saturating_sub(1),
         ..treemap
     };
+    let (side_panel, preview) = match side_panel.map(|panel| split_preview(panel, cell_pixels)) {
+        Some((list, preview)) => (Some(list), preview),
+        None => (None, None),
+    };
     ScreenAreas {
         title: chunks[0],
         side_panel,
+        preview,
         grid,
         bottom: chunks[2],
     }
+}
+
+/// Take the preview off the bottom of `panel`: a caption row and a picture area of the panel's
+/// width (less its gutter) and 16:9 in pixels. None when that would leave the list too little.
+fn split_preview(panel: Rect, cell_pixels: (u16, u16)) -> (Rect, Option<Rect>) {
+    let (cell_width, cell_height) = (
+        u32::from(cell_pixels.0.max(1)),
+        u32::from(cell_pixels.1.max(1)),
+    );
+    let picture_width = u32::from(panel.width.saturating_sub(1)) * cell_width;
+    let picture_rows = (picture_width * PREVIEW_ASPECT.1 / PREVIEW_ASPECT.0)
+        .div_ceil(cell_height)
+        .min(u32::from(u16::MAX)) as u16;
+    let wanted = (picture_rows + 1).min(panel.height / 2);
+    if wanted < 3 || panel.height - wanted < HEADER_ROWS + MIN_LIST_ROWS {
+        return (panel, None);
+    }
+    let list = Rect {
+        height: panel.height - wanted,
+        ..panel
+    };
+    let preview = Rect {
+        y: panel.y + list.height,
+        height: wanted,
+        ..panel
+    };
+    (list, Some(preview))
 }
 
 /// Which entries a list of `rows` rows shows, keeping `selected` in view. When they do not all
@@ -394,6 +441,61 @@ impl Widget for SidePanel<'_> {
     }
 }
 
+/// `text` cut at the end to at most `width` columns: for preview lines, whose start matters.
+fn cut_end(text: &str, width: usize) -> String {
+    take_width(text.chars(), width).into_iter().collect()
+}
+
+/// The area below the list: a caption naming what is previewed, then the preview. A picture is
+/// drawn over the blank area by the terminal itself, after the frame (see `preview::Graphics`).
+pub struct PreviewPanel<'a> {
+    caption: &'a str,
+    preview: &'a Preview,
+}
+
+impl<'a> PreviewPanel<'a> {
+    pub fn new(caption: &'a str, preview: &'a Preview) -> Self {
+        PreviewPanel { caption, preview }
+    }
+}
+
+/// Where the picture goes in a preview area: below the caption, clear of the gutter.
+pub fn picture_area(preview: Rect) -> Rect {
+    Rect {
+        y: preview.y + 1,
+        height: preview.height.saturating_sub(1),
+        width: preview.width.saturating_sub(1),
+        ..preview
+    }
+}
+
+impl Widget for PreviewPanel<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let width = usize::from(area.width.saturating_sub(1));
+        if width == 0 || area.height == 0 {
+            return;
+        }
+        // Clear it: a picture shows only through cells with nothing in them.
+        for y in area.y..area.y + area.height {
+            buf.set_stringn(area.x, y, " ".repeat(width), width, Style::default());
+        }
+        let caption = Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD);
+        buf.set_stringn(area.x, area.y, fit(self.caption, width), width, caption);
+        let body = picture_area(area);
+        let lines: Vec<String> = match self.preview {
+            Preview::None | Preview::Image(_) => Vec::new(),
+            Preview::Loading => vec!["…".to_string()],
+            Preview::Info(info) => vec![printable(info)],
+            Preview::Text(lines) => lines.clone(),
+        };
+        for (row, line) in (body.y..body.y + body.height).zip(&lines) {
+            buf.set_stringn(area.x, row, cut_end(line, width), width, Style::default());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ::std::ffi::OsString;
@@ -405,22 +507,58 @@ mod tests {
     use libdiskonaut::tiles::{FileMetadata, FileType};
 
     use super::{
-        FolderDetails, HEADER_ROWS, SIDE_PANEL_MIN_WIDTH, SidePanel, bar, entry_at, fit,
-        list_window, screen_areas,
+        DEFAULT_CELL_PIXELS, FolderDetails, HEADER_ROWS, SIDE_PANEL_MIN_WIDTH, SidePanel, bar,
+        entry_at, fit, list_window, screen_areas,
     };
 
     #[test]
     fn a_wide_screen_gives_a_third_to_the_panel() {
-        let areas = screen_areas(Rect::new(0, 0, 120, 30));
+        let areas = screen_areas(Rect::new(0, 0, 120, 30), DEFAULT_CELL_PIXELS);
         assert_eq!(areas.title, Rect::new(0, 0, 120, 1));
-        assert_eq!(areas.side_panel, Some(Rect::new(0, 1, 40, 27)));
+        // 39 columns of 8px is 312px; 16:9 of that is 175px, 11 rows of 16px, plus a caption.
+        assert_eq!(areas.side_panel, Some(Rect::new(0, 1, 40, 15)));
+        assert_eq!(areas.preview, Some(Rect::new(0, 16, 40, 12)));
         assert_eq!(areas.grid, Rect::new(40, 1, 79, 26), "borders inside");
         assert_eq!(areas.bottom, Rect::new(0, 28, 120, 2));
     }
 
+    /// The picture area is 16:9 in pixels, so squarer cells give it fewer rows; it never takes
+    /// more than half the panel, and it gives way when the list would be left too little.
+    #[test]
+    fn the_preview_is_sixteen_by_nine_in_pixels() {
+        let panel_height = |cells| {
+            screen_areas(Rect::new(0, 0, 120, 30), cells)
+                .preview
+                .map(|preview| preview.height)
+        };
+        assert_eq!(panel_height((8, 16)), Some(12));
+        assert_eq!(panel_height((10, 20)), Some(12), "same shape, same rows");
+        assert_eq!(
+            panel_height((16, 16)),
+            Some(13),
+            "square cells: capped at half of 27"
+        );
+        assert_eq!(panel_height((12, 16)), Some(13));
+        assert_eq!(
+            panel_height((4, 16)),
+            Some(7),
+            "tall thin cells: fewer rows"
+        );
+        let short = screen_areas(Rect::new(0, 0, 120, 12), DEFAULT_CELL_PIXELS);
+        assert_eq!(short.preview, None, "too short to spare any");
+        assert_eq!(
+            short.side_panel.map(|panel| panel.height),
+            Some(10),
+            "all of it to the list"
+        );
+    }
+
     #[test]
     fn a_narrow_screen_gives_everything_to_the_treemap() {
-        let areas = screen_areas(Rect::new(0, 0, SIDE_PANEL_MIN_WIDTH - 1, 24));
+        let areas = screen_areas(
+            Rect::new(0, 0, SIDE_PANEL_MIN_WIDTH - 1, 24),
+            DEFAULT_CELL_PIXELS,
+        );
         assert_eq!(areas.side_panel, None);
         assert_eq!(areas.grid.x, 0);
         assert_eq!(areas.grid.width, SIDE_PANEL_MIN_WIDTH - 2);
