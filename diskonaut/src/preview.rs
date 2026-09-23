@@ -1,5 +1,6 @@
 //! What the panel below the list shows for the entry in hand: the first lines of a text file, or
-//! a picture of a PNG or JPEG, scaled down and drawn with the kitty graphics protocol.
+//! a picture of a PNG or JPEG, scaled down and drawn with the kitty graphics protocol — or, in a
+//! terminal without it, drawn in cells as half blocks, two pixels to a cell.
 //!
 //! Files are read on a thread of their own, so a slow disk never holds up the interface, and a
 //! picture is decoded only once the selection has rested on it for [`IMAGE_DEBOUNCE`]: holding
@@ -14,6 +15,7 @@ use ::std::thread;
 use ::std::time::Duration;
 
 use ::ratatui::layout::Rect;
+use ::ratatui::style::Color;
 
 use crate::clipboard::base64;
 
@@ -51,6 +53,39 @@ pub struct PreparedImage {
     pub description: String,
 }
 
+/// A picture drawn in cells: each cell is `▀`, its foreground the upper pixel and its
+/// background the lower, so a cell holds two pixels one above the other.
+#[derive(Debug, PartialEq, Eq)]
+pub struct BlockImage {
+    pub columns: u16,
+    pub rows: u16,
+    /// `columns` by `rows * 2` pixels, row by row; `None` where the picture is transparent.
+    pub pixels: Vec<Option<Color>>,
+    /// What it is, for the caption: `PNG 1920×1080`.
+    pub description: String,
+}
+
+impl BlockImage {
+    /// The pixel at `column` and half-row `half_row`, `None` where transparent or outside.
+    pub fn pixel(&self, column: u16, half_row: u16) -> Option<Color> {
+        if column >= self.columns || half_row >= self.rows * 2 {
+            return None;
+        }
+        self.pixels[usize::from(half_row) * usize::from(self.columns) + usize::from(column)]
+    }
+}
+
+/// How pictures are shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pictures {
+    /// Through the kitty graphics protocol, at full resolution.
+    Kitty,
+    /// In cells, as half blocks: in 24-bit colour, or else the xterm 256-colour palette.
+    Blocks { true_color: bool },
+    /// Not at all: described in words.
+    Described,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Preview {
     /// Nothing to preview: a folder, several marked entries, or nothing selected.
@@ -59,8 +94,20 @@ pub enum Preview {
     Loading,
     Text(Vec<String>),
     Image(Arc<PreparedImage>),
+    Blocks(Arc<BlockImage>),
     /// A line saying what it is instead: `binary file`, `PNG image · 1920×1080`, an error.
     Info(String),
+}
+
+impl Preview {
+    /// What the picture is, for the caption, when it is one.
+    pub fn picture_description(&self) -> Option<&str> {
+        match self {
+            Preview::Image(image) => Some(&image.description),
+            Preview::Blocks(image) => Some(&image.description),
+            _ => None,
+        }
+    }
 }
 
 /// One file to preview, for a preview area of `cells`, whose cells are `cell_pixels` in size.
@@ -70,8 +117,8 @@ pub struct Request {
     pub path: PathBuf,
     pub cells: (u16, u16),
     pub cell_pixels: (u16, u16),
-    /// Whether the terminal can show pictures; without it they are only described.
-    pub graphics: bool,
+    /// How pictures are shown; `Described` means they are not decoded at all.
+    pub pictures: Pictures,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -186,7 +233,7 @@ fn describe_image(path: &Path, kind: Kind) -> Preview {
 
 /// Decode a picture, scale it to the preview area and encode it for the terminal.
 fn prepare_image(request: &Request, kind: Kind, size: u64) -> Preview {
-    if !request.graphics || size > MAX_IMAGE_BYTES {
+    if request.pictures == Pictures::Described || size > MAX_IMAGE_BYTES {
         return describe_image(&request.path, kind);
     }
     let mut limits = image::Limits::default();
@@ -222,6 +269,15 @@ fn prepare_image(request: &Request, kind: Kind, size: u64) -> Preview {
     );
     // Never scaled up: a small picture is shown at its own size.
     let scaled = picture.thumbnail(columns * cell_width, rows * cell_height);
+    if let Pictures::Blocks { true_color } = request.pictures {
+        return Preview::Blocks(Arc::new(block_image(
+            &scaled,
+            (cell_width, cell_height),
+            (columns, rows),
+            true_color,
+            description,
+        )));
+    }
     let mut png = Vec::new();
     if let Err(error) = scaled.write_to(&mut io::Cursor::new(&mut png), image::ImageFormat::Png) {
         return Preview::Info(format!("could not prepare the preview: {error}"));
@@ -233,6 +289,67 @@ fn prepare_image(request: &Request, kind: Kind, size: u64) -> Preview {
         rows: scaled.height().div_ceil(cell_height).clamp(1, rows) as u16,
         description,
     }))
+}
+
+/// Resample a picture already scaled to fit to half-block pixels, which are a cell wide and half
+/// a cell tall, and colour them for the terminal.
+fn block_image(
+    scaled: &image::DynamicImage,
+    (cell_width, cell_height): (u32, u32),
+    (columns, rows): (u32, u32),
+    true_color: bool,
+    description: String,
+) -> BlockImage {
+    let width = scaled.width().div_ceil(cell_width).clamp(1, columns);
+    let half_rows = (scaled.height() * 2)
+        .div_ceil(cell_height)
+        .clamp(1, rows * 2);
+    let small = scaled.thumbnail_exact(width, half_rows).to_rgba8();
+    let rows = half_rows.div_ceil(2);
+    let mut pixels = vec![None; (width * rows * 2) as usize];
+    for (x, y, pixel) in small.enumerate_pixels() {
+        let [r, g, b, a] = pixel.0;
+        if a >= 128 {
+            pixels[(y * width + x) as usize] = Some(if true_color {
+                Color::Rgb(r, g, b)
+            } else {
+                Color::Indexed(xterm_256(r, g, b))
+            });
+        }
+    }
+    BlockImage {
+        columns: width as u16,
+        rows: rows as u16,
+        pixels,
+        description,
+    }
+}
+
+/// The nearest colour in the xterm 256-colour palette: its 6×6×6 cube or its 24 greys. The 16
+/// system colours are left out, since each terminal picks its own.
+fn xterm_256(r: u8, g: u8, b: u8) -> u8 {
+    const LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
+    let nearest_level = |value: u8| {
+        (0..6)
+            .min_by_key(|&i| (i32::from(LEVELS[i]) - i32::from(value)).abs())
+            .unwrap_or(0)
+    };
+    let distance = |(r2, g2, b2): (u8, u8, u8)| {
+        let d = |a: u8, b: u8| (i32::from(a) - i32::from(b)).pow(2);
+        d(r, r2) + d(g, g2) + d(b, b2)
+    };
+    let (ri, gi, bi) = (nearest_level(r), nearest_level(g), nearest_level(b));
+    let cube = 16 + 36 * ri + 6 * gi + bi;
+    let cube_distance = distance((LEVELS[ri], LEVELS[gi], LEVELS[bi]));
+    let average = (u32::from(r) + u32::from(g) + u32::from(b)) / 3;
+    // Greys run 8, 18, … 238.
+    let grey = (average.saturating_sub(3) / 10).min(23) as u8;
+    let level = 8 + 10 * grey;
+    if distance((level, level, level)) < cube_distance {
+        232 + grey
+    } else {
+        cube as u8
+    }
 }
 
 /// The preview thread's end of the conversation: send it files, and it answers each through
@@ -292,6 +409,31 @@ fn run(incoming: &Receiver<Request>, on_ready: &impl Fn(u64, Preview)) {
     }
 }
 
+/// How pictures are shown. `DISKONAUT_GRAPHICS` picks: `kitty`, `blocks` or `none`; otherwise
+/// kitty graphics where the terminal has them, and half blocks everywhere else, tmux included.
+pub fn pictures() -> Pictures {
+    match ::std::env::var("DISKONAUT_GRAPHICS").as_deref() {
+        Ok("none") => Pictures::Described,
+        _ if kitty_supported() => Pictures::Kitty,
+        _ => Pictures::Blocks {
+            true_color: true_color_supported(),
+        },
+    }
+}
+
+/// Whether the terminal says it takes 24-bit colour. ssh does not forward `COLORTERM`, so a
+/// remote session usually falls back to the 256-colour palette, which every terminal of note
+/// has.
+fn true_color_supported() -> bool {
+    let var = |name| ::std::env::var(name).unwrap_or_default();
+    matches!(var("COLORTERM").as_str(), "truecolor" | "24bit")
+        || var("TERM").ends_with("-direct")
+        || matches!(
+            var("TERM").as_str(),
+            "xterm-kitty" | "xterm-ghostty" | "wezterm"
+        )
+}
+
 /// Whether the terminal speaks the kitty graphics protocol. Decided once, by [`detect_kitty`] on
 /// the first call, which must come in raw mode and before anything else reads stdin.
 pub fn kitty_supported() -> bool {
@@ -309,12 +451,13 @@ static KITTY_SUPPORTED: OnceLock<bool> = OnceLock::new();
 /// Judged from the environment first: kitty, Ghostty and WezTerm say who they are. ssh forwards
 /// none of that but `TERM`, and that is often `xterm-256color`, so otherwise the terminal is
 /// asked. Inside tmux the sequences would need a passthrough tmux does not reliably give, so
-/// pictures are described there instead. `DISKONAUT_GRAPHICS=kitty` or `none` overrides.
+/// pictures are drawn in cells there instead. `DISKONAUT_GRAPHICS` set to `kitty` says yes,
+/// and `blocks` or `none` no, without asking.
 fn detect_kitty() -> bool {
     let var = |name| ::std::env::var(name).unwrap_or_default();
     match var("DISKONAUT_GRAPHICS").as_str() {
         "kitty" => return true,
-        "none" => return false,
+        "blocks" | "none" => return false,
         _ => {}
     }
     if !var("TMUX").is_empty() {
@@ -510,8 +653,8 @@ mod tests {
     use ::std::time::{Duration, Instant};
 
     use super::{
-        IMAGE_DEBOUNCE, Kind, Placement, PreparedImage, Preview, Previewer, Request, kitty_delete,
-        kitty_place, kitty_reply, sniff, text_lines,
+        IMAGE_DEBOUNCE, Kind, Pictures, Placement, PreparedImage, Preview, Previewer, Request,
+        kitty_delete, kitty_place, kitty_reply, sniff, text_lines, xterm_256,
     };
 
     fn temp_dir(name: &str) -> PathBuf {
@@ -631,13 +774,13 @@ mod tests {
         );
     }
 
-    fn request(generation: u64, path: PathBuf, graphics: bool) -> Request {
+    fn request(generation: u64, path: PathBuf, pictures: Pictures) -> Request {
         Request {
             generation,
             path,
             cells: (39, 11),
             cell_pixels: (8, 16),
-            graphics,
+            pictures,
         }
     }
 
@@ -663,7 +806,7 @@ mod tests {
         fs::write(dir.join("notes.txt"), "first\nsecond\n").expect("write");
         let (previewer, answers) = previewer();
         let asked = Instant::now();
-        previewer.request(request(1, dir.join("notes.txt"), true));
+        previewer.request(request(1, dir.join("notes.txt"), Pictures::Kitty));
         let (generation, preview, at) = answers
             .recv_timeout(Duration::from_secs(5))
             .expect("answer");
@@ -688,7 +831,7 @@ mod tests {
             picture(&dir.join(name), 1600, 400, format);
             let (previewer, answers) = previewer();
             let asked = Instant::now();
-            previewer.request(request(3, dir.join(name), true));
+            previewer.request(request(3, dir.join(name), Pictures::Kitty));
             let (generation, preview, at) = answers
                 .recv_timeout(Duration::from_secs(10))
                 .expect("answer");
@@ -721,9 +864,9 @@ mod tests {
         picture(&dir.join("a.png"), 64, 64, image::ImageFormat::Png);
         fs::write(dir.join("b.txt"), "b").expect("write");
         let (previewer, answers) = previewer();
-        previewer.request(request(1, dir.join("a.png"), true));
+        previewer.request(request(1, dir.join("a.png"), Pictures::Kitty));
         ::std::thread::sleep(IMAGE_DEBOUNCE / 4);
-        previewer.request(request(2, dir.join("b.txt"), true));
+        previewer.request(request(2, dir.join("b.txt"), Pictures::Kitty));
         let (generation, preview, _) = answers
             .recv_timeout(Duration::from_secs(5))
             .expect("answer");
@@ -741,12 +884,58 @@ mod tests {
         let dir = temp_dir("described");
         picture(&dir.join("shot.png"), 1920, 1080, image::ImageFormat::Png);
         let (previewer, answers) = previewer();
-        previewer.request(request(1, dir.join("shot.png"), false));
+        previewer.request(request(1, dir.join("shot.png"), Pictures::Described));
         let (_, preview, _) = answers
             .recv_timeout(Duration::from_secs(5))
             .expect("answer");
         assert_eq!(preview, Preview::Info("PNG image · 1920×1080".into()));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Without kitty graphics a picture is drawn in cells: scaled the same way, then two pixels
+    /// to a cell, a transparent pixel left blank.
+    #[test]
+    fn without_kitty_a_picture_is_drawn_in_half_blocks() {
+        use ::ratatui::style::Color;
+        let dir = temp_dir("blocks");
+        let mut wide = image::RgbaImage::from_pixel(1600, 400, image::Rgba([255, 0, 0, 255]));
+        for x in 0..1600 {
+            for y in 200..400 {
+                wide.put_pixel(x, y, image::Rgba([0, 0, 0, 0]));
+            }
+        }
+        wide.save(dir.join("wide.png")).expect("write picture");
+        for (true_color, red) in [(true, Color::Rgb(255, 0, 0)), (false, Color::Indexed(196))] {
+            let (previewer, answers) = previewer();
+            previewer.request(request(
+                1,
+                dir.join("wide.png"),
+                Pictures::Blocks { true_color },
+            ));
+            let (_, preview, _) = answers
+                .recv_timeout(Duration::from_secs(10))
+                .expect("answer");
+            let Preview::Blocks(image) = preview else {
+                panic!("expected blocks, got {preview:?}");
+            };
+            // Scaled to 312×78px as for kitty: 39 cells across, 78/8 → 10 half rows, 5 rows.
+            assert_eq!((image.columns, image.rows), (39, 5));
+            assert_eq!(image.pixels.len(), 39 * 10);
+            assert_eq!(image.pixel(0, 0), Some(red), "the red top half");
+            assert_eq!(image.pixel(38, 9), None, "the transparent bottom half");
+            assert_eq!(image.pixel(39, 0), None, "outside");
+            assert!(image.description.ends_with("1600×400"));
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn colours_map_to_the_nearest_of_the_256() {
+        assert_eq!(xterm_256(0, 0, 0), 16);
+        assert_eq!(xterm_256(255, 255, 255), 231);
+        assert_eq!(xterm_256(255, 0, 0), 196);
+        assert_eq!(xterm_256(128, 128, 128), 244, "a grey from the grey ramp");
+        assert_eq!(xterm_256(0, 95, 135), 24);
     }
 
     #[test]
@@ -757,7 +946,7 @@ mod tests {
         fs::write(dir.join("fake.png"), b"\x89PNG\r\n\x1a\nnot really").expect("write");
         let (previewer, answers) = previewer();
         let ask = |generation, name: &str| {
-            previewer.request(request(generation, dir.join(name), true));
+            previewer.request(request(generation, dir.join(name), Pictures::Kitty));
             answers
                 .recv_timeout(Duration::from_secs(5))
                 .expect("answer")
@@ -787,7 +976,7 @@ mod tests {
             return;
         }
         let (previewer, answers) = previewer();
-        previewer.request(request(1, fifo, true));
+        previewer.request(request(1, fifo, Pictures::Kitty));
         let (_, preview, _) = answers
             .recv_timeout(Duration::from_secs(5))
             .expect("answered");

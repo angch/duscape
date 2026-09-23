@@ -233,8 +233,11 @@ passed to the terminal. A PNG or JPEG — recognised by its first bytes, not its
 as a picture in terminals that speak the kitty graphics protocol (kitty, Ghostty, WezTerm; known
 from the environment, or by asking the terminal when it says nothing, as over ssh), once
 the selection has rested on it for 100 ms, so moving quickly through a folder of photos decodes
-none of them. Elsewhere, and inside tmux, a picture is described instead: `PNG image · 1920×1080`.
-`DISKONAUT_GRAPHICS=kitty` or `none` overrides the guess. Only regular files are read, and on
+none of them. Elsewhere, and inside tmux, it is drawn in the text itself as half blocks (`▀`),
+two pixels to a cell: in 24-bit colour where `COLORTERM` says the terminal has it, and in the
+256-colour palette otherwise (ssh does not pass `COLORTERM` on). `DISKONAUT_GRAPHICS=kitty`,
+`blocks` or `none` overrides the guess; `none` describes a picture instead of drawing it:
+`PNG image · 1920×1080`. Only regular files are read, and on
 macOS files that are only in iCloud are not, since reading one would download it.
 
 Narrower terminals give the whole width to the treemap, as before.

@@ -17,7 +17,7 @@ use crate::Event;
 use crate::clipboard::{Clipboard, SystemClipboard};
 use crate::config::Keybinds;
 use crate::messages::{Instruction, handle_instructions};
-use crate::preview::{Graphics, NoGraphics, Preview, Previewer, Request, placement_in};
+use crate::preview::{Graphics, NoGraphics, Pictures, Preview, Previewer, Request, placement_in};
 use crate::state::UiEffects;
 use crate::ui::Display;
 use crate::ui::side_panel::{self, picture_area};
@@ -97,8 +97,8 @@ where
     mark_range: Option<(OsString, Vec<OsString>)>,
     /// The thread that reads files for the preview, once started; without one nothing is read.
     previewer: Option<Previewer>,
-    /// Whether the terminal can show pictures, and what draws them.
-    graphics_supported: bool,
+    /// How pictures are shown, and what draws them when the terminal does.
+    pictures: Pictures,
     graphics: Box<dyn Graphics>,
     /// What the preview was last asked for — the file, the picture area and the cell size — so
     /// it is asked again only when one of them changes.
@@ -169,7 +169,7 @@ where
             cursor_chosen: false,
             mark_range: None,
             previewer: None,
-            graphics_supported: false,
+            pictures: Pictures::Described,
             graphics: Box::new(NoGraphics),
             preview_key: None,
             preview_generation: 0,
@@ -181,16 +181,16 @@ where
                 .ok(),
         }
     }
-    /// Start previewing files: `previewer` reads them, and `graphics` draws pictures if the
-    /// terminal can (`graphics_supported`); otherwise pictures are described in words.
+    /// Start previewing files: `previewer` reads them, and pictures are shown as `pictures`
+    /// says — by `graphics` for [`Pictures::Kitty`], in the frame itself for blocks.
     pub fn enable_previews(
         &mut self,
         previewer: Previewer,
-        graphics_supported: bool,
+        pictures: Pictures,
         graphics: Box<dyn Graphics>,
     ) {
         self.previewer = Some(previewer);
-        self.graphics_supported = graphics_supported;
+        self.pictures = pictures;
         self.graphics = graphics;
     }
     /// A preview has been read. Kept only if it answers the latest request.
@@ -235,7 +235,7 @@ where
                     path,
                     cells,
                     cell_pixels,
-                    graphics: self.graphics_supported,
+                    pictures: self.pictures,
                 });
                 Preview::Loading
             }
@@ -267,8 +267,8 @@ where
             " · {}",
             libdiskonaut::format::DisplaySize(entry.size as f64)
         ));
-        if let Preview::Image(image) = &self.preview {
-            caption.push_str(&format!(" · {}", image.description));
+        if let Some(description) = self.preview.picture_description() {
+            caption.push_str(&format!(" · {description}"));
         }
         caption
     }

@@ -21,8 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a PNG or JPEG (detected by magic bytes) drawn with the kitty graphics protocol after a 100 ms
   debounce, scaled to fit. Support is read from the environment, or else asked of the terminal
   (a graphics query then a device attributes request), so it is found over ssh too. Terminals
-  without it, and tmux, get a description instead.
-  `DISKONAUT_GRAPHICS=kitty|none` overrides the detection. Files are read on a thread of their
+  without it, and tmux, get the picture in half blocks (`▀`, two pixels to a cell) in 24-bit
+  colour when `COLORTERM` says so, else the xterm 256-colour palette.
+  `DISKONAUT_GRAPHICS=kitty|blocks|none` overrides the detection; `none` describes pictures. Files are read on a thread of their
   own; only regular files are opened, and iCloud-only files on macOS are left undownloaded.
 - `d` deletes every marked entry, after one prompt that counts them, totals their size and names
   as many as fit. A failure part-way does not stop the rest; the message says what failed.

@@ -203,13 +203,13 @@ fn start<B>(
         let previewer = preview::Previewer::spawn(move |generation, preview| {
             let _ = instruction_sender.send(Instruction::PreviewReady(generation, preview));
         });
-        let kitty = preview::kitty_supported();
-        let graphics: Box<dyn preview::Graphics> = if kitty {
+        let pictures = preview::pictures();
+        let graphics: Box<dyn preview::Graphics> = if pictures == preview::Pictures::Kitty {
             Box::new(preview::KittyGraphics::default())
         } else {
             Box::new(preview::NoGraphics)
         };
-        app.enable_previews(previewer, kitty, graphics);
+        app.enable_previews(previewer, pictures, graphics);
     }
 
     active_threads.push(

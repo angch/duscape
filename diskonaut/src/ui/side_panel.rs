@@ -18,7 +18,7 @@ use ::unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use libdiskonaut::format::{DisplayCount, DisplaySize};
 use libdiskonaut::tiles::{FileMetadata, FileType, Tile};
 
-use crate::preview::Preview;
+use crate::preview::{BlockImage, Preview};
 
 /// Terminals narrower than this give the whole width to the treemap: a third of anything less
 /// is too narrow for a name and a size, and what it took would cramp the treemap.
@@ -446,8 +446,9 @@ fn cut_end(text: &str, width: usize) -> String {
     take_width(text.chars(), width).into_iter().collect()
 }
 
-/// The area below the list: a caption naming what is previewed, then the preview. A picture is
-/// drawn over the blank area by the terminal itself, after the frame (see `preview::Graphics`).
+/// The area below the list: a caption naming what is previewed, then the preview. A kitty
+/// picture is drawn over the blank area by the terminal itself, after the frame (see
+/// `preview::Graphics`); a picture in half blocks is part of the frame.
 pub struct PreviewPanel<'a> {
     caption: &'a str,
     preview: &'a Preview,
@@ -486,12 +487,40 @@ impl Widget for PreviewPanel<'_> {
         let body = picture_area(area);
         let lines: Vec<String> = match self.preview {
             Preview::None | Preview::Image(_) => Vec::new(),
+            Preview::Blocks(image) => {
+                draw_blocks(image, body, buf);
+                Vec::new()
+            }
             Preview::Loading => vec!["…".to_string()],
             Preview::Info(info) => vec![printable(info)],
             Preview::Text(lines) => lines.clone(),
         };
         for (row, line) in (body.y..body.y + body.height).zip(&lines) {
             buf.set_stringn(area.x, row, cut_end(line, width), width, Style::default());
+        }
+    }
+}
+
+/// A picture in half blocks, centred across `area` like a kitty one. A cell whose two pixels
+/// are both transparent is left blank; one with only one gets the half block for it alone, so
+/// the terminal's own background shows through the other half.
+fn draw_blocks(image: &BlockImage, area: Rect, buf: &mut Buffer) {
+    let left = area.x + area.width.saturating_sub(image.columns) / 2;
+    for row in 0..image.rows.min(area.height) {
+        for column in 0..image.columns.min(area.width) {
+            let (upper, lower) = (
+                image.pixel(column, row * 2),
+                image.pixel(column, row * 2 + 1),
+            );
+            let (symbol, style) = match (upper, lower) {
+                (None, None) => continue,
+                (Some(upper), None) => ("▀", Style::default().fg(upper)),
+                (None, Some(lower)) => ("▄", Style::default().fg(lower)),
+                (Some(upper), Some(lower)) => ("▀", Style::default().fg(upper).bg(lower)),
+            };
+            if let Some(cell) = buf.cell_mut((left + column, area.y + row)) {
+                cell.set_symbol(symbol).set_style(style);
+            }
         }
     }
 }
