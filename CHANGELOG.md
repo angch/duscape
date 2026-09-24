@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The Windows viewer does what the terminal viewer does: the list beside the treemap (Tab
+  switches, `s` hides it), the live treemap while scanning, breadcrumbs, marks (Ctrl+click,
+  Shift+↑↓, Shift+click, Ctrl+A) that copy their paths, copying paths (Ctrl+C, Ctrl+Shift+C),
+  deleting several entries at once, a preview of text and pictures, zoom, the disk-usage/apparent-
+  size switch, rescans (`r`/`R`, F5), a right-click menu, double-click to open, the volume and
+  freed-space summary, and the terminal viewer's scan flags. It is built on `diskonaut-viewer`,
+  the state the macOS and Linux windows share, so the three behave alike; only GDI and Win32
+  input are its own.
+- `diskonaut-viewer` follows the terminal viewer's rules, so every desktop viewer does: Ctrl+click
+  (⌘-click) takes in the entry already in hand only if the user picked it, never one the viewer
+  placed, so nothing unchosen is deleted; a Shift run adds its range to the marks there were and
+  shrinks when reversed; every change to the marks copies their paths once the viewer has given it
+  a clipboard (`set_clipboard`, `copy_paths`); `delete` removes entries from disk going on past
+  failures and names the first, with `delete_prompt` the question to ask first; its rescans are
+  `diskonaut_scan::rescan::Rescans`'s, as the terminal viewer's are; a status message shows over
+  the marks' summary while it lasts; the status bar says the zoom; `wanted_preview_sized` asks for
+  a preview again when the pixels it will take change.
+- Shared by the viewers now, rather than written into the terminal one: rescan bookkeeping
+  (`diskonaut_scan::rescan::Rescans`), how a copied path is made (`format::copied_path`) and the
+  debounced preview thread (`preview::Reader`).
 - The MS-DOS viewer, from a review of its 286 port: deleting or rescanning a folder whose path is
   too long for DOS is refused (the check was lost to a flag overwritten before it was tested),
   and a rescan no longer takes a folder out of the tree before knowing it can be read, so one
@@ -69,6 +89,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The workspace builds on Windows and macOS again: the Linux viewer's Wayland and X11 crates are
+  Unix-only, so they are now dependencies of Linux and FreeBSD targets alone, and elsewhere
+  `diskonaut-linux` is the stub it already was.
+- macOS and Linux viewers: pictures the system decodes but `libdiskonaut` does not (HEIC, GIF,
+  WebP, TIFF, BMP, AVIF) are shown again. Since a binary file's preview became a description of
+  where its blocks are, `Previewer` was looking for the old `binary file` line and never found it.
 - macOS viewer: ⌘⌫ (Move to Trash) and ⌥⌘⌫ (Delete Immediately) did nothing; their key
   equivalent was Backspace (`U+0008`), not the Delete character the ⌫ key types.
 - Pictures in the preview are drawn as sixels in terminals without kitty graphics that have
@@ -99,6 +125,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Pictures smaller than the preview were scaled up to fill it, blurred, though the code said they
+  were not: `DynamicImage::thumbnail` enlarges too. Both viewers now use `preview::fit`.
 - The Windows GUI's Delete removed the entry from the treemap but never from disk, though its
   dialog said it would. It now deletes through the same code as the terminal viewer, and like it
   refuses NTFS's metadata files.

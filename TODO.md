@@ -3,6 +3,17 @@
 Work that needs a machine this repository's CI does not have. Each item says how to check it and
 what should happen; tick it off (or fix what it finds) and say so in the commit.
 
+## Shared viewer (`diskonaut-viewer`): needs a macOS or Linux machine
+
+- [ ] **One preview thread.** `viewers/shared/src/preview.rs` (`Previewer`, 60 ms debounce on
+      every file, pictures handed over as bytes for the system decoder) and
+      `libdiskonaut::preview::Reader` (latest request only, 100 ms debounce on pictures alone,
+      the picture prepared by a closure — the terminal and Windows viewers) do the same job twice.
+      Port `Previewer` onto `Reader` with a `picture` closure that reads the bytes, keeping the
+      by-extension formats (`OTHER_PICTURES`) the system decodes, then delete its loop. Check on a
+      real window that HEIC and GIF still preview and that holding ↓ through a folder of photos
+      decodes none until the key is released.
+
 ## macOS viewer (`diskonaut-mac`): untried by hand
 
 `viewers/macos/` was written and checked without screen or input access. The platform-independent
@@ -76,7 +87,8 @@ To automate another item, add steps and `expect` lines to `smoke.sh`.
 
 - [ ] *(smoke: click in the list)* **Click** selects in either panel; **double-click** opens a folder, and on a file opens Quick
       Look.
-- [ ] *(smoke: ⌘-click)* **⌘-click** toggles a mark (the entry already in hand is marked as well); **⇧-click** marks
+- [ ] *(smoke: ⌘-click)* **⌘-click** toggles a mark (the entry already in hand is marked as well, if the
+      user picked it rather than the app placing it there); **⇧-click** marks
       the range from the anchor; a plain click clears the marks.
 - [ ] **Hover** highlights the tile or row and names it in the status bar; leaving the view clears
       that (`NSTrackingArea` with `InVisibleRect`; `mouseExited:`).

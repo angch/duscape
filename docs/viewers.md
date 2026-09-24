@@ -53,25 +53,37 @@ a window that draws one picture. See [`viewers/linux/README.md`](../viewers/linu
 
 ## Windows GUI (experimental)
 
-`diskonaut-windows` is a native Windows treemap window. The walker (`diskonaut-scan`) and the tree,
-layout and deletion (`libdiskonaut`) are the same code the terminal app runs; the window is only
-drawing and input. [`features.md`](features.md) lists what each viewer offers. It is built on
-`windows-sys` and GDI rather than a GUI framework, so the release binary is about **250 KB**.
+`diskonaut-windows` is the terminal viewer in a native window: the same walker (`diskonaut-scan`), and
+the same tree, treemap, deletion, previews and rescans (`libdiskonaut`), with the list and the
+treemap side by side. What the window shows and does is `diskonaut-viewer`, the state the macOS
+and Linux windows share, so the three behave alike. It is built on `windows-sys` and GDI rather than a GUI framework, so the
+release binary is about **840 KB**, most of it the PNG and JPEG decoders for the preview.
+[`features.md`](features.md) compares the viewers feature by feature.
 
 ```sh
 cargo run -p diskonaut-windows --release -- C:\   # or run with no argument for a folder picker
 ```
 
-- **Fast:** the native parallel walker, scanning on a worker thread; the title bar shows entries/second.
-- **Live progress:** the window opens immediately and reports entries as the scan runs.
-- **Navigation:** left-click or Enter to open a folder, right-click / Backspace / the ◄ Up button to
-  go back, arrow keys to move the selection.
-- **Deletion:** Delete removes the selected file or folder from disk after a confirmation dialog,
-  and refuses NTFS's own metadata files.
-- **Details:** the bottom bar shows the hovered tile; a "small files" block stands in for entries too
-  small to draw; the window is DPI-aware and double-buffered (no flicker).
+It takes the terminal viewer's scan flags: `-a`, `--max-depth`, `--threads`,
+`--hard-link-threshold`.
 
-Still experimental — no breadcrumb clicks, custom icon, or in-place rescan yet.
+- **Live:** the treemap and list fill in as the scan runs, as in the terminal.
+- **Navigation:** arrows move through the list or the treemap (Tab switches); Enter or a double
+  click opens a folder; Esc, Backspace, a breadcrumb or the mouse's back button goes up.
+- **Marks:** Ctrl+click, Shift+↑↓ or Shift+click marks several entries, Ctrl+A all of them, and
+  each copies their paths.
+- **Copy:** Ctrl+C copies the path of what is marked or in hand, relative to where the viewer was
+  started and quoted for PowerShell; Ctrl+Shift+C the full path.
+- **Delete:** Del or `d` deletes what is marked, or the entry in hand, after saying what and how
+  much; NTFS's own metadata files are refused.
+- **Preview:** a file in hand is shown under the list — text in a monospace font, a PNG or JPEG
+  as a picture.
+- **Right-click** opens a menu: open, copy, rescan, delete.
+- **Keys:** `a` switches disk usage and apparent size, `+` / `-` / `0` zoom (or the wheel over
+  the treemap), `r` / `R` (or F5 / Shift+F5) rescan the folder or everything, `s` hides the panel.
+- **Details:** the status bar says what is in hand or under the pointer and how the scan went —
+  entries, unreadable ones, how much of the volume it could not see, what was freed, rescans under
+  way; the window is DPI-aware and double-buffered.
 
 ## MS-DOS
 

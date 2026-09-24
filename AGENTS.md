@@ -17,7 +17,7 @@ diskonaut/
 │   ├── windows/       # diskonaut-windows: the Win32/GDI viewer
 │   ├── macos/         # diskonaut-mac: the AppKit viewer (objc2)
 │   ├── linux/         # diskonaut-linux: the Wayland/X11 viewer, no toolkit (wayland-client, x11rb, fontdue)
-│   ├── shared/        # diskonaut-viewer: what the macOS and Linux viewers share — the window's
+│   ├── shared/        # diskonaut-viewer: what the desktop viewers share — the window's
 │   │                  #   state and layout (`Viewer`), the first scan with its outline, the previewer
 │   └── dos/           # not a crate: the MS-DOS treemap in 16-bit FASM assembly, `make dos`
 ├── docs/              # features.md (every feature, per viewer), sizes.md (how sizes are counted),
@@ -26,11 +26,11 @@ diskonaut/
 ├── example/config.toml
 └── Cargo.toml         # Workspace root
 ```
-Dependencies run one way: `diskonaut-scan` → `libdiskonaut`, each viewer → both, and the macOS and
-Linux viewers → `diskonaut-viewer` too. A feature that is not drawing or input goes in `common`
+Dependencies run one way: `diskonaut-scan` → `libdiskonaut`, each viewer → both, and the desktop
+viewers (Windows, macOS, Linux) → `diskonaut-viewer` too. A feature that is not drawing or input goes in `common`
 (or `scanners`, if it reads the disk), so the other viewers get it by calling it; what is about the
 *window* but not about a toolkit (which entry is in hand, marks, the layout in points, what a
-delete changes) goes in `viewers/shared`, so the macOS and Linux viewers behave alike. The scan protocol types (`ScanOptions`, `EntryMeta`, `DirEntries`,
+delete changes) goes in `viewers/shared`, so the three desktop viewers behave alike. The scan protocol types (`ScanOptions`, `EntryMeta`, `DirEntries`,
 `Outline`, `Found`) are in `common` because the model consumes them; `diskonaut-scan` re-exports
 them, so `diskonaut_scan::X` works for either kind.
 
@@ -136,14 +136,30 @@ Six kinds of thread communicate via `mpsc` channels (bounded, except the preview
 - `rescan.rs` — `Rescanner` and `Refiner`: rescans and the second pass on threads of their own,
   results through a callback, for any viewer
 
-**`diskonaut-windows`** (`viewers/windows/`) — the Win32/GDI viewer: one `main.rs`. Scans with
-`parallel::build_tree`, draws the `Board`'s tiles, deletes through `libdiskonaut::delete`.
+**`diskonaut-windows`** (`viewers/windows/`) — the Win32/GDI viewer, over `diskonaut-viewer`, at
+feature parity with the TUI bar configurable keys (`docs/features.md`). Behaviour goes in the
+shared `Viewer`, not in `win/`:
+- `preview.rs` — `prepare_picture`: a picture decoded and scaled to the pixels it will take, as
+  BGRA rows blended over the panel, for `libdiskonaut::preview::Reader`; no Win32, tested everywhere
+- `cli.rs` — the TUI's scan flags
+- `win/mod.rs` — the window: input → `Viewer` calls (points are pixels over the DPI scale), then
+  `changed()` (a preview request at the drawn size — `wanted_preview_sized` — title, redraw).
+  Threads post one boxed `AppMsg`; one arriving during a modal loop (message box, context menu)
+  is queued FIFO in `PENDING` and handled when the handler returns — order matters, the outline's
+  last batch comes before the finished tree
+- `win/paint.rs` — GDI, double-buffered, by `Viewer::layout`; returns the breadcrumbs for clicks
 
 **`diskonaut-viewer`** (`viewers/shared/`) — what the desktop viewers share, with no toolkit:
 - `state.rs` — `Viewer`: everything the window shows and how it answers input — `Layout` (points;
   tiles in 2.4×6 pt cells, the treemap's 2.5 ratio), the entry in hand kept by *name* so a
-  relayout cannot move it, marks, navigation, zoom, delete bookkeeping, rescans, the status bar's
-  words. Its tests run on every platform; a behaviour both windows should have goes here first
+  relayout cannot move it, marks, navigation, zoom, delete (`delete`, `delete_prompt`, and
+  `removed` for a Trash), rescans (through `diskonaut_scan::rescan::Rescans`), the status bar's
+  words. It keeps the TUI's rules from "Key Patterns": `chosen` says whether the entry in hand was
+  picked or placed, and only a picked one seeds a Ctrl+click selection; a Shift run adds its range
+  to the marks it started from (`mark_run`) and shrinks when reversed; every change to the marks
+  copies their paths once the viewer has called `set_clipboard` (Windows does; macOS and Linux
+  copy through their toolkits and read `target_paths`). Its tests run on every platform; a
+  behaviour the windows should share goes here first
 - `scan.rs` — the first scan with the live `Outline`, results through callbacks on the scan's
   thread; `preview.rs` — the latest-wins preview reader (pictures are handed over as bytes for
   the viewer to decode: `NSImage` on macOS, the `image` crate on Linux)
@@ -465,7 +481,7 @@ measured and none helped — read the 2026-09-24 section before trying them agai
 
 ### Modifying treemap layout
 - Core algorithm: `common/src/tiles/treemap.rs`
-- Tile rendering: `viewers/tui/src/ui/grid/` (terminal), `viewers/windows/src/main.rs` (`paint`),
+- Tile rendering: `viewers/tui/src/ui/grid/` (terminal), `viewers/windows/src/win/paint.rs`,
   `viewers/macos/src/mac/draw.rs` (`treemap`)
 - Adjust `HEIGHT_WIDTH_RATIO`, `MINIMUM_HEIGHT`, `MINIMUM_WIDTH` constants
 - Entries below the minimum tile size are never dropped: they fold into the "small files" `x`
@@ -515,8 +531,9 @@ busybox. One job then publishes both tarballs: matrix jobs that each create the 
 | `viewers/tui/src/lib.rs` | ~400 lines — terminal setup, thread/channel setup |
 | `viewers/tui/src/app/mod.rs` | ~1400 lines — the TUI's state machine |
 | `viewers/tui/src/preview.rs` | ~1300 lines — preview thread, kitty/sixel/half-block output, detection |
-| `viewers/windows/src/main.rs` | ~800 lines — the whole Windows viewer |
-| `viewers/shared/src/state.rs` | ~1170 lines — the desktop viewers' shared state, no toolkit |
+| `viewers/windows/src/win/mod.rs` | ~750 lines — the Windows window: input → `Viewer`, threads, messages |
+| `viewers/windows/src/win/paint.rs` | ~670 lines — GDI drawing by `Viewer::layout` |
+| `viewers/shared/src/state.rs` | ~1300 lines — the desktop viewers' shared state, no toolkit |
 | `viewers/macos/src/mac/view.rs` | ~1050 lines — the macOS viewer's view, events and commands |
 | `viewers/linux/src/wayland.rs` | ~980 lines — the Wayland backend: shm, xdg-shell, seat, clipboard |
 | `viewers/linux/src/app.rs` | ~810 lines — the Linux viewer's loop, keys, mouse, dialogs, title bar |
