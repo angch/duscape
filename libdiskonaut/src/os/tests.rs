@@ -28,19 +28,35 @@ fn size_on_disk_fast_is_at_least_file_length() {
 }
 
 /// Only a volume's root is comparable with the volume's usage; a folder inside it is not.
+///
+/// Worked out from a folder made for the test, never from the temp directory itself: on the many
+/// desktops that mount `/tmp` as tmpfs, the temp directory *is* a volume root.
 #[test]
 fn volume_used_is_reported_for_a_volume_root_only() {
-    let dir = std::env::temp_dir()
-        .canonicalize()
-        .expect("canonicalize temp dir");
-    assert_eq!(
-        crate::os::volume_used(&dir),
-        None,
-        "a folder is not a volume"
+    let dir = std::env::temp_dir().join("diskonaut_os_volume_used_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let dir = dir.canonicalize().expect("canonicalize temp dir");
+    let inside = crate::os::volume_used(&dir);
+
+    // The mount the folder is on: up from it while the device stays the same — `/tmp` itself
+    // where that is a tmpfs, the root filesystem where it is not.
+    let device = crate::os::volume_id(&dir).expect("device of the temp dir");
+    let mount = dir
+        .ancestors()
+        .take_while(|path| crate::os::volume_id(path) == Some(device))
+        .last()
+        .expect("the folder itself at least")
+        .to_path_buf();
+    let used = crate::os::volume_used(&mount);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert_eq!(inside, None, "a folder is not a volume");
+    assert!(
+        used.is_some(),
+        "{} is where its volume is mounted",
+        mount.display()
     );
-    let root = dir.ancestors().last().expect("a root");
-    let used = crate::os::volume_used(root).expect("the root of the temp dir's volume");
-    assert!(used > 0);
 }
 
 /// Unelevated, the privilege is not held; the call must say so rather than fail.
