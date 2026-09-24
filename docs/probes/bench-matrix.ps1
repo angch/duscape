@@ -10,8 +10,9 @@
 # is timed in its export mode (`/export`, folders only, `/admin=0`), which scans, writes a CSV and
 # exits — unelevated it walks the directories as everyone else does; from an elevated shell it
 # reads the MFT, and so does diskonaut read the volume's metadata files, which is what the
-# "elevated runs" line records. Windows has no way to drop the file cache from a script, so there
-# are no cold rows; the file says so rather than silently skipping them.
+# "elevated runs" line records. Cold rows need the file cache emptied before each run
+# (`drop-cache.ps1`, beside this script), which an elevated shell can do; unelevated there are
+# none, and the file says so rather than silently skipping them.
 # Only the trees are positional: without this, PowerShell binds the first tree to `-Tag`.
 [CmdletBinding(PositionalBinding = $false)]
 param(
@@ -40,6 +41,8 @@ $wiztree = @("C:\Program Files\WizTree\WizTree64.exe", "C:\Program Files (x86)\W
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $elevated = (New-Object Security.Principal.WindowsPrincipal $identity).IsInRole(
     [Security.Principal.WindowsBuiltInRole]::Administrator)
+$dropCache = Join-Path $PSScriptRoot "drop-cache.ps1"
+$canDrop = $elevated -and (Test-Path $dropCache)
 $host_ = $env:COMPUTERNAME.ToLower()
 $date = Get-Date
 $out = Join-Path $here ("docs\benchmarks\{0}-{1}{2}.md" -f $host_, $date.ToString("yyyyMMdd"), $(if ($Tag) { "-$Tag" } else { "" }))
@@ -95,7 +98,7 @@ $lines.Add("| system | $($os.Caption.Trim()) $($os.Version) |")
 $lines.Add("| diskonaut | $commit ($dirty), release profile |")
 $lines.Add("| diskus | $diskusVersion |")
 $lines.Add("| WizTree | $wiztreeVersion, timed in export mode (folders only) |")
-$lines.Add("| cold runs | no: Windows has no way to drop the file cache from a script |")
+$lines.Add("| cold runs | $(if ($canDrop) { 'yes (the file cache emptied before each: drop-cache.ps1)' } else { 'no: emptying the file cache (drop-cache.ps1) needs an elevated shell' }) |")
 $lines.Add("| elevated runs | $(if ($elevated) { 'yes: this shell is elevated (every row)' } else { 'no: run from an elevated shell for them' }) |")
 $lines.Add("| runs per cell | $Runs |")
 $lines.Add("")
@@ -148,7 +151,7 @@ if ($wizFigures) {
     $wizFigures | ForEach-Object { $lines.Add($_) }
 }
 
-function Bench([string]$title, [string]$dir) {
+function Bench([string]$title, [string]$dir, [string[]]$hyperfineArgs) {
     $md = Join-Path $env:TEMP "bench-matrix-hyperfine.md"
     $cmds = @()
     if ($diskus) { $cmds += @("-n", "diskus", "$(Program $diskus) --directories excluded $(Arg $dir) >NUL 2>&1") }
@@ -159,7 +162,7 @@ function Bench([string]$title, [string]$dir) {
     # a cell that fails is recorded with what hyperfine said, and the run goes on.
     $was = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    try { $said = @(& $hyperfine --runs $Runs --warmup 1 --export-markdown $md @cmds 2>&1 | ForEach-Object { [string]$_ }) }
+    try { $said = @(& $hyperfine --runs $Runs @hyperfineArgs --export-markdown $md @cmds 2>&1 | ForEach-Object { [string]$_ }) }
     finally { $ErrorActionPreference = $was }
     $lines.Add("### ${title}: $dir")
     $lines.Add("")
@@ -181,7 +184,11 @@ $lines.Add("## Timings")
 $lines.Add("")
 foreach ($path in $resolved) {
     Write-Host "== warm $path"
-    Bench "warm" $path
+    Bench "warm" $path @("--warmup", "1")
+    if ($canDrop) {
+        Write-Host "== cold $path"
+        Bench "cold" $path @("--prepare", "powershell -NoProfile -ExecutionPolicy Bypass -File $dropCache")
+    }
 }
 
 $lines.Add("## Build profile (tree-only, warm)")

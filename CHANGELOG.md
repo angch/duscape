@@ -28,7 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a preview again when the pixels it will take change.
 - `docs/probes/bench-matrix.ps1`: the cross-machine benchmark matrix on Windows, in the same
   file format as the Linux script — diskonaut against `diskus` and WizTree's export mode, with
-  WizTree's own figures beside the trees for the sizes cross-check.
+  WizTree's own figures beside the trees for the sizes cross-check. From an elevated shell it
+  runs cold rows too, the file cache emptied before each by `drop-cache.ps1` (the system file
+  cache trimmed and the standby list purged through the API, as RAMMap does).
 - Shared by the viewers now, rather than written into the terminal one: rescan bookkeeping
   (`diskonaut_scan::rescan::Rescans`), how a copied path is made (`format::copied_path`) and the
   debounced preview thread (`preview::Reader`).

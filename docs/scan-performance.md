@@ -3100,7 +3100,8 @@ the directories like everyone else rather than reading the MFT. Three runs a cel
 
 `docs/benchmarks/tiamat-20260925-elevated.md` is the same matrix from an elevated shell, the
 same afternoon: diskonaut with the backup privilege and the volume's metadata files, WizTree
-reading the MFT — its own game. Means of three runs, `refined` against the export:
+reading the MFT — its own game. Means of three runs, `refined` against the export (the file was
+then rewritten by the cold run below; its warm rows differ from these by noise):
 
 | tree | entries (elevated) | diskonaut | WizTree | diskus |
 | --- | --- | --- | --- | --- |
@@ -3124,3 +3125,33 @@ reading the MFT — its own game. Means of three runs, `refined` against the exp
 - Elevated, the ledger is the build's biggest phase (0.32 s of the 0.88 s for `C:\`, 1.97M
   sightings), since every file now goes through it; unelevated it was 0.12 s. Still an eighth
   of the scan.
+
+### Cold
+
+The same elevated matrix run again with cold rows, the cache emptied before every run by
+`docs/probes/drop-cache.ps1` (the system file cache trimmed and the standby list purged through
+the API — what RAMMap's "Empty" menu does; about fifteen seconds a drop on this 128 GiB machine,
+outside the timing). `tiamat-20260925-elevated.md` now holds both. Means of three, warm → cold:
+
+| tree | diskonaut `sharded` | WizTree (MFT) | diskus |
+| --- | --- | --- | --- |
+| `C:\Users\angch\project` (132k) | 0.19 → 0.34 s | 0.86 → 0.95 s | 1.87 → 2.03 s |
+| `C:\Users\angch` (1.61M) | 2.77 → 3.93 s | 6.68 → 12.1 s | 22.5 → 24.9 s |
+| `C:\` (2.46M) | 5.60 → 8.33 s | 6.76 → **6.24 s** | 45.4 → 47.3 s |
+| `D:\` (415k) | 0.16 → 0.41 s | 1.72 → 1.73 s | 5.79 → 6.64 s |
+
+- The walk's cold penalty is 1.5–2.6x, less than Linux's (2.5–6x in "Cold cache"): NVMe
+  latency, and NTFS directory blocks that are larger and fewer than ext4's. `diskus` barely
+  notices the cache (+5–15%) — on Windows it is bound by its per-file calls, not the disk.
+- **Cold, on the whole system volume, WizTree's MFT read wins: 6.2 s against 8.3 s.** Reading
+  the MFT is one sequential read of a 2.7 GB file, so cold is warm for it — its cold figures
+  equal its warm ones on three trees — while the walk pays a disk read per directory. This is
+  the Windows shape of roadmap step 2 (ext4's inode tables from the device): the metadata read
+  sequentially is cache-independent and, cold, beats the walk by a quarter on a 2.46M-entry
+  volume; warm, the walk is still faster (5.6 s against 6.8 s), and on every smaller tree the
+  walk wins cold as well, by 2.4–4x, since the MFT read costs the whole volume whatever the
+  tree. An MFT reader for diskonaut would want the same gate as the ext4 one: used for a whole
+  volume as administrator, and only when it is faster than the walk it replaces.
+- WizTree's home-tree cold figure (12.1 ± 2.8 s, against 6.7 warm) is the one exception to its
+  cache-independence, and its variance says why: its export of a folder is filtered from a
+  whole-volume MFT read plus the folder's own walk for what the MFT lacks, and that part is cold.

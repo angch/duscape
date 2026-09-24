@@ -22,7 +22,7 @@ diskonaut/
 │   └── dos/           # not a crate: the MS-DOS treemap in 16-bit FASM assembly, `make dos`
 ├── docs/              # features.md (every feature, per viewer), sizes.md (how sizes are counted),
 │                      #   terminal.md, viewers.md, benchmarking.md, scan-performance.md (the measurements),
-│                      #   probes/ (bench-matrix.sh and .ps1, bench-diskus.sh, the C/Python probes behind the measurements)
+│                      #   probes/ (bench-matrix.sh and .ps1, drop-cache.ps1, bench-diskus.sh, the C/Python probes behind the measurements)
 ├── example/config.toml
 └── Cargo.toml         # Workspace root
 ```

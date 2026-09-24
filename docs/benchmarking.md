@@ -87,9 +87,15 @@ On Windows, `probes/bench-matrix.ps1 TREE...` writes the same file: the machine 
 volume and the physical disk behind each tree, and the warm rows against `diskus` and
 [WizTree](https://wiztreefree.com) — timed in its export mode (`/export`, folders only,
 `/admin=0`), which scans, writes a CSV and exits, and whose figures for each tree are listed for
-the sizes cross-check. There are no cold rows, since Windows has no way to drop the file cache
-from a script, and elevated rows (diskonaut reading the volume's metadata files, WizTree reading
-the MFT) only from an elevated shell; the file says which it did.
+the sizes cross-check. From an elevated shell it also runs the cold rows, and every row is
+elevated (diskonaut reading the volume's metadata files, WizTree reading the MFT); unelevated
+there are neither, and the file says so. The cache is emptied by `probes/drop-cache.ps1`, the
+`drop_caches` of Windows: every volume's write cache flushed, the system file cache's working
+set trimmed (`SetSystemFileCacheSize`) and the modified and standby page lists purged
+(`NtSetSystemInformation`, what RAMMap's "Empty" menu calls), so NTFS's MFT and directory
+blocks are read from the disk again. It takes about fifteen seconds on a 128 GiB machine, which
+hyperfine leaves out of the timing, and makes a 415k-entry NVMe volume scan 3.4x slower than
+warm — the disk, not a reboot: what a kernel keeps outside the page lists stays.
 
 `scan-performance.md` has every measurement, the reasoning, and notes for repeating the exercise
 on another platform.
