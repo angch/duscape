@@ -129,6 +129,7 @@ fn try_main() -> Result<(), Error> {
             opts.bench_repeat,
             opts.bench_shards,
             opts.bench_shard_depth,
+            opts.bench_profile,
         );
         return Ok(());
     }

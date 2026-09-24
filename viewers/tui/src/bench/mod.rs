@@ -126,7 +126,7 @@ fn finish(
     start: Instant,
     entries: u64,
     failed: u64,
-    tree: FileTree,
+    mut tree: FileTree,
 ) -> StageResult {
     let result = StageResult {
         stage,
@@ -137,6 +137,9 @@ fn finish(
         hard_linked: tree.hard_linked_files(),
         reflinked: tree.reflinked_files(),
     };
+    if let Some(profile) = tree.take_profile() {
+        eprint!("{}", profile.report("  "));
+    }
     std::mem::forget(tree);
     result
 }
@@ -329,7 +332,11 @@ pub fn run(
     repeat: u32,
     shards: usize,
     shard_depth: usize,
+    profile: bool,
 ) {
+    if profile {
+        libdiskonaut::model::files::profile::enable();
+    }
     println!("benchmarking {}", path.display());
     if let Some(used) = libdiskonaut::os::volume_used(path) {
         // What the stages' totals fall short of is what the walk could not see: unreadable

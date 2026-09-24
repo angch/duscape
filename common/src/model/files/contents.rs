@@ -20,7 +20,7 @@
 use ::std::ffi::OsStr;
 
 use super::hash::FastMap;
-use super::{FileOrFolder, Folder};
+use super::{DirRef, FileOrFolder, Folder, HardLinks};
 
 /// Entries above which a folder builds a name index instead of scanning.
 const INDEX_ABOVE: usize = 128;
@@ -54,9 +54,15 @@ impl Contents {
         if let Some(index) = &self.index {
             return index.get(wanted).map(|&position| position as usize);
         }
-        self.entries
+        let position = self
+            .entries
             .iter()
-            .position(|entry| self.bytes_of(entry) == wanted)
+            .position(|entry| self.bytes_of(entry) == wanted);
+        super::profile::count(
+            &super::profile::NAME_COMPARES,
+            position.map_or(self.entries.len(), |p| p + 1) as u64,
+        );
+        position
     }
 
     /// Build the index if this folder has grown past the point where scanning is cheaper.
@@ -72,6 +78,7 @@ impl Contents {
             index.insert(Box::from(name), position as u32);
         }
         self.index = Some(Box::new(index));
+        super::profile::count(&super::profile::INDEX_BUILDS, 1);
     }
 
     /// Adopt a directory's packed names, returning the offset its entries must be shifted by.
@@ -174,17 +181,42 @@ impl Contents {
     /// on the path walk that resolves every directory's parent — once per level, for every
     /// directory the scan reports — so it is the hottest thing the model does.
     pub fn folder_or_insert(&mut self, name: &OsStr) -> &mut Folder {
-        let position = match self.position(name) {
+        let position = self.folder_position_or_insert(name);
+        self.folder_at_mut(position)
+    }
+
+    /// Where the subfolder `name` is among the entries, making it if it is not there yet.
+    pub fn folder_position_or_insert(&mut self, name: &OsStr) -> usize {
+        match self.position(name) {
             Some(position) => position,
             None => {
                 self.push(name, FileOrFolder::Folder(Box::default()));
                 self.entries.len() - 1
             }
-        };
+        }
+    }
+
+    /// The subfolder at `position`, from [`Self::folder_position_or_insert`]. Positions are stable
+    /// while entries are only added, which is all a build does.
+    ///
+    /// # Panics
+    ///
+    /// If the entry there is a file.
+    pub fn folder_at_mut(&mut self, position: usize) -> &mut Folder {
         match &mut self.entries[position].node {
             FileOrFolder::Folder(folder) => folder,
             FileOrFolder::File(_) => unreachable!("got a file in the middle of a path"),
         }
+    }
+
+    /// Every subfolder, for walks that change them.
+    pub fn folders_mut(&mut self) -> impl Iterator<Item = &mut Folder> {
+        self.entries
+            .iter_mut()
+            .filter_map(|entry| match &mut entry.node {
+                FileOrFolder::Folder(folder) => Some(&mut **folder),
+                FileOrFolder::File(_) => None,
+            })
     }
 
     /// Insert only if nothing is there yet.
@@ -216,9 +248,18 @@ impl Contents {
     /// already exists here is merged into the existing one rather than duplicated — that is the
     /// shared-ancestor case, where two shards both created `home/` on the way to different things
     /// beneath it. Files cannot collide, for the reason above.
-    pub fn merge_from(&mut self, other: Contents) {
+    pub fn merge_from(
+        &mut self,
+        other: Contents,
+        parent: DirRef,
+        ledger: &mut HardLinks,
+        remap: &mut [DirRef],
+    ) {
         if self.entries.is_empty() {
             *self = other;
+            for folder in self.folders_mut() {
+                folder.renumber(parent, ledger, remap);
+            }
             return;
         }
         let Contents { names, entries, .. } = other;
@@ -237,12 +278,18 @@ impl Contents {
                     };
                     match self.position(name) {
                         Some(position) => match &mut self.entries[position].node {
-                            FileOrFolder::Folder(existing) => existing.merge_from(*incoming),
+                            FileOrFolder::Folder(existing) => {
+                                existing.merge_into(*incoming, parent, ledger, remap);
+                            }
                             FileOrFolder::File(_) => {
                                 unreachable!("a file and a folder cannot share one name")
                             }
                         },
-                        None => self.place(offset, len, FileOrFolder::Folder(incoming), false),
+                        None => {
+                            let mut incoming = incoming;
+                            incoming.renumber(parent, ledger, remap);
+                            self.place(offset, len, FileOrFolder::Folder(incoming), false);
+                        }
                     }
                 }
                 file @ FileOrFolder::File(_) => self.place(offset, len, file, false),

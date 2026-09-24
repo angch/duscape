@@ -2773,9 +2773,95 @@ Cold, `project`, 3–4 runs each (the two-phase read is what the walker does now
 
 ### Where it stands
 
-Cold, diskonaut at its new default matches `diskus` on both trees, at the device's floor for the
-reads this walk has to make: 0.74s and 5.3s against 0.74s and 5.0s. Warm, unchanged. As root, the
-directories' blocks are read ahead through the device: 3x fewer reads, 6–20% faster cold,
-ahead of `diskus` (above); what is left is the kernel's CPU per cold entry. The measured
-regime is one ext4 SSD in a VM; on NVMe the floor is higher and the workers matter more, and on a
-spinning disk the inode order matters more. Neither was available to measure.
+Against `diskus` 0.9.0 (24 threads), 3 runs each, after the tree build work of the same day
+(next section) as well; diskonaut's `sharded` stage, which builds the whole navigable tree:
+
+| | warm | cold | cold, as root |
+| --- | --- | --- | --- |
+| `project`, 375k entries: `diskus` | 226 ms | 756 ms | |
+| `project`: diskonaut | 223 ms | 763 ms | 685 ms |
+| `home`, 2.24M entries, 173k hard-linked: `diskus` | 1.45 s | 4.93 s | |
+| `home`: diskonaut | 1.50 s | 4.97 s | 3.87 s |
+
+Level with `diskus` warm and cold, on both trees, while building the tree it does not; as
+root, with the directories' blocks read ahead through the device, 9% and 21% ahead of it. The
+measured regime is one ext4 SSD in a VM; on NVMe the floor is higher and the workers matter
+more, and on a spinning disk the inode order matters more. Neither was available to measure.
+
+## The tree build (2026-09-24)
+
+Warm, on the 8-core VM, the walk is 1.1s for 2.24M entries and the build alone 0.92s, and the
+app's `sharded` stage came to 1.75–1.81s: the walk and the builders share eight cores, and after
+the walk a serial replay of 0.44s. This tree has 173k hard-linked files under `~/.cache` (uv,
+pnpm), so it is the ledger's worst case, which is what made the replay visible.
+
+### Instrumentation
+
+`--benchmark --bench-profile` now prints where the builders' time went, phase by phase, for any
+stage that builds a tree: resolving each directory's folder, the pass over its entries, the
+ledger, placing the entries, and the replay's two halves, with counts (folders stepped through,
+name comparisons, sightings, ancestor steps). `libdiskonaut::model::files::profile` holds it;
+off, it costs one predictable branch per counted event. The numbers below are its output.
+
+`perf` is unavailable on this box (`perf_event_paranoid` is 4) and the release binary is
+stripped, so for a sampling profile there is `--profile profiling` (release with symbols) and
+`docs/probes/gdb-sample/`, a poor man's sampler: it runs the target with `PR_SET_PTRACER` set so
+`gdb` may attach from outside despite Yama, stops it every few milliseconds and counts stacks.
+Two hundred samples were enough to rank the hot spots and agree with the profile.
+
+### What was found, in order of size
+
+**The release profile was `opt-level = "z"`.** Set for the viewers' binary sizes and never
+benchmarked for the scan. `"s"` makes the build 30% faster (0.92 → 0.66s) and the app's stage
+13% (1.86 → 1.60s), for 2% more binary (1.77 → 1.81 MB); `2` and `3` are no faster than `"s"`
+and 25–30% larger. Setting `opt-level = 3` on the two library crates alone did nothing: with
+`lto = true` the final codegen takes the top-level profile's level. The release is `"s"` now.
+
+**Half of the build was the ledger, and most of that was naming directories to it.** The build
+profile of the single-threaded stage:
+
+| phase | before | after |
+| --- | --- | --- |
+| resolve the folder (10.5 deep, ~150 name compares) | 0.12s | 0.15s |
+| the pass over the entries, directories without links | 0.015s | 0.015s |
+| the same with the ledger, 155k directories, 735k sightings | 0.30s | 0.19s |
+| place the entries | 0.16s | 0.18s |
+| **build** | **0.70s** | **0.63s** |
+| replay after a sharded build | 0.44s | 0.14s |
+
+- The ledger interned each directory by *path*: normalise into a `PathBuf`, hash it, and for a
+  new one hash every ancestor's path above and box two copies of the key — 0.7 µs a directory,
+  0.11s of the build, and the replay did all of it again for the merged tree, 0.13s serial.
+  Now a folder carries its ledger id (`Folder::dir`, given when its path is first resolved, as
+  `HardLinks::child(parent)`: a push, no hashing), the deferred sightings hold ids instead of
+  paths, the merge renumbers the folders it moves in (`Folder::renumber`, with a remap the
+  sightings follow), and a graft does the same for the rescanned subtree.
+- The replay took sizes back by walking the tree down to each folder, by name, for every
+  sighting. It now adds up what each folder owes in a `Vec` by id and takes it back in one pass
+  (`Folder::take_back`): 0.012s for 558k sightings.
+- `shared_depth` walked parent pointers up from both directories until they met — about 18
+  dependent loads a comparison, 126 a sighting. Each interned directory now keeps its ancestor
+  chain (`HardLinks::ancestors`), so it is the common prefix of two short arrays: 28 steps a
+  sighting. Worth 14% of the ledger; the interning above was the rest.
+
+**What is left**, per the profile: the ledger's remaining 0.19s is 735k hash lookups into a
+map of 173k `LinkedFile`s of ~80 bytes each, a cache miss or two apiece; shrinking the entry
+(box the charged set, keep the first few directories inline) would help. Resolving is ~15 name
+comparisons per level — the walk emits siblings together, so a cache of the last path's
+positions would skip most of them. Both are second-order now. The first-order fact on this box
+is that the whole warm scan is CPU-bound at eight cores: the walk's 7s of system time (3 µs an
+entry, in a VM) is what the clock measures, and the build is 0.6s of the ~10s of CPU.
+
+### Where it stands
+
+Warm, against the previous commit, 5 runs each:
+
+| | before | after |
+| --- | --- | --- |
+| `~/.cache`, 1.05M entries, 169k hard-linked: build alone | 0.60s | 0.36s |
+| the same, `sharded` (the app) | 1.12s | 0.82s |
+| `/data/angch`, 2.24M entries: build alone | 0.92s | 0.63s |
+| the same, `sharded` | 1.80s | 1.45s |
+
+Totals are identical between `tree`, `pipeline` and `sharded` on both trees, the model's
+folder-by-folder sharded test passes, and so do the filesystem fixtures.

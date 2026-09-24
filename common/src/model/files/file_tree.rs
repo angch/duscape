@@ -1,15 +1,20 @@
 use ::std::ffi::{OsStr, OsString};
 use ::std::path::{Component, Path, PathBuf};
 
-use crate::model::{FileOrFolder, FileToDelete, Folder, HardLinks, SizeKind, Sizes};
+use crate::model::{
+    BuildProfile, DirRef, FileOrFolder, FileToDelete, Folder, HardLinks, SizeKind, Sizes,
+};
 use ::std::sync::Arc;
+use ::std::time::Instant;
+
+use super::profile;
 
 use crate::scan::{DirEntries, DirSummary, EntryMeta, NamedEntry, SharedBlocks};
 
 /// Shared-block sightings a tree has put off charging: one entry per directory that held any,
-/// with the directory's path relative to the scan root, and each file's size on disk (which the
-/// ledger identifies files by) and both of its sizes (which are taken back).
-type Sightings = Vec<(PathBuf, Vec<(SharedBlocks, u64, Sizes)>)>;
+/// with the directory's ledger id, and each file's size on disk (which the ledger identifies
+/// files by) and both of its sizes (which are taken back).
+type Sightings = Vec<(DirRef, Vec<(SharedBlocks, u64, Sizes)>)>;
 
 pub struct FileTree {
     pub current_folder_names: Vec<OsString>,
@@ -29,17 +34,22 @@ pub struct FileTree {
     hard_links: HardLinks,
     /// Reused between calls: how much size to add at each depth from the base folder down.
     size_at_depth: Vec<Sizes>,
+    /// Reused between calls: the way to the directory being added, by position at each level.
+    positions: Vec<usize>,
     /// When set, shared blocks are counted in full and noted here instead of being charged, so
     /// that several trees built in parallel can be merged and then reconciled once. `None` is the
     /// ordinary tree, which charges as it goes.
     deferred: Option<Sightings>,
+    /// Where the build's time went, kept only when [`profile::enable`] was called first.
+    profile: Option<Box<BuildProfile>>,
 }
 
 impl FileTree {
-    pub fn new(base_folder: Folder, path_in_filesystem: PathBuf) -> Self {
+    pub fn new(mut base_folder: Folder, path_in_filesystem: PathBuf) -> Self {
         let path_in_filesystem = path_in_filesystem
             .canonicalize()
             .unwrap_or(path_in_filesystem);
+        base_folder.dir = DirRef::ROOT;
         FileTree {
             base_folder,
             current_folder_names: Vec::new(),
@@ -51,7 +61,9 @@ impl FileTree {
             volume_used: None,
             hard_links: HardLinks::default(),
             size_at_depth: Vec::new(),
+            positions: Vec::new(),
             deferred: None,
+            profile: profile::enabled().then(Box::default),
         }
     }
 
@@ -68,11 +80,42 @@ impl FileTree {
     /// The other tree's folders add to this one's, and its deferred sightings — if either side
     /// has any — are carried over so that one `replay_deferred` on the result settles everything.
     pub fn merge_from(&mut self, other: FileTree) {
-        self.base_folder.merge_from(other.base_folder);
+        // The other tree's folders get ids in this tree's ledger as they come in; `remap` says
+        // what each of their old ids became, so their sightings can follow.
+        let mut remap = vec![DirRef::NONE; other.hard_links.directories()];
+        self.base_folder.merge_into(
+            other.base_folder,
+            DirRef::NONE,
+            &mut self.hard_links,
+            &mut remap,
+        );
         self.failed_to_read += other.failed_to_read;
         if let Some(theirs) = other.deferred {
-            self.deferred.get_or_insert_with(Vec::new).extend(theirs);
+            let mine = self.deferred.get_or_insert_with(Vec::new);
+            mine.reserve(theirs.len());
+            for (dir, shared) in theirs {
+                let dir = remap.get(dir.0 as usize).copied().unwrap_or(DirRef::NONE);
+                debug_assert_ne!(
+                    dir,
+                    DirRef::NONE,
+                    "a sighting in a folder the merge never saw"
+                );
+                if dir != DirRef::NONE {
+                    mine.push((dir, shared));
+                }
+            }
         }
+        if let (Some(mine), Some(theirs)) = (&mut self.profile, &other.profile) {
+            mine.merge(theirs);
+        }
+    }
+
+    /// The build's profile, with the process-wide counters folded in, if profiling was on when
+    /// this tree was made. Take it once the tree is finished: merged, replayed, refined.
+    pub fn take_profile(&mut self) -> Option<BuildProfile> {
+        let mut profile = self.profile.take()?;
+        profile.collect_globals();
+        Some(*profile)
     }
 
     /// Charge every shared block this tree deferred, and take back what was over-counted.
@@ -86,18 +129,38 @@ impl FileTree {
         let Some(sightings) = self.deferred.take() else {
             return;
         };
+        let started = self.profile.as_ref().map(|_| Instant::now());
+        let (mut replayed, mut taken_back, mut directories) = (0u64, 0u64, 0u64);
+        // What each folder, by ledger id, has to give back: added up here, taken back from the
+        // tree in one pass at the end rather than by walking down to every folder for every
+        // sighting.
+        let mut amounts = vec![Sizes::ZERO; self.hard_links.directories()];
         for (dir, shared) in sightings {
-            let depth = dir.components().count();
-            let dir_ref = self.hard_links.directory(&dir);
+            directories += 1;
+            let depth = self.hard_links.depth_of(dir);
             for (blocks, disk, sizes) in shared {
-                if let Some(charged) = self.hard_links.charge_in(blocks, disk, dir_ref) {
-                    self.base_folder.subtract_along(
-                        dir.components().map(Component::as_os_str),
-                        charged.min(depth),
-                        sizes,
-                    );
+                replayed += 1;
+                if let Some(charged) = self.hard_links.charge_in(blocks, disk, dir) {
+                    taken_back += 1;
+                    // The root and the ancestors down to depth `charged` had already counted
+                    // these blocks through another path.
+                    amounts[DirRef::ROOT.0 as usize] += sizes;
+                    for ancestor in &self.hard_links.ancestors(dir)[..charged.min(depth)] {
+                        amounts[ancestor.0 as usize] += sizes;
+                    }
                 }
             }
+        }
+        let charged = started.map(|started| started.elapsed());
+        self.base_folder.take_back(&amounts);
+        if let (Some(profile), Some(started), Some(charged)) = (&mut self.profile, started, charged)
+        {
+            profile.replay += started.elapsed();
+            profile.replay_charge += charged;
+            profile.replay_take_back += started.elapsed().saturating_sub(charged);
+            profile.replay_sightings += replayed;
+            profile.replay_taken_back += taken_back;
+            profile.replay_directories += directories;
         }
     }
     /// Fold in what the second pass found (the second pass, `diskonaut_scan::refine`): small files counted in full
@@ -141,7 +204,15 @@ impl FileTree {
                 continue;
             }
             let depth = names.len();
-            let dir_ref = self.hard_links.directory(relative);
+            // The folder exists (just found), so this makes nothing: it only gives the folders
+            // on the way their ids, where they have none yet.
+            let mut positions = ::std::mem::take(&mut self.positions);
+            let dir_ref = self.base_folder.resolve_path(
+                names.iter().map(OsString::as_os_str),
+                &mut self.hard_links,
+                &mut positions,
+            );
+            self.positions = positions;
             for found in present {
                 let disk = u64::try_from(found.sizes.disk).unwrap_or(u64::MAX);
                 if let Some(charged) =
@@ -305,7 +376,11 @@ impl FileTree {
             rescanned.adopt_navigation_from(self);
             return Some(::std::mem::replace(self, rescanned).base_folder);
         }
-        let new_folder = rescanned.base_folder;
+        let FileTree {
+            base_folder: mut new_folder,
+            hard_links: new_ledger,
+            ..
+        } = rescanned;
         let (old_size, old_descendants) = match self.base_folder.path(relative.to_vec())? {
             FileOrFolder::Folder(folder) => (folder.sizes, folder.num_descendants),
             FileOrFolder::File(_) => return None,
@@ -316,8 +391,10 @@ impl FileTree {
             folder.num_descendants =
                 folder.num_descendants.saturating_sub(old_descendants) + new_descendants;
         };
+        let ledger = &mut self.hard_links;
         let mut folder = &mut self.base_folder;
         resize(folder);
+        let mut parent = folder.dir;
         let (last, parents) = relative.split_last().expect("not empty");
         for name in parents {
             folder = match folder.contents.get_mut(name) {
@@ -325,7 +402,14 @@ impl FileTree {
                 _ => unreachable!("the path was just found"),
             };
             resize(folder);
+            if folder.dir == DirRef::NONE {
+                folder.dir = ledger.child(parent);
+            }
+            parent = folder.dir;
         }
+        // The grafted folders' ids were the rescan's own; they get this tree's, under the parent.
+        let mut remap = vec![DirRef::NONE; new_ledger.directories()];
+        new_folder.renumber(parent, ledger, &mut remap);
         match folder.contents.get_mut(last) {
             Some(FileOrFolder::Folder(target)) => {
                 Some(::std::mem::replace(&mut **target, new_folder))
@@ -396,16 +480,27 @@ impl FileTree {
             base_folder,
             hard_links,
             size_at_depth,
+            positions,
             deferred,
+            profile,
             ..
         } = self;
+        let started = profile.as_ref().map(|_| Instant::now());
+
+        // The folder first, by name at each level, which also gives it (and any folder on the
+        // way) its ledger id; the sizes follow the same way by position once they are known.
+        let this_dir = base_folder.resolve_path(
+            relative_dir.components().map(Component::as_os_str),
+            hard_links,
+            positions,
+        );
+        let resolved = started.map(|_| Instant::now());
 
         size_at_depth.clear();
         size_at_depth.resize(depth + 1, Sizes::ZERO);
         let mut normal_size = Sizes::ZERO;
-        // Interned only if this directory turns out to hold a hard link; most do not.
-        let mut this_dir = None;
         let mut noted: Option<Vec<(SharedBlocks, u64, Sizes)>> = None;
+        let mut sightings = 0u64;
         for entry in &entries {
             if entry.meta.is_dir {
                 continue;
@@ -415,6 +510,7 @@ impl FileTree {
             let size = Sizes::of(entry.meta.size, entry.meta.apparent);
             match entry.meta.shared_blocks() {
                 Some(shared) if deferred.is_some() => {
+                    sightings += 1;
                     // Counted in full for now like any other file; the sighting is kept so that
                     // `replay_deferred` can take back whatever turns out to be counted twice.
                     normal_size += size;
@@ -423,8 +519,8 @@ impl FileTree {
                         .push((shared, entry.meta.size, size));
                 }
                 Some(shared) => {
-                    let dir = *this_dir.get_or_insert_with(|| hard_links.directory(relative_dir));
-                    let charged_down_to = hard_links.charge_in(shared, entry.meta.size, dir);
+                    sightings += 1;
+                    let charged_down_to = hard_links.charge_in(shared, entry.meta.size, this_dir);
                     let first_uncharged = charged_down_to.map_or(0, |charged| charged + 1);
                     for folder_size in &mut size_at_depth[first_uncharged.min(depth + 1)..] {
                         *folder_size += size;
@@ -434,20 +530,34 @@ impl FileTree {
             }
         }
         if let (Some(deferred), Some(noted)) = (deferred.as_mut(), noted) {
-            deferred.push((relative_dir.to_path_buf(), noted));
+            deferred.push((this_dir, noted));
         }
         if !normal_size.is_zero() {
             for folder_size in &mut size_at_depth[..] {
                 *folder_size += normal_size;
             }
         }
+        let ledgered = started.map(|_| Instant::now());
 
-        base_folder.add_dir_entries(
-            relative_dir.components().map(Component::as_os_str),
-            names,
-            entries,
-            size_at_depth,
-            0,
-        );
+        let count = entries.len() as u64;
+        let folder = base_folder.descend(positions, size_at_depth, count);
+        folder.place_entries(names, entries);
+
+        if let (Some(profile), Some(started), Some(resolved), Some(ledgered)) =
+            (profile, started, resolved, ledgered)
+        {
+            profile.directories += 1;
+            profile.entries += count;
+            profile.sightings += sightings;
+            profile.resolve_steps += depth as u64;
+            profile.resolve += resolved.duration_since(started);
+            if sightings == 0 {
+                profile.sizes += ledgered.duration_since(resolved);
+            } else {
+                profile.ledger_directories += 1;
+                profile.ledger += ledgered.duration_since(resolved);
+            }
+            profile.place += ledgered.elapsed();
+        }
     }
 }

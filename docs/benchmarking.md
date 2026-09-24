@@ -26,6 +26,28 @@ count, `--bench-repeat N` repeats each stage, `--single-thread` forces one worke
 `--bench-shards N` and `--bench-shard-depth N` vary the parallel build. Whatever is changed,
 `sharded`'s totals must stay identical to `pipeline`'s: that comparison is the correctness check.
 
+## Inside the tree build
+
+`--bench-profile` adds, after each stage that builds a tree, where the builders' time went:
+
+```
+  build profile: 311671 directories, 2240019 entries, 0.656s of builder time
+    resolve 0.119s  10.5 folders/dir  152.2 name compares/dir  1108 indexes built
+    place   0.168s  75 ns/entry
+    sizes   0.015s  13 ns/entry over the 156222 directories with no shared blocks
+    ledger  0.187s  155460 directories, 734679 sightings  6.9 link comparisons and 27.8 ancestor steps each
+    replay  0.146s  charge 0.124s  take back 0.022s  155460 directories, 734679 sightings, 561706 taken back
+```
+
+`resolve` is finding each directory's folder down from the root, `sizes` the pass over its
+entries, `ledger` the same pass where it charges shared blocks, `place` putting the entries in,
+and `replay` the reconciliation after a parallel build. In `sharded` the builders run in
+parallel and their times add up, so the total exceeds the wall clock; compare phases, not the
+sum, and compare `tree-only` runs for the build on its own.
+
+For a sampling profile, build with `--profile profiling` (release with symbols) and use
+`docs/probes/gdb-sample/`, which works where `perf` is not allowed.
+
 On macOS the scan uses `getattrlistbulk(2)` directly, requesting only the name, type, flags, inode,
 and one size field per entry — the general-purpose walker asks for the whole `stat` set and pays an
 extra path lookup per directory.

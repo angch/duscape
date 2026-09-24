@@ -334,6 +334,12 @@ Exiting { app_loaded: bool }
   `stx_mnt_id` (`NETWORK_FUSE`: sshfs, rclone, s3fs…), since FUSE also serves local filesystems.
   macOS skips a mount point without `MNT_LOCAL`. Another machine's files are not this disk's space.
 - **ManuallyDrop on FileTree**: Avoids slow recursive drop on exit.
+- **Folders know their ledger id**: `Folder::dir` is the folder in `HardLinks`, given when a
+  directory's path is first resolved (`HardLinks::child(parent)`, no hashing) and `NONE` until
+  then. Deferred sightings carry ids, not paths; a merge renumbers the folders it moves in
+  (`Folder::renumber`, remapping the other tree's sightings) and so does a graft. Interning by
+  path was 0.7 µs a directory and a third of the ledger's time — see "The tree build" in
+  `docs/scan-performance.md`. `--benchmark --bench-profile` shows the build phase by phase.
 
 ---
 
@@ -454,6 +460,10 @@ A `v*` tag runs `deploy.yml`. It builds `diskonaut-angch-<tag>-<target>.tar.gz` 
 `x86_64-unknown-linux-musl` (`musl-gcc`) and `aarch64-unknown-linux-musl` (`cargo zigbuild`,
 zig 0.13.0). The binaries are fully static, so they have no glibc floor and run on Alpine and
 busybox. One job then publishes both tarballs: matrix jobs that each create the release race.
+- **`opt-level = "s"`**: the release profile is size-optimised for the viewers' binaries, but
+  `"z"` cost the scan 13% and the tree build 30%; `"s"` is as fast as `3` at 2% more size. With
+  `lto = true` a per-crate `opt-level` does nothing, the final codegen uses the top level's.
+  `--profile profiling` is the release with symbols, for samplers.
 - **Allocator**: musl builds use jemalloc (`tikv-jemallocator`, 64-bit musl only). musl's own
   malloc made the scan 7x slower and mimalloc 2x. Do not swap it without rerunning the
   `--bench-stage sharded` comparison in `docs/scan-performance.md`. glibc builds use the system
@@ -497,9 +507,9 @@ busybox. One job then publishes both tarballs: matrix jobs that each create the 
 | `viewers/linux/src/xkb.rs` | ~360 lines — the xkb keymap reader |
 | `common/src/tiles/board.rs` | ~230 lines — tile nav/zoom |
 | `common/src/tiles/treemap.rs` | ~270 lines — squarify |
-| `common/src/model/files/file_tree.rs` | ~450 lines — folder tree, hard-link accounting |
+| `common/src/model/files/file_tree.rs` | ~550 lines — folder tree, hard-link accounting, the build profile |
 | `scanners/src/lib.rs` | ~650 lines — walker selection, parallel build, fallback |
-| `scanners/src/linux.rs` | ~1250 lines — Linux `getdents64`/`statx` walker |
+| `scanners/src/linux.rs` | ~1500 lines — Linux `getdents64`/`statx` walker, inode order, block prefetch |
 | `scanners/src/macos.rs` | ~830 lines — macOS `getattrlistbulk` walker |
 | `scanners/src/windows.rs` | ~920 lines — Windows bulk-listing walker |
 | `viewers/tui/src/bench/mod.rs` | ~370 lines — `--benchmark` harness |

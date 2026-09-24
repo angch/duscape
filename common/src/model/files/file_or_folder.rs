@@ -4,6 +4,8 @@ use ::std::path::{Path, PathBuf};
 
 use crate::scan::{EntryMeta, NamedEntry};
 
+use super::{DirRef, HardLinks};
+
 /// What a folder holds, by name.
 ///
 /// A `Folder` is boxed so that the far more numerous files do not each pay for a folder's size:
@@ -173,21 +175,31 @@ impl File {
 /// It does not store its own name. The name is the key it is filed under in its parent, so a copy
 /// here would be a second one — and nothing ever read it. On a whole-volume scan that was 385k
 /// `OsString`s allocated to be written once and never looked at.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Folder {
     pub contents: ContentsMap,
     pub sizes: Sizes,
     pub num_descendants: u64,
+    /// This folder in the tree's hard-link ledger, given when a directory's entries are first
+    /// resolved to it, or [`DirRef::NONE`] until then. Links found in it are charged under this
+    /// id, so a folder never has to be named to the ledger by path.
+    pub dir: DirRef,
+}
+impl Default for Folder {
+    fn default() -> Self {
+        Self {
+            contents: ContentsMap::default(),
+            sizes: Sizes::ZERO,
+            num_descendants: 0,
+            dir: DirRef::NONE,
+        }
+    }
 }
 impl Folder {
     /// The scan root's folder. The path is not kept: a folder's name lives in its parent, and the
     /// root's is held by [`crate::FileTree`].
     pub fn new(_path: &Path) -> Self {
-        Self {
-            contents: ContentsMap::default(),
-            sizes: Sizes::ZERO,
-            num_descendants: 0,
-        }
+        Self::default()
     }
 
     /// Insert an entry addressed by its path components relative to this folder.
@@ -236,8 +248,21 @@ impl Folder {
         extra_descendants: u64,
     ) {
         let contained_count = entries.len() as u64 + extra_descendants;
-        let size_at = |depth: usize| size_at_depth.get(depth).copied().unwrap_or(Sizes::ZERO);
+        let (folder, _) = self.resolve_dir(dir_path, size_at_depth, contained_count);
+        folder.place_entries(names, entries);
+    }
 
+    /// The first half of [`Self::add_dir_entries`]: find or make the folder at `dir_path`, adding
+    /// `size_at_depth` and `contained_count` to it and to every folder on the way. Returns the
+    /// folder and how many folders were stepped through (the path's depth).
+    pub fn resolve_dir<'a>(
+        &mut self,
+        dir_path: impl Iterator<Item = &'a OsStr>,
+        size_at_depth: &[Sizes],
+        contained_count: u64,
+    ) -> (&mut Self, u64) {
+        let size_at = |depth: usize| size_at_depth.get(depth).copied().unwrap_or(Sizes::ZERO);
+        let mut steps = 0;
         let mut folder = self;
         folder.sizes += size_at(0);
         folder.num_descendants += contained_count;
@@ -245,8 +270,97 @@ impl Folder {
             folder = folder.contents.folder_or_insert(name);
             folder.sizes += size_at(depth + 1);
             folder.num_descendants += contained_count;
+            steps += 1;
         }
+        (folder, steps)
+    }
 
+    /// Find or make the folder at `dir_path`, telling the ledger about every folder on the way
+    /// that it does not know yet, and note where each step went in `positions` (emptied first)
+    /// so that [`Self::descend`] can take the same way by index. Returns the folder's ledger id.
+    /// This folder's own id must be set — the tree's root is [`DirRef::ROOT`].
+    pub fn resolve_path<'a>(
+        &mut self,
+        dir_path: impl Iterator<Item = &'a OsStr>,
+        ledger: &mut HardLinks,
+        positions: &mut Vec<usize>,
+    ) -> DirRef {
+        positions.clear();
+        let mut folder = self;
+        let mut dir = folder.dir;
+        for name in dir_path {
+            let position = folder.contents.folder_position_or_insert(name);
+            positions.push(position);
+            folder = folder.contents.folder_at_mut(position);
+            if folder.dir == DirRef::NONE {
+                folder.dir = ledger.child(dir);
+            }
+            dir = folder.dir;
+        }
+        dir
+    }
+
+    /// Walk the way [`Self::resolve_path`] noted, adding `size_at_depth` and `contained_count`
+    /// to this folder and each one on the way, and return the folder at its end.
+    pub fn descend(
+        &mut self,
+        positions: &[usize],
+        size_at_depth: &[Sizes],
+        contained_count: u64,
+    ) -> &mut Self {
+        let size_at = |depth: usize| size_at_depth.get(depth).copied().unwrap_or(Sizes::ZERO);
+        let mut folder = self;
+        folder.sizes += size_at(0);
+        folder.num_descendants += contained_count;
+        for (depth, &position) in positions.iter().enumerate() {
+            folder = folder.contents.folder_at_mut(position);
+            folder.sizes += size_at(depth + 1);
+            folder.num_descendants += contained_count;
+        }
+        folder
+    }
+
+    /// Give this folder and every folder below it ids in `ledger` under `parent`, recording in
+    /// `remap` (indexed by old id) what each id it had before became. For a folder moved in
+    /// whole from another tree, whose ids meant something only in that tree's ledger. A folder
+    /// the other ledger never knew stays unknown.
+    pub fn renumber(&mut self, parent: DirRef, ledger: &mut HardLinks, remap: &mut [DirRef]) {
+        if self.dir != DirRef::NONE {
+            // Under a folder the ledger does not know, nothing below can be known either.
+            let new = if parent == DirRef::NONE {
+                DirRef::NONE
+            } else {
+                ledger.child(parent)
+            };
+            if let Some(slot) = remap.get_mut(self.dir.0 as usize) {
+                *slot = new;
+            }
+            self.dir = new;
+        }
+        let mine = self.dir;
+        for folder in self.contents.folders_mut() {
+            folder.renumber(mine, ledger, remap);
+        }
+    }
+
+    /// Take `amounts[dir]` back from every folder with a ledger id, this one and below. The
+    /// second half of deferred shared-block accounting, done in one pass once the replay has
+    /// added up what each folder over-counted.
+    pub fn take_back(&mut self, amounts: &[Sizes]) {
+        if let Some(amount) = amounts.get(self.dir.0 as usize)
+            && !amount.is_zero()
+        {
+            self.sizes = self.sizes.saturating_sub(*amount);
+        }
+        for folder in self.contents.folders_mut() {
+            folder.take_back(amounts);
+        }
+    }
+
+    /// The second half of [`Self::add_dir_entries`]: place a directory's packed entries in this
+    /// folder.
+    pub fn place_entries(&mut self, names: Vec<u8>, entries: Vec<NamedEntry>) {
+        let folder = self;
         // The scan packed these names once; the folder takes that buffer rather than copying each
         // name out of it, so an entry's name is never allocated between the kernel and the tree.
         let shift = folder.contents.absorb_names(names);
@@ -277,9 +391,35 @@ impl Folder {
     /// Sizes and counts add, because each side counted disjoint groups of entries; where both
     /// sides hold a folder of the same name, that folder is merged in turn.
     pub fn merge_from(&mut self, other: Folder) {
+        let mut ledger = HardLinks::default();
+        let mut remap = Vec::new();
+        self.merge_into(other, DirRef::NONE, &mut ledger, &mut remap);
+    }
+
+    /// [`Self::merge_from`] with the ledger the merged tree charges to: `other`'s folders take
+    /// this tree's ids — this folder's where both have one, new ones under it (or under
+    /// `parent`, if this folder has none yet) where only `other` does — and `remap`, indexed by
+    /// `other`'s old ids, says what each became, so that what `other` noted about them can be
+    /// carried over.
+    pub fn merge_into(
+        &mut self,
+        other: Folder,
+        parent: DirRef,
+        ledger: &mut HardLinks,
+        remap: &mut [DirRef],
+    ) {
         self.sizes += other.sizes;
         self.num_descendants += other.num_descendants;
-        self.contents.merge_from(other.contents);
+        if other.dir != DirRef::NONE {
+            if self.dir == DirRef::NONE && parent != DirRef::NONE {
+                self.dir = ledger.child(parent);
+            }
+            if let Some(slot) = remap.get_mut(other.dir.0 as usize) {
+                *slot = self.dir;
+            }
+        }
+        self.contents
+            .merge_from(other.contents, self.dir, ledger, remap);
     }
 
     /// Take `sizes` back from this folder and from the first `down_to` folders along `path`.

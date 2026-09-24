@@ -37,6 +37,9 @@ pub struct Opt {
     /// Repeat each benchmark stage this many times
     #[arg(long, value_name = "N", default_value_t = 1)]
     pub bench_repeat: u32,
+    /// Under `--benchmark`, report where the tree build's time went, phase by phase
+    #[arg(long)]
+    pub bench_profile: bool,
     /// Tree-building threads for the `sharded` benchmark stage (default: what the app uses)
     #[arg(long, value_name = "N", default_value_t = diskonaut_scan::parallel::SHARDS)]
     pub bench_shards: usize,

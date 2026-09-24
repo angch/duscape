@@ -14,7 +14,7 @@ resolver = "3"
 # unwinding tables; the CLI stays safe because its terminal is restored by a panic hook, not only by
 # unwinding a drop guard (see `viewers/tui/src/lib.rs`).
 [profile.release]
-opt-level = "z"
+opt-level = "s"
 lto = true
 codegen-units = 1
 strip = true
@@ -44,3 +44,9 @@ toml = "1"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 unicode-width = "0.2"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+
+# The release build with symbols kept and line tables, for profilers (`--profile profiling`).
+[profile.profiling]
+inherits = "release"
+strip = false
+debug = "line-tables-only"

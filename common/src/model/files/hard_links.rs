@@ -12,11 +12,21 @@ use crate::scan::SharedBlocks;
 /// dozens of folders each, comparing paths component by component was most of the cost of
 /// building the tree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct DirRef(u32);
+pub struct DirRef(pub(crate) u32);
+
+impl DirRef {
+    /// No directory: a folder the ledger has not been told about yet.
+    pub const NONE: DirRef = DirRef(u32::MAX);
+    /// The scan root.
+    pub const ROOT: DirRef = DirRef(0);
+}
 
 struct Dir {
     parent: DirRef,
     depth: u32,
+    /// Where this directory's ancestors start in `HardLinks::chains`: `depth` of them, from the
+    /// root's child down to this directory itself. The root has none.
+    chain: u32,
 }
 
 /// Folders holding links to one file, past which [`LinkedFile`] keeps the folders they charge as
@@ -58,13 +68,15 @@ pub struct HardLinks {
     reflinks: FastMap<u64, LinkedFile>,
     /// Interned directories; index 0 is the scan root (the empty relative path).
     dirs: Vec<Dir>,
+    /// Every interned directory's ancestors, end to end; see `Dir::chain`.
+    chains: Vec<DirRef>,
     /// Normalised relative directory path to its interned id.
     ids: FastMap<Box<OsStr>, DirRef>,
     /// Reused between calls to hold the normalised form of the path being interned.
     scratch: PathBuf,
 }
 
-const ROOT: DirRef = DirRef(0);
+const ROOT: DirRef = DirRef::ROOT;
 
 impl Default for HardLinks {
     fn default() -> Self {
@@ -76,7 +88,9 @@ impl Default for HardLinks {
             dirs: vec![Dir {
                 parent: ROOT,
                 depth: 0,
+                chain: 0,
             }],
+            chains: Vec::new(),
             ids,
             scratch: PathBuf::new(),
         }
@@ -85,23 +99,25 @@ impl Default for HardLinks {
 
 /// Depth of the deepest folder that contains both directories: how many leading components
 /// their paths share.
-fn shared_depth(dirs: &[Dir], mut left: DirRef, mut right: DirRef) -> u32 {
-    let at = |dir: DirRef| &dirs[dir.0 as usize];
-    let (mut left_depth, mut right_depth) = (at(left).depth, at(right).depth);
-    while left_depth > right_depth {
-        left = at(left).parent;
-        left_depth -= 1;
-    }
-    while right_depth > left_depth {
-        right = at(right).parent;
-        right_depth -= 1;
-    }
-    while left != right {
-        left = at(left).parent;
-        right = at(right).parent;
-        left_depth -= 1;
-    }
-    left_depth
+///
+/// Each directory's ancestors are kept as an array, so this is the length of the two arrays'
+/// common prefix — a few adjacent words compared, and for two directories that part company
+/// near the root (two snapshots of the same tree, say) one or two. Walking up from each by
+/// parent pointers until they met cost about 18 dependent loads a comparison, and with a file
+/// linked from several folders compared against each of them, 126 loads a sighting: half of a
+/// tree build with 734k sightings went there.
+fn shared_depth(dirs: &[Dir], chains: &[DirRef], left: DirRef, right: DirRef) -> u32 {
+    let chain = |dir: DirRef| {
+        let dir = &dirs[dir.0 as usize];
+        &chains[dir.chain as usize..dir.chain as usize + dir.depth as usize]
+    };
+    let shared = chain(left)
+        .iter()
+        .zip(chain(right))
+        .take_while(|(a, b)| a == b)
+        .count();
+    super::profile::count(&super::profile::ANCESTOR_STEPS, shared as u64 + 1);
+    shared as u32
 }
 
 /// Mark `directory` and its ancestors as charged, returning the depth of the deepest of them that
@@ -113,6 +129,7 @@ fn shared_depth(dirs: &[Dir], mut left: DirRef, mut right: DirRef) -> u32 {
 fn charge_ancestors(dirs: &[Dir], charged: &mut FastSet<DirRef>, mut directory: DirRef) -> u32 {
     while charged.insert(directory) {
         directory = dirs[directory.0 as usize].parent;
+        super::profile::count(&super::profile::ANCESTOR_STEPS, 1);
     }
     dirs[directory.0 as usize].depth
 }
@@ -132,6 +149,12 @@ impl HardLinks {
         id
     }
 
+    /// How deep `directory` is below the scan root, which is depth 0.
+    #[must_use]
+    pub fn depth_of(&self, directory: DirRef) -> usize {
+        self.dirs[directory.0 as usize].depth as usize
+    }
+
     /// [`Self::directory`] for a path already in the normalised form `components()` yields.
     fn intern_normalised(&mut self, directory: &Path) -> DirRef {
         let key = directory.as_os_str();
@@ -142,11 +165,44 @@ impl HardLinks {
             Some(parent) => self.intern_normalised(parent),
             None => ROOT,
         };
-        let id = DirRef(u32::try_from(self.dirs.len()).expect("fewer than 2^32 directories"));
-        let depth = self.dirs[parent.0 as usize].depth + 1;
-        self.dirs.push(Dir { parent, depth });
+        let id = self.child(parent);
         self.ids.insert(Box::from(key), id);
         id
+    }
+
+    /// A new directory directly under `parent`, which is how the tree names its folders to the
+    /// ledger: no path, no hashing — the folder keeps the id it is given and hands it back with
+    /// every link found in it. ([`Self::directory`] is the same by path, for callers that have
+    /// only that.)
+    pub fn child(&mut self, parent: DirRef) -> DirRef {
+        debug_assert_ne!(parent, DirRef::NONE, "a child of no directory");
+        let id = DirRef(u32::try_from(self.dirs.len()).expect("fewer than 2^32 directories"));
+        let above = &self.dirs[parent.0 as usize];
+        let depth = above.depth + 1;
+        let chain = u32::try_from(self.chains.len()).expect("ancestor chains fit in 4 Gi entries");
+        let parent_chain = above.chain as usize..above.chain as usize + above.depth as usize;
+        self.chains.extend_from_within(parent_chain);
+        self.chains.push(id);
+        self.dirs.push(Dir {
+            parent,
+            depth,
+            chain,
+        });
+        id
+    }
+
+    /// `directory`'s ancestors below the root, from the root's child down to `directory` itself:
+    /// the one at index `i` is at depth `i + 1`.
+    #[must_use]
+    pub fn ancestors(&self, directory: DirRef) -> &[DirRef] {
+        let dir = &self.dirs[directory.0 as usize];
+        &self.chains[dir.chain as usize..dir.chain as usize + dir.depth as usize]
+    }
+
+    /// How many directories the ledger knows: one more than the largest id it has given out.
+    #[must_use]
+    pub fn directories(&self) -> usize {
+        self.dirs.len()
     }
 
     /// Record a link to `inode`, of `size` bytes, found in `directory` (relative to the scan root).
@@ -179,6 +235,7 @@ impl HardLinks {
             files,
             reflinks,
             dirs,
+            chains,
             ..
         } = self;
         let (seen_before, key) = match shared {
@@ -204,13 +261,17 @@ impl HardLinks {
                     return Some(charge_ancestors(dirs, charged, directory) as usize);
                 }
                 let mut deepest = 0;
+                super::profile::count(
+                    &super::profile::LINK_COMPARISONS,
+                    seen.directories.len() as u64,
+                );
                 for &existing in &seen.directories {
                     if existing == directory {
                         // This folder already holds a link, so it and everything above it have
                         // been charged.
                         return Some(dirs[directory.0 as usize].depth as usize);
                     }
-                    deepest = deepest.max(shared_depth(dirs, existing, directory));
+                    deepest = deepest.max(shared_depth(dirs, chains, existing, directory));
                 }
                 seen.directories.push(directory);
                 if seen.directories.len() > INDEXED_AT {
