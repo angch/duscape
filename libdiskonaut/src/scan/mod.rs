@@ -779,7 +779,7 @@ pub enum ScanItem {
 
 /// Workers for the walker the app actually uses.
 pub fn thread_count(options: ScanOptions) -> usize {
-    capped(options, MAX_SCAN_THREADS)
+    capped(options, max_scan_threads())
 }
 
 /// Workers for the `dua-core` walk, wherever it is still reached.
@@ -822,8 +822,31 @@ fn capped(options: ScanOptions, cap: usize) -> usize {
 const MAX_SCAN_THREADS: usize = 24;
 #[cfg(target_os = "macos")]
 const MAX_SCAN_THREADS: usize = 6;
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 const MAX_SCAN_THREADS: usize = 8;
+
+/// The scan's worker cap on this machine: `MAX_SCAN_THREADS`, except on Windows.
+///
+/// There the walk is bound by a fixed cost per directory handle in the kernel and its filter
+/// drivers (Defender among them): on a system volume about 55µs of thread time per directory,
+/// three times what the same walk pays on a data volume. The kernel side stops scaling at a
+/// number of workers that grows with the machine, not at a fixed count. On a 12-thread machine 8
+/// workers beat 4 and 16. On a 32-thread one, `C:\` (436k directories) took 6.18s at 8 and 5.56s
+/// at 12, interleaved over four rounds, then 6.9s at 16 and 7.3s at 32. Two thirds of the cores,
+/// capped at 12, gives 8 on the first and 12 on the second.
+#[cfg(windows)]
+fn max_scan_threads() -> usize {
+    let cores = std::thread::available_parallelism().map_or(1, NonZero::get);
+    (cores * 2 / 3).clamp(1, WINDOWS_MAX_SCAN_THREADS)
+}
+#[cfg(not(windows))]
+fn max_scan_threads() -> usize {
+    MAX_SCAN_THREADS
+}
+
+/// The most workers a Windows walk is given, however many cores there are.
+#[cfg(windows)]
+const WINDOWS_MAX_SCAN_THREADS: usize = 12;
 
 /// Worker cap for the `dua-core` walk, which collapses past eight on every machine measured.
 const MAX_DUA_THREADS: usize = 8;

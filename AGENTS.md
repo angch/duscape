@@ -307,7 +307,10 @@ behind it on `parallel::SHARDS` threads. On macOS and Windows the walk is the wh
 waits on 4 KiB metadata reads and is fastest at six workers — so `SHARDS` is 1 there and any
 serial work after the walk shows directly in the scan time. `--bench-stage sharded` is the app's
 path; `pipeline` is the single-threaded build it replaced. Anything you change must keep `sharded`'s totals identical
-to `pipeline`'s — that comparison is the correctness check, not just the speed one.
+to `pipeline`'s — that comparison is the correctness check, not just the speed one. On Windows the
+floor is a fixed kernel and filter-driver cost per directory handle (3× on the system volume);
+opening by file id, closing off the walker threads and skipping the last listing call were all
+measured and none helped — read the 2026-09-24 section before trying them again.
 
 ### Modifying treemap layout
 - Core algorithm: `libdiskonaut/src/tiles/treemap.rs`

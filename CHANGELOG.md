@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The Windows walk uses two thirds of the cores, at most 12, instead of a fixed 8: `C:\` took
+  5.9s instead of 6.3s on a 32-thread machine (`D:\` 0.18s instead of 0.23s), and a 12-thread
+  one keeps its 8.
 - Forked as **`diskonaut-angch`** and restarted versioning at `0.1.0`. This fork diverged
   substantially from upstream diskonaut `0.13.0` (native per-platform walkers, parallel tree build,
   Windows support) and now versions independently; `repository` and `homepage` point at the fork.
