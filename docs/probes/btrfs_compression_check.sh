@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 #
+# ANSWERED 2026-09-23 by fixtures/fs (the `compression` scenario): blocks ~= logical.
+# stx_blocks reports the uncompressed size. diskonaut, run as root, now reads the extent items
+# instead (BTRFS_IOC_TREE_SEARCH_V2); as a user it still reports the uncompressed size.
+#
 # Does `stat` (and therefore diskonaut's on-disk size, which reads stx_blocks)
 # already reflect btrfs transparent compression? This cannot be answered on the
 # development machine, which has no btrfs volume, so run it on a real one.

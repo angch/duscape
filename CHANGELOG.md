@@ -7,16 +7,167 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The MS-DOS viewer, from a review of its 286 port: deleting or rescanning a folder whose path is
+  too long for DOS is refused (the check was lost to a flag overwritten before it was tested),
+  and a rescan no longer takes a folder out of the tree before knowing it can be read, so one
+  DOS cannot open neither vanishes nor counts as freed; colour averages round to nearest; a 16-bit
+  JPEG quantiser above 32767 is clamped; the disk line shows "0 not scanned" instead of nothing
+  when the drive reports less than was found; invalid UTF-8 is read exactly as Rust's lossy
+  decoding reads it; and PNG transparency (tRNS) works for gray and RGB as well as palettes.
+- The MS-DOS viewer runs on a 286 (or an 80186) with no coprocessor: 16-bit registers only, no
+  FS/GS, conditional jumps a 286 can take (`J286.INC`), and the treemap in IEEE doubles computed in
+  software (`SOFTFP.ASM`), so it still lays out exactly as Rust's f64 code does. Checked by a lint
+  for 386 instructions, 150,000 random soft-float operations against the host's doubles, and the
+  whole test suite on an emulated 286 without an FPU. With it, fixes from a review: a tiny JPEG
+  could hang the decoder for hours (a scan now ends at its end marker, and keys are read each
+  row); JPEG Huffman tables are checked before use; sniff read only every other byte; long names
+  lost their ends in the list; small JPEGs came out blank; the list followed the treemap's
+  selection only when the list had the keyboard; the cursor went to the top after a delete; a
+  file whose name DOS converted could not be previewed; the disk line and the share of the scan
+  differed from the terminal viewer's; restart markers could swallow the next marker; 4-byte
+  UTF-8 showed the wrong character; a 64 KiB head with no newline previewed blank.
+- The MS-DOS viewer's side panel and previews: the folder's details and its entries beside the
+  treemap, with the TUI's focus rules (the list has the keyboard, Tab and the arrows cross over,
+  Page Up/Down, Home/End), and under them the entry in hand previewed — text in CP437, or a PNG
+  or JPEG in half blocks, decoded in assembly (inflate, every PNG colour type and Adam7; JPEG
+  from its DC coefficients, progressive too) with six of the 16 text colours set to the
+  picture's own. `s` hides the panel. The tests compare every preview with ImageMagick's decode.
+- diskonaut for MS-DOS (`viewers/dos/`): the treemap as a 16-bit real-mode program in FASM
+  assembly, about 12 KB, for a 386 with a 387 or DOSBox-X. Ported from the Rust code — the
+  squarify layout, rounding, navigation, zoom, tile text and size formats — with tiles identical to
+  `libdiskonaut`'s on 100 random folders. It scans with DOS's find calls (long names where DOS has
+  them), draws the treemap live during the scan, deletes files and whole folders, toggles apparent
+  size, rescans a folder or everything (`r`/`R`), and takes the mouse. What does not fit in
+  conventional memory is shown as one "(not in memory)" entry per folder, so totals stay right; a
+  folder that will not delete completely is walked again. `make dos` assembles it inside DOSBox-X
+  with FASM and CWSDPMI fetched into `target/dos/`; `make dos-run` opens this repository;
+  `viewers/dos/test.py` checks it headless on fixtures.
+- A Linux viewer, `diskonaut-linux` (`viewers/linux/`), with no toolkit: the frame is drawn in
+  software and put on the screen natively on Wayland (`wayland-client`'s pure-Rust protocol:
+  `wl_shm`, `xdg-shell`, `xdg-decoration`, the seat with the xkb keymap read by the viewer, the
+  data device) or on X11 (`x11rb`), text comes from the system's fonts through `fontdue`, and
+  nothing is linked from the system, so it builds static for musl (about 1.7 MB) and runs on any
+  compositor or X server. Where the compositor draws no title bar, the window draws its own. The
+  same window as the macOS viewer's —
+  breadcrumbs, the list beside the treemap with the entry in hand previewed under it, live while
+  scanning — with the Trash (freedesktop; `gio trash` when installed), immediate deletion, marks,
+  copying paths (the window owns the clipboard itself when no tool is installed), zoom, apparent
+  sizes, rescans, and HiDPI by `Xft.dpi`. `DISKONAUT_SNAPSHOT=out.png` writes the frame after the
+  scan, for looking at the drawing without a screen.
+- `diskonaut-viewer` (`viewers/shared/`): the desktop viewers' shared state — the window's layout
+  in points, the entry in hand, marks, navigation, zoom, rescans, what a delete changes, the first
+  scan with its live outline, and the preview reader — moved out of the macOS viewer so the Linux
+  one behaves the same and both are tested once.
+- A native macOS viewer, `diskonaut-mac` (`viewers/macos/`), on AppKit through `objc2`: the
+  treemap with the list beside it, live while scanning; previews in the side panel and Quick
+  Look; the Trash or immediate deletion of every marked entry; copying paths, Show in Finder, a
+  context menu, breadcrumbs, zoom, apparent sizes, rescans, and folders dropped on the window.
+  Its state is kept free of AppKit and tested on every platform, and `tests/smoke.sh` drives the
+  real window with synthetic keys and clicks (`DISKONAUT_MAC_SCRIPT`) and checks what it holds.
+
+### Fixed
+
+- macOS viewer: ⌘⌫ (Move to Trash) and ⌥⌘⌫ (Delete Immediately) did nothing; their key
+  equivalent was Backspace (`U+0008`), not the Delete character the ⌫ key types.
+- Pictures in the preview are drawn as sixels in terminals without kitty graphics that have
+  them, before falling back to half blocks. Sixel support is attribute 4 of the device
+  attributes the terminal is already asked for (tmux answers for itself), with the cell size
+  asked alongside (`CSI 16 t`) for when the system reports none; on Windows, where the terminal
+  is not asked, Windows Terminal is taken to have them. `DISKONAUT_GRAPHICS=sixel` forces it.
+
 ### Changed
 
+- The Windows viewer is `diskonaut-windows` (crate and binary), not `diskonaut-gui`: there are GUI
+  viewers for three platforms now, and each is named for its own.
+- The workspace is split by role: `common/` (`libdiskonaut`: model, treemap, scan protocol,
+  deletion, preview reading, native clipboard), `scanners/` (the new `diskonaut-scan`: every
+  walker, the parallel build, the second pass, rescans), and `viewers/tui/` (`diskonaut-angch`) and
+  `viewers/windows/` (`diskonaut-windows`). Crate and binary names are unchanged; code that used
+  `libdiskonaut::scan::parallel`, `scan_directories` or `scan_into_tree` now takes them from
+  `diskonaut_scan`. `docs/features.md` describes every feature, where it lives, and which viewer
+  offers it.
+- The Windows walk uses two thirds of the cores, at most 12, instead of a fixed 8: `C:\` took
+  5.9s instead of 6.3s on a 32-thread machine (`D:\` 0.18s instead of 0.23s), and a 12-thread
+  one keeps its 8.
 - Forked as **`diskonaut-angch`** and restarted versioning at `0.1.0`. This fork diverged
   substantially from upstream diskonaut `0.13.0` (native per-platform walkers, parallel tree build,
   Windows support) and now versions independently; `repository` and `homepage` point at the fork.
   The binary is still named `diskonaut`, so the command and docs are unchanged. Entries below this
   line predate the rename.
 
+### Fixed
+
+- The Windows GUI's Delete removed the entry from the treemap but never from disk, though its
+  dialog said it would. It now deletes through the same code as the terminal viewer, and like it
+  refuses NTFS's metadata files.
+- Deleting a junction or directory symbolic link on Windows failed: it is not a directory to
+  `symlink_metadata`, so it went to `remove_file`, which Windows refuses for a directory link. It
+  is now removed with `remove_dir`, which takes the link and leaves its target alone.
+- btrfs snapshots were counted once per snapshot. Every subvolume and snapshot has its own
+  `st_dev`, which was folded into the identity of shared extents, so a snapshot's files never
+  matched the live ones they share. On btrfs the identity now uses the filesystem's UUID
+  (`BTRFS_IOC_FS_INFO`, no privileges needed).
+- btrfs compression was invisible: `stat` reports the uncompressed size, so 64 MiB of text that
+  holds 2 MiB read as 64 MiB. Run as root, the walk now reads each file's extent items
+  (`BTRFS_IOC_TREE_SEARCH_V2`, on the directory, no file opened) and counts what they occupy on
+  disk: compressed extents at their stored size (a partly referenced one pro rata), holes as
+  nothing, inline data as its bytes. About a microsecond a file, so only on btrfs mounted with
+  `compress`/`compress-force`, or for files marked compressed (`chattr +c`). As a user, sizes stay
+  uncompressed: the search needs `CAP_SYS_ADMIN`.
+- Compressed files over 8 MiB on btrfs, and any file of more than 64 extents on XFS or btrfs, were
+  never recognised as shared, so each snapshot or reflink copy of one counted again: the FIEMAP
+  probe read one page of 64 extents and gave up on longer maps. It now reads the whole map (to
+  256Ki extents).
+- Small files in btrfs snapshots, and small reflink copies on XFS and btrfs, were counted once per
+  copy: the walk only checks files of 64 KiB and up for shared blocks, to stay fast. It now notes
+  the smaller ones (4 KiB and up, not hard-linked) and checks them in a second pass after the
+  treemap is up, the folder being looked at first; the title says "refining" while it runs and
+  sizes settle as it goes. A folder rescan runs its own second pass before it is shown.
+- A folder rescan (`r`) walks under the same rules as the whole scan: a folder the scan left
+  empty — `/proc`, a network mount, another filesystem under `-x`, a bind mount it reaches anyway,
+  a folder past `--max-depth` — is not rescanned into life. Deleting something inside a folder
+  that is being rescanned starts the rescan again, so the deleted entry cannot come back. After
+  `R`, "outside the scan" no longer counts space freed before the rescan a second time, and if
+  the folder shown has gone, the marks and zoom history of it go too.
+- A bind mount of a folder inside the scan was counted twice, `-x` or not: it has the same device
+  as the folder, so nothing marked a boundary. At a mount root the walk now reads the mount table
+  and leaves the mount empty when an earlier mount shows the same directory inside the scan (the
+  same directory by device and inode, so a source since hidden under another mount is kept). A
+  second mount of the same filesystem is handled the same way. Scanning a bind mount on its own is
+  unaffected.
+
+### Changed
+
+- Scans no longer walk into network filesystems: NFS, SMB/CIFS, 9p, Ceph, AFS, Lustre, GPFS and
+  others by `statfs` magic, and remote FUSE filesystems (sshfs, rclone, s3fs, gcsfuse, GVfs …) by
+  their subtype in the mount table, so local FUSE filesystems such as ntfs-3g are still counted.
+  Another machine's files are not where this disk's space went, and a slow or dead server no
+  longer slows or hangs the scan. Named as the scan root, a network mount is still scanned. On
+  macOS, a mount point without `MNT_LOCAL` is skipped the same way.
+
 ### Added
 
+- `a` switches between size on disk and apparent size without scanning again (new `toggle-size`
+  keybind); `-a` now only chooses which is shown first. The tree keeps both sizes: a file holds its
+  size on disk and its length as a 32-bit difference from it, in the padding its 16-byte slot
+  already had, so the tree is no larger per file; the rare file whose two sizes are 2 GiB or more
+  apart (a huge sparse file) keeps both in a box of its own, so both are exact. Folders hold both
+  totals. Every walker now reads both sizes; on macOS the bulk listing asks for the allocation
+  and the data length together, the data length standing in for the allocation on FAT as before.
+- `make test-fs` / `fixtures/fs/`: ext4, XFS, btrfs, f2fs, tmpfs, FAT32, exFAT and NTFS on loopback
+  images, with hard links, sparse files, reflinks, snapshots, compression, mount layouts and
+  network mounts (loopback NFS, `fuse.rclone`), checked
+  against independent oracles and run in CI. Needs root or the docker group.
+- `r` rescans the selected folder (the one shown when a file is selected) and `R` everything,
+  in the background, with the old view browsable until the result is grafted in; ancestors'
+  sizes and counts are corrected by the difference. New `rescan` and `rescan-all` keybinds. A
+  character bound without Shift now also matches with it, since terminals report `R` with Shift.
+- The help line moves on by itself: the key legend, then a tip (Ctrl+click, right-click copy,
+  rescans…), then the legend again. Each rests at least five seconds, restarted by any key press,
+  then slides to the next in 80 ms, eased, at 60 frames a second. A legend wider than the terminal
+  is shown a page at a time, which replaces the abbreviated legend narrow terminals used to get.
 - A preview below the list, 16:9 and at most half the panel: the first lines of a text file, or
   a PNG or JPEG (detected by magic bytes) drawn with the kitty graphics protocol after a 100 ms
   debounce, scaled to fit. Support is read from the environment, or else asked of the terminal

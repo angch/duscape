@@ -27,3 +27,8 @@ confirm = "y"
 cancel = "n"
 # Move the arrow keys between the list on the left and the treemap on the right.
 switch-panel = "tab"
+# Scan the selected folder again (the shown folder when a file is selected), or everything.
+rescan = "r"
+rescan-all = "R"
+# Switch between space used on disk and apparent size (file lengths); no rescan needed.
+toggle-size = "a"

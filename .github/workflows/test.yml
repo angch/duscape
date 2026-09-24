@@ -26,7 +26,7 @@ jobs:
       - name: Run tests (musl)
         env:
           CC_x86_64_unknown_linux_musl: musl-gcc
-        run: cargo test -p libdiskonaut -p diskonaut-angch --target x86_64-unknown-linux-musl
+        run: cargo test -p libdiskonaut -p diskonaut-scan -p diskonaut-angch -p diskonaut-viewer -p diskonaut-linux --target x86_64-unknown-linux-musl
 
   test-coverage:
     runs-on: ubuntu-latest
@@ -52,6 +52,9 @@ jobs:
       - name: Generate coverage report (libdiskonaut)
         run: |
           cargo llvm-cov --all-features -p libdiskonaut --lcov --output-path lcov-libdiskonaut.info
+      - name: Generate coverage report (diskonaut-scan)
+        run: |
+          cargo llvm-cov --all-features -p diskonaut-scan --lcov --output-path lcov-diskonaut-scan.info
       - name: Generate coverage report (diskonaut)
         run: |
           cargo llvm-cov --all-features -p diskonaut-angch --lcov --output-path lcov-diskonaut.info
@@ -61,6 +64,16 @@ jobs:
           files: ./lcov-libdiskonaut.info
           flags: libdiskonaut
           name: libdiskonaut
+          fail_ci_if_error: false
+          verbose: true
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+      - name: Upload diskonaut-scan coverage to Codecov
+        uses: codecov/codecov-action@v7
+        with:
+          files: ./lcov-diskonaut-scan.info
+          flags: diskonaut-scan
+          name: diskonaut-scan
           fail_ci_if_error: false
           verbose: true
         env:

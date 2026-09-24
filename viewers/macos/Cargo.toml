@@ -1,0 +1,25 @@
+[package]
+name = "diskonaut-mac"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "macOS GUI viewer for diskonaut-angch: the shared model and native walker, drawn with AppKit."
+
+[[bin]]
+name = "diskonaut-mac"
+path = "src/main.rs"
+
+[dependencies]
+libdiskonaut = { workspace = true }
+diskonaut-scan = { workspace = true }
+diskonaut-viewer = { path = "../shared", version = "0.1.0" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-app-kit = "0.3"
+dispatch2 = "0.3"
+objc2-quick-look-ui = "0.3"

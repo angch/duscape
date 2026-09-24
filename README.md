@@ -21,21 +21,88 @@ This fork exists to **explore further performance optimizations for everyday dis
 - **Unix-native** — Linux, macOS, and BSD; built on `ratatui` and parallel directory walking
 - **Stays put on request** — `-x` keeps the scan on one filesystem, like `du -x`
 
+## macOS GUI (experimental)
+
+`diskonaut-mac` is a native macOS window on the same walker and model, drawn with AppKit (through
+`objc2`). A list of the folder's entries sits beside the treemap, with the entry in hand previewed
+under it; the treemap fills in live while the scan runs.
+
+```sh
+cargo run -p diskonaut-mac --release -- ~   # or run with no argument, or drop a folder on the window
+```
+
+- **Mac conventions:** ⌘⌫ moves to the Trash (⌥⌘⌫ deletes immediately), Space is Quick Look,
+  ⌘↑/⌘↓ go up and in, ⌥⌘R shows in Finder, ⌘C copies the path, right-click for a context menu.
+- **Marks:** ⇧-arrows, ⇧-click and ⌘-click mark several entries; Trash, copy and Finder act on all.
+- **Also:** breadcrumbs, zoom (⌘+/⌘-/⌘0), apparent sizes (`a`), rescans (⌘R/⇧⌘R), light and dark mode.
+
+## Linux GUI (experimental)
+
+`diskonaut-linux` is a window on the same walker and model for Linux and FreeBSD, drawn with no
+toolkit at all: the frame is painted in software and put on the screen by one of two backends,
+native Wayland (`wayland-client`, `xdg-shell`, a `wl_shm` buffer) or X11 (`x11rb`), both pure
+Rust, with text from the system's fonts (`fontconfig`'s sans-serif, rasterised by `fontdue`).
+Nothing is linked from the system — not libwayland, not Xlib — so it builds static
+(`--target x86_64-unknown-linux-musl`, about **1.7 MB**) and runs on any compositor or X server.
+It shares its state — the layout, what is in hand, marks, navigation, rescans — with the macOS
+viewer (`viewers/shared/`).
+
+```sh
+cargo run -p diskonaut-linux --release -- ~   # or run with no argument for the current folder
+```
+
+- **The same window as the Mac's:** breadcrumbs, the list beside the treemap with the entry in hand
+  previewed under it (text, PNG and JPEG), live while the scan runs; a status bar.
+- **Keys:** arrows, Enter/Esc, Tab, Page Up/Down, Home/End; `d` or Delete moves to the Trash
+  (freedesktop, through `gio trash` when it is installed), `D` or Shift+Delete deletes at once,
+  each after asking; `a` apparent sizes, `+`/`-`/`0` zoom, `r`/`R` rescan, `s` hides the list,
+  Ctrl+C copies the path, Ctrl+A marks everything, `q` quits.
+- **Mouse:** click, double-click to open, Ctrl+click and Shift+click to mark, right-click to copy
+  the path, wheel over the list, breadcrumbs to go up.
+- **Wayland or X11:** Wayland when `WAYLAND_DISPLAY` is set, else X11; `DISKONAUT_BACKEND=x11`
+  or `wayland` picks. On Wayland the compositor is asked for a title bar (`xdg-decoration`); where
+  it draws none (GNOME) the window draws its own, with move, maximise and close.
+- **HiDPI:** on Wayland the compositor's scale; on X11 `Xft.dpi` (or `GDK_SCALE`, or
+  `DISKONAUT_SCALE`).
+
+Why not GTK or Qt: both need their development packages to build and their libraries to run, which
+rules out the static binaries this fork ships, and their Rust bindings bring hundreds of crates for
+a window that draws one picture. See [`viewers/linux/README.md`](viewers/linux/README.md).
+
+## MS-DOS
+
+`viewers/dos/` is the treemap for MS-DOS: a 16-bit real-mode program in assembly (FASM), about
+**29 KB**, that runs in DOSBox-X or on a 286 with no coprocessor (the treemap's doubles are
+computed in software, bit for bit as Rust's f64). It is not built from the Rust code but
+ported from it — the squarify layout, navigation, zoom, tile text, the side panel and size formats
+— and its tiles match `libdiskonaut`'s on every folder it was compared on. It scans with long file
+names where DOS has them, draws the treemap live during the scan, deletes and rescans, and
+previews text, PNG and JPEG files beside the treemap, pictures in half blocks with six of text
+mode's 16 colours set to the picture's own.
+
+```sh
+make dos-run    # needs dosbox-x; fetches FASM, assembles, opens this repository as C:
+```
+
+See [`viewers/dos/README.md`](viewers/dos/README.md).
+
 ## Windows GUI (experimental)
 
-`diskonaut-gui` is a native Windows treemap window that reuses the fast walker and the squarify
-layout from `libdiskonaut` — the scan is the same one the terminal app runs. It is built on
+`diskonaut-windows` is a native Windows treemap window. The walker (`diskonaut-scan`) and the tree,
+layout and deletion (`libdiskonaut`) are the same code the terminal app runs; the window is only
+drawing and input. [`docs/features.md`](docs/features.md) lists what each viewer offers. It is built on
 `windows-sys` and GDI rather than a GUI framework, so the release binary is about **250 KB**.
 
 ```sh
-cargo run -p diskonaut-gui --release -- C:\   # or run with no argument for a folder picker
+cargo run -p diskonaut-windows --release -- C:\   # or run with no argument for a folder picker
 ```
 
 - **Fast:** the native parallel walker, scanning on a worker thread; the title bar shows entries/second.
 - **Live progress:** the window opens immediately and reports entries as the scan runs.
 - **Navigation:** left-click or Enter to open a folder, right-click / Backspace / the ◄ Up button to
   go back, arrow keys to move the selection.
-- **Deletion:** Delete removes the selected file or folder after a confirmation dialog.
+- **Deletion:** Delete removes the selected file or folder from disk after a confirmation dialog,
+  and refuses NTFS's own metadata files.
 - **Details:** the bottom bar shows the hovered tile; a "small files" block stands in for entries too
   small to draw; the window is DPI-aware and double-buffered (no flicker).
 
@@ -233,10 +300,12 @@ passed to the terminal. A PNG or JPEG — recognised by its first bytes, not its
 as a picture in terminals that speak the kitty graphics protocol (kitty, Ghostty, WezTerm; known
 from the environment, or by asking the terminal when it says nothing, as over ssh), once
 the selection has rested on it for 100 ms, so moving quickly through a folder of photos decodes
-none of them. Elsewhere, and inside tmux, it is drawn in the text itself as half blocks (`▀`),
-two pixels to a cell: in 24-bit colour where `COLORTERM` says the terminal has it, and in the
-256-colour palette otherwise (ssh does not pass `COLORTERM` on). `DISKONAUT_GRAPHICS=kitty`,
-`blocks` or `none` overrides the guess; `none` describes a picture instead of drawing it:
+none of them. A terminal without kitty graphics that has sixels (foot, xterm, mlterm, Windows
+Terminal, iTerm2, Konsole, tmux built with them — found from the terminal's device attributes)
+gets the picture as sixels, in up to 256 colours. Elsewhere it is drawn in the text itself as
+half blocks (`▀`), two pixels to a cell: in 24-bit colour where `COLORTERM` says the terminal has
+it, and in the 256-colour palette otherwise (ssh does not pass `COLORTERM` on).
+`DISKONAUT_GRAPHICS=kitty`, `sixel`, `blocks` or `none` overrides the guess; `none` describes a picture instead of drawing it:
 `PNG image · 1920×1080`. Only regular files are read, and on
 macOS files that are only in iCloud are not, since reading one would download it.
 
@@ -252,6 +321,9 @@ Narrower terminals give the whole width to the treemap, as before.
 | `d`                                | Delete selected file or folder        |
 | `+` / `-`                          | Zoom in / out                         |
 | `0`                                | Reset zoom                            |
+| `a`                                | Disk usage / apparent size            |
+| `r`                                | Rescan the selected folder            |
+| `R`                                | Rescan everything                     |
 | `q` or `Ctrl+C`                    | Quit (confirm with `y` when prompted) |
 | `Tab`                              | Move the keyboard to the list / map   |
 | `PgUp` `PgDn` `Home` `End`         | Jump through the list                 |
@@ -263,6 +335,23 @@ Narrower terminals give the whole width to the treemap, as before.
 | Double right-click                 | Copy its absolute path                |
 
 Deletion always asks for `y` / `n` confirmation.
+
+`a` switches between the space files take on disk and their apparent size (their length, as
+`du --apparent-size` counts it) at once, without scanning again: every file keeps both. `-a` or
+`apparent-size = true` in the config only chooses which is shown first.
+
+`r` scans the selected folder again (the folder shown, when a file is selected) and `R` the whole
+tree, in the background: the old figures stay up, and can be browsed, until the new ones replace
+them. A folder that has gone from disk is taken out of the view. Hard links between the rescanned
+folder and the rest are counted on both sides until the next `R`.
+
+On XFS and btrfs, small files are checked for blocks they share with other files (reflink copies,
+btrfs snapshots) after the treemap is up, the folder you are looking at first; the title says
+"refining" meanwhile, and sizes can go down a little as it finds them.
+
+The help line at the bottom moves on by itself: the key legend, then a tip, then the legend again
+and the next tip. Each rests at least five seconds, counted from your last key press, and then
+slides to the next in under 100 ms. A legend wider than the terminal is shown a page at a time.
 
 A double click is two clicks on the same tile within half a second.
 

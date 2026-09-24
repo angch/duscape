@@ -375,7 +375,7 @@ that does not fill them in gets the old additive behaviour rather than a wrong a
 | Firmlink handling | no, macOS has no counterpart elsewhere |
 | Inode-vs-listed-inode mount detection | the *technique* ports; on Linux `st_dev` is simpler and sufficient |
 
-Non-macOS builds use `fallback::group_by_directory` in `libdiskonaut/src/scan/mod.rs`, which groups
+Non-macOS builds use `fallback::group_by_directory` in `scanners/src/lib.rs` (then `libdiskonaut/src/scan/mod.rs`), which groups
 the `dua-core` walk into per-directory batches so the rest of the pipeline is identical. It is
 compiled on every platform (`#[cfg_attr(target_os = "macos", allow(dead_code))]`) and the tests in
 `scan/tests.rs` call it directly everywhere, so it is exercised on macOS even though it is never
@@ -1042,7 +1042,7 @@ native walker, not the two lines of one `all` run.**
 
 ### What the walker does
 
-`libdiskonaut/src/scan/linux.rs`. `getdents64` for names, `statx` for sizes, which is the same pair
+`scanners/src/linux.rs` (then `libdiskonaut/src/scan/linux.rs`). `getdents64` for names, `statx` for sizes, which is the same pair
 of syscalls `dua-core` ends up making — section 3 above measured that no portable change to *what*
 is asked per entry is worth anything. The whole difference is the thread model:
 
@@ -1547,6 +1547,46 @@ Also worth dismissing, because it is the obvious thing to wonder: **btrfs qgroup
 much does each subvolume hold" instantly, and `zfs list -o space` does the same for datasets. Both
 are far coarser than a treemap needs — they stop at the subvolume or dataset, not at the directory
 — so neither substitutes for a walk.
+
+### Measured on btrfs (2026-09-23): snapshots were counted once each
+
+With a loopback btrfs now available (`fixtures/fs`, in a privileged container), the report that
+btrfs double counted was reproduced at once: a subvolume of 43.1 MiB with two snapshots scanned as
+129.4 MiB. The extent identity folded in the device so that equal offsets on two volumes would not
+merge — but a snapshot *is* another device over the same address space, so its files never matched
+the live ones they share every extent with. The identity now folds in the filesystem's UUID on
+btrfs, from `BTRFS_IOC_FS_INFO`, which any user may call and which agrees across the top level,
+subvolumes and snapshots (`f_fsid` differs per subvolume like `st_dev`; `FS_IOC_GETFSUUID` is not
+implemented by btrfs). XFS keeps the device. After: 49.4 MiB, and the large-file snapshot fixture
+is byte-exact against btrfs's *data used*.
+
+What remains, measured on the same volume:
+
+- **Small files.** Nothing under `PROBE_ABOVE_BYTES` (64 KiB) is probed, so each snapshot counts
+  its small files again. FIEMAP answers them correctly (a 4 KiB file in a snapshot is `SHARED` at
+  the live copy's offset), and a build probing everything from 4 KiB matched btrfs exactly on 40k
+  files with a snapshot, but took 0.159 s against 0.018 s — about 2 µs a file, which on a 4M-file
+  btrfs root would be seconds. On `/usr` here 96% of files and 13.6% of bytes are under 64 KiB, so
+  a snapshot of `/` is overstated by roughly an eighth of itself. **Resolved** by a second pass:
+  the walk notes these files instead of probing them, and they are probed once the tree is on
+  screen, so the walk's time is unchanged (`scan::refine`). The fixtures' small-file snapshot case
+  now matches btrfs's data figure exactly.
+- **Inline files** (up to ~2 KiB) live in metadata: FIEMAP says `DATA_INLINE` at offset 0 and
+  never `SHARED`, and `st_blocks` claims 4 KiB. They cannot be matched this way at all.
+- **Compression is invisible to `stat`**: 64 MiB of text under `compress-force=zstd` holds 2 MiB
+  of data and `stx_blocks` says 64 MiB. That settles `probes/btrfs_compression_check.sh`: no.
+  Only `BTRFS_IOC_TREE_SEARCH_V2` sees compressed extent sizes, and it returns `EPERM` to a user
+  (checked). **As root it is now used**: one search per file on the directory's descriptor, no
+  open. Measured on 40k files of 4–60 KiB: 0.014 s as a user, 0.052 s as root on a `compress`
+  mount — about 1 µs a file — and 0.014 s as root on an uncompressed one, where only files
+  `statx` marks compressed are searched. The fixtures' compressed volume (text, random, mixed,
+  preallocated, sparse) comes out at btrfs's data used to the byte.
+- **Long extent maps**: the FIEMAP probe read 64 extents and gave up on more. A compressed file has
+  an extent per 128 KiB, so every compressed file over 8 MiB was counted once per snapshot; it
+  now pages through the map.
+- A reflink clone rewritten in part leaves the *source* wholly `SHARED` on btrfs — the original
+  extent stays whole, referenced by the clone's unchanged ends — where XFS splits it. Totals are
+  unaffected; the reflinked count can be one higher.
 
 ### ZFS
 
@@ -2119,7 +2159,8 @@ tags `MOUNT_POINT` and `SYMLINK`) are not followed. Every other reparse point is
 because OneDrive placeholders and dedup files are real data carrying a tag.
 
 Eight workers is the cap, as before: on `D:\`, 4 took 3.9s, 8 took 2.8s, 16 took 4.0s and 24 took
-4.2s (timed while link probing was still on).
+4.2s (timed while link probing was still on). Since 2026-09-24 the cap is two thirds of the cores,
+at most 12, which is still 8 on this machine; see *Where `C:\`'s six seconds go* below.
 
 ### Hard links: what did not work
 
@@ -2334,6 +2375,52 @@ is always zero.
 The app's real load path is `parallel::build_tree` (the `sharded` stage), not `pipeline`, despite
 an earlier benchmark comment that said otherwise — now corrected.
 
+### Where `C:\`'s six seconds go, and what did not help (2026-09-24)
+
+A second machine: Windows 11, 32 logical cores, Defender real-time protection on, unelevated.
+`C:\` is 2.34M entries in 436k directories, 1.2 TiB; `D:\` is 415k entries in 25.5k directories.
+`walk` and `sharded` take the same time here, so the tree build and the hard-link ledger are
+already hidden behind the walk, and nothing after the walk is worth moving to a second pass the way
+the Linux small-file probe was (`refine`). The walk does no per-file work at all; its cost is per
+directory. A temporary timer around each call, single-threaded, per directory:
+
+| | `C:\` | `D:\` |
+| --- | ---: | ---: |
+| `CreateFileW` | 34µs | 12µs |
+| two listing calls (the second only says there are no more) | 16µs | 8µs |
+| parsing the entries | 3µs | 4µs |
+| `CloseHandle` | 12µs | 5.5µs |
+
+Same code, same filesystem, and the system volume costs three times as much per handle: the filter
+drivers attached to it (Defender among them) run on every open and close. Charged to each folder
+at depth three, the cost was a uniform 45–60µs a directory everywhere, `Users` and `WinSxS` alike,
+so there is no subtree to special-case. And it does not scale: at 12 workers the same work took 72
+thread-seconds against 29 on one, and throughput levels off at about 75–80k directories a second.
+
+What was tried, interleaved against an unchanged build because two runs of the same binary differ
+by up to half a second:
+
+- **Opening directories by file id** (`OpenFileById` with the id from the parent's listing), to
+  skip resolving the whole path from the root: 18.2 against 14.9 thread-seconds of opens
+  single-threaded. Slower. Path lookup was never the cost.
+- **Not closing handles on the walker threads**: with handles leaked outright, as an upper bound,
+  open times rose to take the place of the closes and the walk took as long.
+- **Skipping the listing call that only says there are no more entries.** NTFS fills the buffer
+  while entries remain, and on all 461,996 directories of both volumes, no listing that left room
+  for the longest possible entry had more to give. Half of all calls, and about 4µs each, but at
+  12 workers the walk was *slower* without them in six rounds of six (5.98s against 5.80s), and
+  faster only at 8 (5.90s against 6.18s). Not kept: it is a gain only below the best thread count.
+- **More workers.** The cap of 8 was set on a 12-thread machine, where 8 beat 4 and 16. On this
+  one, over four interleaved rounds, 8 took 6.18s and 12 took 5.56s; 16 took 6.9s and 32 took
+  7.3s. So the cap is now two thirds of the cores, at most 12: 8 there, 12 here. The app's path
+  (`sharded`, no `--threads`) went from 6.26s to 5.87s over five interleaved rounds, with identical
+  entry counts. `D:\` gained too, 0.225s to 0.180s over six rounds, so the data volume, where
+  opens are three times cheaper, does not want fewer workers than the system volume.
+
+Unelevated, that is the floor: every directory has to be opened to be listed, and on a system
+volume the open is the filter drivers' price, not the walker's. What would go below it is not
+opening directories at all — reading the master file table, which only an administrator can do.
+
 ## A static Linux release: musl, and the allocator it needs (2026-09-23)
 
 The release binary is `x86_64-unknown-linux-musl`, fully static, so it runs on any x86_64 Linux
@@ -2440,7 +2527,8 @@ buys queue depth at the price of kernel contention:
 | 12 | 45.1s | 401s |
 
 Interleaved on the app's path, six beat eight in every round (39.1–39.8s against 40.5–41.7s).
-`MAX_SCAN_THREADS` is now 6 on macOS; Windows keeps 8, Linux 24. It is a measurement on one
+`MAX_SCAN_THREADS` is now 6 on macOS; Windows keeps 8 (two thirds of the cores, at most 12,
+since 2026-09-24), Linux 24. It is a measurement on one
 14-core M4 Pro and an NVMe SSD, not a law — a slower disk or a different core count may move it.
 
 The vnode cache is small next to the tree: `kern.maxvnodes` is 263,168 and one scan of `/` creates

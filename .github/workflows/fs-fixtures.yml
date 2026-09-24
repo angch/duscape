@@ -1,0 +1,38 @@
+name: Filesystem fixtures
+
+# The scan's correctness depends on the filesystem under it: hard links, reflinks, snapshots,
+# compression, sparse files and mount layouts behave differently on each. This makes each one on a
+# loopback image and checks diskonaut against it. See fixtures/fs/README.md.
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  fs-fixtures:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build cache
+        uses: Swatinem/rust-cache@v2
+      - name: Install filesystem tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y btrfs-progs xfsprogs f2fs-tools dosfstools exfatprogs ntfs-3g \
+            nfs-kernel-server rclone fuse3
+          sudo modprobe -a btrfs xfs f2fs exfat ntfs3 nfsd || true
+          # The fixture starts its own loopback NFS server; the packaged one would hold the port.
+          sudo systemctl stop nfs-server || true
+      - name: Build
+        run: fixtures/fs/run.sh --build-only
+      - name: Run
+        # As root, so run.sh uses the tools installed above rather than a container; the scans
+        # and tests still run as the runner's own user.
+        run: sudo --preserve-env=PATH env WORK="$PWD/target/fs-fixtures" fixtures/fs/run.sh --no-build
