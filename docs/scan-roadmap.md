@@ -31,11 +31,12 @@ up in `scan-performance.md` as a negative result and not merged.
 | privilege | user, root / administrator | device reads, dm tables, bulkstat, MFT |
 | cache | warm, cold | CPU-bound against I/O-bound |
 
-Results so far come from one cell: an 8-core VM, virtio SSD with the host's cache under it,
-ext4, Linux. The 3 µs per `statx` measured there is partly virtualisation; bare metal is
-expected to halve it, which shrinks the kernel's share and grows the model's. Cold on a spinning
-disk has not been seen at all, and it is where the inode-order and prefetch work should show
-most.
+Results so far come from two cells, both ext4 on Linux: an 8-core VM on a virtio SSD with the
+host's cache under it (`docs/benchmarks/angch-noble-*.md`), and a 16-core bare-metal laptop on
+NVMe (`badwolf-*.md`, warm only so far: no sudo there). Bare metal walks about 2.5M entries/s
+warm against the VM's 1.5M, and diskonaut and `diskus` finish within a few percent of each other
+on both, so warm, the walk is the kernel's cost on either. Cold on a spinning disk has not been
+seen at all, and it is where the inode-order and prefetch work should show most.
 
 ## The steps, in order of expected payoff
 
