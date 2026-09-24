@@ -1,4 +1,5 @@
 use ::ratatui::backend::Backend;
+use ::ratatui::layout::Rect;
 use ::std::ffi::{OsStr, OsString};
 use ::std::fs;
 use ::std::mem::ManuallyDrop;
@@ -19,7 +20,9 @@ use crate::Event;
 use crate::clipboard::{Clipboard, SystemClipboard};
 use crate::config::Keybinds;
 use crate::messages::{Instruction, handle_instructions};
-use crate::preview::{Graphics, NoGraphics, Pictures, Preview, Previewer, Request, placement_in};
+use crate::preview::{
+    Graphics, NoGraphics, Pictures, Placement, Preview, Previewer, Request, placement_in,
+};
 use crate::rescan::{Outcome, Refiner, Rescanner};
 use crate::state::UiEffects;
 use crate::ui::side_panel::{self, picture_area};
@@ -110,6 +113,9 @@ where
     /// Counts requests, so an answer to one the selection has since moved past is dropped.
     preview_generation: u64,
     preview: Preview,
+    /// The screen size the last frame was drawn at: a new one clears the screen, and with it any
+    /// picture the terminal drew.
+    screen_size: Option<Rect>,
     /// Where copied paths go: the system clipboard, or a recorder in tests.
     clipboard: Box<dyn Clipboard>,
     /// The directory diskonaut was started from, resolved, which copied relative paths start
@@ -220,6 +226,7 @@ where
             graphics: Box::new(NoGraphics),
             preview_key: None,
             preview_generation: 0,
+            screen_size: None,
             preview: Preview::None,
             clipboard: Box::new(SystemClipboard),
             // Resolved like the scan root, so that `..` counts real directories on both sides.
@@ -240,7 +247,8 @@ where
         }
     }
     /// Start previewing files: `previewer` reads them, and pictures are shown as `pictures`
-    /// says — by `graphics` for [`Pictures::Kitty`], in the frame itself for blocks.
+    /// says — by `graphics` for [`Pictures::Kitty`] and [`Pictures::Sixel`], in the frame
+    /// itself for blocks.
     pub fn enable_previews(
         &mut self,
         previewer: Previewer,
@@ -604,14 +612,22 @@ where
         }
         caption
     }
-    /// Draw the picture over the frame just drawn, or take it away.
-    fn show_picture(&mut self) {
-        let placement = match (&self.preview, self.display.areas().preview, &self.ui_mode) {
+    /// Where the picture goes over the frame, if anywhere. A picture that text would destroy is
+    /// taken away while a dialog is up.
+    fn picture_placement(&self) -> Option<Placement> {
+        let dialog = matches!(
+            self.ui_mode,
+            UiMode::DeleteFiles(_)
+                | UiMode::ErrorMessage(_)
+                | UiMode::Exiting { .. }
+                | UiMode::WarningMessage(_)
+        );
+        match (&self.preview, self.display.areas().preview, &self.ui_mode) {
             (_, _, UiMode::ScreenTooSmall) => None,
+            _ if dialog && !self.graphics.stays_under_text() => None,
             (Preview::Image(image), Some(area), _) => Some(placement_in(picture_area(area), image)),
             _ => None,
-        };
-        self.graphics.show(placement);
+        }
     }
     /// Send copied paths somewhere other than the system clipboard, for tests.
     #[cfg(test)]
@@ -656,6 +672,12 @@ where
         // real cells and is not superseded by a second one as soon as the frame is drawn.
         self.display.refresh_cell_pixels();
         self.update_preview();
+        // A new size clears the screen as the frame is drawn.
+        if self.screen_size.replace(full_screen_size) != Some(full_screen_size) {
+            self.graphics.cleared();
+        }
+        let placement = self.picture_placement();
+        self.graphics.prepare(placement.as_ref());
         let panel_state = crate::ui::PanelState {
             list_focused: self.focus() == Focus::List,
             highlighted: self.highlighted_listing_index(),
@@ -679,7 +701,8 @@ where
                 panel: panel_state,
             },
         );
-        self.show_picture();
+        // Drawn over the frame just drawn, or taken away.
+        self.graphics.show(placement);
     }
     pub fn flash_space_freed(&mut self) {
         self.ui_effects.flash_space_freed = true;

@@ -76,7 +76,8 @@ where
             cell_pixels: DEFAULT_CELL_PIXELS,
         }
     }
-    /// The cell size in pixels, as the terminal reports it, or the usual 1:2 if it does not.
+    /// The cell size in pixels, as the system reports it, else as the terminal said when asked,
+    /// else the usual 1:2.
     fn measure_cell_pixels(&mut self) -> (u16, u16) {
         match self.terminal.backend_mut().window_size() {
             Ok(size)
@@ -90,7 +91,7 @@ where
                     (size.pixels.height / size.columns_rows.height).max(1),
                 )
             }
-            _ => DEFAULT_CELL_PIXELS,
+            _ => crate::preview::queried_cell_pixels().unwrap_or(DEFAULT_CELL_PIXELS),
         }
     }
     pub fn cell_pixels(&self) -> (u16, u16) {

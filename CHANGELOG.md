@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Pictures in the preview are drawn as sixels in terminals without kitty graphics that have
+  them, before falling back to half blocks. Sixel support is attribute 4 of the device
+  attributes the terminal is already asked for (tmux answers for itself), with the cell size
+  asked alongside (`CSI 16 t`) for when the system reports none; on Windows, where the terminal
+  is not asked, Windows Terminal is taken to have them. `DISKONAUT_GRAPHICS=sixel` forces it.
+
 ### Changed
 
 - Forked as **`diskonaut-angch`** and restarted versioning at `0.1.0`. This fork diverged

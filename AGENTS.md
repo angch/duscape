@@ -100,14 +100,23 @@ Six kinds of thread communicate via `mpsc` channels (bounded, except the preview
   the panel when ≥ 80 columns) and `entry_at` maps a cell to a row — used by both the renderer and
   the mouse, so they cannot disagree
 - `config/mod.rs` — TOML config (`~/.config/diskonaut/config.toml`)
-- `preview.rs` — the preview thread, file sniffing, and kitty graphics output (`Graphics`:
+- `preview.rs` — the preview thread, file sniffing, and kitty/sixel graphics output (`Graphics`:
   `KittyGraphics` writes after each frame, only on change; `q=2` so the terminal never answers
-  on stdin, `z=-1` so dialogs cover it). `side_panel::screen_areas` sizes the preview 16:9 from
-  the cell pixel size `Display` measures each frame. `kitty_supported` decides once: env vars
-  (kitty, Ghostty, WezTerm; tmux never), else a graphics query + DA1 read straight off stdin —
-  what finds it over ssh. It must first run in raw mode before any thread reads stdin (`try_main`).
-  `pictures()` picks `Pictures::Kitty`, `Blocks` (the fallback: `▀` cells the previewer colours
-  as `Preview::Blocks` and `side_panel` draws into the frame) or `Described`
+  on stdin, `z=-1` so dialogs cover it). `SixelGraphics` has nothing to delete a picture by and
+  the frame never redraws cells it thinks blank, so `prepare` (before the frame) erases the old
+  picture's cells when it changes; text over a sixel destroys it, so it is hidden while a dialog
+  is up (`stays_under_text`), and `cleared` forgets it when a resize clears the screen. The
+  encoder is a median-cut palette of 256 and the picture is cut to whole 6-pixel bands so none
+  spills into the next row. `side_panel::screen_areas` sizes the preview 16:9 from the cell pixel
+  size `Display` measures each frame (else the `CSI 16 t` answer, `queried_cell_pixels`).
+  `graphics_protocol` decides once: env vars (kitty, Ghostty, WezTerm; tmux never kitty), else a
+  graphics query + `CSI 16 t` + DA1 read straight off stdin — what finds it over ssh; sixels are
+  DA1 attribute `4` (tmux answers for itself). Where nothing can be asked (Windows) Windows
+  Terminal, foot, mlterm and iTerm2 are taken as sixel by name (WT with its fixed 10×20
+  sixel cell, since the console reports no pixels). It must first run in raw mode
+  before any thread reads stdin (`try_main`). `pictures()` picks `Pictures::Kitty`, `Sixel`,
+  `Blocks` (the fallback: `▀` cells the previewer colours as `Preview::Blocks` and `side_panel`
+  draws into the frame) or `Described`
 - `clipboard.rs` — native clipboard (`pbcopy`, Win32, `wl-copy`/`xclip`/`xsel`), OSC 52 fallback;
   paths are quoted by `libdiskonaut::format::quote_path_for_shell` before they get there
 - `cli/mod.rs` — clap CLI args

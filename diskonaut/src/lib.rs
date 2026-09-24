@@ -144,7 +144,7 @@ fn try_main() -> Result<(), Error> {
             // Asked now, in raw mode and before anything reads stdin, because it may query the
             // terminal and read the answer; on the alternate screen, so a terminal that prints
             // the query instead of answering it leaves nothing behind once `App::new` clears it.
-            preview::kitty_supported();
+            preview::graphics_protocol();
             let default_hook = std::panic::take_hook();
             std::panic::set_hook(Box::new(move |info| {
                 restore_terminal();
@@ -205,10 +205,10 @@ fn start<B>(
             let _ = instruction_sender.send(Instruction::PreviewReady(generation, preview));
         });
         let pictures = preview::pictures();
-        let graphics: Box<dyn preview::Graphics> = if pictures == preview::Pictures::Kitty {
-            Box::new(preview::KittyGraphics::default())
-        } else {
-            Box::new(preview::NoGraphics)
+        let graphics: Box<dyn preview::Graphics> = match pictures {
+            preview::Pictures::Kitty => Box::new(preview::KittyGraphics::default()),
+            preview::Pictures::Sixel => Box::new(preview::SixelGraphics::default()),
+            _ => Box::new(preview::NoGraphics),
         };
         app.enable_previews(previewer, pictures, graphics);
     }

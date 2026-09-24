@@ -1342,6 +1342,40 @@ fn without_kitty_a_picture_is_drawn_in_the_frame() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// Sixels, which text drawn over them destroys, are taken away while a dialog is up and put
+/// back once it closes.
+#[test]
+fn a_sixel_picture_makes_way_for_a_dialog() {
+    struct Sixels(PictureRecorder);
+    impl crate::preview::Graphics for Sixels {
+        fn show(&mut self, placement: Option<crate::preview::Placement>) {
+            crate::preview::Graphics::show(&mut self.0, placement);
+        }
+        fn stays_under_text(&self) -> bool {
+            false
+        }
+    }
+    let dir = preview_fixture("preview_sixel");
+    let mut app = app_with_scanned_dir(&dir, 120, 30);
+    let (answers, _) = previewing(&mut app, crate::preview::Pictures::Sixel);
+    let recorder = PictureRecorder::default();
+    app.graphics = Box::new(Sixels(recorder.clone()));
+    let (column, row) = list_row_of(&app, "photo.png");
+    app.click(MouseButton::Left, column, row);
+    deliver(&mut app, &answers);
+    let placed = recorder.last().flatten().expect("a picture placed");
+    assert!(placed.image.data.starts_with(b"\x1bP"), "a sixel sequence");
+
+    app.prompt_file_deletion();
+    app.render();
+    assert!(matches!(app.ui_mode, UiMode::DeleteFiles(_)));
+    assert_eq!(recorder.last(), Some(None), "gone while the dialog is up");
+    press(&mut app, 'n');
+    app.render();
+    assert_eq!(recorder.last(), Some(Some(placed)), "back once it closes");
+    let _ = fs::remove_dir_all(&dir);
+}
+
 /// Folders and multi-selections are not previewed, and nothing is read for them.
 #[test]
 fn folders_and_selections_are_not_previewed() {
