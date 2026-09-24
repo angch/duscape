@@ -17,6 +17,10 @@ libdiskonaut = { workspace = true }
 diskonaut-scan = { workspace = true }
 diskonaut-viewer = { path = "../shared", version = "0.1.0" }
 image = { workspace = true }
+
+# The window is Linux and FreeBSD only (`main.rs`); elsewhere the binary is a stub that says so,
+# and these (Unix-only) crates are not built at all.
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
 x11rb = { version = "0.14.0", features = ["image", "resource_manager"] }
 fontdue = "0.9.4"
 libc.workspace = true
