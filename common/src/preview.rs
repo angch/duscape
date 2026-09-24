@@ -1,13 +1,20 @@
 //! Looking inside a file for a viewer's preview: what it is, its first lines if it is text, and
 //! its pixels if it is a PNG or JPEG.
 //!
-//! Only what any viewer needs is here. How a picture is scaled and drawn — kitty graphics, sixels
-//! or half blocks in a terminal, a bitmap in a window — and when it is decoded (after the
-//! selection has rested on it) is the viewer's business.
+//! Only what any viewer needs is here, and [`Reader`], the thread that reads files as the
+//! selection moves and decodes a picture only once it has rested on one. How a picture is scaled
+//! and drawn — kitty graphics, sixels or half blocks in a terminal, a bitmap in a window — is the
+//! viewer's business, which it hands the reader as a closure.
 
 use ::std::fs::File;
 use ::std::io::Read;
 use ::std::path::Path;
+use ::std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
+use ::std::thread;
+use ::std::time::Duration;
+
+/// How long the selection must rest on a picture before it is decoded.
+pub const IMAGE_DEBOUNCE: Duration = Duration::from_millis(100);
 
 /// How much of a file is read to tell what it is, and to show as text.
 pub const HEAD_BYTES: u64 = 64 * 1024;
@@ -212,9 +219,122 @@ pub fn decode_picture(path: &Path, kind: Kind) -> Result<Picture, String> {
     Ok(Picture { image, description })
 }
 
+/// `image` scaled down, keeping its shape, to fit within `width` by `height` pixels — or as it
+/// is, if it already fits. `DynamicImage::thumbnail` alone would blow a small picture up to fill
+/// the space, blurred.
+#[must_use]
+pub fn fit(image: image::DynamicImage, width: u32, height: u32) -> image::DynamicImage {
+    let (width, height) = (width.max(1), height.max(1));
+    if image.width() <= width && image.height() <= height {
+        image
+    } else {
+        image.thumbnail(width, height)
+    }
+}
+
+/// A file a viewer wants previewed: its path, a generation that says which request an answer is
+/// for, and whatever else the viewer needs to prepare a picture of it (the area it goes in, say).
+pub trait Wanted: Send + 'static {
+    fn generation(&self) -> u64;
+    fn path(&self) -> &Path;
+}
+
+/// What the reader answers: a line saying what the file is, its first lines, or the picture the
+/// viewer prepared of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Ready<P> {
+    Info(String),
+    Text(Vec<String>),
+    Picture(P),
+}
+
+/// The preview thread's end of the conversation: send it files, and it answers each through the
+/// callback it was started with, tagged with the request's generation. Only the latest request
+/// matters: anything queued behind it is dropped unread, and a picture is prepared only once no
+/// newer request has come for [`IMAGE_DEBOUNCE`], so holding an arrow key down through a folder
+/// of photos decodes none of them. Files are read on this thread, so a slow disk never holds up
+/// the viewer.
+pub struct Reader<R> {
+    requests: Sender<R>,
+}
+
+impl<R: Wanted> Reader<R> {
+    /// Start the thread. `picture` prepares a picture for display, from the request, its
+    /// [`Kind`] and the file's size — typically with [`decode_picture`], or [`describe_picture`]
+    /// when the viewer shows none; it may answer with [`Ready::Info`] instead.
+    pub fn spawn<P: Send + 'static>(
+        picture: impl Fn(&R, Kind, u64) -> Ready<P> + Send + 'static,
+        on_ready: impl Fn(u64, Ready<P>) + Send + 'static,
+    ) -> Self {
+        let (requests, incoming) = channel();
+        let _ = thread::Builder::new()
+            .name("previewer".to_string())
+            .spawn(move || run(&incoming, &picture, &on_ready));
+        Reader { requests }
+    }
+
+    pub fn request(&self, request: R) {
+        let _ = self.requests.send(request);
+    }
+}
+
+fn run<R: Wanted, P>(
+    incoming: &Receiver<R>,
+    picture: &impl Fn(&R, Kind, u64) -> Ready<P>,
+    on_ready: &impl Fn(u64, Ready<P>),
+) {
+    let mut next = None;
+    loop {
+        let mut request = match next.take() {
+            Some(request) => request,
+            None => match incoming.recv() {
+                Ok(request) => request,
+                Err(_) => return,
+            },
+        };
+        // Only the latest request matters; anything queued behind it is already out of date.
+        while let Ok(newer) = incoming.try_recv() {
+            request = newer;
+        }
+        let ready = match read(request.path()) {
+            Contents::Info(info) => Ready::Info(info),
+            Contents::Text(lines) => Ready::Text(lines),
+            Contents::Picture { kind, size } => {
+                // Decode only once the selection has stayed here; a newer request means it moved
+                // on, and this picture is never needed.
+                match incoming.recv_timeout(IMAGE_DEBOUNCE) {
+                    Ok(newer) => {
+                        next = Some(newer);
+                        continue;
+                    }
+                    Err(RecvTimeoutError::Disconnected) => return,
+                    Err(RecvTimeoutError::Timeout) => picture(&request, kind, size),
+                }
+            }
+        };
+        on_ready(request.generation(), ready);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Kind, sniff, text_lines};
+
+    /// Scaled down to fit, keeping its shape, and never up.
+    #[test]
+    fn a_picture_is_fitted_down_and_never_up() {
+        let picture = image::DynamicImage::new_rgba8(400, 100);
+        let fitted = super::fit(picture.clone(), 200, 200);
+        assert_eq!((fitted.width(), fitted.height()), (200, 50));
+        let fitted = super::fit(picture.clone(), 4000, 4000);
+        assert_eq!((fitted.width(), fitted.height()), (400, 100));
+        let fitted = super::fit(picture, 0, 0);
+        assert_eq!(
+            (fitted.width(), fitted.height()),
+            (1, 1),
+            "a degenerate area is one pixel"
+        );
+    }
 
     #[test]
     fn files_are_told_apart_by_their_first_bytes() {

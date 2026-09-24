@@ -1567,7 +1567,7 @@ mod rescans {
         assert_eq!(app.rescans.len(), 1);
         app.rescan_all();
         assert_eq!(app.rescans.len(), 1);
-        assert!(app.rescans[0].relative.is_empty());
+        assert!(app.rescans.iter().all(|(_, relative)| relative.is_empty()));
         // Whatever the stopped one reports is dropped; the whole-tree one lands.
         while !app.rescans.is_empty() {
             finish(&mut app, &rx);
@@ -1612,7 +1612,7 @@ mod rescans {
         write(&dir.join("sub/kept"), 1000);
         let (mut app, rx) = app_with_rescans(&dir);
         app.rescan_selected();
-        let first = app.rescans[0].id;
+        let first = app.rescans.iter().next().map(|(id, _)| id);
         // Delete sub/doomed while the rescan may already have listed it.
         app.handle_enter();
         let doomed = app
@@ -1628,7 +1628,11 @@ mod rescans {
         let files = app.get_files_to_delete();
         app.delete_files(&files);
         assert_eq!(app.rescans.len(), 1);
-        assert_ne!(app.rescans[0].id, first, "started again after the delete");
+        assert_ne!(
+            app.rescans.iter().next().map(|(id, _)| id),
+            first,
+            "started again after the delete"
+        );
         while !app.rescans.is_empty() {
             finish(&mut app, &rx);
         }

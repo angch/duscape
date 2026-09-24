@@ -1,7 +1,71 @@
+use ::std::fs;
+use ::std::sync::atomic::AtomicBool;
+use ::std::sync::{Arc, Mutex, mpsc};
+
 use super::*;
-use libdiskonaut::EntryMeta;
+use diskonaut_scan::scan_into_tree;
+use libdiskonaut::format::quote_path_for_shell;
+use libdiskonaut::{EntryMeta, ScanOptions};
 
 const ROOT: &str = "/diskonaut-mac-test-root";
+
+/// Apparent sizes and one thread, so the figures are the files' lengths on any filesystem.
+fn options() -> ScanOptions {
+    ScanOptions {
+        parallel: false,
+        show_apparent_size: true,
+        ..ScanOptions::default()
+    }
+}
+
+/// A folder on disk: `big/inside` (3000 bytes), `medium.txt` (2000), `small/inside` (100),
+/// `tiny.txt` (50).
+fn on_disk(name: &str) -> PathBuf {
+    let dir = ::std::env::temp_dir().join(format!("diskonaut_viewer_state_{name}"));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(dir.join("big")).expect("create big");
+    fs::create_dir_all(dir.join("small")).expect("create small");
+    fs::write(dir.join("big").join("inside"), vec![b'x'; 3000]).expect("write");
+    fs::write(dir.join("medium.txt"), vec![b'x'; 2000]).expect("write");
+    fs::write(dir.join("small").join("inside"), vec![b'x'; 100]).expect("write");
+    fs::write(dir.join("tiny.txt"), vec![b'x'; 50]).expect("write");
+    dir.canonicalize().expect("canonical")
+}
+
+/// A viewer over a folder on disk, scanned, with copied text going into the returned record.
+fn viewer_on(dir: &Path) -> (Viewer, Arc<Mutex<Vec<String>>>) {
+    let mut viewer = Viewer::new(dir, SizeKind::Apparent, 1);
+    viewer.resize(1200.0, 800.0);
+    let (tree, _) = scan_into_tree(dir, options());
+    viewer.finish_scan(tree);
+    viewer.set_working_dir(Some(dir.to_path_buf()));
+    let copied = Arc::new(Mutex::new(Vec::new()));
+    let record = Arc::clone(&copied);
+    viewer.set_clipboard(move |text| {
+        record.lock().expect("record").push(text.to_string());
+        true
+    });
+    (viewer, copied)
+}
+
+fn last_copied(copied: &Mutex<Vec<String>>) -> Option<String> {
+    copied.lock().expect("record").last().cloned()
+}
+
+fn quoted(relative: &str) -> String {
+    quote_path_for_shell(Path::new(relative))
+}
+
+fn row_center(viewer: &Viewer, name: &str) -> (f64, f64) {
+    let list = viewer.layout.list.expect("a list");
+    let index = viewer
+        .board
+        .listing()
+        .iter()
+        .position(|entry| entry.name == name)
+        .expect("listed");
+    (list.x + 10.0, list.y + ROW * (index as f64 + 0.5))
+}
 
 fn meta(size: u64, is_dir: bool) -> EntryMeta {
     EntryMeta {
@@ -184,23 +248,232 @@ fn shift_marks_a_range_that_shrinks_when_reversed() {
     assert!(viewer.marked.is_empty());
 }
 
+/// A ⇧ run adds its range to the marks there were, so an earlier mark outside the range survives
+/// the run shrinking — it is not replaced by the range.
 #[test]
-fn command_click_toggles_marks_starting_from_the_entry_in_hand() {
+fn a_shift_run_keeps_the_marks_it_started_from() {
     let mut viewer = viewer();
     let toggle = Mods {
         toggle: true,
         range: false,
     };
+    let (x, y) = row_center(&viewer, "big");
+    viewer.click(x, y, Mods::default());
+    let (x, y) = row_center(&viewer, "tiny.bin");
+    viewer.click(x, y, toggle);
+    assert_eq!(
+        viewer.marked,
+        ["big", "tiny.bin"],
+        "big was picked, so it joins"
+    );
+    viewer.arrow(Direction::Up, true);
+    viewer.arrow(Direction::Up, true);
+    assert_eq!(
+        viewer.marked,
+        ["big", "tiny.bin", "small", "medium.txt"],
+        "swept from the anchor, on top of the marks there were"
+    );
+    viewer.arrow(Direction::Down, true);
+    assert_eq!(
+        viewer.marked,
+        ["big", "tiny.bin", "small"],
+        "the range shrinks; the mark it started from stays"
+    );
+    viewer.jump(Jump::Home, false);
+    assert!(viewer.marked.is_empty(), "a plain jump clears the marks");
+}
+
+/// Marks cleared by a move in the treemap are gone for good: a ⇧ move afterwards starts a range
+/// from nothing rather than bringing back what the run began with.
+#[test]
+fn a_shift_run_does_not_bring_back_marks_cleared_in_the_treemap() {
+    let mut viewer = viewer();
+    let toggle = Mods {
+        toggle: true,
+        range: false,
+    };
+    let (x, y) = row_center(&viewer, "tiny.bin");
+    viewer.click(x, y, toggle);
+    viewer.arrow(Direction::Up, true);
+    assert_eq!(viewer.marked, ["tiny.bin", "small"]);
+    viewer.toggle_focus();
+    viewer.arrow(Direction::Left, false);
+    assert!(
+        viewer.marked.is_empty(),
+        "a plain move in the treemap clears them"
+    );
+    viewer.focus = Focus::List;
+    let from = viewer.selected_listing_index().expect("in hand");
+    viewer.arrow(Direction::Down, true);
+    let listing = names(&viewer);
+    let to = (from + 1).min(listing.len() - 1);
+    let marked: Vec<String> = viewer
+        .marked
+        .iter()
+        .map(|name| name.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        marked,
+        listing[from..=to],
+        "only the new range, from the entry in hand"
+    );
+}
+
+/// A modified click takes in the entry already in hand only if the user picked it. The entry the
+/// viewer put in hand after the scan was placed, not picked, so it is not marked behind their
+/// back; one they moved to is.
+#[test]
+fn command_click_seeds_the_marks_only_with_a_chosen_entry() {
+    let mut viewer = viewer();
+    let toggle = Mods {
+        toggle: true,
+        range: false,
+    };
+    assert!(!viewer.chosen, "the scan placed `big` in hand");
     let (x, y) = center_of(&viewer, "small");
     viewer.click(x, y, toggle);
-    assert_eq!(viewer.marked, ["big", "small"]);
+    assert_eq!(viewer.marked, ["small"]);
     viewer.click(x, y, toggle);
-    assert_eq!(viewer.marked, ["big"]);
-    assert_eq!(viewer.target_names(), ["big"]);
+    assert!(viewer.marked.is_empty(), "a second click takes it out");
+    assert_eq!(viewer.target_names(), ["small"]);
+
+    // Picked with an arrow, `medium.txt` joins a selection begun with a click elsewhere.
+    viewer.jump(Jump::Home, false);
+    viewer.arrow(Direction::Down, false);
+    assert!(viewer.chosen);
+    viewer.click(x, y, toggle);
+    assert_eq!(viewer.marked, ["medium.txt", "small"]);
     // A plain click clears the marks.
     viewer.click(x, y, Mods::default());
     assert!(viewer.marked.is_empty());
     assert_eq!(viewer.target_names(), ["small"]);
+    // The folder just left is placed, like a deleted entry's neighbour.
+    viewer.enter(OsStr::new("big"));
+    viewer.go_up();
+    assert!(!viewer.chosen);
+}
+
+#[test]
+fn marking_copies_the_paths_and_ctrl_c_copies_what_is_in_hand() {
+    let dir = on_disk("copy");
+    let (mut viewer, copied) = viewer_on(&dir);
+    let toggle = Mods {
+        toggle: true,
+        range: false,
+    };
+    let (x, y) = row_center(&viewer, "medium.txt");
+    viewer.click(x, y, toggle);
+    assert_eq!(last_copied(&copied), Some(quoted("medium.txt")));
+    let (x, y) = row_center(&viewer, "tiny.txt");
+    viewer.click(x, y, toggle);
+    assert_eq!(
+        last_copied(&copied),
+        Some(format!("{} {}", quoted("medium.txt"), quoted("tiny.txt")))
+    );
+    let (left, _) = viewer.status();
+    assert!(left.starts_with("Copied 2 paths:"), "{left}");
+
+    viewer.jump(Jump::Home, false);
+    assert!(viewer.copy_paths(false));
+    assert_eq!(last_copied(&copied), Some(quoted("big")));
+    assert!(viewer.copy_paths(true));
+    assert_eq!(
+        last_copied(&copied),
+        Some(quote_path_for_shell(&dir.join("big")))
+    );
+    let (left, _) = viewer.status();
+    assert!(left.starts_with("Copied absolute path:"), "{left}");
+    viewer.enter_selected();
+    viewer.copy_paths(false);
+    assert_eq!(
+        last_copied(&copied),
+        Some(quoted(&format!("big{}inside", ::std::path::MAIN_SEPARATOR)))
+    );
+    // Without a clipboard nothing is copied, and the marks still work.
+    let mut quiet = Viewer::new(&dir, SizeKind::Apparent, 1);
+    quiet.resize(1200.0, 800.0);
+    quiet.finish_scan(scan_into_tree(&dir, options()).0);
+    quiet.mark_all();
+    assert_eq!(quiet.marked.len(), 4);
+    assert!(!quiet.copy_paths(false));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn deleting_removes_from_disk_going_on_past_a_failure() {
+    let dir = on_disk("delete");
+    let (mut viewer, _) = viewer_on(&dir);
+    let (x, y) = row_center(&viewer, "medium.txt");
+    viewer.click(x, y, Mods::default());
+    let files = viewer.targets();
+    assert_eq!(files.len(), 1);
+    assert!(Viewer::delete_prompt(&files).contains("medium.txt"));
+    viewer.delete(&files).expect("deleted");
+    assert!(!dir.join("medium.txt").exists());
+    assert_eq!(names(&viewer), ["big", "small", "tiny.txt"]);
+    assert_eq!(viewer.tree.space_freed.get(SizeKind::Apparent), 2000);
+    assert_eq!(
+        selected(&viewer).as_deref(),
+        Some("small"),
+        "what took its place"
+    );
+    assert!(!viewer.chosen, "placed there, not picked");
+
+    // Several at once, in the order marked; one already gone is reported, the rest deleted.
+    let toggle = Mods {
+        toggle: true,
+        range: false,
+    };
+    let (x, y) = row_center(&viewer, "tiny.txt");
+    viewer.click(x, y, toggle);
+    let (x, y) = row_center(&viewer, "small");
+    viewer.click(x, y, toggle);
+    let files = viewer.targets();
+    assert_eq!(files.len(), 2);
+    assert!(Viewer::delete_prompt(&files).starts_with("Delete these 2 entries?"));
+    fs::remove_file(dir.join("tiny.txt")).expect("gone behind its back");
+    let error = viewer.delete(&files).expect_err("one failed");
+    assert!(error.starts_with("Deleted 1 of 2; tiny.txt"), "{error}");
+    assert!(!dir.join("small").exists());
+    assert!(viewer.marked.is_empty());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_rescan_brings_in_what_changed_on_disk() {
+    let dir = on_disk("rescan");
+    let (mut viewer, _) = viewer_on(&dir);
+    let (sender, answers) = mpsc::channel();
+    let sender = Mutex::new(sender);
+    viewer.enable_rescans(Rescanner::new(
+        options(),
+        Arc::new(AtomicBool::new(true)),
+        move |id, outcome| {
+            let _ = sender.lock().expect("sender").send((id, outcome));
+        },
+    ));
+    fs::write(dir.join("small").join("new"), vec![b'x'; 5000]).expect("write");
+    let (x, y) = row_center(&viewer, "small");
+    viewer.click(x, y, Mods::default());
+    viewer.rescan_selected();
+    assert!(
+        viewer
+            .rescanning()
+            .is_some_and(|what| what.contains("small")),
+        "{:?}",
+        viewer.rescanning()
+    );
+    let (_, totals) = viewer.status();
+    assert!(totals.contains("rescanning 1 folder"), "{totals}");
+    let (id, outcome): (u64, Outcome) = answers
+        .recv_timeout(Duration::from_secs(20))
+        .expect("the rescan reports back");
+    viewer.rescan_done(id, outcome);
+    assert_eq!(viewer.rescanning(), None);
+    let small = viewer.entry_named(OsStr::new("small")).expect("small");
+    assert_eq!(small.size, 5100);
+    assert_eq!(selected(&viewer).as_deref(), Some("small"), "still in hand");
+    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -302,6 +575,27 @@ fn previews_are_asked_for_files_once_and_answers_to_old_requests_dropped() {
     assert!(!viewer.preview_ready(first, Preview::Info("old".into())));
     assert!(viewer.preview_ready(second, Preview::Info("binary file".into())));
     assert_eq!(viewer.preview, Preview::Info("binary file".into()));
+}
+
+/// A viewer that prepares the picture at its drawn size asks again when that size changes.
+#[test]
+fn a_sized_preview_is_asked_again_when_its_size_changes() {
+    let mut viewer = viewer();
+    viewer.arrow(Direction::Down, false);
+    let (first, _) = viewer
+        .wanted_preview_sized(Some((320, 180)))
+        .expect("a request");
+    assert_eq!(
+        viewer.wanted_preview_sized(Some((320, 180))),
+        None,
+        "asked once"
+    );
+    let (second, _) = viewer
+        .wanted_preview_sized(Some((640, 360)))
+        .expect("a new size is a new request");
+    assert!(second > first);
+    assert!(!viewer.preview_ready(first, Preview::Picture("small".into())));
+    assert!(viewer.preview_ready(second, Preview::Picture("PNG 640×360".into())));
 }
 
 #[test]

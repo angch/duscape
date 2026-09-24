@@ -1,18 +1,25 @@
 //! What the window shows and how it answers input, with no toolkit in it: the tree and its
 //! board, where each panel sits, the entry in hand, marks, navigation, zoom, rescans, and what a
-//! delete changes. Each desktop viewer (AppKit on macOS, X11 on Linux) turns its events into
-//! calls here and draws what is here.
+//! delete changes. Each desktop viewer (Win32 on Windows, AppKit on macOS, Wayland or X11 on
+//! Linux) turns its events into calls here and draws what is here.
+//!
+//! It follows the terminal viewer's rules (`docs/features.md`, and "Key Patterns" in
+//! `AGENTS.md`): the entry in hand is one *name*, which the list highlights and the treemap
+//! selects; a plain move, jump, click or folder change clears the marks; a Shift run keeps the
+//! marks it started from and shrinks when reversed; Ctrl+click takes in the entry already in
+//! hand only if the user picked it (`chosen`), so nothing unchosen is ever deleted; every change
+//! to the marks copies their paths, when the viewer has given it a clipboard; a rescan covered by
+//! one under way is not started, and a delete inside a folder being rescanned restarts it.
 //!
 //! Kept free of any toolkit so that its tests run on the Linux CI like the rest of the workspace.
 
 use ::std::ffi::{OsStr, OsString};
 use ::std::mem::ManuallyDrop;
 use ::std::path::{Path, PathBuf};
-use ::std::sync::Arc;
-use ::std::sync::atomic::{AtomicBool, Ordering};
 use ::std::time::{Duration, Instant};
 
-use diskonaut_scan::rescan::{Outcome, Rescanner};
+use diskonaut_scan::rescan::{Outcome, Rescanner, Rescans};
+use libdiskonaut::format::copied_path;
 use libdiskonaut::model::SizeKind;
 use libdiskonaut::tiles::{Area, Board, FileMetadata, FileType};
 use libdiskonaut::{
@@ -218,19 +225,8 @@ pub enum Preview {
     Picture(String),
 }
 
-/// A rescan under way: its id, the folder's path from the scan root, and what stops it.
-struct Rescan {
-    id: u64,
-    relative: Vec<OsString>,
-    cancel: Arc<AtomicBool>,
-}
-
-impl Rescan {
-    /// Whether this rescan's folder is `relative` or holds it, so it will bring back `relative`.
-    fn covers(&self, relative: &[OsString]) -> bool {
-        relative.starts_with(&self.relative)
-    }
-}
+/// Where copied paths go. A viewer that copies through the toolkit itself leaves it unset.
+type Clipboard = Box<dyn FnMut(&str) -> bool + Send>;
 
 pub struct Viewer {
     /// The outline while the first scan runs; the finished tree after. Never dropped here: a
@@ -245,11 +241,23 @@ pub struct Viewer {
     /// The entry in hand, by name, so that it stays in hand when the tiles are laid out again —
     /// a resize, a zoom, or new sizes arriving during a scan. Both panels show it.
     pub selected: Option<OsString>,
+    /// Whether the entry in hand was picked by the user (an arrow, a jump, a click), rather than
+    /// placed by the viewer (the top of a folder just entered, the folder just left, what took a
+    /// deleted entry's place). Only a picked one is taken into a selection begun with a modified
+    /// click, so nothing unchosen is ever deleted.
+    pub chosen: bool,
     /// Marked entries, in the order marked. When there are any, they are what a delete, a copy
     /// or Show in Finder acts on; otherwise the entry in hand is.
     pub marked: Vec<OsString>,
     /// Where a ⇧ range starts.
     anchor: Option<OsString>,
+    /// The marks there were when the run of ⇧ moves began: the range is added to them, so
+    /// reversing the run shrinks it back towards its start rather than taking earlier marks out.
+    mark_run: Option<Vec<OsString>>,
+    /// Where copied paths go, if the viewer has said; see [`Viewer::set_clipboard`].
+    clipboard: Option<Clipboard>,
+    /// What copied paths are relative to: the working directory the viewer started in.
+    working_dir: Option<PathBuf>,
     /// The listing's first row on screen.
     pub list_top: usize,
     pub hover: Option<OsString>,
@@ -266,11 +274,11 @@ pub struct Viewer {
     /// A message for the status bar, and when it was posted.
     message: Option<(String, Instant)>,
     rescanner: Option<Rescanner>,
-    rescans: Vec<Rescan>,
-    next_rescan_id: u64,
-    /// The file the preview was last asked for, and the request's number: an answer to an older
+    rescans: Rescans,
+    /// The file the preview was last asked for (and the pixels it may take, when the viewer says
+    /// — see [`Viewer::wanted_preview_sized`]), and the request's number: an answer to an older
     /// one is dropped.
-    preview_for: Option<PathBuf>,
+    preview_for: Option<(PathBuf, Option<(u32, u32)>)>,
     pub preview_generation: u64,
     pub preview: Preview,
 }
@@ -290,8 +298,15 @@ impl Viewer {
             top_inset: 0.0,
             focus: Focus::List,
             selected: None,
+            chosen: false,
             marked: Vec::new(),
             anchor: None,
+            mark_run: None,
+            clipboard: None,
+            // Resolved like a scan root is, so that `..` counts real directories on both sides.
+            working_dir: ::std::env::current_dir()
+                .and_then(|dir| dir.canonicalize())
+                .ok(),
             list_top: 0,
             hover: None,
             zooms: Vec::new(),
@@ -303,8 +318,7 @@ impl Viewer {
             scan_took: None,
             message: None,
             rescanner: None,
-            rescans: Vec::new(),
-            next_rescan_id: 0,
+            rescans: Rescans::default(),
             preview_for: None,
             preview_generation: 0,
             preview: Preview::None,
@@ -314,6 +328,19 @@ impl Viewer {
     /// Allow rescans, which `rescanner` runs.
     pub fn enable_rescans(&mut self, rescanner: Rescanner) {
         self.rescanner = Some(rescanner);
+    }
+
+    /// Copy paths through `clipboard` — [`libdiskonaut::clipboard::copy`], or a record in a
+    /// test. Once set, every change to the marks copies their paths, as the terminal viewer
+    /// does; a viewer that copies through its toolkit instead leaves this unset and asks for
+    /// [`Viewer::target_paths`].
+    pub fn set_clipboard(&mut self, clipboard: impl FnMut(&str) -> bool + Send + 'static) {
+        self.clipboard = Some(Box::new(clipboard));
+    }
+
+    /// What copied paths are relative to; the working directory unless told otherwise.
+    pub fn set_working_dir(&mut self, working_dir: Option<PathBuf>) {
+        self.working_dir = working_dir;
     }
 
     pub fn root(&self) -> &Path {
@@ -357,6 +384,7 @@ impl Viewer {
         let listed = |name: &OsString| listing.iter().any(|entry| &entry.name == name);
         if self.selected.as_ref().is_some_and(|name| !listed(name)) {
             self.selected = None;
+            self.chosen = false;
         }
         self.marked.retain(|name| listed(name));
         if self.hover.as_ref().is_some_and(|name| !listed(name)) {
@@ -456,26 +484,31 @@ impl Viewer {
         self.tree.get_current_path().join(name)
     }
 
-    fn select(&mut self, name: Option<OsString>) {
+    /// Put `name` in hand: `chosen` says whether the user picked it or the viewer placed it. A
+    /// plain selection ends any ⇧ run and starts the next range here.
+    fn select(&mut self, name: Option<OsString>, chosen: bool) {
         self.selected = name;
+        self.chosen = chosen && self.selected.is_some();
         self.anchor = self.selected.clone();
+        self.mark_run = None;
         self.sync_board();
         self.scroll_to_selected();
     }
 
+    /// The top of the list comes into hand, placed rather than picked.
     fn select_first(&mut self) {
         let first = self.board.listing().first().map(|entry| entry.name.clone());
-        self.select(first);
+        self.select(first, false);
     }
 
-    fn select_listing(&mut self, index: usize) {
+    fn select_listing(&mut self, index: usize, chosen: bool) {
         let name = self
             .board
             .listing()
             .get(index)
             .map(|entry| entry.name.clone());
         if name.is_some() {
-            self.select(name);
+            self.select(name, chosen);
         }
     }
 
@@ -499,7 +532,7 @@ impl Viewer {
             (Focus::List, Direction::Right) => self.focus = Focus::Treemap,
             (Focus::List, Direction::Left) => {}
             (Focus::Treemap, _) => {
-                self.marked.clear();
+                self.clear_marks();
                 let before = self.board.get_selected_index();
                 match direction {
                     Direction::Left => self.board.move_selected_left(),
@@ -510,7 +543,7 @@ impl Viewer {
                 match self.board.currently_selected() {
                     Some(tile) => {
                         let name = tile.name.clone();
-                        self.select(Some(name));
+                        self.select(Some(name), true);
                     }
                     // Off the edge: stay on the tile, or cross to the list beside it.
                     None => {
@@ -552,24 +585,55 @@ impl Viewer {
         if extend {
             let anchor = self.anchor.clone().or_else(|| self.selected.clone());
             self.selected = self.board.listing().get(index).map(|e| e.name.clone());
+            self.chosen = true;
             self.anchor = anchor.clone();
             self.mark_range(anchor.as_deref(), index);
             self.sync_board();
             self.scroll_to_selected();
         } else {
-            self.marked.clear();
-            self.select_listing(index);
+            self.clear_marks();
+            self.select_listing(index, true);
         }
     }
 
-    /// Mark every entry from `anchor` to the listing's `to`, in place of the marks there were.
+    /// Take every mark off, and with them the ⇧ run they were part of — a later ⇧ move starts a
+    /// range from nothing, and never brings back marks the user saw cleared.
+    fn clear_marks(&mut self) {
+        self.marked.clear();
+        self.mark_run = None;
+    }
+
+    /// Mark every entry from `anchor` to the listing's `to`, swept in that order, on top of the
+    /// marks there were when the ⇧ run began — so reversing the run shrinks the range back
+    /// towards the anchor and no earlier mark is lost. Then copy them.
     fn mark_range(&mut self, anchor: Option<&OsStr>, to: usize) {
-        let from = self.listing_index(anchor).unwrap_or(to);
-        let (low, high) = (from.min(to), from.max(to));
-        self.marked = self.board.listing()[low..=high]
+        let listing = self.board.listing();
+        // Marks from the run's start that have since left the listing (a delete, a rescan) stay
+        // gone.
+        let base: Vec<OsString> = self
+            .mark_run
+            .get_or_insert_with(|| self.marked.clone())
             .iter()
-            .map(|entry| entry.name.clone())
+            .filter(|name| listing.iter().any(|entry| &entry.name == *name))
+            .cloned()
             .collect();
+        let from = self.listing_index(anchor).unwrap_or(to);
+        let swept: Vec<OsString> = if from <= to {
+            (from..=to).map(|row| listing[row].name.clone()).collect()
+        } else {
+            (to..=from)
+                .rev()
+                .map(|row| listing[row].name.clone())
+                .collect()
+        };
+        let mut marked = base;
+        for name in swept {
+            if !marked.contains(&name) {
+                marked.push(name);
+            }
+        }
+        self.marked = marked;
+        self.copy_marked();
     }
 
     pub fn toggle_focus(&mut self) {
@@ -588,6 +652,54 @@ impl Viewer {
             .iter()
             .map(|entry| entry.name.clone())
             .collect();
+        self.mark_run = None;
+        self.copy_marked();
+    }
+
+    // ---------------------------------------------------------------- copying paths
+
+    /// Copy the path of every marked entry, or else of the one in hand: relative to the working
+    /// directory unless `absolute` (or there is no relative path), quoted for the shell and
+    /// separated by spaces, ready to paste after a command. Says what was copied. `false` if
+    /// there is no clipboard, or nothing to copy.
+    pub fn copy_paths(&mut self, absolute: bool) -> bool {
+        let names = self.target_names();
+        let paths: Vec<(_, String)> = names
+            .iter()
+            .map(|name| copied_path(&self.path_of(name), self.working_dir.as_deref(), absolute))
+            .collect();
+        let label = match paths.as_slice() {
+            [] => return false,
+            [(kind, _)] if self.marked.is_empty() => format!("Copied {} path:", kind.name()),
+            [_] => "Copied 1 path:".to_string(),
+            many => format!("Copied {} paths:", DisplayCount(many.len() as u64)),
+        };
+        let text = paths
+            .iter()
+            .map(|(_, path)| path.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        self.copy_text(&text, &label)
+    }
+
+    /// The marks changed: copy their paths, if there is a clipboard to copy to.
+    fn copy_marked(&mut self) {
+        if self.clipboard.is_some() && !self.marked.is_empty() {
+            self.copy_paths(false);
+        }
+    }
+
+    fn copy_text(&mut self, text: &str, label: &str) -> bool {
+        let Some(clipboard) = self.clipboard.as_mut() else {
+            return false;
+        };
+        if clipboard(text) {
+            self.say(format!("{label} {text}"));
+            true
+        } else {
+            self.say("Could not reach the clipboard");
+            false
+        }
     }
 
     // ---------------------------------------------------------------- the mouse
@@ -617,8 +729,8 @@ impl Viewer {
         }
     }
 
-    /// A press of the main button: take the entry under the pointer in hand, with ⌘ toggling its
-    /// mark and ⇧ marking the range to it from the anchor. Returns the entry's name.
+    /// A press of the main button: take the entry under the pointer in hand, with ⌘ (Ctrl)
+    /// toggling its mark and ⇧ marking the range to it from the anchor. Returns the entry's name.
     pub fn click(&mut self, x: f64, y: f64, mods: Mods) -> Option<OsString> {
         let (focus, name) = match self.hit(x, y) {
             Hit::Row(index) => (Focus::List, self.board.listing()[index].name.clone()),
@@ -631,11 +743,14 @@ impl Viewer {
             let anchor = self.anchor.clone().or_else(|| self.selected.clone());
             self.mark_range(anchor.as_deref(), to);
             self.selected = Some(name.clone());
+            self.chosen = true;
             self.anchor = anchor;
             self.sync_board();
         } else if mods.toggle {
-            // The entry in hand joins the marks first, so ⌘-click after a plain click marks both.
+            // Starting a selection takes in the entry already in hand, as a file manager does —
+            // but only one the user picked, never one the viewer placed there.
             if self.marked.is_empty()
+                && self.chosen
                 && let Some(selected) = self.selected.clone()
                 && selected != name
             {
@@ -647,10 +762,12 @@ impl Viewer {
                 }
                 None => self.marked.push(name.clone()),
             }
-            self.select(Some(name.clone()));
+            // Placed, not picked: a click that marks does not choose what a later one adds.
+            self.select(Some(name.clone()), false);
+            self.copy_marked();
         } else {
-            self.marked.clear();
-            self.select(Some(name.clone()));
+            self.clear_marks();
+            self.select(Some(name.clone()), true);
         }
         Some(name)
     }
@@ -664,9 +781,9 @@ impl Viewer {
             Hit::SmallFiles | Hit::Nothing => return false,
         };
         if !self.is_marked(&name) {
-            self.marked.clear();
+            self.clear_marks();
         }
-        self.select(Some(name));
+        self.select(Some(name), true);
         true
     }
 
@@ -705,7 +822,7 @@ impl Viewer {
         self.zooms.push(self.board.zoom_level);
         self.tree.enter_folder(name);
         self.board.reset_zoom_index();
-        self.marked.clear();
+        self.clear_marks();
         self.hover = None;
         self.list_top = 0;
         self.refresh();
@@ -720,10 +837,10 @@ impl Viewer {
         };
         self.tree.leave_folder();
         self.board.set_zoom_index(self.zooms.pop().unwrap_or(0));
-        self.marked.clear();
+        self.clear_marks();
         self.hover = None;
         self.refresh();
-        self.select(Some(left));
+        self.select(Some(left), false);
         true
     }
 
@@ -794,9 +911,92 @@ impl Viewer {
             .collect()
     }
 
+    /// The question to ask before deleting `files` for good.
+    #[must_use]
+    pub fn delete_prompt(files: &[FileToDelete]) -> String {
+        let size: u128 = files.iter().map(|file| file.size).sum();
+        match files {
+            [one] => format!(
+                "Delete {}?\n\n{} will be permanently removed from disk.",
+                one.full_path().display(),
+                DisplaySize(size as f64)
+            ),
+            many => {
+                const SHOWN: usize = 10;
+                let mut names: Vec<String> = many
+                    .iter()
+                    .take(SHOWN)
+                    .map(|file| {
+                        format!("  {}  ({})", last_name(file), DisplaySize(file.size as f64))
+                    })
+                    .collect();
+                if many.len() > SHOWN {
+                    names.push(format!(
+                        "  and {} more",
+                        DisplayCount((many.len() - SHOWN) as u64)
+                    ));
+                }
+                format!(
+                    "Delete these {} entries?\n\n{}\n\n{} will be permanently removed from disk.",
+                    DisplayCount(many.len() as u64),
+                    names.join("\n"),
+                    DisplaySize(size as f64)
+                )
+            }
+        }
+    }
+
+    /// Why `files` may not be deleted, if one of them is NTFS's own metadata — to say before
+    /// asking, as well as before touching anything.
+    #[must_use]
+    pub fn refusal(files: &[FileToDelete]) -> Option<String> {
+        libdiskonaut::delete::refused(files).map(|name| {
+            format!("NTFS metadata belongs to the filesystem and cannot be deleted: {name}")
+        })
+    }
+
+    /// Delete `files` from disk for good, going on past any that fail: only what left the disk
+    /// comes off the tree and counts as freed. NTFS's own metadata is refused before anything is
+    /// touched. The error names what failed — the first failure, and how many more.
+    pub fn delete(&mut self, files: &[FileToDelete]) -> Result<(), String> {
+        if let Some(refusal) = Self::refusal(files) {
+            return Err(refusal);
+        }
+        let mut deleted = Vec::new();
+        let mut failures = Vec::new();
+        for file in files {
+            match libdiskonaut::delete::remove(file) {
+                Ok(()) => deleted.push(file.clone()),
+                Err(error) => failures.push((file, error)),
+            }
+        }
+        self.removed(&deleted, true);
+        match failures.as_slice() {
+            [] => Ok(()),
+            [(file, error)] if files.len() == 1 => Err(format!(
+                "Could not delete {}: {error}",
+                file.full_path().display()
+            )),
+            [(file, error), rest @ ..] => {
+                let more = if rest.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (and {} more)", DisplayCount(rest.len() as u64))
+                };
+                Err(format!(
+                    "Deleted {} of {}; {}: {error}{more}",
+                    DisplayCount(deleted.len() as u64),
+                    DisplayCount(files.len() as u64),
+                    last_name(file)
+                ))
+            }
+        }
+    }
+
     /// Take entries that have left the disk off the tree. `freed` says whether their space came
     /// back (a delete), or only moved elsewhere (to the Trash). What took the first one's place
-    /// in the list is put in hand.
+    /// in the list is put in hand, placed rather than picked. A rescan under way of a folder one
+    /// of them was in is started again, or it would put the entry back.
     pub fn removed(&mut self, files: &[FileToDelete], freed: bool) {
         let at = self.selected_listing_index();
         for file in files {
@@ -804,17 +1004,19 @@ impl Viewer {
                 self.tree.note_freed(file.sizes);
             }
         }
-        if !files.is_empty() {
-            self.restart_rescans_under(files);
+        if !files.is_empty()
+            && let Some(rescanner) = &self.rescanner
+        {
+            self.rescans.restart_under(rescanner, &self.tree, files);
         }
-        self.marked.clear();
+        self.clear_marks();
         self.leave_vanished_folders();
         self.refresh();
         if self.selected.is_none()
             && let Some(at) = at
         {
             let last = self.board.listing().len().saturating_sub(1);
-            self.select_listing(at.min(last));
+            self.select_listing(at.min(last), false);
         }
     }
 
@@ -849,103 +1051,52 @@ impl Viewer {
         self.start_rescan(Vec::new());
     }
 
-    /// Rescan the folder at `relative`. Not while the first scan runs, nor when a rescan under
-    /// way covers it; one that this covers is stopped, as this brings its folder back too.
+    /// Rescan the folder at `relative`. Not while the first scan runs (it is reading all of it
+    /// anyway), nor when a rescan under way covers it; one that this covers is stopped, as this
+    /// brings its folder back too — [`Rescans`] keeps those rules for every viewer.
     fn start_rescan(&mut self, relative: Vec<OsString>) {
-        if self.scanning || self.rescans.iter().any(|rescan| rescan.covers(&relative)) {
+        if self.scanning {
             return;
         }
-        let Some(rescanner) = &self.rescanner else {
-            return;
-        };
-        self.rescans.retain(|rescan| {
-            let covered = rescan.relative.starts_with(&relative);
-            if covered {
-                rescan.cancel.store(true, Ordering::Release);
-            }
-            !covered
-        });
-        self.next_rescan_id += 1;
-        let id = self.next_rescan_id;
-        let cancel = Arc::new(AtomicBool::new(false));
-        let root = self.tree.path_in_filesystem.clone();
-        let path = relative
-            .iter()
-            .fold(root.clone(), |path, name| path.join(name));
-        rescanner.spawn(
-            id,
-            root,
-            path,
-            relative.len(),
-            Arc::clone(&cancel),
-            !relative.is_empty(),
-        );
-        self.rescans.push(Rescan {
-            id,
-            relative,
-            cancel,
-        });
+        if let Some(rescanner) = &self.rescanner {
+            self.rescans.start(rescanner, &self.tree, relative);
+        }
     }
 
-    /// Start again every rescan whose folder holds one of `files`: one that listed a file before
-    /// it was deleted would otherwise put it back.
-    fn restart_rescans_under(&mut self, files: &[FileToDelete]) {
-        let mut restart = Vec::new();
-        self.rescans.retain(|rescan| {
-            let holds = files
-                .iter()
-                .any(|file| file.path_to_file.starts_with(&rescan.relative));
-            if holds {
-                rescan.cancel.store(true, Ordering::Release);
-                restart.push(rescan.relative.clone());
-            }
-            !holds
-        });
-        for relative in restart {
-            self.start_rescan(relative);
-        }
+    /// What is being rescanned, for a status line; `None` when nothing is.
+    pub fn rescanning(&self) -> Option<String> {
+        self.rescans.describe(&self.tree.path_in_filesystem)
     }
 
     /// Stop every rescan, as the window moves on to another folder.
     pub fn cancel_rescans(&mut self) {
-        for rescan in self.rescans.drain(..) {
-            rescan.cancel.store(true, Ordering::Release);
-        }
+        self.rescans.cancel_all();
     }
 
     /// A rescan has finished: put what it found in the tree. One stopped meanwhile is dropped.
     pub fn rescan_done(&mut self, id: u64, outcome: Outcome) {
-        let Some(index) = self.rescans.iter().position(|rescan| rescan.id == id) else {
+        let not_walked = matches!(outcome, Outcome::NotWalked);
+        let navigated_to = self.tree.current_folder_names.clone();
+        let Some(finished) = self.rescans.finish(id, outcome, &mut self.tree) else {
             return;
         };
-        let rescan = self.rescans.remove(index);
-        let navigated_to = self.tree.current_folder_names.clone();
-        let changed = match outcome {
-            Outcome::NotWalked => {
-                self.say(
-                    "That folder is not scanned (another filesystem, or past the depth limit)",
-                );
-                false
-            }
-            Outcome::Scanned(tree, duration, _small) => {
-                let old = self.tree.graft(&rescan.relative, *tree);
-                let grafted = old.is_some();
-                if let Some(old) = old {
-                    drop_later(old);
-                }
-                if rescan.relative.is_empty() {
-                    self.scan_took = Some(duration);
-                    self.entries_scanned = self.tree.get_total_descendants();
-                }
-                grafted
-            }
-            Outcome::Gone => self.tree.remove_path(&rescan.relative),
-        };
-        if changed {
+        if not_walked {
+            self.say("That folder is not scanned (another filesystem, or past the depth limit)");
+        }
+        // The folder replaced is freed off the window's thread; a window lives long enough for
+        // leaking it every rescan to add up.
+        if let Some(old) = finished.old {
+            drop_later(old);
+        }
+        if let Some((duration, _small)) = finished.whole {
+            self.scan_took = Some(duration);
+            self.entries_scanned = self.tree.get_total_descendants();
+        }
+        if finished.changed {
             if self.tree.current_folder_names != navigated_to {
                 self.zooms.clear();
                 self.board.reset_zoom_index();
-                self.marked.clear();
+                self.clear_marks();
             }
             self.leave_vanished_folders();
             // The file in hand may have changed on disk too.
@@ -962,17 +1113,23 @@ impl Viewer {
     /// A new preview request, when the file in hand is not the one last asked about. A folder, or
     /// nothing, clears the preview.
     pub fn wanted_preview(&mut self) -> Option<(u64, PathBuf)> {
+        self.wanted_preview_sized(None)
+    }
+
+    /// [`Viewer::wanted_preview`] for a viewer that prepares the picture at the size it will be
+    /// drawn: `pixels` is part of what was asked, so a resize asks again for the same file.
+    pub fn wanted_preview_sized(&mut self, pixels: Option<(u32, u32)>) -> Option<(u64, PathBuf)> {
         let target = self
             .selected_entry()
             .filter(|entry| entry.file_type == FileType::File)
-            .map(|entry| self.path_of(&entry.name));
+            .map(|entry| (self.path_of(&entry.name), pixels));
         if target == self.preview_for {
             return None;
         }
         self.preview_for = target.clone();
         self.preview_generation += 1;
         match target {
-            Some(path) => {
+            Some((path, _)) => {
                 self.preview = Preview::Loading;
                 Some((self.preview_generation, path))
             }
@@ -1035,11 +1192,25 @@ impl Viewer {
         words
     }
 
-    /// The status bar: on the left what the pointer or the keyboard is on (or a message), on the
-    /// right what the scan found.
+    /// The status bar: on the left a message while it lasts (what was copied, say), else the
+    /// marks' count and size, else what the pointer or the keyboard is on; on the right what the
+    /// scan found.
     pub fn status(&self) -> (String, String) {
         let left = match &self.message {
             Some((message, at)) if at.elapsed() < MESSAGE_TIME => message.clone(),
+            _ if !self.marked.is_empty() && self.hover.is_none() => {
+                let size: u128 = self
+                    .marked
+                    .iter()
+                    .filter_map(|name| self.entry_named(name))
+                    .map(|entry| entry.size)
+                    .sum();
+                format!(
+                    "{} marked, {}",
+                    DisplayCount(self.marked.len() as u64),
+                    DisplaySize(size as f64)
+                )
+            }
             _ => {
                 let name = self.hover.as_ref().or(self.selected.as_ref());
                 match name.and_then(|name| self.entry_named(name)) {
@@ -1049,20 +1220,6 @@ impl Viewer {
                 }
             }
         };
-        if !self.marked.is_empty() && self.hover.is_none() {
-            let size: u128 = self
-                .marked
-                .iter()
-                .filter_map(|name| self.entry_named(name))
-                .map(|entry| entry.size)
-                .sum();
-            let left = format!(
-                "{} marked, {}",
-                DisplayCount(self.marked.len() as u64),
-                DisplaySize(size as f64)
-            );
-            return (left, self.totals());
-        }
         (left, self.totals())
     }
 
@@ -1096,6 +1253,9 @@ impl Viewer {
         if freed > 0 {
             words.push(format!("{} freed", DisplaySize(freed as f64)));
         }
+        if self.board.zoom_level > 0 {
+            words.push(format!("zoom ×{}", self.board.zoom_level));
+        }
         match self.rescans.len() {
             0 => {}
             1 => words.push("rescanning 1 folder".to_string()),
@@ -1103,6 +1263,14 @@ impl Viewer {
         }
         words.join(" · ")
     }
+}
+
+/// An entry's own name, from its path in the tree.
+fn last_name(file: &FileToDelete) -> String {
+    file.path_to_file
+        .last()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 /// One line on an entry: name, size, share of its folder, and what it is.

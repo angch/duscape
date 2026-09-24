@@ -223,3 +223,40 @@ pub fn relative_to(target: &Path, base: &Path) -> Option<::std::path::PathBuf> {
     }
     Some(relative)
 }
+
+/// Which a copied path turned out to be: [`copied_path`] falls back to absolute when there is no
+/// relative path to be had.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathKind {
+    Relative,
+    Absolute,
+}
+
+impl PathKind {
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            PathKind::Relative => "relative",
+            PathKind::Absolute => "absolute",
+        }
+    }
+}
+
+/// `full` as a viewer copies it, ready to paste after a command: relative to `working_dir`, or
+/// absolute when `absolute` is asked for or there is no relative path (the working directory is
+/// unknown, or on another drive), quoted for the platform's shell. A relative path starting with
+/// `-` gets a `./`, since pasted after a command `-rf` is an option however it is quoted.
+#[must_use]
+pub fn copied_path(full: &Path, working_dir: Option<&Path>, absolute: bool) -> (PathKind, String) {
+    let relative = (!absolute)
+        .then(|| working_dir.and_then(|working_dir| relative_to(full, working_dir)))
+        .flatten();
+    let (kind, path) = match relative {
+        Some(relative) if relative.as_os_str().as_encoded_bytes().first() == Some(&b'-') => {
+            (PathKind::Relative, Path::new(".").join(relative))
+        }
+        Some(relative) => (PathKind::Relative, relative),
+        None => (PathKind::Absolute, full.to_path_buf()),
+    };
+    (kind, quote_path_for_shell(&path))
+}

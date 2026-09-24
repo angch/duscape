@@ -54,11 +54,19 @@ impl Previewer {
 
 pub fn load(path: &Path) -> Loaded {
     match read(path) {
-        Contents::Info(info) => match other_picture(path) {
-            Some(format) if info == "binary file" => picture(path, format!("{format} image")),
-            _ => Loaded::Info(info),
+        Contents::Info(info) => Loaded::Info(info),
+        // A binary file is described (`binary file · 1.7M`, then where its blocks are); one the
+        // system can decode is shown instead.
+        Contents::Text(lines) => match other_picture(path) {
+            Some(format)
+                if lines
+                    .first()
+                    .is_some_and(|line| line.starts_with("binary file")) =>
+            {
+                picture(path, format!("{format} image"))
+            }
+            _ => Loaded::Text(lines),
         },
-        Contents::Text(lines) => Loaded::Text(lines),
         Contents::Picture { kind, .. } => picture(path, describe_picture(path, kind)),
     }
 }

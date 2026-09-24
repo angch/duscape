@@ -4,27 +4,24 @@
 //! cell.
 //!
 //! Files are read on a thread of their own, so a slow disk never holds up the interface, and a
-//! picture is decoded only once the selection has rested on it for [`IMAGE_DEBOUNCE`]: holding
+//! picture is decoded only once the selection has rested on it for
+//! [`libdiskonaut::preview::IMAGE_DEBOUNCE`]: holding
 //! an arrow key down through a folder of photos decodes none of them.
 
 use ::std::io::{self, Write};
-use ::std::path::PathBuf;
-use ::std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
+use ::std::path::{Path, PathBuf};
 use ::std::sync::{Arc, OnceLock};
-use ::std::thread;
+#[cfg(unix)]
 use ::std::time::Duration;
 
 use ::ratatui::layout::Rect;
 use ::ratatui::style::Color;
 
 use libdiskonaut::preview::{
-    self, Contents, Kind, MAX_IMAGE_BYTES, decode_picture, describe_picture,
+    Kind, MAX_IMAGE_BYTES, Reader, Ready, Wanted, decode_picture, describe_picture,
 };
 
 use crate::clipboard::base64;
-
-/// How long the selection must rest on a picture before it is decoded.
-pub const IMAGE_DEBOUNCE: Duration = Duration::from_millis(100);
 
 /// A picture ready for the terminal: scaled to fit the preview and encoded for it.
 #[derive(Debug, PartialEq, Eq)]
@@ -134,7 +131,7 @@ fn prepare_image(request: &Request, kind: Kind, size: u64) -> Preview {
         _ => rows * cell_height,
     };
     // Never scaled up: a small picture is shown at its own size.
-    let scaled = picture.thumbnail(columns * cell_width, height);
+    let scaled = libdiskonaut::preview::fit(picture, columns * cell_width, height);
     if let Pictures::Blocks { true_color } = request.pictures {
         return Preview::Blocks(Arc::new(block_image(
             &scaled,
@@ -367,56 +364,40 @@ fn median_cut(pixels: &[(u32, [u8; 3])], colours: usize) -> (Vec<[u8; 3]>, Vec<u
     (palette, indices)
 }
 
-/// The preview thread's end of the conversation: send it files, and it answers each through
-/// the callback it was started with, tagged with the request's generation.
+/// The preview thread, as the terminal uses it: [`libdiskonaut::preview::Reader`] with pictures
+/// prepared for the terminal by [`prepare_image`].
 pub struct Previewer {
-    requests: Sender<Request>,
+    reader: Reader<Request>,
+}
+
+impl Wanted for Request {
+    fn generation(&self) -> u64 {
+        self.generation
+    }
+    fn path(&self) -> &Path {
+        &self.path
+    }
 }
 
 impl Previewer {
     pub fn spawn(on_ready: impl Fn(u64, Preview) + Send + 'static) -> Self {
-        let (requests, incoming) = channel();
-        let _ = thread::Builder::new()
-            .name("previewer".to_string())
-            .spawn(move || run(&incoming, &on_ready));
-        Previewer { requests }
+        let reader = Reader::spawn(
+            |request: &Request, kind, size| Ready::Picture(prepare_image(request, kind, size)),
+            move |generation, ready| {
+                on_ready(
+                    generation,
+                    match ready {
+                        Ready::Info(info) => Preview::Info(info),
+                        Ready::Text(lines) => Preview::Text(lines),
+                        Ready::Picture(preview) => preview,
+                    },
+                );
+            },
+        );
+        Previewer { reader }
     }
     pub fn request(&self, request: Request) {
-        let _ = self.requests.send(request);
-    }
-}
-
-fn run(incoming: &Receiver<Request>, on_ready: &impl Fn(u64, Preview)) {
-    let mut next = None;
-    loop {
-        let mut request = match next.take() {
-            Some(request) => request,
-            None => match incoming.recv() {
-                Ok(request) => request,
-                Err(_) => return,
-            },
-        };
-        // Only the latest request matters; anything queued behind it is already out of date.
-        while let Ok(newer) = incoming.try_recv() {
-            request = newer;
-        }
-        let preview = match preview::read(&request.path) {
-            Contents::Info(info) => Preview::Info(info),
-            Contents::Text(lines) => Preview::Text(lines),
-            Contents::Picture { kind, size } => {
-                // Decode only once the selection has stayed here; a newer request means it moved
-                // on, and this picture is never needed.
-                match incoming.recv_timeout(IMAGE_DEBOUNCE) {
-                    Ok(newer) => {
-                        next = Some(newer);
-                        continue;
-                    }
-                    Err(RecvTimeoutError::Disconnected) => return,
-                    Err(RecvTimeoutError::Timeout) => prepare_image(&request, kind, size),
-                }
-            }
-        };
-        on_ready(request.generation, preview);
+        self.reader.request(request);
     }
 }
 
@@ -860,13 +841,14 @@ mod tests {
     use ::std::sync::mpsc::channel;
     use ::std::sync::{Arc, Mutex};
     use ::std::time::{Duration, Instant};
+    use libdiskonaut::preview::IMAGE_DEBOUNCE;
 
     use ::ratatui::layout::Rect;
 
     use super::{
-        IMAGE_DEBOUNCE, Pictures, Placement, PreparedImage, Preview, Previewer, Reply, Request,
-        erase_cells, kitty_delete, kitty_place, median_cut, parse_reply, sixel, sixel_place,
-        sixel_runs, xterm_256,
+        Pictures, Placement, PreparedImage, Preview, Previewer, Reply, Request, erase_cells,
+        kitty_delete, kitty_place, median_cut, parse_reply, sixel, sixel_place, sixel_runs,
+        xterm_256,
     };
 
     fn temp_dir(name: &str) -> PathBuf {
