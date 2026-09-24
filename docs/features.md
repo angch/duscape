@@ -1,12 +1,13 @@
 # Features, and where they live
 
-diskonaut is four packages. Two are libraries every viewer shares; two are viewers.
+diskonaut is five packages. Two are libraries every viewer shares; three are viewers.
 
 ```
 common/            libdiskonaut      what a viewer shows and does, with no user interface
 scanners/          diskonaut-scan    reading the disk: one walker per platform, and what drives them
 viewers/tui/       diskonaut-angch   the terminal viewer (ratatui) — the primary one
 viewers/windows/   diskonaut-gui     a native Windows window (Win32 and GDI)
+viewers/macos/     diskonaut-mac     a native macOS window (AppKit, through objc2)
 ```
 
 Dependencies run one way: `diskonaut-scan` depends on `libdiskonaut`, and each viewer on both.
@@ -43,29 +44,32 @@ by copying it.
 
 ## What each viewer offers
 
-| | terminal (`diskonaut-angch`) | Windows (`diskonaut-gui`) |
-| --- | --- | --- |
-| Scan with the native walker | yes | yes |
-| Live treemap while scanning | yes (`Outline`) | progress count in the title |
-| Treemap | yes, in cells | yes, GDI |
-| List of entries beside it | yes | — |
-| Move by arrow keys, select by click | yes | yes; hovering names a tile in the status bar |
-| Enter a folder, go up | Enter or double-click / Esc | Enter or click / Backspace, right-click or ◄ Up |
-| Delete | yes, one or every marked entry | yes, one |
-| Refuse NTFS metadata | yes | yes |
-| Mark several entries | yes (Shift+arrows, Ctrl+click) | — |
-| Copy a path, shell-quoted | yes (right-click; double for absolute) | — |
-| Preview text and pictures | yes (kitty graphics, sixels or half blocks) | — |
-| Zoom | yes | — |
-| Disk usage / apparent size toggle | yes | — |
-| Rescan a folder / everything | yes (`r` / `R`) | — |
-| Second pass for small shared files | yes (Linux) | not needed (Windows) |
-| Volume used vs. what the scan found | yes, in the title | — |
-| Configurable keys | yes (`config.toml`) | — |
-| Benchmark harness | yes (`--benchmark`) | — |
+| | terminal (`diskonaut-angch`) | Windows (`diskonaut-gui`) | macOS (`diskonaut-mac`) |
+| --- | --- | --- | --- |
+| Scan with the native walker | yes | yes | yes |
+| Live treemap while scanning | yes (`Outline`) | progress count in the title | yes (`Outline`) |
+| Treemap | yes, in cells | yes, GDI | yes, AppKit |
+| List of entries beside it | yes | — | yes, with the entry's details under it (⌃⌘S hides) |
+| Move by arrow keys, select by click | yes | yes; hovering names a tile in the status bar | yes; hovering names an entry in the status bar |
+| Enter a folder, go up | Enter or double-click / Esc | Enter or click / Backspace, right-click or ◄ Up | Return, ⌘↓ or double-click / Esc, ⌫, ⌘↑ or a breadcrumb |
+| Delete | yes, one or every marked entry | yes, one | to the Trash (⌘⌫) or immediately (⌥⌘⌫), every marked entry |
+| Refuse NTFS metadata | yes | yes | yes |
+| Mark several entries | yes (Shift+arrows, Ctrl+click) | — | yes (⇧ arrows or ⇧-click, ⌘-click, ⌘A) |
+| Copy a path, shell-quoted | yes (right-click; double for absolute) | — | yes (⌘C; ⌥⌘C plain, like Finder) |
+| Preview text and pictures | yes (kitty graphics, sixels or half blocks) | — | yes, in the side panel (any format macOS decodes), and Quick Look (Space) |
+| Show in Finder, open with the default app | — | — | yes (⌥⌘R, ⌘↓ on a file) |
+| Context menu | — | — | yes (right-click or Control-click) |
+| Scan a folder dropped on the window | — | — | yes |
+| Zoom | yes | — | yes (⌘+ / ⌘- / ⌘0) |
+| Disk usage / apparent size toggle | yes | — | yes (`a`, View menu) |
+| Rescan a folder / everything | yes (`r` / `R`) | — | yes (⌘R / ⇧⌘R, or `r` / `R`) |
+| Second pass for small shared files | yes (Linux) | not needed (Windows) | not needed (macOS) |
+| Volume used vs. what the scan found | yes, in the title | — | yes, in the status bar |
+| Configurable keys | yes (`config.toml`) | — | — |
+| Benchmark harness | yes (`--benchmark`) | — | — |
 
-A gap in the Windows column is a missing viewer feature, not a missing library one: everything in
-it apart from drawing and input is already in the two libraries.
+A gap in a GUI column is a missing viewer feature, not a missing library one: everything in it
+apart from drawing and input is already in the two libraries.
 
 ## What stays in a viewer
 

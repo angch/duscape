@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A native macOS viewer, `diskonaut-mac` (`viewers/macos/`), on AppKit through `objc2`: the
+  treemap with the list beside it, live while scanning; previews in the side panel and Quick
+  Look; the Trash or immediate deletion of every marked entry; copying paths, Show in Finder, a
+  context menu, breadcrumbs, zoom, apparent sizes, rescans, and folders dropped on the window.
+  Its state is kept free of AppKit and tested on every platform.
 - Pictures in the preview are drawn as sixels in terminals without kitty graphics that have
   them, before falling back to half blocks. Sixel support is attribute 4 of the device
   attributes the terminal is already asked for (tmux answers for itself), with the cell size

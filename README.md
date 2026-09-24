@@ -21,6 +21,21 @@ This fork exists to **explore further performance optimizations for everyday dis
 - **Unix-native** — Linux, macOS, and BSD; built on `ratatui` and parallel directory walking
 - **Stays put on request** — `-x` keeps the scan on one filesystem, like `du -x`
 
+## macOS GUI (experimental)
+
+`diskonaut-mac` is a native macOS window on the same walker and model, drawn with AppKit (through
+`objc2`). A list of the folder's entries sits beside the treemap, with the entry in hand previewed
+under it; the treemap fills in live while the scan runs.
+
+```sh
+cargo run -p diskonaut-mac --release -- ~   # or run with no argument, or drop a folder on the window
+```
+
+- **Mac conventions:** ⌘⌫ moves to the Trash (⌥⌘⌫ deletes immediately), Space is Quick Look,
+  ⌘↑/⌘↓ go up and in, ⌥⌘R shows in Finder, ⌘C copies the path, right-click for a context menu.
+- **Marks:** ⇧-arrows, ⇧-click and ⌘-click mark several entries; Trash, copy and Finder act on all.
+- **Also:** breadcrumbs, zoom (⌘+/⌘-/⌘0), apparent sizes (`a`), rescans (⌘R/⇧⌘R), light and dark mode.
+
 ## Windows GUI (experimental)
 
 `diskonaut-gui` is a native Windows treemap window. The walker (`diskonaut-scan`) and the tree,

@@ -14,7 +14,8 @@ diskonaut/
 │                      #   the parallel build, the second pass, rescan/refine threads
 ├── viewers/
 │   ├── tui/           # diskonaut-angch: the ratatui viewer (primary) — CLI, UI, input, config
-│   └── windows/       # diskonaut-gui: the Win32/GDI viewer
+│   ├── windows/       # diskonaut-gui: the Win32/GDI viewer
+│   └── macos/         # diskonaut-mac: the AppKit viewer (objc2)
 ├── docs/features.md   # every feature, which package holds it, which viewer offers it
 ├── example/config.toml
 └── Cargo.toml         # Workspace root
@@ -116,6 +117,20 @@ Six kinds of thread communicate via `mpsc` channels (bounded, except the preview
 
 **`diskonaut-gui`** (`viewers/windows/`) — the Win32/GDI viewer: one `main.rs`. Scans with
 `parallel::build_tree`, draws the `Board`'s tiles, deletes through `libdiskonaut::delete`.
+
+**`diskonaut-mac`** (`viewers/macos/`) — the AppKit viewer, on `objc2`/`objc2-app-kit`:
+- `state.rs` — `Viewer`: everything the window shows and how it answers input, with no AppKit —
+  `Layout` (points; tiles in 2.4×6 pt cells, the treemap's 2.5 ratio), the entry in hand kept by
+  *name* so a relayout cannot move it, marks, navigation, zoom, delete bookkeeping, rescans.
+  Built under `cfg(test)` off macOS, so its tests run on the Linux CI
+- `scan.rs` — the first scan with the live `Outline`; `preview.rs` — the latest-wins preview
+  reader (pictures are handed over as bytes for `NSImage` to decode)
+- `mac/view.rs` — the one `NSView`: events, menu commands, dialogs, Trash, pasteboard, Finder,
+  Quick Look, drag and drop. Other threads come back through `on_main` (the main dispatch queue).
+  The `Viewer` is in a `RefCell`; never hold a borrow across a modal (`NSAlert::runModal`, the
+  open panel), which runs the event loop inside the call. `DISKONAUT_MAC_SNAPSHOT=out.png` writes
+  the view to a PNG after the scan and quits — how to look at the drawing without screen access
+- `mac/draw.rs` — painting, by `Layout`; `mac/mod.rs` — the app, delegate, menus, window
 
 **`diskonaut-angch`** (`viewers/tui/`) — the ratatui viewer:
 - `main.rs` — entry point, thread spawning, channel setup
@@ -341,7 +356,8 @@ measured and none helped — read the 2026-09-24 section before trying them agai
 
 ### Modifying treemap layout
 - Core algorithm: `common/src/tiles/treemap.rs`
-- Tile rendering: `viewers/tui/src/ui/grid/` (terminal), `viewers/windows/src/main.rs` (`paint`)
+- Tile rendering: `viewers/tui/src/ui/grid/` (terminal), `viewers/windows/src/main.rs` (`paint`),
+  `viewers/macos/src/mac/draw.rs` (`treemap`)
 - Adjust `HEIGHT_WIDTH_RATIO`, `MINIMUM_HEIGHT`, `MINIMUM_WIDTH` constants
 - Entries below the minimum tile size are never dropped: they fold into the "small files" `x`
   marker, whose corner is clamped by `SMALL_FILES_MINIMUM_WIDTH/HEIGHT` so it stays visible even
@@ -386,6 +402,8 @@ busybox. One job then publishes both tarballs: matrix jobs that each create the 
 | `viewers/tui/src/app/mod.rs` | ~1400 lines — the TUI's state machine |
 | `viewers/tui/src/preview.rs` | ~1300 lines — preview thread, kitty/sixel/half-block output, detection |
 | `viewers/windows/src/main.rs` | ~800 lines — the whole Windows viewer |
+| `viewers/macos/src/state.rs` | ~1150 lines — the macOS viewer's state, no AppKit |
+| `viewers/macos/src/mac/view.rs` | ~1050 lines — the macOS viewer's view, events and commands |
 | `common/src/tiles/board.rs` | ~230 lines — tile nav/zoom |
 | `common/src/tiles/treemap.rs` | ~270 lines — squarify |
 | `common/src/model/files/file_tree.rs` | ~450 lines — folder tree, hard-link accounting |

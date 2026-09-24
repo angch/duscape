@@ -1,5 +1,5 @@
 [workspace]
-members = ["common", "scanners", "viewers/tui", "viewers/windows"]
+members = ["common", "scanners", "viewers/tui", "viewers/windows", "viewers/macos"]
 resolver = "3"
 
 # Small binaries are a feature of this fork: optimize release for size. `panic = "abort"` drops the
