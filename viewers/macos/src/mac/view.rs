@@ -59,6 +59,9 @@ pub struct Ivars {
     options: Cell<ScanOptions>,
     /// Scrolling not yet a whole row.
     scrolled: Cell<f64>,
+    /// The context menu last opened, for a script to choose from or close (`script`): while it
+    /// is open, it reads events itself.
+    context_menu: RefCell<Option<Retained<NSMenu>>>,
 }
 
 define_class!(
@@ -162,7 +165,9 @@ define_class!(
         fn menu_for_event(&self, event: &NSEvent) -> Option<Retained<NSMenu>> {
             let (x, y) = self.point(event);
             let on_entry = self.update(|viewer| viewer.context_click(x, y)).unwrap_or(false);
-            on_entry.then(|| context_menu(self.mtm()))
+            let menu = on_entry.then(|| context_menu(self.mtm()));
+            self.ivars().context_menu.replace(menu.clone());
+            menu
         }
 
         #[unsafe(method(mouseMoved:))]
@@ -445,6 +450,7 @@ impl DiskView {
             scans: Cell::new(0),
             options: Cell::new(options),
             scrolled: Cell::new(0.0),
+            context_menu: RefCell::new(None),
         });
         let view: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
         // SAFETY: the view owns the area, and `InVisibleRect` keeps it matched to the view.
@@ -659,6 +665,9 @@ impl DiskView {
             return;
         }
         self.update(|viewer| viewer.finish_scan(tree));
+        if super::script::run_from_environment() {
+            return;
+        }
         if let Some(path) = ::std::env::var_os("DISKONAUT_MAC_SNAPSHOT") {
             // Long enough for the preview of what is in hand to arrive.
             ::std::thread::spawn(move || {
@@ -673,7 +682,7 @@ impl DiskView {
 
     /// Draw the window's contents into a PNG at `path`: a way to look at the drawing without
     /// screen access, for development (`DISKONAUT_MAC_SNAPSHOT=out.png diskonaut-mac FOLDER`).
-    fn snapshot(&self, path: &Path) {
+    pub fn snapshot(&self, path: &Path) {
         let bounds = self.bounds();
         let Some(bitmap) = self.bitmapImageRepForCachingDisplayInRect(bounds) else {
             return;
@@ -728,6 +737,84 @@ impl DiskView {
             self.ivars().image.replace(image);
             self.setNeedsDisplay(true);
         }
+    }
+
+    /// Choose `title` from the context menu last opened, or with `None` close it. Returns
+    /// whether there was such an item.
+    pub fn choose_from_context_menu(&self, title: Option<&str>) -> bool {
+        let Some(menu) = self.ivars().context_menu.take() else {
+            return false;
+        };
+        let chosen = match title {
+            Some(title) => {
+                let index = menu.indexOfItemWithTitle(&NSString::from_str(title));
+                if index >= 0 {
+                    menu.performActionForItemAtIndex(index);
+                }
+                index >= 0
+            }
+            None => true,
+        };
+        menu.cancelTracking();
+        chosen
+    }
+
+    /// What the viewer holds, as `name: value` lines, for a script to compare (`script`).
+    pub fn state_for_script(&self) -> String {
+        let window = self.window();
+        let title = window
+            .as_ref()
+            .map(|window| window.title().to_string())
+            .unwrap_or_default();
+        let app = NSApplication::sharedApplication(self.mtm());
+        let key_window = app
+            .keyWindow()
+            .map(|window| {
+                // Without the prefix of the subclass key-value observing makes at run time.
+                let class = window.class().name().to_string_lossy().into_owned();
+                let class = class.trim_start_matches("NSKVONotifying_").to_string();
+                format!("{} ({class})", window.title())
+            })
+            .unwrap_or_default();
+        let key_window = format!("{key_window}, active {}", app.isActive());
+        let lossy = |names: &[::std::ffi::OsString]| {
+            names
+                .iter()
+                .map(|name| name.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join(" | ")
+        };
+        let viewer = self.ivars().viewer.borrow();
+        let Some(viewer) = viewer.as_deref() else {
+            return format!("viewer: none\ntitle: {title}\n");
+        };
+        let listing: Vec<_> = viewer
+            .board
+            .listing()
+            .iter()
+            .map(|entry| entry.name.clone())
+            .collect();
+        let (status, totals) = viewer.status();
+        [
+            ("title", title),
+            ("key window", key_window),
+            ("path", lossy(&viewer.tree.current_folder_names)),
+            ("listing", lossy(&listing)),
+            ("selected", lossy(viewer.selected.as_slice())),
+            ("marked", lossy(&viewer.marked)),
+            ("focus", format!("{:?}", viewer.focus)),
+            ("zoom", viewer.board.zoom_level.to_string()),
+            ("apparent", viewer.showing_apparent().to_string()),
+            ("sidebar", viewer.sidebar.to_string()),
+            ("scanning", viewer.scanning.to_string()),
+            ("preview", format!("{:?}", viewer.preview)),
+            ("image", self.ivars().image.borrow().is_some().to_string()),
+            ("status", status),
+            ("totals", totals),
+        ]
+        .iter()
+        .map(|(name, value)| format!("{name}: {value}\n"))
+        .collect()
     }
 
     // ---------------------------------------------------------------- acting on entries

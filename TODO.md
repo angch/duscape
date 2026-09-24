@@ -12,6 +12,22 @@ scan. **Nothing below has been done with a real mouse and keyboard.** Run
 `cargo run -p diskonaut-mac -- <folder>` from a terminal and go through it. The code for each is in
 `src/mac/view.rs` unless said otherwise.
 
+**Automated since:** `viewers/macos/tests/smoke.sh` drives the real app with synthetic keys and
+clicks (`DISKONAUT_MAC_SCRIPT`, `src/mac/script.rs`) and checks its state after each. It needs a
+logged-in session but no permissions. Items marked *(smoke)* pass there. Synthetic events are the
+app's own, so a hand check is still worth doing once, mainly for what the keyboard really sends.
+To automate another item, add steps and `expect` lines to `smoke.sh`.
+
+### Found by the smoke test
+
+- [ ] **Menu commands are disabled while Quick Look has the keyboard.** The view's commands (⌘C,
+      ⌘⌫, ⌃⌘S, rescans…) go along the key window's responder chain, and the Quick Look panel's
+      chain does not include the view. Finder allows ⌘⌫ with Quick Look open. Targeting those menu
+      items at the view would fix it but would break ⌘C in the open panel's text fields; route
+      them from the application delegate instead (it ends every chain), forwarding to the view.
+- [x] ⌘⌫ and ⌥⌘⌫ never fired: their key equivalent was `U+0008`, and the ⌫ key types `U+007F`.
+      Now `U+007F`, and ⌥⌘⌫ opens its alert in the smoke test. *Confirm with a real keyboard.*
+
 ### Start-up and the window
 
 - [ ] **No argument:** the open panel appears at launch (`applicationDidFinishLaunching` →
@@ -45,22 +61,22 @@ scan. **Nothing below has been done with a real mouse and keyboard.** Run
 
 ### Keyboard
 
-- [ ] **Arrows in the list** move by row and keep the highlighted row visible (it scrolls). In the
+- [ ] *(smoke: ↓, Home, End)* **Arrows in the list** move by row and keep the highlighted row visible (it scrolls). In the
       treemap they move by direction; ← off the treemap's left edge goes to the list, → from the
       list goes to the treemap; Tab switches panel.
 - [ ] **Page Up/Down, Home, End** jump through the list.
-- [ ] **Return / keypad Enter** opens a folder; **Esc and ⌫** go up with the folder just left in
+- [ ] *(smoke: Return, Esc)* **Return / keypad Enter** opens a folder; **Esc and ⌫** go up with the folder just left in
       hand.
-- [ ] **Plain letters:** `a` toggles apparent sizes, `+`/`=`, `-`, `0` zoom, `r`/`R` rescan, `d`
+- [ ] *(smoke: `a`)* **Plain letters:** `a` toggles apparent sizes, `+`/`=`, `-`, `0` zoom, `r`/`R` rescan, `d`
       and Forward Delete ask to move to the Trash.
 - [ ] **Keys with ⌘ go to the menu, not the view** (`key()` returns false for ⌘/⌃, so an unhandled
       one beeps).
 
 ### Mouse
 
-- [ ] **Click** selects in either panel; **double-click** opens a folder, and on a file opens Quick
+- [ ] *(smoke: click in the list)* **Click** selects in either panel; **double-click** opens a folder, and on a file opens Quick
       Look.
-- [ ] **⌘-click** toggles a mark (the entry already in hand is marked as well); **⇧-click** marks
+- [ ] *(smoke: ⌘-click)* **⌘-click** toggles a mark (the entry already in hand is marked as well); **⇧-click** marks
       the range from the anchor; a plain click clears the marks.
 - [ ] **Hover** highlights the tile or row and names it in the status bar; leaving the view clears
       that (`NSTrackingArea` with `InVisibleRect`; `mouseExited:`).
@@ -69,7 +85,7 @@ scan. **Nothing below has been done with a real mouse and keyboard.** Run
 - [ ] **Breadcrumbs:** clicking one goes up to it. With a deep path the middle ones collapse to
       "…" and the current folder stays visible (`draw.rs`, `path_bar`).
 - [ ] **Clicking "small files"** says in the status bar that those entries are in the list.
-- [ ] **Right-click and Control-click** an entry: the context menu appears, with the entry in hand
+- [ ] *(smoke: right-click, Copy as Pathname, cancel)* **Right-click and Control-click** an entry: the context menu appears, with the entry in hand
       (marks kept if it is one of them); each item works, and "Move to Trash" is greyed out while
       a scan runs (`menuForEvent:`, `validateMenuItem:`).
 - [ ] **Clicking into an inactive window** acts at once (`acceptsFirstMouse:`).
@@ -79,7 +95,7 @@ scan. **Nothing below has been done with a real mouse and keyboard.** Run
 - [ ] **Each item works**, and is greyed out when it cannot: Open, Quick Look, Trash and Delete
       with nothing in hand; Enclosing Folder at the root; rescans during the first scan.
 - [ ] **"Show Apparent Sizes" shows a check mark** when on, and "Hide Sidebar" toggles its title.
-- [ ] **Shortcuts:** ⌘↑ / ⌘↓ (`U+F700`/`U+F701`), ⌘⌫ / ⌥⌘⌫ (`U+0008`), and whether ⌘+ fires on a
+- [ ] **Shortcuts:** ⌘↑ / ⌘↓ (`U+F700`/`U+F701`), ⌘⌫ / ⌥⌘⌫ (`U+007F`; see above), and whether ⌘+ fires on a
       US keyboard without Shift (the key equivalent is `+`; if only ⇧⌘= works, add `=`). Also
       ⇧⌘R (key equivalent `R`), ⌃⌘S, ⌃⌘F full screen, ⌘M, ⌘H, ⌘Q.
 - [ ] **About diskonaut** shows the standard panel.
@@ -89,14 +105,14 @@ scan. **Nothing below has been done with a real mouse and keyboard.** Run
 - [ ] **Move to the Trash** (⌘⌫): the confirmation names the entry (or counts several and lists up
       to five), and after it the entry is in the Finder's Trash and gone from the list, with the
       next entry in hand and "Moved … to the Trash" in the status bar. "Freed" doesn't change.
-- [ ] **Delete immediately** (⌥⌘⌫): a critical-style alert saying it can't be undone; afterwards
+- [ ] *(smoke: confirmed with Return; the file leaves the disk and the list)* **Delete immediately** (⌥⌘⌫): a critical-style alert saying it can't be undone; afterwards
       the space shows as freed.
 - [ ] **A symlink:** trashing or deleting one removes the link, never its target.
 - [ ] **A failure** (a file owned by root, or on a read-only volume): the others still go, an
       alert names the first failure and counts the rest, and the failed entries stay in the list.
 - [ ] **Deleting while a rescan of the same folder runs:** the rescan starts again, and the
       deleted entry does not come back (`restart_rescans_under`).
-- [ ] **Copy Path** (⌘C) puts a shell-quoted path on the pasteboard (paste it into a terminal:
+- [ ] *(smoke: a plain path)* **Copy Path** (⌘C) puts a shell-quoted path on the pasteboard (paste it into a terminal:
       names with spaces, quotes, `$` and non-ASCII characters must survive). **Copy as Pathname**
       (⌥⌘C) is plain, one per line. With several marked, all of them are copied.
 - [ ] **Show in Finder** (⌥⌘R) opens Finder with the entries selected, or the current folder when
@@ -106,7 +122,7 @@ scan. **Nothing below has been done with a real mouse and keyboard.** Run
 
 ### Previews and Quick Look
 
-- [ ] **Text preview:** holding ↓ through a folder of text files shows only the one it stops on
+- [ ] *(smoke: a text file's lines)* **Text preview:** holding ↓ through a folder of text files shows only the one it stops on
       (60 ms debounce), with no flicker of stale previews (`preview_generation`).
 - [ ] **Picture formats:** a JPEG with an EXIF rotation shows upright; HEIC, GIF, TIFF and WebP
       preview (`OTHER_PICTURES` in `src/preview.rs`); an AVIF may not, depending on the macOS
@@ -115,7 +131,7 @@ scan. **Nothing below has been done with a real mouse and keyboard.** Run
       is first drawn, since `NSImage` decodes lazily on the main thread. Time it; if it's noticeable,
       decode a thumbnail off the main thread (`CGImageSourceCreateThumbnailAtIndex`) instead.
 - [ ] **An iCloud-only file** (dataless) is described, not downloaded.
-- [ ] **Quick Look:** Space opens the panel on the entry in hand, and again closes it. With it open,
+- [ ] *(smoke: Space opens it)* **Quick Look:** Space opens the panel on the entry in hand, and again closes it. With it open,
       arrows in the panel move the selection here and the panel follows (`previewPanel:handleEvent:`).
       With several marked, the panel pages through them.
 

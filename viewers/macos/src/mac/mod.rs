@@ -2,6 +2,7 @@
 //! [`view::DiskView`], drawn by [`draw`].
 
 mod draw;
+mod script;
 mod view;
 
 use ::std::cell::OnceCell;
@@ -169,7 +170,7 @@ fn menu_bar(mtm: MainThreadMarker, app: &NSApplication) -> Retained<NSMenu> {
     let option = NSEventModifierFlags::Option;
     let control = NSEventModifierFlags::Control;
     // U+F700 and U+F701 are AppKit's ↑ and ↓ keys; U+0008 is Backspace (⌫).
-    let (up, down, backspace) = ("\u{f700}", "\u{f701}", "\u{8}");
+    let (up, down, backspace) = ("\u{f700}", "\u{f701}", "\u{7f}");
 
     let bar = NSMenu::new(mtm);
     let app_menu = submenu(mtm, &bar, "diskonaut");

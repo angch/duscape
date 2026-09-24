@@ -77,6 +77,25 @@ Other threads come back to the main thread through `view::on_main` (the main dis
 `Viewer` lives in a `RefCell`; a modal (an alert, the open panel) runs the event loop inside the
 call that opens it, so no borrow is held across one.
 
+## Testing
+
+`tests/smoke.sh` builds the app, scans a fixture, and drives it with a script of keys, clicks and
+menu choices, checking what it holds after each step — navigation, marks, the clipboard, the
+context menu, the side panel, a delete through its confirmation alert, Quick Look. It needs a
+logged-in session and no permissions; the window comes to the front for the ten seconds or so it
+runs.
+
+```sh
+viewers/macos/tests/smoke.sh
+```
+
+The script language is in `src/mac/script.rs`: `DISKONAUT_MAC_SCRIPT=steps.txt diskonaut-mac
+FOLDER` runs `steps.txt` once the scan is done. Its events are made by the app and posted to its
+own queue, so they take a real key's or click's path — menu key equivalents, the first responder,
+hit testing, the event loops of alerts and menus — without the Accessibility permission that
+posting to the system (`CGEventPost`, AppleScript's System Events, XCUITest) would need. A
+`state FILE` step writes what the viewer holds as `name: value` lines, which the test compares.
+
 To look at the drawing without screen access:
 
 ```sh

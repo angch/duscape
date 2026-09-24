@@ -130,6 +130,9 @@ Six kinds of thread communicate via `mpsc` channels (bounded, except the preview
   The `Viewer` is in a `RefCell`; never hold a borrow across a modal (`NSAlert::runModal`, the
   open panel), which runs the event loop inside the call. `DISKONAUT_MAC_SNAPSHOT=out.png` writes
   the view to a PNG after the scan and quits — how to look at the drawing without screen access
+- `mac/script.rs` — `DISKONAUT_MAC_SCRIPT`: synthetic keys, clicks and menu choices posted to the
+  app's own event queue, and `state` dumps to assert on. `tests/smoke.sh` runs one on a fixture;
+  run it after changing the viewer (macOS, logged-in session, no permissions needed)
 - `mac/draw.rs` — painting, by `Layout`; `mac/mod.rs` — the app, delegate, menus, window
 
 **`diskonaut-angch`** (`viewers/tui/`) — the ratatui viewer:
