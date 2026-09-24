@@ -42,7 +42,7 @@ by copying it.
 
 | Module | What it does |
 | --- | --- |
-| `ext4` | As root on ext4, the scan read from the block device instead of asked of the kernel: directory blocks and inodes swept in device order a generation at a time, every run advised before any is read; a mount point inside goes to the kernel walker; anything it cannot follow makes it decline up front. `--no-device-read` opts out; rescans never use it. Cold it is 1.7x the kernel walk, 2.2x an unprivileged scan. |
+| `ext4` | As root on ext4, the scan read from the block device instead of asked of the kernel: directory blocks and inodes swept in device order a generation at a time, every run advised before any is read; a mount point inside, or a directory of a shape it does not read, goes to the kernel walker; a filesystem it cannot follow makes it decline up front. `--no-device-read` opts out; rescans never use it. Cold it is 1.7x the kernel walk, 2.2x an unprivileged scan. |
 | `linux` | `getdents64` and `statx` on its own thread pool. Probes shared extents (FIEMAP) for reflinks from 64 KiB up, reads btrfs compressed sizes when root, and refuses pseudo filesystems (`/proc`, `/sys`…), network filesystems (NFS, SMB, sshfs…) and bind-mount duplicates at their mount points. |
 | `macos` | `getattrlistbulk(2)`, choosing the size attribute per device because FAT misreports it. |
 | `windows` | One handle per directory, entries in bulk (`FileIdExtdDirectoryInfo`). Hard links deduplicated by file id where they are made (or everywhere, elevated). Elevated, NTFS's metadata files are sized from their MFT records (`ntfs`) and shown at the volume's root. |

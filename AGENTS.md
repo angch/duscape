@@ -119,8 +119,9 @@ Six kinds of thread communicate via `mpsc` channels (bounded, except the preview
 - `ext4.rs` — as root on ext4, the walk read from the block device: directory blocks and inodes
   swept in device order a generation at a time, every run advised before any is read, parsed and
   batched on several threads; one `DirEntries` per directory like any walker. Declines up front
-  (and the kernel walk runs) for what it cannot follow; mount points inside go to the kernel
-  walker; rescans and `--no-device-read` never use it. `--bench-stage ext4-raw` is the inode
+  (and the kernel walk runs) for a filesystem it cannot follow (META_BG, a device that will not
+  open); a mount point inside, or a directory of a shape it does not read, goes to the kernel
+  walker whole; rescans and `--no-device-read` never use it. `--bench-stage ext4-raw` is the inode
   survey alone. Last seconds of writes may be missing: it reads the device's page cache
 - `linux.rs` — Linux walker on `getdents64`/`statx`, own thread pool; also the `FS_IOC_FIEMAP`
   reflink probe. `dua-core` is only the fallback for other platforms and the benchmark baseline

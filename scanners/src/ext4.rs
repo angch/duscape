@@ -15,9 +15,10 @@
 //! The layout is the kernel's `fs/ext4/ext4.h`. What is read is the device's page cache, which
 //! is the buffer cache ext4 reads its own metadata through, so it is as current as the disk:
 //! delayed allocation and an uncheckpointed journal mean the last seconds of writes are not in
-//! it yet. Anything this cannot follow — META_BG, an inline directory spilling into an xattr, a
-//! triply indirect directory — makes it decline before it has said anything, and the kernel
-//! walk takes over.
+//! it yet. A filesystem this cannot follow — META_BG, a device that will not open — makes it
+//! decline before it has said anything, and the kernel walk takes over; a directory of a shape
+//! it does not read (an inline directory spilling into an xattr, a triply indirect one) goes to
+//! the kernel walker whole, like a mount point.
 
 use ::std::ffi::OsStr;
 use ::std::fs::File;
@@ -626,6 +627,17 @@ fn device_fs(root: &Path) -> Option<Fs> {
 /// A directory's entries as parsed: `(inode, name)`.
 type Entries = Vec<(u64, Vec<u8>)>;
 
+/// The reader's reason for stopping when the consumer has gone: the viewer quit, and nothing
+/// is wrong.
+const CONSUMER_GONE: &str = "the consumer went away";
+
+/// Whether a scan of `root` by this process would read the device: ext4, and the device
+/// opens. For the benchmark's report.
+#[must_use]
+pub fn would_read_device(root: &Path) -> bool {
+    device_fs(root).is_some()
+}
+
 /// A directory the walk has reached but not yet read.
 struct Pending {
     ino: u64,
@@ -686,7 +698,9 @@ pub fn walk_ext4(root: &Path, options: ScanOptions) -> Option<Ext4Walk> {
     let reader = ::std::thread::Builder::new()
         .name("ext4_reader".to_string())
         .spawn(move || {
-            if let Err(error) = read_tree(fs, inodes, root, root_ino, options, &sender) {
+            if let Err(error) = read_tree(fs, inodes, root, root_ino, options, &sender)
+                && error != CONSUMER_GONE
+            {
                 // Nothing to fall back to once directories have been handed on; say so.
                 eprintln!("diskonaut: reading the device stopped: {error}");
             }
@@ -731,7 +745,7 @@ fn read_tree(
     let send = |outbox: &mut Vec<DirEntries>| -> Result<(), String> {
         sender
             .send(::std::mem::take(outbox))
-            .map_err(|_| "the consumer went away".to_string())
+            .map_err(|_| CONSUMER_GONE.to_string())
     };
 
     while !frontier.is_empty() {
@@ -739,15 +753,16 @@ fn read_tree(
         // Where this generation's directories keep their blocks: `(block, frontier index)`.
         let mut wanted: Vec<(u64, usize)> = Vec::new();
         let mut entries_of: Vec<Entries> = (0..frontier.len()).map(|_| Vec::new()).collect();
+        // Directories of a shape this does not read, handed to the kernel walker whole, like a
+        // mount point; their own entry was already given by the parent's listing.
+        let mut handed_over: Vec<PathBuf> = Vec::new();
         for (index, pending) in frontier.iter().enumerate() {
             let Some(dir) = inodes.dirs.get(&pending.ino).cloned() else {
                 continue;
             };
             if !dir_is_readable(&fs, &dir) {
-                return Err(format!(
-                    "a directory this cannot read, inode {}",
-                    pending.ino
-                ));
+                handed_over.push(pending.path.to_path_buf());
+                continue;
             }
             if dir.flags & INODE_INLINE_DATA_FL != 0 {
                 parse_dir_entries(&dir.block[4..], block_size as usize, &mut entries_of[index]);
@@ -900,9 +915,9 @@ fn read_tree(
                 }
             }
             next.extend(more);
-            for path in mounted {
-                // Another filesystem is mounted here: what is under it is the kernel walk's to
-                // read, if the scan would enter it at all.
+            for path in mounted.into_iter().chain(handed_over.drain(..)) {
+                // Another filesystem is mounted here, or a directory this does not read: what is
+                // under it is the kernel walk's to read, if the scan would enter it at all.
                 if super::linux::walk_would_enter(&root, &path, options) {
                     let depth = path
                         .strip_prefix(&*root)

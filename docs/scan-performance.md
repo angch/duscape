@@ -2929,9 +2929,10 @@ reads them from too. Mount points inside the tree are handed to the ordinary wal
 
 As root on ext4, the Linux scan now reads the filesystem from its block device
 (`scanners/src/ext4.rs`) instead of asking the kernel for every entry: `--no-device-read` gets
-the old walk back, rescans always use it, and anything the reader cannot follow (META_BG, an
-inline directory spilling into an xattr, a triply indirect directory, a device that will not
-open) makes it decline before it has said anything and the kernel walk takes over. Every
+the old walk back, rescans always use it, a filesystem the reader cannot follow (META_BG, a
+device that will not open) makes it decline before it has said anything and the kernel walk
+takes over, and a directory of a shape it does not read (an inline directory spilling into an
+xattr, a triply indirect one) is handed to the kernel walker whole, like a mount point. Every
 directory still leaves as one `DirEntries`, so the tree, the ledger and the viewers see no
 difference; the fixtures, which run the binary as root on loop-mounted ext4, agree with their
 oracles to the byte, mounts inside the tree included (those go to the kernel walker).

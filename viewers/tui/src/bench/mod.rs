@@ -387,6 +387,22 @@ fn bench_ext4_raw(_path: &Path) -> StageResult {
     }
 }
 
+/// Whether the scan will read the filesystem from its device: asked for, and possible here.
+#[cfg(target_os = "linux")]
+fn device_read_words(path: &Path, options: ScanOptions) -> &'static str {
+    if !options.read_device {
+        "off (--no-device-read)"
+    } else if diskonaut_scan::ext4::would_read_device(path) {
+        "yes (ext4, as root)"
+    } else {
+        "no (not ext4, or not root)"
+    }
+}
+#[cfg(not(target_os = "linux"))]
+fn device_read_words(_path: &Path, _options: ScanOptions) -> &'static str {
+    "no (Linux only)"
+}
+
 /// Run the requested benchmark stages against `path` and print a report.
 pub fn run(
     path: &Path,
@@ -407,12 +423,13 @@ pub fn run(
         println!("  volume used: {} ({used} B)", human_size(u128::from(used)));
     }
     println!(
-        "  threads: {}   apparent-size: {}   max-depth: {}\n",
+        "  threads: {}   apparent-size: {}   max-depth: {}   device read: {}\n",
         thread_count(options),
         options.show_apparent_size,
         options
             .max_depth
             .map_or_else(|| "unlimited".to_string(), |depth| depth.to_string()),
+        device_read_words(path, options),
     );
 
     let stages = match stage {
