@@ -2923,3 +2923,61 @@ names (`ext4_dir_entry_2`, the same in htree leaves; index blocks and checksum t
 inode 0 and are skipped), so cold they are a sequential sweep rather than 370k dependent
 reads, and warm a copy out of the device's page cache, which is the buffer cache the kernel
 reads them from too. Mount points inside the tree are handed to the ordinary walker.
+
+
+## Roadmap step 2: the ext4 device walker (2026-09-24)
+
+As root on ext4, the Linux scan now reads the filesystem from its block device
+(`scanners/src/ext4.rs`) instead of asking the kernel for every entry: `--no-device-read` gets
+the old walk back, rescans always use it, and anything the reader cannot follow (META_BG, an
+inline directory spilling into an xattr, a triply indirect directory, a device that will not
+open) makes it decline before it has said anything and the kernel walk takes over. Every
+directory still leaves as one `DirEntries`, so the tree, the ledger and the viewers see no
+difference; the fixtures, which run the binary as root on loop-mounted ext4, agree with their
+oracles to the byte, mounts inside the tree included (those go to the kernel walker).
+
+### How it reads
+
+A generation at a time, from the scan root's directory: the frontier's directory blocks are
+gathered (extent trees and the classic indirect map both followed), sorted by device address,
+merged into runs (blocks within eight of each other in one read, up to 8 MiB), every run
+advised with `WILLNEED` **before** any is read — so the device has the whole sorted list in its
+queue — then read and parsed for names on eight threads. The inodes those names point at are
+fetched the same way, in one sweep per generation, only the ones not seen yet. Then the
+directory batches are built on eight threads too. Nothing is read up front: a subtree scan
+pays for its subtree.
+
+Three things were measured on the way there, each a factor of two:
+
+- The first version read every inode table up front (600 MiB, 0.35s whatever the subtree) and
+  swept directory blocks one synchronous `pread` at a time. Warm it was level with the kernel
+  walk and **cold it was 2x slower**: queue depth one against the kernel walk's 24 workers.
+  Advising every run first turned the sweep into what it should be.
+- The inode sweep found each run's index with a linear search: quadratic in runs per
+  generation, thousands of them.
+- Building the batches ran on the reader thread alone, 0.7s of the 1.7s; done in parallel it is
+  0.03s a generation.
+
+`--bench-profile` prints each generation: directories, blocks, runs, bytes and seconds for the
+directory sweep and the inode fetch, and the emit.
+
+### Where it stands
+
+`docs/benchmarks/angch-noble-20260924-step2.md`, 3 runs each, `sharded`; the *kernel walk as
+root* row is the same privilege without the device read, so the pair isolates it:
+
+| tree | warm: device / kernel walk (root) | cold: device / kernel walk (root) | cold, unprivileged | cold, `diskus` |
+| --- | --- | --- | --- | --- |
+| `project`, 401k entries | 225 / 248 ms | **398** / 708 ms | 768 ms | 777 ms |
+| `home`, 2.25M entries | 1.51 / 1.61 s | **2.25** / 3.88 s | 4.87 s | 4.92 s |
+| `~/.cache`, 1.05M, 169k hard-linked | 827 / 905 ms | **1.18** / 1.96 s | 2.53 s | 2.57 s |
+
+Cold, as root, the scan is now 1.7x the kernel walk with the same privilege and 2.2x what an
+unprivileged scan or `diskus` gets; warm, 7–10% ahead. The gate asked for 3x warm on `walk`,
+which the survey's floor promised and the walker does not reach: reading 2.5 GiB of directory
+blocks and 1.1 GiB of inode blocks out of the page cache, parsing 2.25M names and building
+the batches costs about what the kernel's 24 threads of `statx` cost on eight cores. Two things
+would close the gap and are left for another day: reading only the blocks of directories that
+are not already in the tree's way (the runs' merging reads twice the bytes of the blocks
+wanted), and folding the batch build into the parse. Cold is where the change lives, and it
+is a clean 2x there.

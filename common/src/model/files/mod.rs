@@ -2,7 +2,7 @@ mod contents;
 mod file_or_folder;
 mod file_tree;
 mod hard_links;
-mod hash;
+pub mod hash;
 pub mod profile;
 
 pub use contents::Contents;

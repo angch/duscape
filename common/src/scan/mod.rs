@@ -36,6 +36,11 @@ pub struct ScanOptions {
     /// was not drawn from. `Some(bytes)` tracks every file at least that large, wherever it is.
     /// Ignored elsewhere: Unix walks get the link count for free.
     pub hard_link_threshold: Option<u64>,
+    /// Read the filesystem's metadata from its block device where the process may (root, on
+    /// ext4 on Linux), instead of asking the kernel for each entry: several times faster, at the
+    /// price of not seeing the last seconds of writes. Off for rescans, whose folders are small
+    /// and want to be current, and with `--no-device-read`.
+    pub read_device: bool,
 }
 
 impl ScanOptions {
@@ -59,6 +64,7 @@ impl Default for ScanOptions {
             max_depth: None,
             one_file_system: false,
             hard_link_threshold: None,
+            read_device: true,
         }
     }
 }

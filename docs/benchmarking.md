@@ -21,8 +21,12 @@ diskonaut --benchmark --threads 6 --bench-repeat 3 /
 | `sharded`   | the walk feeding several tree builders at once, merged at the end: what the app runs |
 | `refined`   | `sharded`, then the second pass over small files that may share extents           |
 
+| `ext4-raw`  | root, Linux, ext4: every live inode's size read straight from the device's inode tables, no names — the floor |
+
 Other flags: `--max-depth N` stops the descent (a partial scan), `--threads N` sets the worker
 count, `--bench-repeat N` repeats each stage, `--single-thread` forces one worker,
+`--no-device-read` asks the kernel for every entry even as root on ext4 (the two rows the
+harness prints as root differ by exactly that),
 `--bench-shards N` and `--bench-shard-depth N` vary the parallel build. Whatever is changed,
 `sharded`'s totals must stay identical to `pipeline`'s: that comparison is the correctness check.
 

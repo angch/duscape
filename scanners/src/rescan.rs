@@ -65,6 +65,9 @@ impl Rescanner {
         refine_here: bool,
     ) {
         let mut options = self.options;
+        // A rescan is of a folder the user is looking at: small, and wanted current, so it
+        // goes through the kernel even where the first scan read the device.
+        options.read_device = false;
         let running = Arc::clone(&self.running);
         let done = Arc::clone(&self.done);
         let _ = thread::Builder::new()

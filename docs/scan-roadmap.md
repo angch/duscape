@@ -63,7 +63,7 @@ tree yet: it measures the floor.
   for 2.14M inodes against 1.77s and 4.50s for the walk; the sum within 1 MB of `df`. Half the
   gate; the second machine is still to come.
 
-### 2. The ext4 device walker
+### 2. The ext4 device walker (done here: cold 1.7x the kernel walk as root, 2.2x unprivileged; warm 7–10%)
 
 *Linux, ext4, root.* On the spike's numbers: directory blocks parsed for names (linear and
 htree leaves both hold `ext4_dir_entry_2`), extent trees followed for directories larger than
@@ -75,6 +75,9 @@ the hard-link ledger unchanged.
   `walk` warm; cold at least 2x.
 - Work: an ext4 on-disk reader (`scanners/src/ext4.rs`), a few hundred lines, tested against
   images made by the fixtures.
+- Result on this machine (`scan-performance.md`, "Roadmap step 2"): the cold gate met, the
+  warm one not — 2.5 GiB of directory blocks out of the page cache costs what the kernel's
+  `statx` threads cost on eight cores. On by default as root; `--no-device-read` opts out.
 
 ### 3. XFS bulkstat, as root
 

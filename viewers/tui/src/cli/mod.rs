@@ -53,6 +53,10 @@ pub struct Opt {
     /// Scan with a single thread
     #[arg(long)]
     pub single_thread: bool,
+    /// Ask the kernel for every entry even where the filesystem's metadata could be read from
+    /// its device (root, ext4 on Linux): slower, but shows the last seconds of writes too
+    #[arg(long)]
+    pub no_device_read: bool,
     /// Number of scan worker threads (default: one per core; three on Linux, where a cold cache
     /// keeps them waiting on the disk)
     #[arg(long, value_name = "N")]

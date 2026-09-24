@@ -20,6 +20,8 @@ This fork exists to **explore further performance optimizations for everyday dis
 - **Hard-link aware** — a file reached by several names counts once in each folder that holds it
 - **Native walkers** — Linux, macOS, Windows and BSD each get their own parallel directory walk
 - **Stays put on request** — `-x` keeps the scan on one filesystem, like `du -x`
+- **Reads the disk itself as root** — on ext4, the metadata comes straight off the block
+  device in ordered sweeps rather than one `stat` per file: a cold scan in half the time
 
 ## Other viewers
 

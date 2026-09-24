@@ -116,6 +116,12 @@ Six kinds of thread communicate via `mpsc` channels (bounded, except the preview
   `parallel::build_tree()`: the app's tree build — shard by path prefix, merge, replay;
   `walk_would_enter`, `thread_count`, `scan_into_tree`, the `dua-core` `fallback`
 - `macos.rs` — macOS walker on `getattrlistbulk(2)` (see `docs/scan-performance.md`)
+- `ext4.rs` — as root on ext4, the walk read from the block device: directory blocks and inodes
+  swept in device order a generation at a time, every run advised before any is read, parsed and
+  batched on several threads; one `DirEntries` per directory like any walker. Declines up front
+  (and the kernel walk runs) for what it cannot follow; mount points inside go to the kernel
+  walker; rescans and `--no-device-read` never use it. `--bench-stage ext4-raw` is the inode
+  survey alone. Last seconds of writes may be missing: it reads the device's page cache
 - `linux.rs` — Linux walker on `getdents64`/`statx`, own thread pool; also the `FS_IOC_FIEMAP`
   reflink probe. `dua-core` is only the fallback for other platforms and the benchmark baseline
 - `ntfs.rs` — NTFS file-record parser: sizes `$MFT` and the other metadata files the Windows
@@ -447,7 +453,9 @@ path; `pipeline` is the single-threaded build it replaced. Those are warm number
 dropped) the walk is bound by reads in flight, one directory's inode and blocks per blocked
 worker, which is why Linux runs three workers a core, stats a directory in inode order, walks children
 smallest inode first, and as root reads the directories' blocks ahead through the device
-(`linux::dirblocks`, ext4 only — `DISKONAUT_DIRBLOCKS_DEVICE=<file>` forces the path for testing);
+(`linux::dirblocks`, ext4 only — `DISKONAUT_DIRBLOCKS_DEVICE=<file>` forces the path for testing).
+As root on ext4 the whole walk reads the device instead (`ext4.rs`, roadmap step 2: cold 1.7x
+the kernel walk); `--no-device-read` compares;
 `docs/probes/bench-diskus.sh` measures warm and cold against `diskus` — see "Cold cache" in the doc. Anything you change must keep `sharded`'s totals identical
 to `pipeline`'s — that comparison is the correctness check, not just the speed one. On Windows the
 floor is a fixed kernel and filter-driver cost per directory handle (3× on the system volume);

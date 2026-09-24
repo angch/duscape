@@ -263,7 +263,16 @@ pub fn scan_directories(root: &Path, options: ScanOptions) -> impl Iterator<Item
     }
     #[cfg(target_os = "linux")]
     {
-        linux::walk_linux(root, thread_count(options), options)
+        // From the device where that is allowed and asked for, else through the kernel.
+        let device = if options.read_device {
+            ext4::walk_ext4(root, options)
+        } else {
+            None
+        };
+        match device {
+            Some(walk) => LinuxScan::Device(walk),
+            None => LinuxScan::Kernel(linux::walk_linux(root, thread_count(options), options)),
+        }
     }
     #[cfg(windows)]
     {
@@ -272,6 +281,24 @@ pub fn scan_directories(root: &Path, options: ScanOptions) -> impl Iterator<Item
     #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         fallback::group_by_directory(root, options)
+    }
+}
+
+/// The Linux walk: from the device, or through the kernel.
+#[cfg(target_os = "linux")]
+enum LinuxScan {
+    Device(ext4::Ext4Walk),
+    Kernel(linux::LinuxWalk),
+}
+
+#[cfg(target_os = "linux")]
+impl Iterator for LinuxScan {
+    type Item = DirEntries;
+    fn next(&mut self) -> Option<DirEntries> {
+        match self {
+            LinuxScan::Device(walk) => walk.next(),
+            LinuxScan::Kernel(walk) => walk.next(),
+        }
     }
 }
 

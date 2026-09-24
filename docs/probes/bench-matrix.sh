@@ -3,7 +3,10 @@
 # then warm, cold and root timings of diskonaut against diskus on the trees given, and the build
 # profile. Writes docs/benchmarks/<host>-<date>.md; commit it.
 #
-#   docs/probes/bench-matrix.sh [--runs N] TREE...
+#   docs/probes/bench-matrix.sh [--runs N] [--tag WORD] TREE...
+#
+# `--tag` names the file `<host>-<date>-<tag>.md`, for a second run on the same day (after a
+# step, say) beside the baseline.
 #
 # Cold runs need root to drop caches (a sudoers line for `/usr/bin/tee /proc/sys/vm/drop_caches`
 # does), root runs need `sudo -n <this checkout>/target/release/diskonaut` to work; what cannot be
@@ -12,10 +15,12 @@
 set -euo pipefail
 
 runs=3
+tag=
 trees=()
 while [ $# -gt 0 ]; do
     case "$1" in
         --runs) runs=$2; shift ;;
+        --tag) tag=-$2; shift ;;
         -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
         *) trees+=("$1") ;;
     esac
@@ -29,7 +34,7 @@ diskus=$(command -v diskus || echo "$HOME/.cargo/bin/diskus")
 command -v hyperfine >/dev/null || { echo "missing: hyperfine (cargo install hyperfine)" >&2; exit 1; }
 [ -x "$bin" ] || { echo "missing: $bin (cargo build --release -p diskonaut-angch)" >&2; exit 1; }
 host=$(hostname -s)
-out=$here/docs/benchmarks/$host-$(date +%Y%m%d).md
+out=$here/docs/benchmarks/$host-$(date +%Y%m%d)$tag.md
 drop='sync; echo 3 | sudo -n /usr/bin/tee /proc/sys/vm/drop_caches >/dev/null'
 can_drop=; if [ "$(id -u)" -eq 0 ]; then drop='sync; echo 3 > /proc/sys/vm/drop_caches'; can_drop=1;
 elif echo 3 | sudo -n /usr/bin/tee /proc/sys/vm/drop_caches >/dev/null 2>&1; then can_drop=1; fi
@@ -82,8 +87,11 @@ bench() { # title dir hyperfine-args...
     [ -n "$has_diskus" ] && cmds+=(-n "diskus" "'$diskus' --directories excluded '$dir' >/dev/null 2>&1")
     cmds+=(-n "diskonaut sharded" "'$bin' --benchmark --bench-stage sharded '$dir' >/dev/null")
     cmds+=(-n "diskonaut refined" "'$bin' --benchmark --bench-stage refined '$dir' >/dev/null")
-    if [ -n "$can_root" ] && [ "$(id -u)" -ne 0 ] && [ "$title" = cold ]; then
+    if [ -n "$can_root" ] && [ "$(id -u)" -ne 0 ]; then
+        # As root the Linux scan reads ext4 from the device; the kernel walk as root is the
+        # same privilege without that, so the two rows separate the device read from the rest.
         cmds+=(-n "diskonaut sharded, as root" "sudo -n '$bin' --benchmark --bench-stage sharded '$dir' >/dev/null")
+        cmds+=(-n "diskonaut sharded, as root, kernel walk" "sudo -n '$bin' --benchmark --bench-stage sharded --no-device-read '$dir' >/dev/null")
     fi
     hyperfine --runs "$runs" "$@" --export-markdown "$md" "${cmds[@]}" >/dev/null 2>&1 || true
     { echo "### $title: $dir"; echo; cat "$md"; echo; } >> "$out"
