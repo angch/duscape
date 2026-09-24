@@ -33,10 +33,12 @@ up in `scan-performance.md` as a negative result and not merged.
 
 Results so far come from two cells, both ext4 on Linux: an 8-core VM on a virtio SSD with the
 host's cache under it (`docs/benchmarks/angch-noble-*.md`), and a 16-core bare-metal laptop on
-NVMe (`badwolf-*.md`, warm only so far: no sudo there). Bare metal walks about 2.5M entries/s
-warm against the VM's 1.5M, and diskonaut and `diskus` finish within a few percent of each other
-on both, so warm, the walk is the kernel's cost on either. Cold on a spinning disk has not been
-seen at all, and it is where the inode-order and prefetch work should show most.
+NVMe (`badwolf-20260925-full.md`). Bare metal walks about 2.5M entries/s warm against the VM's
+1.5M, and diskonaut and `diskus` finish within a few percent of each other on both, so warm, the
+walk is the kernel's cost on either. Cold, the NVMe is 2.5–3x the warm time where the VM was
+3–4x, and `diskus` leads by 10–25% there: the difference in how the two issue reads in flight
+shows once the disk is the floor. Cold on a spinning disk has not been seen at all, and it is
+where the inode-order and prefetch work should show most.
 
 ## The steps, in order of expected payoff
 
@@ -79,6 +81,13 @@ the hard-link ledger unchanged.
 - Result on this machine (`scan-performance.md`, "Roadmap step 2"): the cold gate met, the
   warm one not — 2.5 GiB of directory blocks out of the page cache costs what the kernel's
   `statx` threads cost on eight cores. On by default as root; `--no-device-read` opts out.
+- Result on bare-metal NVMe (`badwolf-20260925-full.md`, 16 cores, kernel 7.0): totals
+  identical, but the cold gate is not met and warm it is a loss — cold 1.06–1.4x the kernel
+  walk as root (1.09x on 673k entries), warm 0.7–0.8x (343 ms against 281). The inode survey
+  alone is 97 ms at 4.2 GiB/s, so the device is not the cost; the generation-by-generation
+  parse serialises what the kernel's `statx` threads run on sixteen cores at a third of the
+  VM's per-call price. Whether it should stay on by default there is open: as it stands the
+  default costs a root user on such a machine 25–40% warm for a 10% cold gain.
 
 ### 3. XFS bulkstat, as root (needs an XFS machine; not run here)
 
