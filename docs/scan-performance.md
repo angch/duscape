@@ -2865,3 +2865,31 @@ Warm, against the previous commit, 5 runs each:
 
 Totals are identical between `tree`, `pipeline` and `sharded` on both trees, the model's
 folder-by-folder sharded test passes, and so do the filesystem fixtures.
+
+
+## PGO, and thin against fat LTO (2026-09-24)
+
+The release profile has `lto = true` (fat) and, since this morning, `opt-level = "s"`. Two
+things were left to try on the compiler side: profile-guided optimisation on top, and whether
+thin LTO would do. The profile was trained on the instrumented binary running every benchmark
+stage over `project` (375k entries) and `~/.cache` (1.05M, 169k hard-linked), then merged with
+`llvm-profdata`; `make pgo` does the same. Warm, `sharded`, 5 runs each:
+
+| build | binary | `~/.cache` | `/data/angch` (2.24M) | build alone (`~/.cache`) | walk alone |
+| --- | --- | --- | --- | --- | --- |
+| `s` + fat LTO (the release) | 1.84 MB | 834 ms | 1.477 s | 0.376 s | 1.087 s |
+| `s` + fat LTO + PGO | 1.93 MB | 824 ms | 1.440 s | 0.352 s | 1.055 s |
+| `3` + fat LTO + PGO | 2.36 MB | 814 ms | 1.453 s | 0.366 s | 1.065 s |
+| `s` + thin LTO | 2.20 MB | 849 ms | 1.505 s | 0.413 s | |
+
+- **PGO is worth 2–3% of the wall clock, and 6–8% of the user CPU** (2.52 → 2.33s on the big
+  tree): the tree build gets 6%, the walk 3%. Real, and not enough. The release is built in CI
+  for two musl targets; a profile has to come from a training run of that very build, on some
+  tree, on every release, or be committed and go stale with the next change to the model. For
+  a few percent that is not worth the pipeline. `make pgo` is there for a local build.
+- **`opt-level = 3` with PGO is no better than `"s"` with it**, and 22% larger — the same
+  answer as without the profile.
+- **Thin LTO is 2–3% slower than fat and 20% larger.** Fat stays.
+
+The CPU that remains is where it was: the kernel's `statx` work in the walk, and the model's
+cache misses in the ledger and the folder lookups (see "The tree build").

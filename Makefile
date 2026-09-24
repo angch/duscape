@@ -1,4 +1,4 @@
-.PHONY: build run install test test-fs static static-aarch64 static-linux-gui dos dos-tools dos-run
+.PHONY: build run install test test-fs static static-aarch64 static-linux-gui pgo dos dos-tools dos-run
 
 build:
 	cargo build --workspace
@@ -27,6 +27,25 @@ static:
 # at build time; 64K pages (2^16) also run on 4K and 16K kernels.
 static-aarch64:
 	JEMALLOC_SYS_WITH_LG_PAGE=16 cargo zigbuild -p diskonaut-angch --release --target aarch64-unknown-linux-musl
+
+# A profile-guided build of the terminal viewer: instrument, scan PGO_TRAIN (this directory by
+# default; a big real tree trains it better) through every benchmark stage, then rebuild with the
+# profile. Needs `rustup component add llvm-tools-preview`. Worth 2–3% of the wall clock and 6–8%
+# of the CPU on top of the release profile, measured in docs/scan-performance.md — not enough to
+# put in the release pipeline, which would have to train on every build; here for whoever wants
+# it locally. The result is target/pgo/release/diskonaut.
+PGO_TRAIN ?= .
+PGO_DIR := $(CURDIR)/target/pgo
+PROFDATA := $(shell find $(HOME)/.rustup/toolchains -name llvm-profdata -type f 2>/dev/null | head -1)
+pgo:
+	@test -n "$(PROFDATA)" || { echo "llvm-profdata not found: rustup component add llvm-tools-preview" >&2; exit 1; }
+	rm -rf $(PGO_DIR)/data
+	RUSTFLAGS="-Cprofile-generate=$(PGO_DIR)/data" cargo build -p diskonaut-angch --release --target-dir $(PGO_DIR)/gen
+	$(PGO_DIR)/gen/release/diskonaut --benchmark --bench-stage all $(PGO_TRAIN) >/dev/null
+	$(PGO_DIR)/gen/release/diskonaut --benchmark --bench-stage sharded --bench-repeat 2 $(PGO_TRAIN) >/dev/null
+	$(PROFDATA) merge -o $(PGO_DIR)/merged.profdata $(PGO_DIR)/data
+	RUSTFLAGS="-Cprofile-use=$(PGO_DIR)/merged.profdata" cargo build -p diskonaut-angch --release --target-dir $(PGO_DIR)
+	@echo "built $(PGO_DIR)/release/diskonaut"
 
 # The Linux GUI viewer, fully static: pure Rust down to the X11 protocol, so it needs no musl-gcc
 # and no system library, and runs under XWayland as well as on any X server.
