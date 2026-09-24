@@ -83,5 +83,13 @@ filesystem, disk and build, runs the warm, cold and root comparisons above on th
 adds the build profile, and writes `docs/benchmarks/<host>-<date>.md`. Run it on a new machine
 before anything else and commit the file; `scan-roadmap.md` is the plan those files feed.
 
+On Windows, `probes/bench-matrix.ps1 TREE...` writes the same file: the machine from CIM, the
+volume and the physical disk behind each tree, and the warm rows against `diskus` and
+[WizTree](https://wiztreefree.com) — timed in its export mode (`/export`, folders only,
+`/admin=0`), which scans, writes a CSV and exits, and whose figures for each tree are listed for
+the sizes cross-check. There are no cold rows, since Windows has no way to drop the file cache
+from a script, and elevated rows (diskonaut reading the volume's metadata files, WizTree reading
+the MFT) only from an elevated shell; the file says which it did.
+
 `scan-performance.md` has every measurement, the reasoning, and notes for repeating the exercise
 on another platform.

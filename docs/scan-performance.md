@@ -3063,3 +3063,35 @@ a core. Two signals were tried, twenty milliseconds apart each:
 
 So the fixed count stays: three a core, at most 32. Not merged; the code is in the session's
 history if a machine with a different balance — many cores, a slow disk — wants to try it.
+
+
+## The matrix on Windows (2026-09-25)
+
+`docs/probes/bench-matrix.ps1` is the matrix for Windows, in the same file format as the Linux
+script, and `docs/benchmarks/tiamat-20260925.md` its first run: a Ryzen 9 7950X (32 threads,
+127 GiB), Windows 11 26200, NTFS on two NVMe SSDs, unelevated, warm only — Windows has no way to
+drop the file cache from a script. Against `diskus` 0.9.0 and WizTree 4.32 in its export mode
+(`/export`, folders only, `/admin=0`), which scans, writes a CSV and exits; unelevated it walks
+the directories like everyone else rather than reading the MFT. Three runs a cell, means:
+
+| tree | entries | diskonaut `refined` | WizTree export | diskus |
+| --- | --- | --- | --- | --- |
+| `C:\Users\angch\project` | 132k | 0.19 s | 0.94 s | 1.99 s |
+| `C:\Users\angch` | 1.60M, 49.6k hard-linked | 2.78 s | 7.64 s | 29.4 s |
+| `C:\` | 2.37M, 90k hard-linked | 5.68 s | 13.5 s | 35.9 s |
+| `D:\` | 415k | 0.15 s | 1.45 s | 5.06 s |
+
+- Unelevated, WizTree is 2.4–10x slower than diskonaut, and `diskus` 6–35x. The `D:\` of the
+  2026-09-23 section (609k entries, 34 s with the `dua-core` walk, 1.3 s for WizTree reading the
+  MFT elevated) is a different disk; here 415k entries take 0.15 s, so an MFT read would gain
+  little on a volume the walk reads in a tenth of a second. Elevated rows — diskonaut with the
+  metadata files, WizTree with the MFT — need a run from an elevated shell.
+- The walk is the floor, as the Windows section says: the tree build alone (`tree-only`) is
+  0.72 s for the 2.37M entries of `C:\`, an eighth of the 5.7 s scan.
+- Entries agree with WizTree's to within one on every tree. Sizes agree on `D:\` and the project
+  tree to a few MB, but `C:\Users\angch` is 4.8 GiB and `C:\` 21.5 GB short of WizTree's
+  *unelevated* figures, with 3 and 569 unreadable folders — WizTree either gets into folders
+  this walk is refused, or counts the directory entries' (stale) sizes. Not yet looked into.
+- `sharded` on `C:\Users\angch` had one run of 6.7 s among two of 2.6 s (`refined` 2.6–3.2 s):
+  something else on the machine, most likely — Defender or the indexer waking — but it is the
+  first sign of run-to-run noise on this platform, and the matrix's three runs are few.

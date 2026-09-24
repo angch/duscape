@@ -26,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `diskonaut_scan::rescan::Rescans`'s, as the terminal viewer's are; a status message shows over
   the marks' summary while it lasts; the status bar says the zoom; `wanted_preview_sized` asks for
   a preview again when the pixels it will take change.
+- `docs/probes/bench-matrix.ps1`: the cross-machine benchmark matrix on Windows, in the same
+  file format as the Linux script — diskonaut against `diskus` and WizTree's export mode, with
+  WizTree's own figures beside the trees for the sizes cross-check.
 - Shared by the viewers now, rather than written into the terminal one: rescan bookkeeping
   (`diskonaut_scan::rescan::Rescans`), how a copied path is made (`format::copied_path`) and the
   debounced preview thread (`preview::Reader`).
