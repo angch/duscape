@@ -39,17 +39,73 @@ struct Dir {
 const INDEXED_AT: usize = 32;
 
 /// A file reachable by more than one path, and where those paths were.
+///
+/// Kept small on purpose: there is one per hard-linked file in a hash map that every sighting
+/// looks up, and on a tree with 170k of them the lookups miss cache. Forty bytes with the
+/// first three folders inline, where it was eighty with a `Vec` and a set in every entry.
 struct LinkedFile {
     size: u64,
     /// One entry per distinct folder holding a link, in the order they were found. Emptied when
     /// `charged` takes over.
-    directories: Vec<DirRef>,
+    directories: Dirs,
     /// Every folder already charged for this file — each folder holding a link, and all of its
     /// ancestors — once `directories` outgrows [`INDEXED_AT`].
-    charged: Option<FastSet<DirRef>>,
+    charged: Option<Box<FastSet<DirRef>>>,
     /// Whether a second name has been seen. A file whose link count was not known
     /// ([`crate::scan::LINKS_UNKNOWN`]) is tracked from its first name, and may have no other.
     linked: bool,
+}
+
+/// The folders holding links to one file: up to three in place, more on the heap. Most
+/// hard-linked files have two or three names.
+#[derive(Debug)]
+enum Dirs {
+    Few(u8, [DirRef; 3]),
+    // Boxed so the enum stays sixteen bytes; the extra allocation is paid by the few files
+    // linked from more than three folders, not by the map every sighting looks up.
+    #[allow(clippy::box_collection)]
+    Many(Box<Vec<DirRef>>),
+}
+
+impl Dirs {
+    fn one(dir: DirRef) -> Self {
+        Dirs::Few(1, [dir, DirRef::NONE, DirRef::NONE])
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Dirs::Few(count, _) => *count as usize,
+            Dirs::Many(dirs) => dirs.len(),
+        }
+    }
+
+    fn as_slice(&self) -> &[DirRef] {
+        match self {
+            Dirs::Few(count, dirs) => &dirs[..*count as usize],
+            Dirs::Many(dirs) => dirs,
+        }
+    }
+
+    fn push(&mut self, dir: DirRef) {
+        match self {
+            Dirs::Few(count, dirs) if (*count as usize) < dirs.len() => {
+                dirs[*count as usize] = dir;
+                *count += 1;
+            }
+            Dirs::Few(count, dirs) => {
+                let mut many = dirs[..*count as usize].to_vec();
+                many.push(dir);
+                *self = Dirs::Many(Box::new(many));
+            }
+            Dirs::Many(dirs) => dirs.push(dir),
+        }
+    }
+
+    fn take(&mut self) -> Vec<DirRef> {
+        let taken = self.as_slice().to_vec();
+        *self = Dirs::Few(0, [DirRef::NONE; 3]);
+        taken
+    }
 }
 
 /// Charges each hard-linked file to any one folder at most once.
@@ -265,7 +321,7 @@ impl HardLinks {
                     &super::profile::LINK_COMPARISONS,
                     seen.directories.len() as u64,
                 );
-                for &existing in &seen.directories {
+                for &existing in seen.directories.as_slice() {
                     if existing == directory {
                         // This folder already holds a link, so it and everything above it have
                         // been charged.
@@ -276,17 +332,17 @@ impl HardLinks {
                 seen.directories.push(directory);
                 if seen.directories.len() > INDEXED_AT {
                     let mut charged = FastSet::default();
-                    for existing in ::std::mem::take(&mut seen.directories) {
+                    for existing in seen.directories.take() {
                         charge_ancestors(dirs, &mut charged, existing);
                     }
-                    seen.charged = Some(charged);
+                    seen.charged = Some(Box::new(charged));
                 }
                 Some(deepest as usize)
             }
             Entry::Vacant(slot) => {
                 slot.insert(LinkedFile {
                     size,
-                    directories: vec![directory],
+                    directories: Dirs::one(directory),
                     charged: None,
                     linked: false,
                 });

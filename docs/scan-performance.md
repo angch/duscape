@@ -2981,3 +2981,31 @@ would close the gap and are left for another day: reading only the blocks of dir
 are not already in the tree's way (the runs' merging reads twice the bytes of the blocks
 wanted), and folding the batch build into the parse. Cold is where the change lives, and it
 is a clean 2x there.
+
+
+## Roadmap step 7: the model's cache misses (2026-09-24) — under its gate
+
+Two changes the build profile pointed at, measured with `--bench-stage tree-only
+--bench-profile`, two runs each:
+
+| | `~/.cache` (1.05M entries, 169k hard-linked) | `home` (2.25M) |
+| --- | --- | --- |
+| ledger, before → after | 0.167s → 0.147s | 0.178s → 0.154s |
+| resolve, before → after | 0.081s → 0.073s | 0.140s → 0.124s |
+| name compares per directory | 121 → 16 | 182 → 18 |
+| `tree-only` | 0.39s → 0.37s | 0.60s → 0.59s |
+
+- **The ledger's entry is 40 bytes instead of 80**: the first three folders holding a link
+  kept inline, the charged set boxed. Twelve percent of the ledger's time, from a denser map.
+- **A directory's folder is resolved from the previous directory's positions**, as far as the
+  two paths run together, each remembered position checked by one name comparison. Seven
+  times fewer name comparisons — and only ten percent of the resolve time, which is therefore
+  the walk down ten boxed folders, a cache miss each, not the comparisons. (A first version
+  found the shared prefix by parsing `Path` components and was *slower*; the bytes are
+  compared now.)
+
+Five to six percent of the build on the hard-link-heavy tree, against a gate of ten. Kept,
+being eighty lines that make the structures smaller and the lookups fewer, but recorded as
+under the gate: what is left in `resolve` and `ledger` is pointer chasing and hash misses,
+which a different layout (folders in an arena, the ledger keyed for locality) would address,
+not fewer operations.

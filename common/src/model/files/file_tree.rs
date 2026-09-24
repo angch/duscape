@@ -11,6 +11,24 @@ use super::profile;
 
 use crate::scan::{DirEntries, DirSummary, EntryMeta, NamedEntry, SharedBlocks};
 
+/// How many leading path components `last` and `now` share, on their bytes: both are relative
+/// paths in the form `components()` yields, so a common byte prefix that ends at a separator
+/// (or at the end of one of them) is a common component prefix. Parsing components costs more
+/// than the lookups it would save.
+fn shared_components(last: &OsStr, now: &OsStr) -> usize {
+    let (last, now) = (last.as_encoded_bytes(), now.as_encoded_bytes());
+    let is_sep = |byte: u8| byte.is_ascii() && ::std::path::is_separator(byte as char);
+    let mut common = last.iter().zip(now).take_while(|(a, b)| a == b).count();
+    let at_boundary = |bytes: &[u8], at: usize| at == bytes.len() || is_sep(bytes[at]);
+    while common > 0 && !(at_boundary(last, common) && at_boundary(now, common)) {
+        common -= 1;
+    }
+    if common == 0 {
+        return 0;
+    }
+    now[..common].iter().filter(|&&b| is_sep(b)).count() + 1
+}
+
 /// Shared-block sightings a tree has put off charging: one entry per directory that held any,
 /// with the directory's ledger id, and each file's size on disk (which the ledger identifies
 /// files by) and both of its sizes (which are taken back).
@@ -36,6 +54,9 @@ pub struct FileTree {
     size_at_depth: Vec<Sizes>,
     /// Reused between calls: the way to the directory being added, by position at each level.
     positions: Vec<usize>,
+    /// The directory added last, relative to the root: the next one usually shares most of its
+    /// path, and `positions` is trusted that far.
+    last_dir: PathBuf,
     /// When set, shared blocks are counted in full and noted here instead of being charged, so
     /// that several trees built in parallel can be merged and then reconciled once. `None` is the
     /// ordinary tree, which charges as it goes.
@@ -62,6 +83,7 @@ impl FileTree {
             hard_links: HardLinks::default(),
             size_at_depth: Vec::new(),
             positions: Vec::new(),
+            last_dir: PathBuf::new(),
             deferred: None,
             profile: profile::enabled().then(Box::default),
         }
@@ -481,19 +503,26 @@ impl FileTree {
             hard_links,
             size_at_depth,
             positions,
+            last_dir,
             deferred,
             profile,
             ..
         } = self;
         let started = profile.as_ref().map(|_| Instant::now());
 
-        // The folder first, by name at each level, which also gives it (and any folder on the
-        // way) its ledger id; the sizes follow the same way by position once they are known.
-        let this_dir = base_folder.resolve_path(
+        // The folder first, which also gives it (and any folder on the way) its ledger id; the
+        // sizes follow the same way by position once they are known. As far as this directory's
+        // path runs with the last one's, the positions found then are checked rather than the
+        // names looked up.
+        let shared = shared_components(last_dir.as_os_str(), relative_dir.as_os_str());
+        let this_dir = base_folder.resolve_path_from(
             relative_dir.components().map(Component::as_os_str),
             hard_links,
             positions,
+            shared,
         );
+        last_dir.clear();
+        last_dir.push(relative_dir);
         let resolved = started.map(|_| Instant::now());
 
         size_at_depth.clear();

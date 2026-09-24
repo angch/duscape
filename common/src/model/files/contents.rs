@@ -209,6 +209,20 @@ impl Contents {
         }
     }
 
+    /// The subfolder at `position`'s name, if the entry there is a folder: for checking a
+    /// remembered position before trusting it.
+    #[must_use]
+    pub fn folder_name_at(&self, position: usize) -> Option<&OsStr> {
+        let entry = self.entries.get(position)?;
+        match entry.node {
+            // SAFETY: The slice came from `OsStr::as_encoded_bytes()`.
+            FileOrFolder::Folder(_) => {
+                Some(unsafe { OsStr::from_encoded_bytes_unchecked(self.bytes_of(entry)) })
+            }
+            FileOrFolder::File(_) => None,
+        }
+    }
+
     /// Every subfolder, for walks that change them.
     pub fn folders_mut(&mut self) -> impl Iterator<Item = &mut Folder> {
         self.entries

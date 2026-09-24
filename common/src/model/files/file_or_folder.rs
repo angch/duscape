@@ -285,18 +285,48 @@ impl Folder {
         ledger: &mut HardLinks,
         positions: &mut Vec<usize>,
     ) -> DirRef {
-        positions.clear();
+        self.resolve_path_from(dir_path, ledger, positions, 0)
+    }
+
+    /// [`Self::resolve_path`] trusting the first `trusted` of `positions` as the way the last
+    /// directory went, which the next one usually shares: directories arrive depth first, so
+    /// consecutive ones differ in their last component or two. Each trusted position is checked
+    /// by name — one comparison instead of a scan of the siblings — and the first that does not
+    /// match ends the trust.
+    pub fn resolve_path_from<'a>(
+        &mut self,
+        dir_path: impl Iterator<Item = &'a OsStr>,
+        ledger: &mut HardLinks,
+        positions: &mut Vec<usize>,
+        mut trusted: usize,
+    ) -> DirRef {
         let mut folder = self;
         let mut dir = folder.dir;
+        let mut depth = 0;
         for name in dir_path {
-            let position = folder.contents.folder_position_or_insert(name);
-            positions.push(position);
+            let remembered = positions.get(depth).copied().filter(|_| depth < trusted);
+            let position = match remembered {
+                Some(position) if folder.contents.folder_name_at(position) == Some(name) => {
+                    position
+                }
+                _ => {
+                    trusted = 0;
+                    folder.contents.folder_position_or_insert(name)
+                }
+            };
+            if depth < positions.len() {
+                positions[depth] = position;
+            } else {
+                positions.push(position);
+            }
+            depth += 1;
             folder = folder.contents.folder_at_mut(position);
             if folder.dir == DirRef::NONE {
                 folder.dir = ledger.child(dir);
             }
             dir = folder.dir;
         }
+        positions.truncate(depth);
         dir
     }
 

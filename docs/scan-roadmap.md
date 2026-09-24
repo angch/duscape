@@ -114,13 +114,16 @@ where every inode is; a directory's children, already sorted by inode, can be ad
 range per run before their `statx` calls. Falls out of step 1's superblock code.
 - Gate: cold reads down by half on `project`; warm unchanged.
 
-### 7. The model's cache misses
+### 7. The model's cache misses (done here: 5–6% of the build, under the 10% gate; kept, small)
 
 *All platforms, warm.* From `--bench-profile`: `LinkedFile` is ~80 bytes, so 735k ledger
 lookups miss cache — box the charged set, keep the first few directories inline. Resolving a
 directory costs ~15 name comparisons per level, and consecutive directories share parents — a
 cache of the last path's positions skips most of them.
 - Gate: `tree-only` at least 10% faster on the hard-link-heavy tree; totals identical.
+- Result (`scan-performance.md`, "Roadmap step 7"): 5–6%. The remaining cost is the pointer
+  chase down the folder chain and the ledger's hash misses, which want a different layout,
+  not fewer operations.
 
 ### 8. Whole-queue inode order
 
