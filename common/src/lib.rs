@@ -13,6 +13,7 @@ pub mod format;
 pub mod metafiles;
 pub mod model;
 pub mod os;
+pub mod placement;
 pub mod preview;
 pub mod scan;
 pub mod tiles;

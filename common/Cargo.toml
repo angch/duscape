@@ -16,6 +16,10 @@ rustix = { workspace = true }
 thiserror = { workspace = true }
 unicode-width = { workspace = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# Where a file's blocks are (`placement`): the FIEMAP ioctl and device numbers.
+libc = { workspace = true }
+
 [target.'cfg(windows)'.dependencies]
 # The native clipboard (`clipboard`).
 windows-sys = { workspace = true, features = [

@@ -52,7 +52,8 @@ pub enum Contents {
     /// A line saying what it is instead of showing it: `empty file`, `binary file`, or why it
     /// could not be read.
     Info(String),
-    /// Its first lines, safe to draw.
+    /// Its first lines, safe to draw. For a binary file, what can be said about it instead:
+    /// `binary file · 1.7M`, then where its blocks are (see [`crate::placement`]).
     Text(Vec<String>),
     /// A picture, not yet decoded, and the file's size.
     Picture { kind: Kind, size: u64 },
@@ -66,11 +67,23 @@ pub fn read(path: &Path) -> Contents {
         Err(reason) => Contents::Info(reason),
         Ok((head, size)) => match sniff(&head) {
             Kind::Empty => Contents::Info("empty file".to_string()),
-            Kind::Binary => Contents::Info("binary file".to_string()),
+            Kind::Binary => Contents::Text(describe_binary(path, size)),
             Kind::Text => Contents::Text(text_lines(&head, MAX_LINES)),
             kind @ (Kind::Png | Kind::Jpeg) => Contents::Picture { kind, size },
         },
     }
+}
+
+/// What to show for a file that cannot be shown: what it is and its size, and where on which
+/// disk its blocks are, on the platforms that can say.
+#[must_use]
+pub fn describe_binary(path: &Path, size: u64) -> Vec<String> {
+    let mut lines = vec![format!(
+        "binary file · {}",
+        crate::format::DisplaySize(size as f64)
+    )];
+    lines.extend(crate::placement::describe(path));
+    lines
 }
 
 /// Tell what a file is from its first bytes: pictures by their magic numbers, text by the

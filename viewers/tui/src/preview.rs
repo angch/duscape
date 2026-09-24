@@ -1269,7 +1269,10 @@ mod tests {
                 .1
         };
         assert_eq!(ask(1, "empty"), Preview::Info("empty file".into()));
-        assert_eq!(ask(2, "bin"), Preview::Info("binary file".into()));
+        let Preview::Text(described) = ask(2, "bin") else {
+            panic!("expected a description");
+        };
+        assert_eq!(described[0], "binary file · 4");
         assert_eq!(ask(3, "."), Preview::Info("not a regular file".into()));
         let Preview::Info(broken) = ask(4, "fake.png") else {
             panic!("expected a description");

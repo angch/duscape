@@ -697,6 +697,7 @@ name = "libdiskonaut"
 version = "0.1.0"
 dependencies = [
  "image",
+ "libc",
  "rustix",
  "thiserror",
  "unicode-width",
