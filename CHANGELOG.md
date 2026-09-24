@@ -44,10 +44,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The Windows viewer is `diskonaut-windows` (crate and binary), not `diskonaut-gui`: there are GUI
+  viewers for three platforms now, and each is named for its own.
 - The workspace is split by role: `common/` (`libdiskonaut`: model, treemap, scan protocol,
   deletion, preview reading, native clipboard), `scanners/` (the new `diskonaut-scan`: every
   walker, the parallel build, the second pass, rescans), and `viewers/tui/` (`diskonaut-angch`) and
-  `viewers/windows/` (`diskonaut-gui`). Crate and binary names are unchanged; code that used
+  `viewers/windows/` (`diskonaut-windows`). Crate and binary names are unchanged; code that used
   `libdiskonaut::scan::parallel`, `scan_directories` or `scan_into_tree` now takes them from
   `diskonaut_scan`. `docs/features.md` describes every feature, where it lives, and which viewer
   offers it.

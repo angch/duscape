@@ -388,15 +388,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "diskonaut-gui"
-version = "0.1.0"
-dependencies = [
- "diskonaut-scan",
- "libdiskonaut",
- "windows-sys 0.59.0",
-]
-
-[[package]]
 name = "diskonaut-linux"
 version = "0.1.0"
 dependencies = [
@@ -442,6 +433,15 @@ version = "0.1.0"
 dependencies = [
  "diskonaut-scan",
  "libdiskonaut",
+]
+
+[[package]]
+name = "diskonaut-windows"
+version = "0.1.0"
+dependencies = [
+ "diskonaut-scan",
+ "libdiskonaut",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

@@ -14,7 +14,7 @@ diskonaut/
 │                      #   the parallel build, the second pass, rescan/refine threads
 ├── viewers/
 │   ├── tui/           # diskonaut-angch: the ratatui viewer (primary) — CLI, UI, input, config
-│   ├── windows/       # diskonaut-gui: the Win32/GDI viewer
+│   ├── windows/       # diskonaut-windows: the Win32/GDI viewer
 │   ├── macos/         # diskonaut-mac: the AppKit viewer (objc2)
 │   ├── linux/         # diskonaut-linux: the Wayland/X11 viewer, no toolkit (wayland-client, x11rb, fontdue)
 │   └── shared/        # diskonaut-viewer: what the macOS and Linux viewers share — the window's
@@ -120,7 +120,7 @@ Six kinds of thread communicate via `mpsc` channels (bounded, except the preview
 - `rescan.rs` — `Rescanner` and `Refiner`: rescans and the second pass on threads of their own,
   results through a callback, for any viewer
 
-**`diskonaut-gui`** (`viewers/windows/`) — the Win32/GDI viewer: one `main.rs`. Scans with
+**`diskonaut-windows`** (`viewers/windows/`) — the Win32/GDI viewer: one `main.rs`. Scans with
 `parallel::build_tree`, draws the `Board`'s tiles, deletes through `libdiskonaut::delete`.
 
 **`diskonaut-viewer`** (`viewers/shared/`) — what the desktop viewers share, with no toolkit:

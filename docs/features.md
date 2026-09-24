@@ -7,7 +7,7 @@ viewers share, and four are viewers.
 common/            libdiskonaut      what a viewer shows and does, with no user interface
 scanners/          diskonaut-scan    reading the disk: one walker per platform, and what drives them
 viewers/tui/       diskonaut-angch   the terminal viewer (ratatui) — the primary one
-viewers/windows/   diskonaut-gui     a native Windows window (Win32 and GDI)
+viewers/windows/   diskonaut-windows     a native Windows window (Win32 and GDI)
 viewers/macos/     diskonaut-mac     a native macOS window (AppKit, through objc2)
 viewers/linux/     diskonaut-linux   a Wayland or X11 window for Linux and FreeBSD, no toolkit (wayland-client, x11rb, fontdue)
 viewers/shared/    diskonaut-viewer  what the desktop viewers share: the window's state and layout,
@@ -51,7 +51,7 @@ by copying it.
 
 ## What each viewer offers
 
-| | terminal (`diskonaut-angch`) | Windows (`diskonaut-gui`) | macOS (`diskonaut-mac`) | Linux (`diskonaut-linux`) |
+| | terminal (`diskonaut-angch`) | Windows (`diskonaut-windows`) | macOS (`diskonaut-mac`) | Linux (`diskonaut-linux`) |
 | --- | --- | --- | --- | --- |
 | Scan with the native walker | yes | yes | yes | yes |
 | Live treemap while scanning | yes (`Outline`) | progress count in the title | yes (`Outline`) | yes (`Outline`) |

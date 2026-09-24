@@ -176,7 +176,7 @@ To automate another item, add steps and `expect` lines to `smoke.sh`.
       permissions of its own. Check that a bundled launch ignores Launch Services' `-psn_`
       argument (handled in `mac/mod.rs`, `options`).
 
-## Windows viewer (`diskonaut-gui`): tiles are probably the wrong shape
+## Windows viewer (`diskonaut-windows`): tiles are probably the wrong shape
 
 The treemap (`common/src/tiles/treemap.rs`, `HEIGHT_WIDTH_RATIO = 2.5`) lays tiles out in cells it
 takes to be 2.5 times **taller** than wide, like a terminal cell. `viewers/windows/src/main.rs` uses

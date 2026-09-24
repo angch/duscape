@@ -1,5 +1,5 @@
 [package]
-name = "diskonaut-gui"
+name = "diskonaut-windows"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,7 +9,7 @@ homepage.workspace = true
 description = "Windows GUI viewer for diskonaut-angch: the shared model and native walker, drawn with GDI."
 
 [[bin]]
-name = "diskonaut-gui"
+name = "diskonaut-windows"
 path = "src/main.rs"
 
 [dependencies]

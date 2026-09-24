@@ -71,13 +71,13 @@ a window that draws one picture. See [`viewers/linux/README.md`](viewers/linux/R
 
 ## Windows GUI (experimental)
 
-`diskonaut-gui` is a native Windows treemap window. The walker (`diskonaut-scan`) and the tree,
+`diskonaut-windows` is a native Windows treemap window. The walker (`diskonaut-scan`) and the tree,
 layout and deletion (`libdiskonaut`) are the same code the terminal app runs; the window is only
 drawing and input. [`docs/features.md`](docs/features.md) lists what each viewer offers. It is built on
 `windows-sys` and GDI rather than a GUI framework, so the release binary is about **250 KB**.
 
 ```sh
-cargo run -p diskonaut-gui --release -- C:\   # or run with no argument for a folder picker
+cargo run -p diskonaut-windows --release -- C:\   # or run with no argument for a folder picker
 ```
 
 - **Fast:** the native parallel walker, scanning on a worker thread; the title bar shows entries/second.

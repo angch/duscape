@@ -11,7 +11,7 @@
 
 #[cfg(not(windows))]
 fn main() {
-    eprintln!("diskonaut-gui is a Windows-only GUI. Use `diskonaut` on this platform.");
+    eprintln!("diskonaut-windows is a Windows-only GUI. Use `diskonaut` on this platform.");
     std::process::exit(1);
 }
 
@@ -758,7 +758,7 @@ mod gui {
             };
             RegisterClassW(&wnd_class);
 
-            let title = wide("diskonaut-gui");
+            let title = wide("diskonaut-windows");
             let hwnd = CreateWindowExW(
                 0,
                 class_name.as_ptr(),
