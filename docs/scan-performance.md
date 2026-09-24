@@ -3090,8 +3090,37 @@ the directories like everyone else rather than reading the MFT. Three runs a cel
   0.72 s for the 2.37M entries of `C:\`, an eighth of the 5.7 s scan.
 - Entries agree with WizTree's to within one on every tree. Sizes agree on `D:\` and the project
   tree to a few MB, but `C:\Users\angch` is 4.8 GiB and `C:\` 21.5 GB short of WizTree's
-  *unelevated* figures, with 3 and 569 unreadable folders — WizTree either gets into folders
-  this walk is refused, or counts the directory entries' (stale) sizes. Not yet looked into.
+  *unelevated* figures, with 3 and 569 unreadable folders. Answered by the elevated run below:
+  hard links, and the folders the unelevated walk is refused.
 - `sharded` on `C:\Users\angch` had one run of 6.7 s among two of 2.6 s (`refined` 2.6–3.2 s):
   something else on the machine, most likely — Defender or the indexer waking — but it is the
   first sign of run-to-run noise on this platform, and the matrix's three runs are few.
+
+### Elevated
+
+`docs/benchmarks/tiamat-20260925-elevated.md` is the same matrix from an elevated shell, the
+same afternoon: diskonaut with the backup privilege and the volume's metadata files, WizTree
+reading the MFT — its own game. Means of three runs, `refined` against the export:
+
+| tree | entries (elevated) | diskonaut | WizTree | diskus |
+| --- | --- | --- | --- | --- |
+| `C:\Users\angch\project` | 132k, 7.2k hard-linked | 0.20 s | 0.86 s | 1.96 s |
+| `C:\Users\angch` | 1.61M, 57k hard-linked | 2.66 s | 6.87 s | 22.5 s |
+| `C:\` | 2.46M, 103k hard-linked | 5.46 s | 6.43 s | 36.0 s |
+| `D:\` | 415k | 0.15 s | 1.71 s | 5.30 s |
+
+- On the whole system volume, where the MFT read should shine, diskonaut's walk is 18% faster
+  than WizTree — while reaching 98k entries more than unelevated (2 unreadable folders, not 569)
+  in less time than unelevated took (5.46 s against 5.68 s): the backup privilege saves the
+  access-denied churn. On `D:\` the MFT read is 11x slower than the walk. WizTree's 6.4 s here
+  against its 10.7 s on the 2026-09-23 machine's `C:\` is the disk, not the tool.
+- The sizes question above is answered. Elevated, the two agree on `C:\` to 58 MB in 1.45 TB
+  and on `D:\` to 30 MB. The trees they disagree on are the ones with hard links: unelevated,
+  only hard-link hot spots are tracked and the project tree showed none, 71.1 GiB, WizTree's
+  figure to the byte; elevated, every file is tracked, 7,215 of them turn out to be hard-linked,
+  and the tree is 69.0 GiB. WizTree counts each name of a hard-linked file; diskonaut counts
+  the blocks once (`docs/sizes.md`). Same on `C:\Users\angch`: 57k links, 7.4 GiB. Unelevated
+  `C:\` was short for the other reason, the 569 folders it could not enter.
+- Elevated, the ledger is the build's biggest phase (0.32 s of the 0.88 s for `C:\`, 1.97M
+  sightings), since every file now goes through it; unelevated it was 0.12 s. Still an eighth
+  of the scan.
