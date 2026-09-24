@@ -27,6 +27,10 @@ VERBOSE = "-v" in sys.argv
 ONLY = [a for a in sys.argv[1:] if not a.startswith("-")]
 
 LOW = " ☺☻♥♦♣♠•◘○◙♂♀♪♫☼►◄↕‼¶§▬↨↑↓→←∟↔▲▼"
+MAXTILES = 160
+PV_COLS, PV_ROWS = 25, 7            # the preview's body, in cells
+PV_PIXELS = PV_COLS * PV_ROWS * 2   # block pixels: two to a cell
+PREVIEWED = 3                       # PV_PICTURE
 
 
 class Screen:
@@ -40,6 +44,13 @@ class Screen:
         self.small = (small_x, small_y) if has_small else None
         self.tiles = [struct.unpack("<HHHHHH", rest[8 + 16 * i:8 + 16 * i + 12])
                       for i in range(count)]
+        rest = rest[8 + 16 * MAXTILES:]
+        self.palette = [tuple(rest[i * 3:i * 3 + 3]) for i in range(16)]
+        self.preview_state = rest[48]
+        self.blocks_wide, self.blocks_high = struct.unpack("<II", rest[49:57])
+        pixels = rest[57:57 + PV_PIXELS * 4]
+        self.block_rgb = [tuple(pixels[i * 4:i * 4 + 4]) for i in range(PV_PIXELS)]
+        self.block_colour = list(rest[57 + PV_PIXELS * 4:57 + PV_PIXELS * 5])
         self.text = "\n".join(self.rows)
 
     def __contains__(self, text):
@@ -99,7 +110,7 @@ def fixtures():
     for i in range(30):
         write(os.path.join(fix, "src", "deep", f"f{i:02}.o"), 1000 * (i + 1))
     os.makedirs(os.path.join(fix, "empty"))
-    for copy in ("del", "part"):
+    for copy in ("del", "del2", "part"):
         shutil.copytree(fix, os.path.join(WORK, copy))
     # a read-only file deleted with the rest; a folder that refuses to let go of what is in it
     os.chmod(os.path.join(WORK, "del", "src", "lib.rs"), 0o444)
@@ -108,6 +119,82 @@ def fixtures():
     # path for those cannot be tried here)
     write(os.path.join(WORK, "wide", "café", "inside.txt"), 5000)
     write(os.path.join(WORK, "wide", "plain.txt"), 3000)
+
+
+# pictures, each alone in a folder so that it is the list's first entry: (folder, file, how)
+PICTURE = ('-size 400x225 radial-gradient:white-darkgreen -fill red -draw "rectangle 20,20 150,120"'
+           ' -fill blue -draw "circle 300,110 300,60" -fill yellow -draw "rectangle 180,160 390,215"')
+PICTURES = [
+    ("rgb", "a.png", PICTURE + " PNG24:{out}"),
+    ("palette", "a.png", PICTURE + " -colors 60 PNG8:{out}"),
+    ("interlaced", "a.png", PICTURE + " -interlace PNG PNG24:{out}"),
+    ("deep", "a.png", PICTURE + " -depth 16 PNG48:{out}"),
+    ("gray8", "a.png", PICTURE + " -colorspace gray -depth 8 PNG:{out}"),
+    ("gray4", "a.png", PICTURE + " -colorspace gray -depth 4 PNG:{out}"),
+    ("gray2", "a.png", PICTURE + " -colorspace gray -depth 2 PNG:{out}"),
+    ("gray1", "a.png", PICTURE + " -colorspace gray -monochrome PNG:{out}"),
+    ("alpha", "a.png", "-size 300x160 gradient:red-blue ( -size 300x160 gradient:white-black"
+                       " -rotate 90 -resize 300x160! ) -alpha off -compose copy_opacity"
+                       " -composite PNG32:{out}"),
+    ("tiny", "a.png", "-size 12x7 xc:orange -fill navy -draw \"rectangle 0,0 5,6\" PNG24:{out}"),
+    ("tall", "a.png", "-size 90x700 gradient:cyan-maroon PNG24:{out}"),
+    ("baseline", "a.jpg", PICTURE + " -quality 90 -sampling-factor 2x2 JPEG:{out}"),
+    ("full", "a.jpg", PICTURE + " -quality 90 -sampling-factor 1x1 JPEG:{out}"),
+    ("grayjpeg", "a.jpg", PICTURE + " -colorspace gray -quality 90 JPEG:{out}"),
+    ("progressive", "a.jpg", PICTURE + " -quality 90 -interlace JPEG JPEG:{out}"),
+    ("restarts", "a.jpg", PICTURE + " -quality 90 -define jpeg:restart-interval=3 JPEG:{out}"),
+]
+
+
+def picture_fixtures():
+    for folder, name, how in PICTURES:
+        out = os.path.join(WORK, "pv", folder, name)
+        os.makedirs(os.path.dirname(out))
+        command = "magick " + how.replace("{out}", "'" + out + "'")
+        command = command.replace("( ", "\\( ").replace(" )", " \\)")
+        subprocess.run(command, shell=True, check=True)
+    text = os.path.join(WORK, "pv", "text", "notes.txt")
+    os.makedirs(os.path.dirname(text))
+    with open(text, "wb") as f:
+        f.write("a\tb\r\n\x1b[2Jcleared\nhéllo wörld ½\n".encode() + b"x" * 60 + b"\nlast")
+    for folder, data in [("binary", b"ELF\x00\x01\x02"), ("empty", b""),
+                         ("broken", open(os.path.join(WORK, "pv", "rgb", "a.png"), "rb")
+                          .read()[:900])]:
+        os.makedirs(os.path.join(WORK, "pv", folder))
+        with open(os.path.join(WORK, "pv", folder, "a.png" if folder == "broken" else "f"),
+                  "wb") as f:
+            f.write(data)
+
+
+def reference_blocks(path):
+    """The preview's block pixels as the terminal viewer makes them: the picture fitted into the
+    preview (never scaled up), averaged into cells half a cell tall; from ImageMagick's decode."""
+    size = subprocess.run(["magick", "identify", "-format", "%w %h", path + "[0]"],
+                          capture_output=True, text=True, check=True).stdout.split()
+    width, height = int(size[0]), int(size[1])
+    raw = subprocess.run(["magick", path + "[0]", "-alpha", "on", "-depth", "8", "rgba:-"],
+                         capture_output=True, check=True).stdout
+    fit_w, fit_h = width, height
+    if width > PV_COLS * 8 or height > PV_ROWS * 16:
+        ratio = min(PV_COLS * 8 / width, PV_ROWS * 16 / height)
+        fit_w = max(1, int(width * ratio + 0.5))
+        fit_h = max(1, int(height * ratio + 0.5))
+    cols = min(PV_COLS, (fit_w + 7) // 8)
+    rows = min(PV_ROWS * 2, (fit_h + 7) // 8)
+    sums = [[0, 0, 0, 0, 0] for _ in range(cols * rows)]
+    for y in range(height):
+        base = (y * rows // height) * cols
+        line = raw[y * width * 4:(y + 1) * width * 4]
+        for x in range(width):
+            cell = sums[base + x * cols // width]
+            for channel in range(4):
+                cell[channel] += line[x * 4 + channel]
+            cell[4] += 1
+    return (width, height), cols, rows, [tuple(c // n[4] for c in n[:4]) for n in sums]
+
+
+def weighted(a, b):
+    return 2 * (a[0] - b[0]) ** 2 + 4 * (a[1] - b[1]) ** 2 + 3 * (a[2] - b[2]) ** 2
 
 
 def cleanup():
@@ -151,7 +238,8 @@ def entering_and_leaving():
 def zoom():
     s, = screens([(f"-a {DOS_WORK}\\FIX", "++")])
     expect("zoom 2" in s.row(23), s.row(23))
-    expect("medium.dat" in s and "big.bin" not in s, "the two largest are zoomed past")
+    board = "\n".join(row[BOARD[0]:] for row in s.rows[1:23])
+    expect("medium.dat" in board and "big.bin" not in board, "the two largest are zoomed past")
     return [s]
 
 
@@ -256,9 +344,12 @@ def layout_matches_the_rust_treemap():
                 f.truncate(size)
             sizes[name] = size
         cases.append(sizes)
-    shots = screens([(f"-a {DOS_WORK}\\LAYOUT\\C{case:02}", "") for case in range(len(cases))])
-    area = BOARD
-    for case, (sizes, shot) in enumerate(zip(cases, shots)):
+    runs = [(f"-a {DOS_WORK}\\LAYOUT\\C{case:02}", keys)
+            for keys in ("", "s") for case in range(len(cases))]
+    shots = screens(runs)
+    for case, ((_, keys), shot) in enumerate(zip(runs, shots)):
+        area = BOARD_ALONE if keys else BOARD
+        sizes = cases[case % len(cases)]
         expect(shot is not None, f"C{case:02} ran")
         order = sorted(sizes.items(), key=lambda kv: (-kv[1], kv[0]))
         want, small = rust_tiles(area, [size for _, size in order])
@@ -268,8 +359,117 @@ def layout_matches_the_rust_treemap():
     return []
 
 
-# the treemap's area: x, y, width, height
-BOARD = (0, 1, 79, 21)
+@check
+def the_side_panel():
+    s, = screens([(f"-a {DOS_WORK}\\FIX", "")])
+    expect(s.row(1).startswith("C:\\target\\dos\\t\\fix"), "the folder: " + s.row(1))
+    expect(s.row(2).startswith("1.1M · 46 files · 100.0%") or
+           s.row(2).startswith("1.1M · 100.0% of scan"), s.row(2))
+    expect(s.row(3).startswith("3 folders, 6 files here"), s.row(3))
+    expect(s.row(5)[:PV_COLS] == "src/               605.5K", s.row(5))
+    expect(s.attrs[5][0] == 0x70, "the list's cursor, on its top row, has the keyboard")
+    expect("SELECTED: src/" in s.row(23), "and the treemap shows its entry: " + s.row(23))
+    return [s]
+
+
+@check
+def the_list_has_the_keyboard():
+    down, tab, into, back = screens([
+        (f"-a {DOS_WORK}\\FIX", "j"), (f"-a {DOS_WORK}\\FIX", "Tj"),
+        (f"-a {DOS_WORK}\\FIX", "E"), (f"-a {DOS_WORK}\\FIX", "EX")])
+    expect(down.row(6).startswith("big.bin") and down.attrs[6][0] == 0x70, down.row(6))
+    expect("SELECTED: big.bin" in down.row(23), down.row(23))
+    expect("SELECTED: big.bin" in tab.row(23), "Tab, j: down the treemap: " + tab.row(23))
+    expect(tab.attrs[6][0] == 0x1F, "the list shows the treemap's entry, without the keyboard")
+    expect(into.row(0).rstrip().endswith("fix\\src (605.5K, 35 files)"), into.row(0))
+    expect(into.attrs[5][0] == 0x70, "entered: the list's top")
+    expect(back.row(5).startswith("src/") and back.attrs[5][0] == 0x70,
+           "back up: the cursor on the folder left")
+    return [down, tab, into, back]
+
+
+@check
+def list_jumps():
+    end, home, page = screens([(f"-a {DOS_WORK}\\FIX\\SRC\\DEEP", "Z"),
+                               (f"-a {DOS_WORK}\\FIX\\SRC\\DEEP", "ZH"),
+                               (f"-a {DOS_WORK}\\FIX\\SRC\\DEEP", "N")])
+    expect("SELECTED: f00.o" in end.row(23), "End: the last entry " + end.row(23))
+    expect("... 22 more" in home.text, "Home: the top again, the rest counted")
+    expect("SELECTED: f21.o" in page.row(23), "Page Down: nine on " + page.row(23))
+    return [end, home, page]
+
+
+@check
+def deleting_an_entry_without_a_tile():
+    s, = screens([(f"-a {DOS_WORK}\\DEL2", "jjjjjjjdy")])
+    expect(not os.path.exists(os.path.join(WORK, "del2", "tiny1")), "tiny1 is gone")
+    expect("tiny1" not in s, "and from the list")
+    return [s]
+
+
+@check
+def the_panel_can_be_hidden():
+    s, = screens([(f"-a {DOS_WORK}\\FIX", "s")])
+    expect(s.row(1).startswith("┌"), "the treemap takes the whole width: " + s.row(1))
+    return [s]
+
+
+@check
+def text_previews():
+    s, = screens([(f"-a {DOS_WORK}\\PV\\TEXT", "")])
+    body = [s.row(y)[:PV_COLS].rstrip() for y in range(16, 23)]
+    expect(s.row(15).startswith("notes.txt · 99 "), "the caption: " + s.row(15))
+    expect(body[:5] == ["a   b", "?[2Jcleared", "héllo wörld ½", "x" * PV_COLS, "last"],
+           f"the lines: {body}")
+    return [s]
+
+
+@check
+def previews_say_what_a_file_is():
+    binary, empty, broken = screens([(f"-a {DOS_WORK}\\PV\\{f}", "")
+                                     for f in ("BINARY", "EMPTY", "BROKEN")])
+    expect(binary.row(16).startswith("binary file"), binary.row(16))
+    expect(empty.row(16).startswith("empty file"), empty.row(16))
+    expect(broken.row(16).startswith("PNG image, unreadable: t"), broken.row(16))
+    return [binary, empty, broken]
+
+
+@check
+def picture_previews():
+    runs = [(f"-a {DOS_WORK}\\PV\\{folder.upper()}", "") for folder, _, _ in PICTURES]
+    shown = []
+    for (folder, name, _), s in zip(PICTURES, screens(runs)):
+        expect(s is not None, f"{folder} ran")
+        shown.append(s)
+        (width, height), cols, rows, want = reference_blocks(os.path.join(WORK, "pv", folder,
+                                                                          name))
+        expect(s.preview_state == PREVIEWED, f"{folder}: shown ({s.row(16).strip()})")
+        kind = "PNG" if name.endswith("png") else "JPEG"
+        expect(f"{kind} {width}x{height}" in s.row(15), f"{folder}: caption {s.row(15)}")
+        expect((s.blocks_wide, s.blocks_high) == (cols, rows),
+               f"{folder}: {s.blocks_wide}x{s.blocks_high} blocks, not {cols}x{rows}")
+        error = worst = 0
+        for got, ref in zip(s.block_rgb, want):
+            if ref[3] < 100 or ref[3] > 156:    # clearly transparent or clearly not
+                expect(bool(got[3]) == (ref[3] >= 128), f"{folder}: transparency")
+            if got[3] and ref[3] >= 128:
+                diff = max(abs(g - r) for g, r in zip(got[:3], ref[:3]))
+                error += diff
+                worst = max(worst, diff)
+        mean = error / len(want)
+        expect(mean < 6 and worst < 60, f"{folder}: colours off by {mean:.1f} on average, "
+                                        f"{worst} at worst")
+        used = cols * rows
+        for got, colour in zip(s.block_rgb[:used], s.block_colour):   # each its nearest colour
+            if got[3]:
+                best = min(weighted(got, p) for p in s.palette)
+                expect(weighted(got, s.palette[colour]) == best, f"{folder}: nearest colour")
+    return shown
+
+
+# the treemap's area, x y width height: beside the side panel, and with it hidden
+BOARD = (26, 1, 53, 21)
+BOARD_ALONE = (0, 1, 79, 21)
 
 
 def main():
@@ -279,6 +479,7 @@ def main():
                    env={**os.environ, "CARGO_TARGET_DIR": os.path.join(REPO, "target", "dos",
                                                                        "tiles")}, check=True)
     fixtures()
+    picture_fixtures()
     failed = 0
     try:
         for function in CHECKS:

@@ -2,6 +2,8 @@
 ratatui = "ratatui"
 # The NFS export tool, `exportfs(8)`.
 exportfs = "exportfs"
+# PNG's Paeth filter, after Alan W. Paeth
+paeth = "paeth"
 
 [files]
 extend-exclude = ["trayd/", "target/", "**/*.snap"]

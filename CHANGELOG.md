@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The MS-DOS viewer's side panel and previews: the folder's details and its entries beside the
+  treemap, with the TUI's focus rules (the list has the keyboard, Tab and the arrows cross over,
+  Page Up/Down, Home/End), and under them the entry in hand previewed — text in CP437, or a PNG
+  or JPEG in half blocks, decoded in assembly (inflate, every PNG colour type and Adam7; JPEG
+  from its DC coefficients, progressive too) with six of the 16 text colours set to the
+  picture's own. `s` hides the panel. The tests compare every preview with ImageMagick's decode.
 - diskonaut for MS-DOS (`viewers/dos/`): the treemap as a 16-bit real-mode program in FASM
   assembly, about 12 KB, for a 386 with a 387 or DOSBox-X. Ported from the Rust code — the
   squarify layout, rounding, navigation, zoom, tile text and size formats — with tiles identical to

@@ -79,8 +79,8 @@ by copying it.
 
 The MS-DOS viewer (`viewers/dos/`) shares no code, so it is not in the table. It has the scan (DOS
 find calls, long names where there are), the live treemap, arrow-key and mouse selection, Enter/Esc,
-deleting one entry, zoom, the disk usage / apparent size toggle and rescans (`r` / `R`); see its
-README.
+deleting one entry, zoom, the disk usage / apparent size toggle, rescans (`r` / `R`), the list
+beside the treemap, and previews of text, PNG and JPEG in half blocks; see its README.
 
 A gap in a GUI column is a missing viewer feature, not a missing library one: everything in it
 apart from drawing and input is already in the two libraries.

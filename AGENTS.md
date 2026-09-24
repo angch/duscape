@@ -188,8 +188,10 @@ Six kinds of thread communicate via `mpsc` channels (bounded, except the preview
   run it after changing the viewer (macOS, logged-in session, no permissions needed)
 - `mac/draw.rs` — painting, by `Layout`; `mac/mod.rs` — the app, delegate, menus, window
 
-**MS-DOS** (`viewers/dos/`) — `DISKONAU.ASM`, one FASM source, real mode on a 386 + 387, not
-part of the Cargo workspace. A port, not a binding: the squarify layout, `RectFloat::round`,
+**MS-DOS** (`viewers/dos/`) — FASM, real mode on a 386 + 387, not part of the Cargo workspace:
+`DISKONAU.ASM` (the program), `PANEL.ASM` (side panel), `PREVIEW.ASM` (text and half-block
+pictures, the six adaptive DAC colours), `PNG.ASM` and `JPEG.ASM` (decoders; a JPEG block's mean
+is its DC coefficient, so no IDCT), `PVDATA.ASM` (their data). A port, not a binding: the squarify layout, `RectFloat::round`,
 `Board` navigation, the tile text and the size formats are rewritten from `common/` and the TUI's
 `grid/`, so a change to those should be carried over by hand. `make dos` fetches FASM and CWSDPMI
 into `target/dos/` (hash-checked) and assembles inside DOSBox-X; `make dos-run` opens the repo as
@@ -199,7 +201,9 @@ runs the checks on fixtures that way, the layout ones against `TreeMap` through 
 search entries when two searches are open, so each folder is listed to the end before its
 subfolders are walked (a pending stack in its own segment), and the delete queues its entries the
 same way; keep it that way. Do not set attributes on host files needlessly: DOSBox-X stores them in
-`.DBLOCALFILE_ATR_*` files beside them.
+`.DBLOCALFILE_ATR_*` files beside them. Decoding runs with ES = the line segment and FS = the
+window: a `rep stos`/`movs` into DS there must set ES first, and a table in the code segment is
+read through `cs:`.
 
 **`diskonaut-angch`** (`viewers/tui/`) — the ratatui viewer:
 - `main.rs` — entry point, thread spawning, channel setup
@@ -486,4 +490,5 @@ busybox. One job then publishes both tarballs: matrix jobs that each create the 
 | `scanners/src/macos.rs` | ~830 lines — macOS `getattrlistbulk` walker |
 | `scanners/src/windows.rs` | ~920 lines — Windows bulk-listing walker |
 | `viewers/tui/src/bench/mod.rs` | ~370 lines — `--benchmark` harness |
-| `viewers/dos/DISKONAU.ASM` | ~3900 lines — the whole MS-DOS viewer, one instruction a line |
+| `viewers/dos/DISKONAU.ASM` | ~4200 lines — the MS-DOS viewer, one instruction a line |
+| `viewers/dos/PREVIEW.ASM` | ~1040 lines — its previews: text, blocks, the palette |

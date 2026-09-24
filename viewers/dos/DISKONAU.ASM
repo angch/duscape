@@ -148,7 +148,17 @@ main_loop:
         jne     quit
         call    key_ready
         jnz     .key
-        cmp     [snap],0
+        cmp     [pv_state],PV_PENDING   ; a picture, once the keyboard has rested 100 ms
+        jne     .snap
+        cmp     [panel_on],0
+        je      .snap
+        call    ticks
+        sub     eax,[last_input]
+        cmp     eax,2
+        jb      @f
+        call    pv_decode
+        jmp     main_loop
+.snap:  cmp     [snap],0
         je      @f
         call    write_snap
         jmp     quit
@@ -158,6 +168,10 @@ main_loop:
         jmp     .wait
 .key:
         call    read_key
+        push    ax
+        call    ticks
+        mov     [last_input],eax
+        pop     ax
         call    handle_key
         jc      quit
         jmp     main_loop
@@ -345,8 +359,10 @@ token:
 @@:     mov     byte [di],0
         ret
 
-; the next key: from -k first ("E" is Enter, "X" Esc: DOS takes < and > for itself), else the
-; keyboard. ax as INT 16h gives it.
+; the next key: from -k first, else the keyboard; ax as INT 16h gives it. In -k, E is Enter and
+; X Esc (DOS takes < and > for itself), T Tab, P and N Page Up and Down, H Home, Z End.
+script_keys     db 'E',0Dh,1Ch, 'X',1Bh,01h, 'T',09h,0Fh, 'P',0,49h, 'N',0,51h, 'H',0,47h
+                db 'Z',0,4Fh, 0
 read_key:
         mov     si,[keyp]
         test    si,si
@@ -356,13 +372,15 @@ read_key:
         jz      .end
         mov     [keyp],si
         xor     ah,ah
-        cmp     al,'E'
-        jne     @f
-        mov     ax,1C0Dh
-@@:     cmp     al,'X'
-        jne     @f
-        mov     ax,011Bh
-@@:     ret
+        mov     si,script_keys
+@@:     cmp     byte [cs:si],0
+        je      .r
+        cmp     al,[cs:si]
+        je      @f
+        add     si,3
+        jmp     @b
+@@:     mov     ax,[cs:si+1]
+.r:     ret
 .end:   mov     [keyp],0
         cmp     [snap],0                ; the script is done: -s shows where it got to
         je      .bios
@@ -399,6 +417,33 @@ write_snap:
         mov     ah,40h                  ; then the tiles, for comparing with the Rust layout
         mov     cx,tiles_end-ntiles
         mov     dx,ntiles
+        int     21h
+        mov     ah,40h                  ; and the 16 colours as they are now, eight-bit RGB
+        mov     cx,48
+        mov     dx,pal_orig
+        cmp     [pal_applied],0
+        je      @f
+        mov     dx,pal_pic
+@@:     int     21h
+        mov     ah,40h                  ; and the picture: its state, size, and each block
+        mov     cx,1                    ; pixel's colour before it is matched to those 16
+        mov     dx,pv_state
+        int     21h
+        mov     ah,40h
+        mov     cx,8
+        mov     dx,acc_cols
+        int     21h
+        mov     ah,40h
+        mov     cx,PV_COLS*PV_HROWS*4
+        mov     dx,tcol
+        int     21h
+        mov     ah,40h
+        mov     cx,PV_COLS*PV_HROWS
+        mov     dx,blk
+        int     21h
+        mov     ah,40h                  ; and how big the arena is, in paragraphs
+        mov     cx,2
+        mov     dx,arena_paras
         int     21h
         mov     ah,3Eh
         int     21h
@@ -498,6 +543,21 @@ cluster_size:
         int     21h
         cmp     ax,0FFFFh
         je      .r
+        push    ax                      ; the space used on the drive, for the side panel
+        push    cx
+        push    dx
+        sub     dx,bx
+        movzx   edx,dx
+        movzx   eax,ax
+        movzx   ecx,cx
+        imul    eax,ecx
+        mul     edx
+        mov     dword [disk_used],eax
+        mov     dword [disk_used+4],edx
+        mov     [disk_known],1
+        pop     dx
+        pop     cx
+        pop     ax
         mul     cx
         test    ax,ax
         jnz     @f
@@ -519,6 +579,36 @@ alloc_memory:
         int     21h
         jc      nomem
         mov     [pendseg],ax
+        mov     [winseg],ax             ; inflate's window: walks and pictures never overlap
+        ; the preview's two picture lines, or a text file's head: in upper memory if DOS has it,
+        ; to leave the more for the tree
+        mov     ax,5800h
+        int     21h
+        mov     [old_strategy],ax
+        mov     ax,5802h
+        int     21h
+        mov     [old_umb_link],al
+        mov     ax,5803h                ; the upper memory blocks linked in
+        mov     bx,1
+        int     21h
+        mov     ax,5801h                ; high first, then low
+        mov     bx,0080h
+        int     21h
+        mov     ah,48h
+        mov     bx,1000h
+        int     21h
+        pushf
+        push    ax
+        mov     ax,5801h
+        mov     bx,[old_strategy]
+        int     21h
+        mov     ax,5803h
+        movzx   bx,[old_umb_link]
+        int     21h
+        pop     ax
+        popf
+        jc      nomem
+        mov     [lineseg],ax
         mov     ah,48h
         mov     bx,0FFFFh
         int     21h
@@ -528,6 +618,7 @@ alloc_memory:
         int     21h
         jc      nomem
         mov     [arena_next],ax
+        mov     [arena_paras],bx
         add     ax,bx
         mov     [arena_end],ax
         sub     ax,RESERVE
@@ -558,6 +649,7 @@ video_init:
         mov     ah,01h                  ; no text cursor
         mov     cx,2000h
         int     10h
+        call    pal_init
         mov     [video],1
         push    es
         xor     ax,ax
@@ -1280,6 +1372,7 @@ setup_files:
 .folder:
         fstp    st1
 .total:
+        fst     qword [ftotal0]
         xor     bx,bx
 .drop:  cmp     bx,[zoom]
         jae     .dropped
@@ -1326,6 +1419,25 @@ pct_of:
         fdiv    qword [ftotal]
         ret
 .eq:    fld     qword [eq_pct]
+        ret
+
+; bx = listing index. st0 = its share of the whole folder, whatever the zoom.
+pct0_of:
+        cmp     [nent],0
+        je      .none
+        fld     qword [ftotal0]
+        ftst
+        fnstsw  ax
+        sahf
+        fstp    st0
+        je      .eq
+        call    load_size
+        fdiv    qword [ftotal0]
+        ret
+.eq:    fld1
+        fidiv   word [nent]
+        ret
+.none:  fldz
         ret
 
 ; bx = listing index. st0 = the area it gets on the board.
@@ -1783,7 +1895,10 @@ render:
         mov     ax,0720h
         mov     cx,80*25
         rep     stosw
+        call    sync_board
+        call    pv_target
         call    draw_title
+        call    draw_panel
         cmp     [ntiles],0
         jne     .tiles
         call    draw_empty
@@ -1822,6 +1937,17 @@ render:
         call    draw_small
         call    draw_status
         call    draw_legend
+        xor     al,al                   ; the picture's colours while it is on screen
+        cmp     [panel_on],0
+        je      @f
+        cmp     [pv_state],PV_PICTURE
+        jne     @f
+        mov     al,1
+        cmp     [pal_want],0            ; a new picture: its colours, even if one was up
+        je      @f
+        mov     [pal_want],0
+        mov     [pal_applied],0
+@@:     call    pal_set
 blit:
         cmp     [mouse],0
         je      @f
@@ -1840,6 +1966,26 @@ blit:
         mov     ax,1
         int     33h
 @@:     ret
+
+; the file in hand, to preview: a file, not a folder or "(not in memory)", with the panel shown
+; and the scan done
+pv_target:
+        xor     ax,ax
+        cmp     [panel_on],0
+        je      .set
+        cmp     [scanning],0
+        jne     .set
+        call    selected_entry
+        cmp     ax,-1
+        je      .none
+        mov     si,ax
+        shl     si,1
+        mov     ax,[gs:si]
+        mov     fs,ax
+        test    byte [fs:N_FLAGS],F_DIR+F_PSEUDO
+        jz      .set
+.none:  xor     ax,ax
+.set:   jmp     pv_update
 
 ; dl = x, dh = y, al = character, ah = attribute
 put_ch:
@@ -2082,14 +2228,17 @@ draw_title:
 .r:     ret
 
 draw_status:
+        call    selected_entry
+        push    ds
+        pop     es
         mov     di,tb
-        mov     bx,[sel]
-        cmp     bx,-1
+        cmp     ax,-1
         je      .none
-        shl     bx,4
-        add     bx,tiles
-        mov     fs,[bx+T_NODE]
-        push    word [bx+T_IDX]
+        mov     bx,ax
+        shl     bx,1
+        mov     fs,[gs:bx]
+        shr     bx,1
+        push    bx
         mov     si,s_selected
         call    append_z
         movzx   cx,byte [fs:N_NLEN]
@@ -2113,7 +2262,7 @@ draw_status:
         mov     si,s_lparen
         call    append_z
         pop     bx
-        call    pct_of
+        call    pct0_of
         fmul    qword [c_100]
         call    round_even
         call    u32dec
@@ -2172,10 +2321,7 @@ draw_status:
 ; the legend: '~' switches between key and text colours
 draw_legend:
         mov     si,s_legend
-        cmp     [apparent],0
-        je      @f
-        mov     si,s_legend_a
-@@:     mov     dl,0
+        mov     dl,0
         mov     dh,24
         mov     ah,A_TEXT
 .l:     lodsb
@@ -2193,8 +2339,16 @@ draw_legend:
 draw_empty:
         cmp     [scanning],0
         jne     .r
-        mov     dl,32
-        mov     dh,10
+        mov     ax,[bnd_w]              ; centred in the board
+        sub     ax,15-1
+        shr     ax,1
+        add     ax,[bnd_x]
+        mov     dl,al
+        mov     ax,[bnd_h]
+        shr     ax,1
+        add     ax,[bnd_y]
+        dec     ax
+        mov     dh,al
         mov     si,s_empty
         mov     cx,15
         mov     ah,A_TEXT
@@ -2726,6 +2880,8 @@ node_path:
 
 ; al = character, ah = scan code. CF=1 to quit.
 handle_key:
+        cmp     al,9
+        je      .tab
         cmp     al,'q'
         je      .quit
         cmp     al,'Q'
@@ -2765,6 +2921,8 @@ handle_key:
         je      .upk
         cmp     al,'l'
         je      .right
+        cmp     al,'s'
+        je      .panel
         clc
         ret
 .ext:   cmp     ah,48h
@@ -2777,11 +2935,51 @@ handle_key:
         je      .right
         cmp     ah,53h
         je      .del
+        mov     dx,-(LIST_ROWS-1)
+        cmp     ah,49h                  ; Page Up, Page Down, Home, End: through the list
+        je      .jump
+        neg     dx
+        cmp     ah,51h
+        je      .jump
+        mov     dx,-7FFFh
+        cmp     ah,47h
+        je      .jump
+        mov     dx,7FFFh
+        cmp     ah,4Fh
+        je      .jump
+        clc
+        ret
+.jump:  call    list_has_keys
+        jnz     .r
+        mov     [cursor_chosen],1
+        mov     ax,dx
+        call    move_list
+        clc
+        ret
+.tab:   cmp     [focus],0               ; the other panel
+        jne     @f
+        call    focus_treemap
+        clc
+        ret
+@@:     call    focus_list
+        clc
+        ret
+.panel: xor     [panel_on],1            ; the side panel, shown or not
+        jnz     @f
+        mov     [focus],1
+@@:     call    panel_layout
+        call    fill
         clc
         ret
 .quit:  stc
         ret
-.enter: call    enter_sel
+.enter: call    list_has_keys
+        jnz     @f
+        call    list_pos
+        call    enter_idx
+        clc
+        ret
+@@:     call    enter_sel
         clc
         ret
 .up:    call    go_up
@@ -2820,15 +3018,55 @@ handle_key:
         call    rescan_key
         clc
         ret
-.right: mov     al,0
+.right: mov     [cursor_chosen],1
+        call    list_has_keys           ; right from the list goes back to the treemap
+        jnz     @f
+        call    focus_treemap
+        clc
+        ret
+@@:     mov     al,0
         jmp     .move
-.left:  mov     al,1
-        jmp     .move
-.down:  mov     al,2
-        jmp     .move
-.upk:   mov     al,3
+.left:  mov     [cursor_chosen],1
+        call    list_has_keys
+        jz      .r
+        mov     bx,[sel]                ; off the treemap's left edge: into the list
+        push    bx
+        mov     al,1
+        call    move_sel
+        pop     bx
+        cmp     bx,-1
+        je      .r
+        cmp     [sel],-1
+        jne     .r
+        cmp     [panel_on],0
+        je      .r
+        mov     [sel],bx
+        call    focus_list
+        clc
+        ret
+.down:  mov     ax,1
+        mov     cl,2
+        jmp     .vert
+.upk:   mov     ax,-1
+        mov     cl,3
+.vert:  call    list_has_keys
+        jnz     @f
+        mov     [cursor_chosen],1
+        call    move_list
+        clc
+        ret
+@@:     mov     al,cl
 .move:  call    move_sel
 .r:     clc
+        ret
+
+; ZF=1 if the list has the keyboard
+list_has_keys:
+        cmp     [panel_on],0
+        je      .no
+        cmp     [focus],0
+        ret
+.no:    or      sp,sp                   ; ZF=0
         ret
 
 ; al = 0 right, 1 left, 2 down, 3 up (Board::move_selected_*): the adjacent tile that overlaps
@@ -2935,13 +3173,36 @@ move_sel:
         mov     [sel],ax
         ret
 
+; Enter on the treemap: the selected tile's folder, or the largest folder when nothing is
+; selected (handle_enter)
 enter_sel:
-        mov     bx,[sel]
-        cmp     bx,-1
-        je      .r
-        shl     bx,4
-        add     bx,tiles
-        mov     ax,[bx+T_NODE]
+        cmp     [sel],-1
+        jne     .have
+        xor     cx,cx                   ; Board::move_to_largest_folder
+        mov     si,tiles
+.l:     cmp     cx,[ntiles]
+        jae     .r
+        mov     ax,[si+T_NODE]
+        mov     fs,ax
+        test    byte [fs:N_FLAGS],F_DIR
+        jnz     .found
+        inc     cx
+        add     si,T_SIZE
+        jmp     .l
+.found: mov     [sel],cx
+.have:  mov     si,[sel]
+        shl     si,4
+        mov     ax,word [tiles+si+T_IDX]
+        jmp     enter_idx
+.r:     ret
+
+; ax = a listing index: into it, if it is a folder (enter_named)
+enter_idx:
+        cmp     ax,[nent]
+        jae     .r
+        mov     si,ax
+        shl     si,1
+        mov     ax,[gs:si]
         mov     fs,ax
         test    byte [fs:N_FLAGS],F_DIR
         jz      .r
@@ -2956,14 +3217,22 @@ enter_sel:
         mov     [cur],ax
         mov     [zoom],0
         mov     [sel],-1
+        mov     [list_cur],0
         mov     [cursor_chosen],0
         call    change_files
+        call    list_has_keys           ; arriving with the list in hand: its top
+        jnz     .r
+        cmp     [nent],0
+        je      .r
+        xor     ax,ax
+        call    set_list_cursor
 .r:     ret
 
 go_up:
         mov     ax,[cur]
         cmp     ax,[root]
         je      .r
+        mov     [left_node],ax
         mov     fs,ax
         mov     ax,[fs:N_PARENT]
         mov     [cur],ax
@@ -2979,11 +3248,20 @@ go_up:
 @@:     mov     [zoom],cx
         mov     [sel],dx
         mov     [cursor_chosen],0
+        mov     [list_cur],0
         call    change_files
+        call    list_has_keys           ; back in the parent, the list is on the folder left
+        jnz     .r
+        mov     ax,[left_node]
+        mov     [list_cur],ax
+        call    list_cursor_index
+        cmp     ax,-1
+        je      .r
+        call    set_list_cursor
 .r:     ret
 
-; a press of the left button selects the tile under it; a second on the same tile within
-; half a second enters it
+; a press of the left button selects the entry under it, in the list or the treemap, and gives
+; that panel the keyboard; a second press on the same entry within half a second enters it
 mouse_poll:
         cmp     [mouse],0
         je      .no
@@ -2995,33 +3273,45 @@ mouse_poll:
         mov     [presses],bx
         shr     cx,3
         shr     dx,3
-        call    tile_at
+        push    cx
+        push    dx
+        call    entry_at
+        pop     dx
+        pop     cx
+        cmp     ax,-1
+        je      .tile
+        mov     [focus],0
+        push    ax
+        call    set_list_cursor
+        pop     ax
+        jmp     .clicked
+.tile:  call    tile_at
         cmp     ax,-1
         je      .no
+        mov     [focus],1
+        mov     [sel],ax
+        mov     si,ax
+        shl     si,4
+        mov     ax,word [tiles+si+T_IDX]
+.clicked:
         mov     [cursor_chosen],1
         cmp     [presses],2             ; both clicks of a double click since the last look
-        jb      @f
-        mov     [sel],ax
-        jmp     .enter
-@@:     push    ax
+        jae     .enter
+        push    ax
         call    ticks
         mov     edx,eax
         pop     ax
-        cmp     ax,[sel]
-        jne     .select
-        cmp     ax,[click_tile]
-        jne     .select
+        cmp     ax,[click_idx]
+        jne     .first
         mov     ecx,edx
         sub     ecx,[click_time]
         cmp     ecx,9
-        ja      .select
-.enter: mov     [click_tile],-1
-        call    enter_sel
+        ja      .first
+.enter: mov     [click_idx],-1
+        call    enter_idx
         stc
         ret
-.select:
-        mov     [sel],ax
-        mov     [click_tile],ax
+.first: mov     [click_idx],ax
         mov     [click_time],edx
         stc
         ret
@@ -3058,15 +3348,14 @@ tile_at:
 delete_sel:
         cmp     [cursor_chosen],0       ; never an entry nobody picked
         je      .r
-        mov     bx,[sel]
-        cmp     bx,-1
+        call    selected_entry
+        cmp     ax,-1
         je      .r
-        shl     bx,4
-        add     bx,tiles
-        mov     ax,[bx+T_NODE]
+        mov     [del_idx],ax
+        mov     si,ax
+        shl     si,1
+        mov     ax,[gs:si]
         mov     [del_node],ax
-        mov     bx,[bx+T_IDX]
-        mov     [del_idx],bx
         mov     fs,ax
         test    byte [fs:N_FLAGS],F_PSEUDO
         jz      .ask
@@ -3565,11 +3854,14 @@ rescan_key:
         cmp     al,'R'
         je      .go
         mov     bx,[cur]
-        mov     si,[sel]
-        cmp     si,-1
+        push    bx
+        call    selected_entry
+        pop     bx
+        cmp     ax,-1
         je      .go
-        shl     si,4
-        mov     ax,word [tiles+si+T_NODE]
+        mov     si,ax
+        shl     si,1
+        mov     ax,[gs:si]
         mov     fs,ax
         test    byte [fs:N_FLAGS],F_DIR
         jz      .go
@@ -3661,6 +3953,11 @@ tree_remove:
         mov     [fs:N_NEXT],dx
 .r:     ret
 
+include 'PANEL.ASM'
+include 'PREVIEW.ASM'
+include 'PNG.ASM'
+include 'JPEG.ASM'
+
 ; =============================================================================================
 
 segment dseg use16
@@ -3678,10 +3975,15 @@ size_off        dw N_DISK
 clus            dd 512
 entseg          dw 0
 pendseg         dw 0
+old_strategy    dw 0
+old_umb_link    db 0
+lineseg         dw 0
+winseg          dw 0
 pend_top        dw 0
 arena_next      dw 0
 arena_end       dw 0
 arena_limit     dw 0
+arena_paras     dw 0
 root            dw 0
 cur             dw 0
 nent            dw 0
@@ -3691,9 +3993,11 @@ sel             dw -1
 depth           dw 0
 seen            dd 0
 last_tick       dd 0
+last_input      dd 0
 freed           dq 0,0                  ; apparent, on disk: as a node's sizes
 navsp           dw 0
-click_tile      dw -1
+click_idx       dw -1
+left_node       dw 0
 presses         dw 0
 click_time      dd 0
 del_node        dw 0
@@ -3709,10 +4013,12 @@ list_cur        dw 0            ; the list's cursor, by node (PANEL.ASM)
 cursor_chosen   db 0            ; the entry in hand was picked, not placed by the program
 
 ; the board: the treemap's bounds; its borders reach column 79 and row 22
-bnd_x           dw 0
+bnd_x           dw PANEL_W
 bnd_y           dw 1
-bnd_w           dw 79
+bnd_w           dw 79-PANEL_W
 bnd_h           dw 21
+panel_on        db 1
+focus           db 0            ; 0 the list, 1 the treemap
 
 cw_near         dw 027Fh                ; double precision, round to nearest, all masked
 cw_chop         dw 0E7Fh                ; the same, truncating
@@ -3723,6 +4029,7 @@ c_minw          dq 8.0
 c_65535         dq 65535.0
 c_100           dq 100.0
 c_ten           dq 10.0
+c_1000          dq 1000.0
 c_g             dq 999999999.0
 c_m             dq 999999.0
 c_k             dq 999.0
@@ -3752,6 +4059,17 @@ s_freed         db ', freed: ',0
 s_dots          db '...'
 s_selected      db ' SELECTED: ',0
 s_sep           db '  ',0B3h,'  ',0
+s_dot           db ' ',0FAh,' ',0
+s_of_scan       db '% of scan',0
+s_folders       db ' folders, ',0,' files here',0
+s_dirs          db ' dirs, ',0,' files',0
+s_disk_used     db 'disk used ',0
+s_not_scanned   db ' not scanned',0
+s_disk          db 'disk ',0
+s_comma_plus    db ', +',0
+s_more          db '... ',0
+s_more2         db ' more',0
+s_loading       db '...',0
 s_skipped       db '  ',0B3h,'  not scanned: too deep',0
 s_pct_close     db '%)',0
 s_scanning_path db ' ',0
@@ -3761,10 +4079,8 @@ s_empty         db 'Folder is empty'
 s_descendants   db ' descendants)',0
 s_trunc_even    db '[...]',0
 s_trunc_odd     db '[..]',0
-s_legend        db ' ~',1Bh,19h,18h,1Ah,'/hjkl~ move  ~Enter~ open  ~Esc~ up  ~+ - 0~ zoom'
-                db '  ~a~ apparent  ~d~ delete  ~q~ quit',0
-s_legend_a      db ' ~',1Bh,19h,18h,1Ah,'/hjkl~ move  ~Enter~ open  ~Esc~ up  ~+ - 0~ zoom'
-                db '  ~a~ on disk  ~d~ delete  ~q~ quit',0
+s_legend        db ' ~',1Bh,19h,18h,1Ah,'~ move  ~Tab~ list  ~Enter~ open  ~Esc~ up  ~+-0~ zoom'
+                db '  ~a~ size  ~d~ delete  ~q~ quit',0
 s_del_file      db 'Delete this file?',0
 s_del_dir       db 'Delete this folder and everything in it?',0
 s_yes_no        db '(y) Yes          (n) No',0
@@ -3779,7 +4095,7 @@ s_pseudo2       db 'Scan a folder further down to see them.',0
 msg_usage       db 'diskonaut for DOS: a treemap of what fills your disk.',13,10,13,10
                 db 'usage: DISKONAU [-a] [-k KEYS] [-s FILE] [FOLDER]',13,10
                 db '  -a       show apparent sizes instead of space on disk',13,10
-                db '  -k KEYS  type these first (E is Enter, X is Esc)',13,10
+                db '  -k KEYS  type these first; E X T P N H Z are Enter Esc Tab PgUp PgDn Home End',13,10
                 db '  -s FILE  then write the screen to FILE and quit',13,10,'$'
 msg_notdir      db 'diskonaut: not a folder',13,10,'$'
 msg_nomem       db 'diskonaut: not enough memory',13,10,'$'
@@ -3793,6 +4109,7 @@ em_w            dq 0.0
 em_h            dq 0.0
 tot_area        dq 0.0
 ftotal          dq 0.0
+ftotal0         dq 0.0                  ; the same before the zoom
 eq_pct          dq 0.0
 len             dq 0.0
 min1            dq 0.0
@@ -3823,6 +4140,15 @@ add_desc        dd 0
 ent_size        dq 0
 pctv            dd 0
 pctv_even       dd 0
+share10         dd 0
+disk_used       dq 0
+disk_out        dq 0
+disk_known      db 0
+lw_first        dw 0
+lw_count        dw 0
+lw_cursor       dw 0
+lw_nlen         dw 0
+lw_dirs         dw 0
 equal           db 0
 w_have          db 0
 l_horiz         db 0
@@ -3895,5 +4221,6 @@ small_y         dw 0
 has_small       db 0,0
 tiles           rb MAXTILES*T_SIZE
 tiles_end:
+include 'PVDATA.ASM'
 boxbits         rb 256
 scr             rw 80*25
