@@ -64,7 +64,8 @@ does about hard links and why running as administrator there shows more.
 `--benchmark` scans headlessly and prints timings for each stage of the scan instead of starting
 the UI; `docs/probes/bench-diskus.sh` compares it with `diskus`, warm and cold. See
 [`docs/benchmarking.md`](docs/benchmarking.md) for the stages and flags, and
-[`docs/scan-performance.md`](docs/scan-performance.md) for what was measured and why.
+[`docs/scan-performance.md`](docs/scan-performance.md) for what was measured and why, and
+[`docs/scan-roadmap.md`](docs/scan-roadmap.md) for what is next.
 
 ## Configuration
 

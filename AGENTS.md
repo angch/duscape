@@ -100,7 +100,13 @@ Six kinds of thread communicate via `mpsc` channels (bounded, except the preview
 - `delete.rs` — `remove` (from disk, a link itself never its target) and `refused` (NTFS metadata)
 - `metafiles.rs` — NTFS metadata names, for the Windows walker and for `delete`
 - `preview.rs` — `read` (sniff the first 64 KiB: text lines, info, or a picture), `describe_picture`,
-  `decode_picture` (bounded). Scaling and encoding for display are the viewer's
+  `decode_picture` (bounded). Scaling and encoding for display are the viewer's. A binary file
+  gets `describe_binary` as its text: its size, then `placement::describe`
+- `placement.rs` — where a file's blocks are, for the preview of a file with nothing else to
+  show (Linux): FIEMAP for its extents, sparseness and shared blocks, then sysfs for the disk —
+  through a partition to the disk's model and SSD/HDD and the offset into it; the members of an
+  LVM or md volume (the table that says which is root's); a loop device's file. The companion
+  tool `whereisthis` follows every layer; this is the few lines that fit under a treemap
 - `clipboard.rs` — native clipboard (`pbcopy`, Win32, `wl-copy`/`xclip`/`xsel`), `base64`
 - `format/display_size.rs` — byte → human-readable (B/KB/MB/GB/TB)
 - `os/unix.rs`, `os/windows.rs` — `is_user_admin()`, `size_on_disk_fast()`, `volume_id()`, `link_count()`
@@ -429,7 +435,9 @@ cargo test -p libdiskonaut --lib -- --ignored fat32
 ```
 
 ### Changing the scan
-Read `docs/scan-performance.md` first. It records what was measured, what turned out not to
+Read `docs/scan-performance.md` first, and `docs/scan-roadmap.md` for what is planned and the
+rules each step follows: measure with `docs/probes/bench-matrix.sh` before and after (it writes
+`docs/benchmarks/<host>-<date>.md`; commit it), totals identical, fixtures green. It records what was measured, what turned out not to
 matter, and how to reproduce the numbers with `--benchmark`. The short version: on Linux the walk
 is the floor (~0.40s for 4.2M entries, at the kernel's `statx` cost) and the tree build is hidden
 behind it on `parallel::SHARDS` threads. On macOS and Windows the walk is the whole scan — macOS
@@ -463,7 +471,8 @@ busybox. One job then publishes both tarballs: matrix jobs that each create the 
 - **`opt-level = "s"`**: the release profile is size-optimised for the viewers' binaries, but
   `"z"` cost the scan 13% and the tree build 30%; `"s"` is as fast as `3` at 2% more size. With
   `lto = true` a per-crate `opt-level` does nothing, the final codegen uses the top level's.
-  `--profile profiling` is the release with symbols, for samplers.
+  `--profile profiling` is the release with symbols, for samplers. PGO (`make pgo`) is worth
+  2–3% wall, 6–8% CPU, and is not in the release pipeline; thin LTO is slower than fat.
 - **Allocator**: musl builds use jemalloc (`tikv-jemallocator`, 64-bit musl only). musl's own
   malloc made the scan 7x slower and mimalloc 2x. Do not swap it without rerunning the
   `--bench-stage sharded` comparison in `docs/scan-performance.md`. glibc builds use the system

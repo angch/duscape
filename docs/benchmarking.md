@@ -72,5 +72,12 @@ As root, diskonaut also reads directories' blocks ahead through the block device
 worth measuring separately: `sudo docs/probes/bench-diskus.sh --cold DIR`. The results, and what
 they led to, are under "Cold cache" in `scan-performance.md`.
 
+## Across machines
+
+`probes/bench-matrix.sh TREE...` is the standard measurement: it records the machine, kernel,
+filesystem, disk and build, runs the warm, cold and root comparisons above on the trees given,
+adds the build profile, and writes `docs/benchmarks/<host>-<date>.md`. Run it on a new machine
+before anything else and commit the file; `scan-roadmap.md` is the plan those files feed.
+
 `scan-performance.md` has every measurement, the reasoning, and notes for repeating the exercise
 on another platform.
