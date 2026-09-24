@@ -84,3 +84,5 @@ DISKONAUT_MAC_SNAPSHOT=out.png cargo run -p diskonaut-mac -- FOLDER
 ```
 
 writes the window to `out.png` half a second after the scan finishes, and quits.
+
+What has not yet been tried by hand, with how to check each, is in [`TODO.md`](../../TODO.md).
