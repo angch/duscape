@@ -1,7 +1,9 @@
 ; diskonaut for MS-DOS: the treemap viewer as a 16-bit real-mode program.
 ;
 ; Assembled by FASM (the DOS build of flat assembler 1.73) into an MZ executable, see BUILD.BAT
-; and `make dos`. It needs a 386 with a 387, which is what DOSBox-X emulates by default.
+; and `make dos`. It runs on a 286 with no coprocessor: 16-bit registers only, no FS or GS, no
+; near conditional jumps (J286.INC makes them short ones over a jmp), and the treemap's doubles in
+; software (SOFTFP.ASM), so it lays out exactly as the Rust f64 code does.
 ;
 ; The Rust workspace is the reference, not a dependency:
 ;   the scan               scanners/src/lib.rs (one walk, sizes charged to every ancestor)
@@ -22,6 +24,7 @@
 ; else 8.3 names.
 
 format MZ
+include 'J286.INC'
 entry cseg:start
 stack 8000h
 heap 0
@@ -106,15 +109,15 @@ start:
         pop     es
         cld
         call    check_cpu
-        fninit
-        fldcw   [cw_near]
+        call    f_constants
         mov     di,boxbits              ; box character → the directions it joins
         xor     ax,ax
         mov     cx,128
         rep     stosw
         mov     bx,1
 @@:     mov     al,[boxch+bx]
-        movzx   si,al
+        xor     ah,ah
+        mov     si,ax
         mov     [boxbits+si],bl
         inc     bx
         cmp     bx,16
@@ -128,7 +131,7 @@ start:
         call    video_init
         mov     [scanning],1
         call    ticks
-        mov     [last_tick],eax
+        mov     [last_tick],ax
         mov     ax,[root]
         mov     [cur],ax
         call    scan_dir
@@ -153,8 +156,8 @@ main_loop:
         cmp     [panel_on],0
         je      .snap
         call    ticks
-        sub     eax,[last_input]
-        cmp     eax,2
+        sub     ax,[last_input]
+        cmp     ax,2
         jb      @f
         call    pv_decode
         jmp     main_loop
@@ -170,7 +173,7 @@ main_loop:
         call    read_key
         push    ax
         call    ticks
-        mov     [last_input],eax
+        mov     [last_input],ax
         pop     ax
         call    handle_key
         jc      quit
@@ -197,38 +200,16 @@ nomem:
         mov     dx,msg_nomem
         jmp     fatal
 
-; a 386 (the 32-bit registers) and a 387 (the treemap), else a message and out
+; an 80186 or later (pusha, shifts by a count, immediates pushed), else a message and out. An
+; 8086 or 8088 shifts by the whole of CL; the 186 and after by its low five bits.
 check_cpu:
-        pushf                           ; put back at the end
-        pushf
-        pop     ax
-        mov     cx,ax
-        and     ax,0FFFh                ; an 8086 keeps flags 12-15 set
-        push    ax
-        popf
-        pushf
-        pop     ax
-        and     ax,0F000h
-        cmp     ax,0F000h
-        je      .old
-        or      cx,7000h                ; a 286 in real mode keeps 12-14 clear
-        push    cx
-        popf
-        pushf
-        pop     ax
-        test    ax,7000h
+        mov     cl,32
+        mov     ax,1
+        shl     ax,cl
+        test    ax,ax
         jz      .old
-        popf
-        fninit
-        mov     word [tmp32],5A5Ah
-        fnstsw  word [tmp32]
-        cmp     byte [tmp32],0
-        jne     .nofpu
         ret
-.old:   popf
-        mov     dx,msg_cpu
-        jmp     fatal
-.nofpu: mov     dx,msg_fpu
+.old:   mov     dx,msg_cpu
         jmp     fatal
 
 ; ---------------------------------------------------------------------------------------------
@@ -279,7 +260,8 @@ detect_lfn:
 parse_args:
         push    es
         mov     es,[psp]
-        movzx   cx,byte [es:80h]
+        mov     cl,[es:80h]
+        xor     ch,ch
         xor     bx,bx
 @@:     jcxz    @f
         mov     al,[es:81h+bx]
@@ -430,7 +412,7 @@ write_snap:
         mov     dx,pv_state
         int     21h
         mov     ah,40h
-        mov     cx,8
+        mov     cx,4
         mov     dx,acc_cols
         int     21h
         mov     ah,40h
@@ -509,7 +491,8 @@ probe_dir:
         je      @f
         mov     byte [pathbuf+bx],'\'
         inc     bx
-@@:     mov     dword [pathbuf+bx],'*.*'
+@@:     mov     word [pathbuf+bx],'*.'
+        mov     word [pathbuf+bx+2],'*'
         mov     dx,pathbuf
         lea     di,[bp-FD]
         call    ff_first
@@ -543,17 +526,22 @@ cluster_size:
         int     21h
         cmp     ax,0FFFFh
         je      .r
-        push    ax                      ; the space used on the drive, for the side panel
-        push    cx
+        push    ax                      ; the space used on the drive, for the side panel:
+        push    cx                      ; used clusters × sectors a cluster × bytes a sector
         push    dx
         sub     dx,bx
-        movzx   edx,dx
-        movzx   eax,ax
-        movzx   ecx,cx
-        imul    eax,ecx
-        mul     edx
-        mov     dword [disk_used],eax
-        mov     dword [disk_used+4],edx
+        mov     bx,dx
+        mul     cx                      ; dx:ax, the bytes of a cluster
+        mov     cx,dx
+        mul     bx
+        mov     word [disk_used],ax
+        mov     word [disk_used+2],dx
+        mov     ax,cx
+        mul     bx
+        add     word [disk_used+2],ax
+        adc     dx,0
+        mov     word [disk_used+4],dx
+        mov     word [disk_used+6],0
         mov     [disk_known],1
         pop     dx
         pop     cx
@@ -603,7 +591,8 @@ alloc_memory:
         mov     bx,[old_strategy]
         int     21h
         mov     ax,5803h
-        movzx   bx,[old_umb_link]
+        mov     bl,[old_umb_link]
+        xor     bh,bh
         int     21h
         pop     ax
         popf
@@ -733,26 +722,79 @@ set_name:
 ; add add_app, add_disk and add_desc to node ax and every folder above it
 add_up:
         push    ax
-        push    fs
-        push    ebx
+        push    bx
+        push    es
 .l:     test    ax,ax
         jz      .d
-        mov     fs,ax
-        mov     ebx,dword [add_app]
-        add     [fs:N_SIZE],ebx
-        mov     ebx,dword [add_app+4]
-        adc     [fs:N_SIZE+4],ebx
-        mov     ebx,dword [add_disk]
-        add     [fs:N_DISK],ebx
-        mov     ebx,dword [add_disk+4]
-        adc     [fs:N_DISK+4],ebx
-        mov     ebx,[add_desc]
-        add     [fs:N_DESC],ebx
-        mov     ax,[fs:N_PARENT]
+        mov     es,ax
+        mov     bx,[add_app]
+        add     [es:N_SIZE],bx
+        mov     bx,[add_app+2]
+        adc     [es:N_SIZE+2],bx
+        mov     bx,[add_app+4]
+        adc     [es:N_SIZE+4],bx
+        mov     bx,[add_app+6]
+        adc     [es:N_SIZE+6],bx
+        mov     bx,[add_disk]
+        add     [es:N_DISK],bx
+        mov     bx,[add_disk+2]
+        adc     [es:N_DISK+2],bx
+        mov     bx,[add_disk+4]
+        adc     [es:N_DISK+4],bx
+        mov     bx,[add_disk+6]
+        adc     [es:N_DISK+6],bx
+        mov     bx,[add_desc]
+        add     [es:N_DESC],bx
+        mov     bx,[add_desc+2]
+        adc     [es:N_DESC+2],bx
+        mov     ax,[es:N_PARENT]
         jmp     .l
-.d:     pop     ebx
-        pop     fs
+.d:     pop     es
+        pop     bx
         pop     ax
+        ret
+
+; add_app rounded up to a whole number of clusters → add_disk. Clusters are a power of two in
+; every DOS file system; were one not, the length is taken as it is.
+round_to_cluster:
+        mov     si,add_app
+        mov     di,add_disk
+        mov     cx,4
+        rep     movsw
+        mov     ax,[clus]
+        mov     dx,[clus+2]
+        sub     ax,1                    ; the mask: cluster - 1
+        sbb     dx,0
+        mov     bx,ax
+        and     bx,[clus]
+        mov     cx,dx
+        and     cx,[clus+2]
+        or      bx,cx
+        jnz     .r                      ; not a power of two
+        add     [add_disk],ax
+        adc     [add_disk+2],dx
+        adc     word [add_disk+4],0
+        adc     word [add_disk+6],0
+        not     ax
+        not     dx
+        and     [add_disk],ax
+        and     [add_disk+2],dx
+.r:     ret
+
+; the child node ax linked in first among the children of bx; ES is kept
+link_child:
+        push    dx
+        push    es
+        mov     es,ax
+        mov     [es:N_PARENT],bx
+        mov     es,bx
+        mov     dx,[es:N_CHILD]
+        mov     [es:N_CHILD],ax
+        inc     word [es:N_COUNT]
+        mov     es,ax
+        mov     [es:N_NEXT],dx
+        pop     es
+        pop     dx
         ret
 
 ; bx = folder. ax = a new "not in memory" entry in it, or 0.
@@ -769,13 +811,8 @@ make_pseudo:
         mov     cx,pseudo_len
         call    set_name
         mov     byte [es:N_FLAGS],F_PSEUDO
-        mov     [es:N_PARENT],bx
-        mov     fs,bx
-        mov     dx,[fs:N_CHILD]
-        mov     [es:N_NEXT],dx
-        mov     [fs:N_CHILD],ax
-        inc     word [fs:N_COUNT]
         pop     es
+        call    link_child
         ret
 .fail:
         xor     ax,ax
@@ -867,10 +904,14 @@ extract:
         mov     [ent_lossy],1
 @@:     mov     al,[ss:di]
         mov     [ent_attr],al
-        mov     eax,[ss:di+20h]
-        mov     dword [ent_size],eax
-        mov     eax,[ss:di+1Ch]
-        mov     dword [ent_size+4],eax
+        mov     ax,[ss:di+20h]
+        mov     [ent_size],ax
+        mov     ax,[ss:di+22h]
+        mov     [ent_size+2],ax
+        mov     ax,[ss:di+1Ch]
+        mov     [ent_size+4],ax
+        mov     ax,[ss:di+1Eh]
+        mov     [ent_size+6],ax
         lea     si,[di+2Ch]
         cmp     byte [ss:si],0
         jne     .name
@@ -878,9 +919,12 @@ extract:
         jmp     .name
 .s:     mov     al,[ss:di+15h]
         mov     [ent_attr],al
-        mov     eax,[ss:di+1Ah]
-        mov     dword [ent_size],eax
-        mov     dword [ent_size+4],0
+        mov     ax,[ss:di+1Ah]
+        mov     [ent_size],ax
+        mov     ax,[ss:di+1Ch]
+        mov     [ent_size+2],ax
+        mov     word [ent_size+4],0
+        mov     word [ent_size+6],0
         lea     si,[di+1Eh]
 .name:
         xor     bx,bx
@@ -936,7 +980,8 @@ scan_dir:
         mov     byte [pathbuf+bx],'\'
         inc     bx
 @@:     mov     [bp-S_BASE],bx
-        mov     dword [pathbuf+bx],'*.*'
+        mov     word [pathbuf+bx],'*.'
+        mov     word [pathbuf+bx+2],'*'
         mov     dx,pathbuf
         lea     di,[bp-FD]
         call    ff_first
@@ -965,31 +1010,23 @@ scan_dir:
         jae     .sizes
         mov     [recurse_ok],1
 .sizes:
-        xor     eax,eax
-        mov     dword [add_app],eax
-        mov     dword [add_app+4],eax
-        mov     dword [add_disk],eax
-        mov     dword [add_disk+4],eax
-        mov     [add_desc],1
+        mov     di,add_app
+        xor     ax,ax
+        mov     cx,10                   ; add_app, add_disk: 0; add_desc: 1
+        rep     stosw
+        mov     word [add_desc],1
         test    [ent_attr],10h
         jnz     .sized
-        mov     eax,dword [ent_size]
-        mov     edx,dword [ent_size+4]
-        mov     dword [add_app],eax
-        mov     dword [add_app+4],edx
-        test    edx,edx
-        jnz     .disk                   ; 4 GiB and more: as it is
-        mov     ecx,[clus]
-        lea     ebx,[ecx-1]
-        add     eax,ebx
-        adc     edx,0
-        div     ecx
-        mul     ecx
-.disk:  mov     dword [add_disk],eax
-        mov     dword [add_disk+4],edx
+        mov     si,ent_size
+        mov     di,add_app
+        mov     cx,4
+        rep     movsw
+        call    round_to_cluster
 .sized:
-        mov     fs,[bp-S_TARGET]
-        test    byte [fs:N_FLAGS],F_PSEUDO
+        push    es
+        mov     es,[bp-S_TARGET]
+        test    byte [es:N_FLAGS],F_PSEUDO
+        pop     es
         jnz     .into_target
         mov     cx,[namelen]
         cmp     [ent_lossy],0
@@ -1035,20 +1072,12 @@ scan_dir:
         inc     cx
         rep     movsb
 @@:     mov     bx,[bp-S_TARGET]
-        mov     [es:N_PARENT],bx
-        mov     fs,bx
-        mov     dx,[fs:N_CHILD]
-        mov     [es:N_NEXT],dx
-        mov     [fs:N_CHILD],ax
-        inc     word [fs:N_COUNT]
-        mov     eax,dword [add_app]
-        mov     [es:N_SIZE],eax
-        mov     eax,dword [add_app+4]
-        mov     [es:N_SIZE+4],eax
-        mov     eax,dword [add_disk]
-        mov     [es:N_DISK],eax
-        mov     eax,dword [add_disk+4]
-        mov     [es:N_DISK+4],eax
+        mov     ax,[bp-S_CHILD]
+        call    link_child
+        mov     si,add_app              ; its own sizes
+        xor     di,di
+        mov     cx,8
+        rep     movsw
         test    [ent_attr],10h
         jz      @f
         or      byte [es:N_FLAGS],F_DIR
@@ -1140,28 +1169,29 @@ push_pending:
 ; the queued subfolder at si → pathbuf (after the frame's base, [bp-S_BASE]) and ax, its node;
 ; si past it
 pop_pending:
-        push    fs
-        mov     fs,[pendseg]
-        mov     ax,[fs:si]
-        movzx   cx,byte [fs:si+2]
+        push    es
+        mov     es,[pendseg]
+        mov     ax,[es:si]
+        mov     cl,[es:si+2]
+        xor     ch,ch
         add     si,3
         mov     bx,[bp-S_BASE]
         lea     di,[pathbuf+bx]
         add     bx,cx
         mov     [pathlen],bx
         jcxz    .z
-@@:     mov     dl,[fs:si]
+@@:     mov     dl,[es:si]
         mov     [di],dl
         inc     si
         inc     di
         loop    @b
 .z:     mov     byte [di],0
-        pop     fs
+        pop     es
         ret
 
 ; now and then: the keyboard (q or Esc stops), and the treemap of what is found so far
 progress:
-        inc     [seen]
+        inc     word [seen]
         cmp     [scanning],0            ; a rescan keeps the screen as it is
         je      .r
         test    byte [seen],31
@@ -1178,30 +1208,29 @@ progress:
         cmp     al,27
         je      .abort
 .t:     call    ticks
-        mov     edx,eax
-        sub     edx,[last_tick]
-        cmp     edx,4                   ; about 0.2 s
+        mov     dx,ax
+        sub     dx,[last_tick]
+        cmp     dx,4                    ; about 0.2 s
         jb      .r
-        mov     [last_tick],eax
+        mov     [last_tick],ax
         call    live_render
 .r:     ret
 .abort:
         mov     [abort],1
         ret
 
+; ax ← the BIOS tick count's low word (18.2 a second): enough for the gaps measured here
 ticks:
         push    es
         push    40h
         pop     es
-        mov     eax,[es:6Ch]
+        mov     ax,[es:6Ch]
         pop     es
         ret
 
 live_render:
-        pushad
+        pusha
         push    es
-        push    fs
-        push    gs
         push    ds
         pop     es
         inc     [spin]
@@ -1211,32 +1240,32 @@ live_render:
         mov     [sel],-1
         call    change_files
         call    render
-        pop     gs
-        pop     fs
         pop     es
-        popad
+        popa
         ret
 
 ; ---------------------------------------------------------------------------------------------
 ; the listing: the folder's entries, largest first (files_in_folder)
 
 build_listing:
-        mov     gs,[entseg]
-        mov     fs,[cur]
-        mov     ax,[fs:N_CHILD]
+        push    es
+        mov     es,[cur]
+        mov     ax,[es:N_CHILD]
         xor     bx,bx
 .l:     test    ax,ax
         jz      .e
         cmp     bx,MAXENT*2
         jae     .e
-        mov     [gs:bx],ax
+        mov     es,[entseg]
+        mov     [es:bx],ax
         add     bx,2
-        mov     fs,ax
-        mov     ax,[fs:N_NEXT]
+        mov     es,ax
+        mov     ax,[es:N_NEXT]
         jmp     .l
 .e:     shr     bx,1
         mov     [nent],bx
-        ; Shell sort
+        ; Shell sort, in the listing's segment
+        mov     es,[entseg]
         mov     si,gaps
 .gap:   lodsw
         test    ax,ax
@@ -1249,7 +1278,7 @@ build_listing:
         jae     .gap
         mov     bx,cx
         shl     bx,1
-        mov     ax,[gs:bx]
+        mov     ax,[es:bx]
         mov     [tmp_e],ax
         mov     di,cx
 .j:     cmp     di,[gap]
@@ -1257,58 +1286,110 @@ build_listing:
         mov     bx,di
         sub     bx,[gap]
         shl     bx,1
-        mov     dx,[gs:bx]
+        mov     dx,[es:bx]
         mov     ax,[tmp_e]
         call    before
         jnc     .put
         mov     bx,di
         shl     bx,1
-        mov     [gs:bx],dx
+        mov     [es:bx],dx
         sub     di,[gap]
         jmp     .j
 .put:   mov     bx,di
         shl     bx,1
         mov     ax,[tmp_e]
-        mov     [gs:bx],ax
+        mov     [es:bx],ax
         inc     cx
         jmp     .i
-.done:  ret
+.done:  pop     es
+        ret
 
 ; CF=1 if node ax comes before node dx: larger first, then by name
 before:
+        push    ax
+        push    bx
         push    si
-        push    fs
+        push    di
         push    es
-        push    eax
-        mov     fs,ax
-        mov     es,dx
         mov     si,[size_off]
-        mov     eax,[fs:si+4]
-        cmp     eax,[es:si+4]
+        mov     es,ax
+        mov     bx,[es:si]
+        mov     [bf_a],bx
+        mov     bx,[es:si+2]
+        mov     [bf_a+2],bx
+        mov     bx,[es:si+4]
+        mov     [bf_a+4],bx
+        mov     bx,[es:si+6]
+        mov     [bf_a+6],bx
+        mov     es,dx
+        mov     bx,6
+@@:     mov     di,[bf_a+bx]
+        cmp     di,[es:si+bx]
         jne     .size
-        mov     eax,[fs:si]
-        cmp     eax,[es:si]
-        jne     .size
+        sub     bx,2
+        jnc     @b
+        push    ds                      ; the same size: by name, a in DS, b in ES
+        mov     ds,ax
         mov     si,N_NAME
-.n:     mov     al,[fs:si]
+.n:     mov     al,[si]
         cmp     al,[es:si]
-        jne     .out                    ; CF=1 if a's byte is lower
+        jne     .named                  ; CF=1 if a's byte is lower
         test    al,al
-        jz      .no
+        jz      .same
         inc     si
         jmp     .n
+.same:  pop     ds
+        clc
+        jmp     .out
+.named: pop     ds
+        jmp     .out
 .size:  ja      .yes
-.no:    clc
+        clc
         jmp     .out
 .yes:   stc
-.out:   pop     eax
-        pop     es
-        pop     fs
+.out:   pop     es
+        pop     di
         pop     si
+        pop     bx
+        pop     ax
+        ret
+
+; bx = listing index → ax = its node
+ent_node:
+        push    es
+        push    bx
+        mov     es,[entseg]
+        shl     bx,1
+        mov     ax,[es:bx]
+        pop     bx
+        pop     es
+        ret
+
+; bx = listing index → ld_size: its size (the kind shown), 64 bits; si = ld_size
+load_size:
+        push    ax
+        push    di
+        push    es
+        call    ent_node
+        mov     es,ax
+        mov     di,[size_off]
+        mov     ax,[es:di]
+        mov     [ld_size],ax
+        mov     ax,[es:di+2]
+        mov     [ld_size+2],ax
+        mov     ax,[es:di+4]
+        mov     [ld_size+4],ax
+        mov     ax,[es:di+6]
+        mov     [ld_size+6],ax
+        pop     es
+        pop     di
+        pop     ax
+        mov     si,ld_size
         ret
 
 ; ---------------------------------------------------------------------------------------------
-; the treemap (treemap.rs), in doubles on the 387
+; the treemap (treemap.rs), in doubles computed in software, in Rust's order: each value here is
+; the f64 the Rust code has at the same point
 
 change_files:
         call    build_listing
@@ -1324,24 +1405,30 @@ fill:
         mov     [sel],-1
 @@:     ret
 
+; the empty space: the board; the total area w × h
 tm_init:
-        fild    word [bnd_x]
-        fstp    qword [em_x]
-        fild    word [bnd_y]
-        fstp    qword [em_y]
-        fild    word [bnd_w]
-        fstp    qword [em_w]
-        fild    word [bnd_h]
-        fstp    qword [em_h]
-        fld     qword [em_w]
-        fmul    qword [em_h]
-        fstp    qword [tot_area]
+        mov     ax,[bnd_x]
+        mov     bx,em_x
+        call    f_from_u16
+        mov     ax,[bnd_y]
+        mov     bx,em_y
+        call    f_from_u16
+        mov     ax,[bnd_w]
+        mov     bx,em_w
+        call    f_from_u16
+        mov     ax,[bnd_h]
+        mov     bx,em_h
+        call    f_from_u16
+        mov     si,em_w
+        mov     di,em_h
+        mov     bx,tot_area
+        call    f_mul
         mov     [ntiles],0
         mov     [has_small],0
         ret
 
 ; the total the percentages are of: the folder's size, or what its entries add up to if more,
-; less what the zoom leaves off
+; less what the zoom leaves off; in integers, as files_in_folder has it
 setup_files:
         mov     ax,[zoom]
         cmp     ax,[nent]
@@ -1351,99 +1438,189 @@ setup_files:
 @@:     mov     cx,[nent]
         sub     cx,ax
         mov     [nfiles],cx
-        fldz
+        mov     di,sum64
+        xor     ax,ax
+        mov     cx,4
+        rep     stosw
         xor     bx,bx
 .sum:   cmp     bx,[nent]
         jae     .summed
         call    load_size
-        faddp   st1,st0
+        mov     di,sum64
+        call    add64
         inc     bx
         jmp     .sum
 .summed:
-        mov     fs,[cur]
+        push    es                      ; the folder's own, if bigger
+        mov     es,[cur]
         mov     si,[size_off]
-        fild    qword [fs:si]
-        fcom    st1
-        fnstsw  ax
-        sahf
-        jae     .folder
-        fstp    st0
-        jmp     .total
-.folder:
-        fstp    st1
-.total:
-        fst     qword [ftotal0]
+        mov     bx,6
+@@:     mov     ax,[es:si+bx]
+        cmp     ax,[sum64+bx]
+        jne     @f
+        sub     bx,2
+        jnc     @b
+        jmp     .keep
+@@:     jb      .keep
+        mov     bx,0
+@@:     mov     ax,[es:si+bx]
+        mov     [sum64+bx],ax
+        add     bx,2
+        cmp     bx,8
+        jb      @b
+.keep:  pop     es
+        mov     si,sum64                ; unzoomed, for the side panel and the status line
+        mov     bx,ftotal0
+        call    f_from_u64
         xor     bx,bx
 .drop:  cmp     bx,[zoom]
         jae     .dropped
         call    load_size
-        fsubp   st1,st0
+        mov     di,sum64
+        call    sub64
         inc     bx
         jmp     .drop
 .dropped:
-        fst     qword [ftotal]
-        ftst
-        fnstsw  ax
-        sahf
-        fstp    st0
-        je      .equal
+        mov     si,sum64
+        mov     bx,ftotal
+        call    f_from_u64
+        mov     [area_cached],0
         mov     [equal],0
-        ret
-.equal:
-        mov     [equal],1               ; nothing has a size: equal shares
+        cmp     byte [ftotal+F_C],FC_ZERO
+        jne     .r
+        mov     [equal],1               ; nothing has a size: equal shares, 1 / n
         cmp     [nfiles],0
-        je      @f
-        fld1
-        fidiv   word [nfiles]
-        fstp    qword [eq_pct]
-@@:     ret
+        je      .r
+        mov     ax,[nfiles]
+        mov     bx,f_t1
+        call    f_from_u16
+        mov     si,fc_one
+        mov     di,f_t1
+        mov     bx,eq_pct
+        call    f_div
+.r:     ret
 
-; bx = listing index. st0 = its size.
-load_size:
-        push    fs
-        push    si
-        mov     si,bx
-        shl     si,1
-        mov     fs,[gs:si]
-        mov     si,[size_off]
-        fild    qword [fs:si]
-        pop     si
-        pop     fs
+; [di] += [si], 64 bits
+add64:
+        mov     ax,[si]
+        add     [di],ax
+        mov     ax,[si+2]
+        adc     [di+2],ax
+        mov     ax,[si+4]
+        adc     [di+4],ax
+        mov     ax,[si+6]
+        adc     [di+6],ax
         ret
 
-; bx = listing index. st0 = its share of the folder (1.0 is all of it).
+; [di] -= [si], 64 bits
+sub64:
+        mov     ax,[si]
+        sub     [di],ax
+        mov     ax,[si+2]
+        sbb     [di+2],ax
+        mov     ax,[si+4]
+        sbb     [di+4],ax
+        mov     ax,[si+6]
+        sbb     [di+6],ax
+        ret
+
+; bx = listing index → f_pct: its share of the folder (1.0 is all of it), after the zoom
 pct_of:
+        push    si
+        push    di
+        push    bx
         cmp     [equal],0
         jne     .eq
         call    load_size
-        fdiv    qword [ftotal]
-        ret
-.eq:    fld     qword [eq_pct]
+        mov     bx,f_pct
+        call    f_from_u64
+        mov     si,f_pct
+        mov     di,ftotal
+        call    f_div
+        jmp     .out
+.eq:    mov     si,eq_pct
+        mov     bx,f_pct
+        call    f_copy
+.out:   pop     bx
+        pop     di
+        pop     si
         ret
 
-; bx = listing index. st0 = its share of the whole folder, whatever the zoom.
+; bx = listing index → f_pct: its share of the whole folder, whatever the zoom
 pct0_of:
+        push    si
+        push    di
+        push    bx
         cmp     [nent],0
         je      .none
-        fld     qword [ftotal0]
-        ftst
-        fnstsw  ax
-        sahf
-        fstp    st0
+        cmp     byte [ftotal0+F_C],FC_ZERO
         je      .eq
         call    load_size
-        fdiv    qword [ftotal0]
-        ret
-.eq:    fld1
-        fidiv   word [nent]
-        ret
-.none:  fldz
+        mov     bx,f_pct
+        call    f_from_u64
+        mov     si,f_pct
+        mov     di,ftotal0
+        call    f_div
+        jmp     .out
+.eq:    mov     ax,[nent]
+        mov     bx,f_t1
+        call    f_from_u16
+        mov     si,fc_one
+        mov     di,f_t1
+        mov     bx,f_pct
+        call    f_div
+        jmp     .out
+.none:  mov     bx,f_pct
+        xor     ax,ax
+        call    f_from_u16
+.out:   pop     bx
+        pop     di
+        pop     si
         ret
 
-; bx = listing index. st0 = the area it gets on the board.
+; bx = listing index → f_area: the area it gets on the board (percentage × total_size). Sizes
+; come largest first, often many alike: the last one's answer is kept.
 area_of:
+        push    si
+        push    di
+        push    bx
+        cmp     [equal],0
+        jne     .compute                ; all the same share, and cheap
+        call    load_size
+        cmp     [area_cached],0
+        je      .compute
+        mov     ax,[ld_size]
+        cmp     ax,[area_size]
+        jne     .compute
+        mov     ax,[ld_size+2]
+        cmp     ax,[area_size+2]
+        jne     .compute
+        mov     ax,[ld_size+4]
+        cmp     ax,[area_size+4]
+        jne     .compute
+        mov     ax,[ld_size+6]
+        cmp     ax,[area_size+6]
+        je      .out
+.compute:
+        pop     bx
+        push    bx
         call    pct_of
-        fmul    qword [tot_area]
+        mov     si,f_pct
+        mov     di,tot_area
+        mov     bx,f_area
+        call    f_mul
+        mov     si,ld_size
+        mov     di,area_size
+        push    es
+        push    ds
+        pop     es
+        mov     cx,4
+        rep     movsw
+        pop     es
+        mov     [area_cached],1
+.out:   pop     bx
+        pop     di
+        pop     si
         ret
 
 squarify:
@@ -1462,10 +1639,13 @@ squarify:
 .more:
         mov     bx,[ri]                 ; largest first, so this is the largest left
         call    area_of
-        fcomp   qword [min_prod]
-        fnstsw  ax
-        sahf
-        jae     .renderable
+        mov     si,f_area
+        mov     di,fc_min_prod
+        call    f_cmp                   ; renderable if min1 × min2 <= its area
+        cmp     al,F_GREATER
+        je      .renderable
+        cmp     al,F_EQUAL
+        je      .renderable
         mov     ax,[rs]
         mov     dx,[ri]
         call    layoutrow
@@ -1478,18 +1658,19 @@ squarify:
         mov     dx,[ri]
         call    worst
         jc      .add
-        fstp    qword [w_cur]
+        mov     si,w_worst
+        mov     bx,w_cur
+        call    f_copy
         mov     ax,[rs]
         mov     dx,[ri]
         inc     dx
         call    worst
         jc      .lay
-        fstp    qword [w_nxt]
-        fld     qword [w_cur]
-        fcomp   qword [w_nxt]
-        fnstsw  ax
-        sahf
-        jb      .add
+        mov     si,w_cur
+        mov     di,w_worst
+        call    f_cmp
+        cmp     al,F_LESS
+        je      .add
 .lay:
         mov     ax,[rs]
         mov     dx,[ri]
@@ -1508,6 +1689,9 @@ squarify:
         mov     di,tiles
         mov     cx,[ntiles]
         xor     dx,dx
+        push    es
+        push    ds
+        pop     es
 .k:     jcxz    .kept
         mov     ax,[si+T_X]
         cmp     ax,[small_x]
@@ -1525,176 +1709,231 @@ squarify:
         inc     dx
         dec     cx
         jmp     .k
-.kept:  mov     [ntiles],dx
+.kept:  pop     es
+        mov     [ntiles],dx
 .r:     ret
 
+; the row's length and the least sides a tile may have, by which side of the space is shorter
 compute_len:
-        fld     qword [em_h]
-        fmul    qword [c_ratio]
-        fcom    qword [em_w]
-        fnstsw  ax
-        sahf
-        jae     .narrow
-        fstp    qword [len]
-        fld     qword [c_minh]
-        fmul    qword [c_ratio]
-        fstp    qword [min1]
-        fld     qword [c_minw]
-        fdiv    qword [c_ratio]
-        fstp    qword [min2]
-        jmp     .p
+        mov     si,em_h
+        mov     di,fc_ratio
+        mov     bx,f_t1
+        call    f_mul                   ; height × 2.5
+        mov     si,f_t1
+        mov     di,em_w
+        call    f_cmp
+        cmp     al,F_LESS
+        jne     .narrow
+        mov     si,f_t1
+        mov     bx,f_len
+        call    f_copy
+        mov     si,fc_min_hr            ; 3 × 2.5
+        mov     bx,min1
+        call    f_copy
+        mov     si,fc_min_wr            ; 8 / 2.5
+        mov     bx,min2
+        call    f_copy
+        ret
 .narrow:
-        fstp    st0
-        fld     qword [em_w]
-        fdiv    qword [c_ratio]
-        fstp    qword [len]
-        fld     qword [c_minw]
-        fdiv    qword [c_ratio]
-        fstp    qword [min1]
-        fld     qword [c_minh]
-        fmul    qword [c_ratio]
-        fstp    qword [min2]
-.p:     fld     qword [min1]
-        fmul    qword [min2]
-        fstp    qword [min_prod]
+        mov     si,em_w
+        mov     di,fc_ratio
+        mov     bx,f_len
+        call    f_div
+        mov     si,fc_min_wr
+        mov     bx,min1
+        call    f_copy
+        mov     si,fc_min_hr
+        mov     bx,min2
+        call    f_copy
         ret
 
-; the worst aspect ratio of the row [ax, dx): st0, or CF=1 if the row is empty or has an
+; the worst aspect ratio of the row [ax, dx) → w_worst, or CF=1 if the row is empty or has an
 ; entry that cannot be drawn (worst_in_renderable_row)
 worst:
         cmp     ax,dx
         jae     .none
         mov     [w_a],ax
         mov     [w_b],dx
-        fldz
-        mov     bx,ax
+        mov     bx,w_sum
+        xor     ax,ax
+        call    f_from_u16
+        mov     bx,[w_a]
 .s:     call    area_of
-        faddp   st1,st0
+        mov     si,w_sum
+        mov     di,f_area
+        push    bx
+        mov     bx,w_sum
+        call    f_add
+        pop     bx
         inc     bx
         cmp     bx,[w_b]
         jb      .s
-        fstp    qword [w_sum]
         mov     [w_have],0
         mov     bx,[w_a]
 .l:     call    area_of
-        fst     qword [w_size]
-        fdiv    qword [w_sum]
-        fmul    qword [len]
-        fst     qword [w_first]
-        fdivr   qword [w_size]
-        fstp    qword [w_second]
-        fld     qword [w_first]
-        fcomp   qword [min1]
-        fnstsw  ax
-        sahf
-        jb      .none
-        fld     qword [w_second]
-        fcomp   qword [min2]
-        fnstsw  ax
-        sahf
-        jb      .none
-        fld     qword [w_first]
-        fcomp   qword [w_second]
-        fnstsw  ax
-        sahf
-        jb      .fs
-        fld     qword [w_second]
-        fdiv    qword [w_first]
-        jmp     .r
-.fs:    fld     qword [w_first]
-        fdiv    qword [w_second]
-.r:     cmp     [w_have],0
+        push    bx
+        mov     si,f_area               ; first = size / sum × length
+        mov     di,w_sum
+        mov     bx,w_first
+        call    f_div
+        mov     si,w_first
+        mov     di,f_len
+        call    f_mul
+        mov     si,f_area               ; second = size / first
+        mov     di,w_first
+        mov     bx,w_second
+        call    f_div
+        pop     bx
+        mov     si,w_first
+        mov     di,min1
+        call    f_cmp
+        cmp     al,F_GREATER
+        je      @f
+        cmp     al,F_EQUAL
+        jne     .none
+@@:     mov     si,w_second
+        mov     di,min2
+        call    f_cmp
+        cmp     al,F_GREATER
+        je      @f
+        cmp     al,F_EQUAL
+        jne     .none
+@@:     push    bx
+        mov     si,w_first
+        mov     di,w_second
+        call    f_cmp
+        cmp     al,F_LESS
+        jne     @f
+        mov     bx,f_t1                 ; first < second: first / second
+        call    f_div
+        jmp     .ratio
+@@:     mov     si,w_second
+        mov     di,w_first
+        mov     bx,f_t1
+        call    f_div
+.ratio: pop     bx
+        cmp     [w_have],0
         je      .take
-        fcom    qword [w_worst]
-        fnstsw  ax
-        sahf
-        jb      .take
-        fstp    st0
-        jmp     .nx
-.take:  fstp    qword [w_worst]
+        mov     si,f_t1
+        mov     di,w_worst
+        call    f_cmp
+        cmp     al,F_LESS
+        jne     .nx
+.take:  push    bx
+        mov     si,f_t1
+        mov     bx,w_worst
+        call    f_copy
+        pop     bx
         mov     [w_have],1
 .nx:    inc     bx
         cmp     bx,[w_b]
         jb      .l
-        fld     qword [w_worst]
         clc
         ret
 .none:  stc
         ret
 
-; lay out the row [ax, dx) along the empty space's shorter side
+; lay out the row [ax, dx) along the empty space's shorter side (layoutrow)
 layoutrow:
         cmp     ax,dx
         jae     .ret
         mov     [l_a],ax
         mov     [l_b],dx
-        fldz
-        mov     bx,ax
+        mov     bx,l_total
+        xor     ax,ax
+        call    f_from_u16
+        mov     bx,[l_a]
 .s:     call    area_of
-        faddp   st1,st0
+        push    bx
+        mov     si,l_total
+        mov     di,f_area
+        mov     bx,l_total
+        call    f_add
+        pop     bx
         inc     bx
         cmp     bx,[l_b]
         jb      .s
-        fstp    qword [l_total]
+        ; horizontal if width <= height × 2.5
         mov     [l_horiz],0
-        fld     qword [em_h]
-        fmul    qword [c_ratio]
-        fcomp   qword [em_w]
-        fnstsw  ax
-        sahf
-        jb      @f
-        mov     [l_horiz],1
-@@:     fld     qword [em_y]
+        mov     si,em_h
+        mov     di,fc_ratio
+        mov     bx,f_t1
+        call    f_mul
+        mov     si,em_w
+        mov     di,f_t1
+        call    f_cmp
+        cmp     al,F_LESS
+        je      @f
+        cmp     al,F_EQUAL
+        jne     .dir
+@@:     mov     [l_horiz],1
+.dir:   mov     si,em_y
         cmp     [l_horiz],0
         je      @f
-        fstp    st0
-        fld     qword [em_x]
-@@:     fstp    qword [l_prog]
-        fldz
-        fstp    qword [l_second]
+        mov     si,em_x
+@@:     mov     bx,l_prog
+        call    f_copy
+        mov     bx,l_second
+        xor     ax,ax
+        call    f_from_u16
         mov     bx,[l_a]
 .l:     call    area_of
-        fst     qword [l_size]
-        fdiv    qword [l_total]
+        push    bx
+        mov     si,f_area               ; first = size / total × (width or height)
+        mov     di,l_total
+        mov     bx,l_first
+        call    f_div
+        mov     di,em_h
         cmp     [l_horiz],0
-        je      .v1
-        fmul    qword [em_w]
-        jmp     .f1
-.v1:    fmul    qword [em_h]
-.f1:    fst     qword [l_first]
-        fdivr   qword [l_size]          ; the candidate for the other side
-        fld     qword [l_second]
-        fcom    st1
-        fnstsw  ax
-        sahf
-        ja      .keep
-        fstp    st0
-        jmp     .gs
-.keep:  fstp    st1
-.gs:    fstp    qword [l_tsecond]
+        je      @f
+        mov     di,em_w
+@@:     mov     si,l_first
+        call    f_mul
+        mov     si,f_area               ; the candidate for the other side
+        mov     di,l_first
+        mov     bx,f_t2
+        call    f_div
+        mov     si,l_second             ; the larger of it and the row's so far
+        mov     di,f_t2
+        call    f_cmp
+        cmp     al,F_GREATER
+        je      @f
+        mov     si,f_t2
+@@:     mov     bx,l_tsecond
+        call    f_copy
         cmp     [l_horiz],0
         je      .vr
-        fld     qword [l_prog]
-        fstp    qword [r_x]
-        fld     qword [em_y]
-        fstp    qword [r_y]
-        fld     qword [l_first]
-        fstp    qword [r_w]
-        fld     qword [l_tsecond]
-        fstp    qword [r_h]
+        mov     si,l_prog
+        mov     bx,r_x
+        call    f_copy
+        mov     si,em_y
+        mov     bx,r_y
+        call    f_copy
+        mov     si,l_first
+        mov     bx,r_w
+        call    f_copy
+        mov     si,l_tsecond
+        mov     bx,r_h
+        call    f_copy
         jmp     .rr
-.vr:    fld     qword [em_x]
-        fstp    qword [r_x]
-        fld     qword [l_prog]
-        fstp    qword [r_y]
-        fld     qword [l_tsecond]
-        fstp    qword [r_w]
-        fld     qword [l_first]
-        fstp    qword [r_h]
-.rr:    fld     qword [l_prog]
-        fadd    qword [l_first]
-        fstp    qword [l_prog]
+.vr:    mov     si,em_x
+        mov     bx,r_x
+        call    f_copy
+        mov     si,l_prog
+        mov     bx,r_y
+        call    f_copy
+        mov     si,l_tsecond
+        mov     bx,r_w
+        call    f_copy
+        mov     si,l_first
+        mov     bx,r_h
+        call    f_copy
+.rr:    mov     si,l_prog
+        mov     di,l_first
+        mov     bx,l_prog
+        call    f_add
         call    round_rect
+        pop     bx
         cmp     [t_h],MINIMUM_HEIGHT
         jb      .small
         cmp     [t_w],MINIMUM_WIDTH
@@ -1702,124 +1941,94 @@ layoutrow:
         call    push_tile
         jmp     .upd
 .small: call    add_unrenderable
-.upd:   fld     qword [l_tsecond]
-        fcomp   qword [l_second]
-        fnstsw  ax
-        sahf
-        jbe     .nx
-        fld     qword [l_tsecond]
-        fstp    qword [l_second]
+.upd:   mov     si,l_tsecond
+        mov     di,l_second
+        call    f_cmp
+        cmp     al,F_GREATER
+        jne     .nx
+        push    bx
+        mov     si,l_tsecond
+        mov     bx,l_second
+        call    f_copy
+        pop     bx
 .nx:    inc     bx
         cmp     bx,[l_b]
         jb      .l
         cmp     [l_horiz],0
         je      .vs
-        fld     qword [em_h]
-        fsub    qword [l_second]
-        fstp    qword [em_h]
-        fld     qword [em_y]
-        fadd    qword [l_second]
-        fstp    qword [em_y]
+        mov     si,em_h
+        mov     di,l_second
+        mov     bx,em_h
+        call    f_sub
+        mov     si,em_y
+        mov     bx,em_y
+        call    f_add
         ret
-.vs:    fld     qword [em_w]
-        fsub    qword [l_second]
-        fstp    qword [em_w]
-        fld     qword [em_x]
-        fadd    qword [l_second]
-        fstp    qword [em_x]
+.vs:    mov     si,em_w
+        mov     di,l_second
+        mov     bx,em_w
+        call    f_sub
+        mov     si,em_x
+        mov     bx,em_x
+        call    f_add
 .ret:   ret
 
 ; r_x..r_h → t_x..t_h (RectFloat::round)
 round_rect:
-        fld     qword [r_x]
-        call    round_u16
+        push    bx
+        mov     si,r_x
+        call    f_round_u16
         mov     [t_x],ax
-        fld     qword [r_y]
-        call    round_u16
+        mov     si,r_y
+        call    f_round_u16
         mov     [t_y],ax
-        fld     qword [r_x]
-        fisub   word [t_x]
-        fadd    qword [r_w]
-        call    round_u16
+        mov     si,r_x                  ; w = ((x - rounded x) + width).round()
+        mov     ax,[t_x]
+        mov     di,r_w
+        call    .side
         mov     [t_w],ax
-        fld     qword [r_y]
-        fisub   word [t_y]
-        fadd    qword [r_h]
-        call    round_u16
+        mov     si,r_y
+        mov     ax,[t_y]
+        mov     di,r_h
+        call    .side
         mov     [t_h],ax
-        fld     qword [r_x]
-        fadd    qword [r_w]
-        call    round_u16
+        mov     si,r_x                  ; one more if (x + width).round() is further
+        mov     di,r_w
+        mov     bx,f_t1
+        call    f_add
+        mov     si,f_t1
+        call    f_round_u16
         mov     dx,[t_x]
         add     dx,[t_w]
         cmp     ax,dx
         jbe     @f
         inc     [t_w]
-@@:     fld     qword [r_y]
-        fadd    qword [r_h]
-        call    round_u16
+@@:     mov     si,r_y
+        mov     di,r_h
+        mov     bx,f_t1
+        call    f_add
+        mov     si,f_t1
+        call    f_round_u16
         mov     dx,[t_y]
         add     dx,[t_h]
         cmp     ax,dx
         jbe     @f
         inc     [t_h]
-@@:     ret
-
-; st0 (popped) → ax: rounded half away from zero, saturating like Rust's `as u16`
-round_u16:
-        fcom    st0
-        fnstsw  ax
-        sahf
-        jp      .zero
-        fadd    qword [c_half]
-        fcom    qword [c_65535]
-        fnstsw  ax
-        sahf
-        jae     .max
-        fldcw   [cw_chop]
-        fistp   dword [tmp32]
-        fldcw   [cw_near]
-        mov     eax,[tmp32]
-        test    eax,eax
-        js      .zero2
+@@:     pop     bx
         ret
-.max:   fstp    st0
-        mov     ax,0FFFFh
-        ret
-.zero:  fstp    st0
-.zero2: xor     ax,ax
-        ret
-
-; st0 (popped) → eax, rounded half to even, as Rust's {:.1} and {:.0} print (the rest of
-; round_u32's rules)
-round_even:
-        fcom    st0
-        fnstsw  ax
-        sahf
-        jp      round_u32.zero
-        fistp   qword [tmp64]
-        jmp     round_u32.got
-
-; st0 (popped) → eax, rounded half up
-round_u32:
-        fcom    st0
-        fnstsw  ax
-        sahf
-        jp      .zero
-        fadd    qword [c_half]
-        fldcw   [cw_chop]
-        fistp   qword [tmp64]
-        fldcw   [cw_near]
-.got:   cmp     dword [tmp64+4],0
-        jl      .zero2
-        jne     .max
-        mov     eax,dword [tmp64]
-        ret
-.max:   mov     eax,0FFFFFFFFh
-        ret
-.zero:  fstp    st0
-.zero2: xor     eax,eax
-        ret
+; si = the start, ax = it rounded, di = the length → ax = ((start - rounded) + length).round()
+.side:  mov     bx,f_t2
+        call    f_from_u16
+        push    di
+        mov     di,f_t2
+        mov     bx,f_t2
+        call    f_sub
+        pop     di
+        mov     si,f_t2
+        mov     bx,f_t2
+        call    f_add
+        mov     si,f_t2
+        jmp     f_round_u16
 
 ; grow the "small files" corner to cover t_x, t_y (add_unrenderable_tile)
 add_unrenderable:
@@ -1877,13 +2086,58 @@ push_tile:
         mov     [di+T_W],ax
         mov     ax,[t_h]
         mov     [di+T_H],ax
-        mov     si,bx
-        shl     si,1
-        mov     ax,[gs:si]
+        call    ent_node
         mov     [di+T_NODE],ax
         mov     [di+T_IDX],bx
         inc     [ntiles]
 .r:     ret
+
+; the treemap's constants, as doubles
+f_constants:
+        mov     ax,1
+        mov     bx,fc_one
+        call    f_from_u16
+        mov     ax,3
+        mov     bx,f_t1
+        call    f_from_u16
+        mov     ax,8
+        mov     bx,f_t2
+        call    f_from_u16
+        mov     ax,5
+        mov     bx,fc_ratio
+        call    f_from_u16
+        mov     ax,2
+        mov     bx,f_pct
+        call    f_from_u16
+        mov     si,fc_ratio             ; 2.5 = 5 / 2
+        mov     di,f_pct
+        mov     bx,fc_ratio
+        call    f_div
+        mov     si,f_t1                 ; MINIMUM_HEIGHT × 2.5
+        mov     di,fc_ratio
+        mov     bx,fc_min_hr
+        call    f_mul
+        mov     si,f_t2                 ; MINIMUM_WIDTH / 2.5
+        mov     di,fc_ratio
+        mov     bx,fc_min_wr
+        call    f_div
+        mov     si,fc_min_hr            ; the least area a tile may have, either way round
+        mov     di,fc_min_wr
+        mov     bx,fc_min_prod
+        call    f_mul
+        mov     ax,100
+        mov     bx,fc_100
+        call    f_from_u16
+        mov     si,k_g                  ; DisplaySize's thresholds
+        mov     bx,fc_g
+        call    f_from_u64
+        mov     si,k_m
+        mov     bx,fc_m
+        call    f_from_u64
+        mov     si,k_k
+        mov     bx,fc_k
+        call    f_from_u64
+        ret
 
 ; ---------------------------------------------------------------------------------------------
 ; drawing, into `scr`, then onto the screen at once
@@ -1978,14 +2232,73 @@ pv_target:
         call    selected_entry
         cmp     ax,-1
         je      .none
-        mov     si,ax
-        shl     si,1
-        mov     ax,[gs:si]
-        mov     fs,ax
-        test    byte [fs:N_FLAGS],F_DIR+F_PSEUDO
+        mov     bx,ax
+        call    ent_node
+        push    ax
+        call    nflags
+        test    al,F_DIR+F_PSEUDO
+        pop     ax
         jz      .set
 .none:  xor     ax,ax
 .set:   jmp     pv_update
+
+; ax = a node → al = its flags; the rest kept
+nflags:
+        push    es
+        mov     es,ax
+        mov     al,[es:N_FLAGS]
+        pop     es
+        ret
+
+; ax = a node → dx:ax = its descendants
+ndesc:
+        push    es
+        mov     es,ax
+        mov     ax,[es:N_DESC]
+        mov     dx,[es:N_DESC+2]
+        pop     es
+        ret
+
+; ax = a node → its name at ds:di, di past it, cx its length; ES kept
+nname:
+        push    si
+        push    es
+        mov     es,ax
+        mov     cl,[es:N_NLEN]
+        xor     ch,ch
+        push    cx
+        mov     si,N_NAME
+        jcxz    .d
+@@:     mov     al,[es:si]
+        mov     [di],al
+        inc     si
+        inc     di
+        loop    @b
+.d:     pop     cx
+        mov     ax,es
+        pop     es
+        pop     si
+        ret
+
+; ax = a node → f_sz: its size (the kind shown) as a double; ld_size the integer
+nsize:
+        pusha
+        push    es
+        mov     es,ax
+        mov     si,[size_off]
+        mov     di,ld_size
+        mov     cx,4
+@@:     mov     ax,[es:si]
+        mov     [di],ax
+        add     si,2
+        add     di,2
+        loop    @b
+        pop     es
+        mov     si,ld_size
+        mov     bx,f_sz
+        call    f_from_u64
+        popa
+        ret
 
 ; dl = x, dh = y, al = character, ah = attribute
 put_ch:
@@ -1995,9 +2308,10 @@ put_ch:
         jae     .r
         push    bx
         push    dx
-        movzx   bx,dh
+        mov     bl,dh
+        xor     bh,bh
         imul    bx,bx,80
-        movzx   dx,dl
+        xor     dh,dh
         add     bx,dx
         shl     bx,1
         mov     [scr+bx],ax
@@ -2026,15 +2340,18 @@ mask_or:
         push    ax
         push    bx
         push    dx
-        movzx   bx,dh
+        mov     bl,dh
+        xor     bh,bh
         imul    bx,bx,80
-        movzx   dx,dl
+        xor     dh,dh
         add     bx,dx
         shl     bx,1
-        movzx   dx,byte [scr+bx]
+        mov     dl,byte [scr+bx]
+        xor     dh,dh
         xchg    bx,dx
         or      al,[boxbits+bx]
-        movzx   bx,al
+        mov     bl,al
+        xor     bh,bh
         mov     al,[boxch+bx]
         mov     bx,dx
         mov     byte [scr+bx],al
@@ -2136,13 +2453,14 @@ draw_title:
         call    append_z
 @@:     mov     si,s_colon
         call    append_z
-        mov     fs,[root]
-        mov     si,[size_off]
-        fild    qword [fs:si]
+        mov     ax,[root]
+        call    nsize
+        mov     si,f_sz
         call    fmt_size
         mov     si,s_lparen
         call    append_z
-        mov     eax,[fs:N_DESC]
+        mov     ax,[root]
+        call    ndesc
         call    u32dec_c
         mov     si,s_files_close
         call    append_z
@@ -2151,12 +2469,16 @@ draw_title:
         mov     si,s_freed
         call    append_z
         mov     si,[size_off]
-        fild    qword [freed+si]
+        add     si,freed
+        mov     bx,f_sz
+        call    f_from_u64
+        mov     si,f_sz
         call    fmt_size
         jmp     .left
 .spin:  mov     al,' '
         stosb
-        movzx   bx,[spin]
+        mov     bl,[spin]
+        xor     bh,bh
         and     bx,3
         mov     al,[spinner+bx]
         stosb
@@ -2178,15 +2500,16 @@ draw_title:
         call    node_path
         cmp     ax,[root]
         je      .r1
-        mov     fs,ax
         mov     si,s_lparen
-        call    append_z
-        mov     si,[size_off]
-        fild    qword [fs:si]
+        call    append_z                ; lodsb: AL is not safe across it
+        mov     ax,[cur]
+        call    nsize
+        mov     si,f_sz
         call    fmt_size
         mov     si,s_comma
         call    append_z
-        mov     eax,[fs:N_DESC]
+        mov     ax,[cur]
+        call    ndesc
         call    u32dec_c
         mov     si,s_files_close
         call    append_z
@@ -2235,48 +2558,52 @@ draw_status:
         cmp     ax,-1
         je      .none
         mov     bx,ax
-        shl     bx,1
-        mov     fs,[gs:bx]
-        shr     bx,1
+        call    ent_node
+        mov     [st_node],ax
         push    bx
         mov     si,s_selected
         call    append_z
-        movzx   cx,byte [fs:N_NLEN]
-        xor     si,si
-@@:     jcxz    @f
-        mov     al,[fs:N_NAME+si]
-        stosb
-        inc     si
-        dec     cx
-        jmp     @b
-@@:     test    byte [fs:N_FLAGS],F_DIR
+        mov     ax,[st_node]
+        call    nname
+        mov     ax,[st_node]
+        call    nflags
+        mov     [st_flags],al
+        test    al,F_DIR
         jz      @f
         mov     al,'/'
         stosb
 @@:     mov     si,s_sep
         call    append_z
-        pop     bx
-        push    bx
-        call    load_size
+        mov     ax,[st_node]
+        call    nsize
+        mov     si,f_sz
         call    fmt_size
         mov     si,s_lparen
         call    append_z
         pop     bx
+        mov     [st_di],di
         call    pct0_of
-        fmul    qword [c_100]
-        call    round_even
+        mov     si,f_pct
+        mov     di,fc_100
+        mov     bx,f_t1
+        call    f_mul
+        mov     si,f_t1
+        mov     cx,1
+        call    f_round_even
+        mov     di,[st_di]
         call    u32dec
         mov     si,s_pct_close
         call    append_z
-        test    byte [fs:N_FLAGS],F_DIR
+        test    [st_flags],F_DIR
         jz      .show
         mov     si,s_sep
         call    append_z
-        mov     eax,[fs:N_DESC]
+        mov     ax,[st_node]
+        call    ndesc
         call    u32dec_c
         mov     si,s_files
         call    append_z
-        test    byte [fs:N_FLAGS],F_SKIPPED
+        test    [st_flags],F_SKIPPED
         jz      .show
         mov     si,s_skipped
         call    append_z
@@ -2304,7 +2631,8 @@ draw_status:
         mov     di,tb
         mov     si,s_zoom
         call    append_z
-        movzx   eax,[zoom]
+        mov     ax,[zoom]
+        xor     dx,dx
         call    u32dec
         mov     al,' '
         stosb
@@ -2387,7 +2715,10 @@ draw_small:
 ; si = tile (draw_tile_text_on_grid)
 draw_tile:
         mov     [dt_tile],si
-        mov     fs,[si+T_NODE]
+        mov     ax,[si+T_NODE]
+        mov     [dt_node],ax
+        call    nflags
+        mov     [dt_flags],al
         mov     cx,[si+T_W]
         sub     cx,2
         mov     [maxlen],cx
@@ -2402,7 +2733,7 @@ draw_tile:
         shr     ax,4
         mov     [a1],A_TEXT
         mov     [a2],A_TEXT
-        test    byte [fs:N_FLAGS],F_DIR
+        test    [dt_flags],F_DIR
         jz      @f
         mov     [a1],A_DIR
 @@:     cmp     ax,[sel]
@@ -2410,7 +2741,7 @@ draw_tile:
         mov     [a1],70h
         mov     [a2],70h
         mov     bx,7700h+0DBh
-        test    byte [fs:N_FLAGS],F_DIR
+        test    [dt_flags],F_DIR
         jz      @f
         mov     [a1],1Fh
         mov     [a2],10h
@@ -2482,18 +2813,12 @@ draw_tile:
         call    put_str
         ret
 
-; fs = node → l1buf, l1len: its name, a folder's with "/" and its descendants if they fit
+; dt_node → l1buf, l1len: its name, a folder's with "/" and its descendants if they fit
 build_line1:
         mov     di,l1buf
-        movzx   cx,byte [fs:N_NLEN]
-        xor     si,si
-@@:     jcxz    @f
-        mov     al,[fs:N_NAME+si]
-        stosb
-        inc     si
-        dec     cx
-        jmp     @b
-@@:     test    byte [fs:N_FLAGS],F_DIR
+        mov     ax,[dt_node]
+        call    nname
+        test    [dt_flags],F_DIR
         jz      .trunc
         mov     al,'/'
         stosb
@@ -2506,7 +2831,8 @@ build_line1:
         stosb
         mov     al,'+'
         stosb
-        mov     eax,[fs:N_DESC]
+        mov     ax,[dt_node]
+        call    ndesc
         call    u32dec_c
         mov     [ind_short],di
         mov     si,s_descendants
@@ -2592,24 +2918,29 @@ truncate_middle:
 ; bx = listing index, maxlen = room → l2buf, l2len: the size and share (tile_second_line)
 build_line2:
         push    bx
-        call    pct_of
-        fmul    qword [c_100]
-        fld     st0
-        call    round_even              ; "{:.0}%"
-        mov     [pctv_even],eax
-        call    round_u32               ; "{}%" of .round()
-        mov     [pctv],eax
+        call    pct_of                  ; percentage × 100
+        mov     si,f_pct
+        mov     di,fc_100
+        mov     bx,f_t1
+        call    f_mul
+        mov     si,f_t1
+        mov     cx,1
+        call    f_round_even            ; "{:.0}%"
+        mov     [pctv_even],ax
+        call    f_round_u16             ; "{}%" of .round()
+        mov     [pctv],ax
         pop     bx
-        push    bx
         call    load_size
+        mov     bx,f_sz
+        call    f_from_u64
         mov     di,s1buf
+        mov     si,f_sz
         call    fmt_size
         mov     ax,di
         sub     ax,s1buf
         mov     [s1len],ax
-        pop     bx
-        call    load_size
         mov     di,s2buf
+        mov     si,f_sz
         call    fmt_size_r
         mov     ax,di
         sub     ax,s2buf
@@ -2624,7 +2955,8 @@ build_line2:
         rep     movsb
         mov     si,s_lparen
         call    append_z
-        mov     eax,[pctv_even]
+        mov     ax,[pctv_even]
+        xor     dx,dx
         call    u32dec
         mov     si,s_pct_close
         call    append_z
@@ -2647,12 +2979,14 @@ build_line2:
         jbe     .e
         mov     al,'('
         stosb
-        mov     eax,[pctv]
+        mov     ax,[pctv]
+        xor     dx,dx
         call    u32dec
         mov     si,s_pct_close
         call    append_z
         jmp     .done
-.e:     mov     eax,[pctv]
+.e:     mov     ax,[pctv]
+        xor     dx,dx
         call    u32dec
         mov     al,'%'
         stosb
@@ -2664,43 +2998,56 @@ build_line2:
 ; ---------------------------------------------------------------------------------------------
 ; numbers
 
-; eax → es:di in decimal
+; dx:ax ← dx:ax / 10, bx ← the remainder
+div10:
+        push    cx
+        mov     bx,10
+        mov     cx,ax
+        mov     ax,dx
+        xor     dx,dx
+        div     bx
+        xchg    ax,cx                   ; cx: the high word of the quotient
+        div     bx
+        mov     bx,dx
+        mov     dx,cx
+        pop     cx
+        ret
+
+; dx:ax → es:di in decimal
 u32dec:
-        push    eax
-        push    ebx
-        push    ecx
-        push    edx
-        mov     ebx,10
-        xor     cx,cx
-.l:     xor     edx,edx
-        div     ebx
+        push    ax
+        push    bx
+        push    cx
         push    dx
+        xor     cx,cx
+.l:     call    div10
+        push    bx
         inc     cx
-        test    eax,eax
+        mov     bx,ax
+        or      bx,dx
         jnz     .l
 .o:     pop     ax
         add     al,'0'
         stosb
         loop    .o
-        pop     edx
-        pop     ecx
-        pop     ebx
-        pop     eax
+        pop     dx
+        pop     cx
+        pop     bx
+        pop     ax
         ret
 
-; eax → es:di with thousands separated (DisplayCount)
+; dx:ax → es:di with thousands separated (DisplayCount)
 u32dec_c:
-        push    eax
-        push    ebx
-        push    ecx
-        push    edx
-        mov     ebx,10
-        xor     cx,cx
-.l:     xor     edx,edx
-        div     ebx
+        push    ax
+        push    bx
+        push    cx
         push    dx
+        xor     cx,cx
+.l:     call    div10
+        push    bx
         inc     cx
-        test    eax,eax
+        mov     bx,ax
+        or      bx,dx
         jnz     .l
 .o:     pop     ax
         add     al,'0'
@@ -2715,83 +3062,101 @@ u32dec_c:
         mov     al,','
         stosb
         jmp     .o
-.d:     pop     edx
-        pop     ecx
-        pop     ebx
-        pop     eax
+.d:     pop     dx
+        pop     cx
+        pop     bx
+        pop     ax
         ret
 
-; st0 (popped) bytes → es:di, e.g. "5.2G" (DisplaySize)
+; the double at [si], bytes → es:di, e.g. "5.2G" (DisplaySize): {:.1} of it over its unit
 fmt_size:
+        push    ax
         push    bx
+        push    cx
+        push    dx
+        push    si
         call    size_unit
         jc      .plain
-        fmul    qword [c_ten]
-        call    round_even
-        push    edx
-        push    ecx
-        xor     edx,edx
-        mov     ecx,10
-        div     ecx
+        mov     si,f_unit
+        mov     cx,10
+        call    f_round_even            ; tenths, exactly as {:.1} rounds
+        push    bx
+        call    div10
         call    u32dec
         mov     al,'.'
         stosb
-        mov     al,dl
+        mov     al,bl
         add     al,'0'
         stosb
-        pop     ecx
-        pop     edx
+        pop     bx
         mov     al,bl
         stosb
-        pop     bx
-        ret
-.plain: call    round_u32
+        jmp     .out
+.plain: mov     cx,1
+        call    f_round_even
         call    u32dec
+.out:   pop     si
+        pop     dx
+        pop     cx
         pop     bx
+        pop     ax
         ret
 
 ; the same without the decimal, e.g. "5G" (DisplaySizeRounded)
 fmt_size_r:
+        push    ax
         push    bx
+        push    cx
+        push    dx
+        push    si
         call    size_unit
-        jc      .plain
-        call    round_even
+        jc      @f
+        mov     si,f_unit
+@@:     pushf
+        mov     cx,1
+        call    f_round_even
         call    u32dec
+        popf
+        jc      @f
         mov     al,bl
         stosb
+@@:     pop     si
+        pop     dx
+        pop     cx
         pop     bx
-        ret
-.plain: call    round_u32
-        call    u32dec
-        pop     bx
+        pop     ax
         ret
 
-; st0 bytes → st0 in its unit and bl the unit's letter, or CF=1 for plain bytes
+; [si], bytes → f_unit, in its unit, and bl the unit's letter; CF=1 for plain bytes. Dividing
+; by 2^30, 2^20 or 2^10 is exact: the exponent moves.
 size_unit:
-        fcom    qword [c_g]
-        fnstsw  ax
-        sahf
-        ja      .g
-        fcom    qword [c_m]
-        fnstsw  ax
-        sahf
-        ja      .m
-        fcom    qword [c_k]
-        fnstsw  ax
-        sahf
-        ja      .k
+        push    di
+        mov     di,fc_g
+        mov     bx,30*256+'G'
+        call    f_cmp
+        cmp     al,F_GREATER
+        je      .unit
+        mov     di,fc_m
+        mov     bx,20*256+'M'
+        call    f_cmp
+        cmp     al,F_GREATER
+        je      .unit
+        mov     di,fc_k
+        mov     bx,10*256+'K'
+        call    f_cmp
+        cmp     al,F_GREATER
+        je      .unit
+        pop     di
         stc
         ret
-.g:     fdiv    qword [c_gib]
-        mov     bl,'G'
-        clc
-        ret
-.m:     fdiv    qword [c_mib]
-        mov     bl,'M'
-        clc
-        ret
-.k:     fdiv    qword [c_kib]
-        mov     bl,'K'
+.unit:  push    bx
+        mov     bx,f_unit
+        call    f_copy
+        pop     bx
+        mov     al,bh
+        xor     ah,ah
+        sub     word [f_unit+F_E],ax
+        pop     di
         clc
         ret
 
@@ -2803,21 +3168,21 @@ node_path:
         push    bx
         push    cx
         push    si
-        push    fs
+        push    es
         mov     [np_start],di
         mov     [np_cut],0
         xor     bx,bx
 .up:    mov     [chain+bx],ax
         add     bx,2
-        mov     fs,ax
-        mov     ax,[fs:N_PARENT]
+        mov     es,ax
+        mov     ax,[es:N_PARENT]
         test    ax,ax
         jz      .down
         cmp     bx,2*64
         jb      .up
         mov     [np_cut],1              ; deeper than any walk goes
 .down:  sub     bx,2
-        mov     fs,[chain+bx]
+        mov     es,[chain+bx]
         cmp     di,[np_start]
         je      .name
         cmp     byte [di-1],'\'
@@ -2826,19 +3191,20 @@ node_path:
         sub     ax,[np_start]
         cmp     ax,NP_MAX
         jae     .cut
-        mov     al,'\'
-        stosb
-.name:  movzx   cx,byte [fs:N_NLEN]
+        mov     byte [di],'\'
+        inc     di
+.name:  mov     cl,[es:N_NLEN]
+        xor     ch,ch
         mov     si,N_NAME
         cmp     [np_disk],0
         je      .fit
-        test    byte [fs:N_FLAGS],F_SHORT
+        test    byte [es:N_FLAGS],F_SHORT
         jz      .fit
         add     si,cx                   ; the short name, after the long one's NUL
         inc     si
         push    si
         xor     cx,cx
-@@:     cmp     byte [fs:si],0
+@@:     cmp     byte [es:si],0
         je      @f
         inc     cx
         inc     si
@@ -2854,9 +3220,10 @@ node_path:
         add     cx,NP_MAX
         sub     cx,di
 .copy:  jcxz    .nx
-@@:     mov     al,[fs:si]
-        stosb
+@@:     mov     al,[es:si]
+        mov     [di],al
         inc     si
+        inc     di
         loop    @b
 .nx:    cmp     [np_cut],0
         jne     .end
@@ -2868,7 +3235,7 @@ node_path:
         mov     [np_disk],0
         mov     al,[np_cut]
         neg     al                      ; CF=1 if it was cut
-        pop     fs
+        pop     es
         pop     si
         pop     cx
         pop     bx
@@ -2964,10 +3331,8 @@ handle_key:
 @@:     call    focus_list
         clc
         ret
-.panel: xor     [panel_on],1            ; the side panel, shown or not
-        jnz     @f
-        mov     [focus],1
-@@:     call    panel_layout
+.panel: xor     [panel_on],1            ; the side panel, shown or not; the list keeps the
+        call    panel_layout            ; keyboard underneath, for when it comes back
         call    fill
         clc
         ret
@@ -3183,8 +3548,8 @@ enter_sel:
 .l:     cmp     cx,[ntiles]
         jae     .r
         mov     ax,[si+T_NODE]
-        mov     fs,ax
-        test    byte [fs:N_FLAGS],F_DIR
+        call    nflags
+        test    al,F_DIR
         jnz     .found
         inc     cx
         add     si,T_SIZE
@@ -3200,11 +3565,12 @@ enter_sel:
 enter_idx:
         cmp     ax,[nent]
         jae     .r
-        mov     si,ax
-        shl     si,1
-        mov     ax,[gs:si]
-        mov     fs,ax
-        test    byte [fs:N_FLAGS],F_DIR
+        mov     bx,ax
+        call    ent_node
+        push    ax
+        call    nflags
+        test    al,F_DIR
+        pop     ax
         jz      .r
         mov     bx,[navsp]
         cmp     bx,64*4
@@ -3233,8 +3599,10 @@ go_up:
         cmp     ax,[root]
         je      .r
         mov     [left_node],ax
-        mov     fs,ax
-        mov     ax,[fs:N_PARENT]
+        push    es
+        mov     es,ax
+        mov     ax,[es:N_PARENT]
+        pop     es
         mov     [cur],ax
         mov     dx,-1
         xor     cx,cx
@@ -3299,20 +3667,20 @@ mouse_poll:
         jae     .enter
         push    ax
         call    ticks
-        mov     edx,eax
+        mov     dx,ax
         pop     ax
         cmp     ax,[click_idx]
         jne     .first
-        mov     ecx,edx
-        sub     ecx,[click_time]
-        cmp     ecx,9
+        mov     cx,dx
+        sub     cx,[click_time]
+        cmp     cx,9
         ja      .first
 .enter: mov     [click_idx],-1
         call    enter_idx
         stc
         ret
 .first: mov     [click_idx],ax
-        mov     [click_time],edx
+        mov     [click_time],dx
         stc
         ret
 .no:    clc
@@ -3352,12 +3720,12 @@ delete_sel:
         cmp     ax,-1
         je      .r
         mov     [del_idx],ax
-        mov     si,ax
-        shl     si,1
-        mov     ax,[gs:si]
+        mov     bx,ax
+        call    ent_node
         mov     [del_node],ax
-        mov     fs,ax
-        test    byte [fs:N_FLAGS],F_PSEUDO
+        call    nflags
+        mov     [del_flags],al
+        test    al,F_PSEUDO
         jz      .ask
         call    render
         call    dialog_box
@@ -3377,24 +3745,15 @@ delete_sel:
         call    render
         call    dialog_box
         mov     si,s_del_file
-        mov     fs,[del_node]
-        test    byte [fs:N_FLAGS],F_DIR
+        test    [del_flags],F_DIR
         jz      @f
         mov     si,s_del_dir
 @@:     mov     dh,9
         call    dialog_line_z
         ; the name
-        movzx   cx,byte [fs:N_NLEN]
         mov     di,l1buf
-        xor     si,si
-        push    cx
-@@:     jcxz    @f
-        mov     al,[fs:N_NAME+si]
-        stosb
-        inc     si
-        dec     cx
-        jmp     @b
-@@:     pop     cx
+        mov     ax,[del_node]
+        call    nname
         mov     si,l1buf
         mov     dx,54
         call    truncate_middle
@@ -3403,15 +3762,16 @@ delete_sel:
         call    dialog_line
         ; its size
         mov     di,tb
-        mov     bx,[del_idx]
-        call    load_size
+        mov     ax,[del_node]
+        call    nsize
+        mov     si,f_sz
         call    fmt_size
-        mov     fs,[del_node]
-        test    byte [fs:N_FLAGS],F_DIR
+        test    [del_flags],F_DIR
         jz      @f
         mov     si,s_lparen
         call    append_z
-        mov     eax,[fs:N_DESC]
+        mov     ax,[del_node]
+        call    ndesc
         call    u32dec_c
         mov     si,s_files_close
         call    append_z
@@ -3443,8 +3803,7 @@ delete_sel:
         mov     ax,3                    ; path not found
         jc      .failed
         mov     [rm_depth],0
-        mov     fs,[del_node]
-        test    byte [fs:N_FLAGS],F_DIR
+        test    [del_flags],F_DIR
         jz      .file
         call    rm_tree
         jmp     .did
@@ -3453,11 +3812,20 @@ delete_sel:
         call    tree_remove
         mov     [cursor_chosen],0       ; its neighbour is in hand now, not picked
         call    change_files
+        call    list_has_keys           ; the list's cursor on the entry that took its place
+        jnz     .r2
+        mov     ax,[nent]
+        test    ax,ax
+        jz      .r2
+        dec     ax
+        cmp     ax,[del_idx]
+        jbe     @f
+        mov     ax,[del_idx]
+@@:     call    set_list_cursor
 .r2:    ret
 .failed:
         mov     [del_err],ax
-        mov     fs,[del_node]           ; some of a folder may have gone: walk it again
-        test    byte [fs:N_FLAGS],F_DIR
+        test    [del_flags],F_DIR       ; some of a folder may have gone: walk it again
         jz      @f
         mov     [rs_freed],1
         mov     ax,[del_node]
@@ -3471,7 +3839,8 @@ delete_sel:
         mov     di,tb
         mov     si,s_doserr
         call    append_z
-        movzx   eax,[del_err]
+        mov     ax,[del_err]
+        xor     dx,dx
         call    u32dec
         mov     cx,di
         sub     cx,tb
@@ -3607,7 +3976,8 @@ rm_tree:
         mov     byte [pathbuf+bx],'\'
         inc     bx
 @@:     mov     [bp-S_BASE],bx
-        mov     dword [pathbuf+bx],'*.*'
+        mov     word [pathbuf+bx],'*.'
+        mov     word [pathbuf+bx+2],'*'
         mov     dx,pathbuf
         lea     di,[bp-FD]
         call    ff_first
@@ -3639,18 +4009,17 @@ rm_tree:
 .sub:   cmp     si,[bp-S_END]
         jae     .subs_done
         mov     bx,[bp-S_BASE]          ; the queued name must fit in the path
-        push    fs
-        mov     fs,[pendseg]
-        movzx   ax,byte [fs:si+2]
-        pop     fs
+        push    es
+        mov     es,[pendseg]
+        mov     al,[es:si+2]
+        pop     es
+        xor     ah,ah
+        push    ax
         add     ax,bx
         cmp     ax,PATHMAX
+        pop     ax
         jb      @f
-        push    fs                      ; skip it
-        mov     fs,[pendseg]
-        movzx   ax,byte [fs:si+2]
-        pop     fs
-        add     si,ax
+        add     si,ax                   ; skip it
         add     si,3
         mov     ax,3
         jmp     .err
@@ -3733,8 +4102,10 @@ rm_attrs:
 ; set, what it lost since counts as freed. The old node is leaked, like everything taken out.
 rescan_node:
         mov     [rs_old],ax
-        mov     fs,ax
-        mov     bx,[fs:N_PARENT]
+        push    es
+        mov     es,ax
+        mov     bx,[es:N_PARENT]
+        pop     es
         mov     [rs_parent],bx
         test    bx,bx
         jz      .root
@@ -3742,22 +4113,23 @@ rescan_node:
         call    tree_remove             ; freed += all of it, for now
         call    probe_dir
         jc      .gone
-        mov     fs,[rs_old]             ; a node like it
-        movzx   cx,byte [fs:N_NLEN]
-        test    byte [fs:N_FLAGS],F_SHORT
+        push    es                      ; a node like it: the name, its NUL, a short name
+        mov     es,[rs_old]
+        mov     cl,[es:N_NLEN]
+        xor     ch,ch
+        inc     cx
+        test    byte [es:N_FLAGS],F_SHORT
+        pop     es
         jz      @f
         add     cx,14
-@@:     mov     al,1
+@@:     mov     [rs_bytes],cx
+        dec     cx
+        mov     al,1
         call    alloc_node
         jc      .gone
         mov     [rs_new],ax
-        mov     fs,[rs_old]
-        movzx   cx,byte [fs:N_NLEN]     ; the name, its NUL, and a short name after it
-        inc     cx
-        test    byte [fs:N_FLAGS],F_SHORT
-        jz      @f
-        add     cx,14
-@@:     push    ds
+        mov     cx,[rs_bytes]
+        push    ds
         push    es
         mov     es,ax
         mov     ds,[rs_old]
@@ -3769,23 +4141,17 @@ rescan_node:
         rep     movsb
         pop     es
         pop     ds
+        push    es
         mov     es,ax
         and     byte [es:N_FLAGS],F_DIR+F_SHORT
-        mov     bx,[rs_parent]
-        mov     [es:N_PARENT],bx
-        mov     fs,bx
-        mov     dx,[fs:N_CHILD]
-        mov     [es:N_NEXT],dx
-        mov     [fs:N_CHILD],ax
-        inc     word [fs:N_COUNT]
-        push    ds
         pop     es
-        xor     eax,eax
-        mov     dword [add_app],eax
-        mov     dword [add_app+4],eax
-        mov     dword [add_disk],eax
-        mov     dword [add_disk+4],eax
-        mov     [add_desc],1
+        mov     bx,[rs_parent]
+        call    link_child
+        mov     di,add_app              ; the folder above: one more entry
+        xor     ax,ax
+        mov     cx,10
+        rep     stosw
+        mov     word [add_desc],1
         mov     ax,bx
         call    add_up
         jmp     .walk
@@ -3803,11 +4169,13 @@ rescan_node:
         pop     es
 .walk:  mov     ax,[rs_new]             ; its depth, so the walk stops where the first one did
         xor     cx,cx
-@@:     mov     fs,ax
-        mov     ax,[fs:N_PARENT]
+        push    es
+@@:     mov     es,ax
+        mov     ax,[es:N_PARENT]
         inc     cx
         test    ax,ax
         jnz     @b
+        pop     es
         dec     cx
         mov     [depth],cx
         mov     ax,[rs_new]
@@ -3818,34 +4186,46 @@ rescan_node:
         mov     ax,[rs_new]
         mov     [root],ax
         jmp     .done
-@@:     mov     fs,[rs_new]             ; freed: what it lost, or nothing
+@@:     mov     ax,[rs_new]             ; freed: what it lost, or nothing
         cmp     [rs_freed],0
-        jne     .sub
-        mov     fs,[rs_old]
-.sub:   mov     eax,[fs:N_SIZE]
-        sub     dword [freed+N_SIZE],eax
-        mov     eax,[fs:N_SIZE+4]
-        sbb     dword [freed+N_SIZE+4],eax
-        mov     eax,[fs:N_DISK]
-        sub     dword [freed+N_DISK],eax
-        mov     eax,[fs:N_DISK+4]
-        sbb     dword [freed+N_DISK+4],eax
+        jne     @f
+        mov     ax,[rs_old]
+@@:     call    freed_less
 .done:  mov     [rs_freed],0
         mov     ax,[rs_new]
         ret
 .gone:  cmp     [rs_freed],0            ; all of it gone: freed if we deleted it
         jne     .fail
-        mov     fs,[rs_old]
-        mov     eax,[fs:N_SIZE]
-        sub     dword [freed+N_SIZE],eax
-        mov     eax,[fs:N_SIZE+4]
-        sbb     dword [freed+N_SIZE+4],eax
-        mov     eax,[fs:N_DISK]
-        sub     dword [freed+N_DISK],eax
-        mov     eax,[fs:N_DISK+4]
-        sbb     dword [freed+N_DISK+4],eax
+        mov     ax,[rs_old]
+        call    freed_less
 .fail:  mov     [rs_freed],0
         xor     ax,ax
+        ret
+
+; freed less node ax's sizes
+freed_less:
+        push    bx
+        push    es
+        mov     es,ax
+        xor     bx,bx
+        mov     ax,[es:bx]
+        sub     [freed],ax
+        mov     ax,[es:bx+2]
+        sbb     [freed+2],ax
+        mov     ax,[es:bx+4]
+        sbb     [freed+4],ax
+        mov     ax,[es:bx+6]
+        sbb     [freed+6],ax
+        mov     ax,[es:bx+8]
+        sub     [freed+8],ax
+        mov     ax,[es:bx+10]
+        sbb     [freed+10],ax
+        mov     ax,[es:bx+12]
+        sbb     [freed+12],ax
+        mov     ax,[es:bx+14]
+        sbb     [freed+14],ax
+        pop     es
+        pop     bx
         ret
 
 ; al = 'r': the selected folder, else the one shown, scanned again; 'R': everything
@@ -3859,11 +4239,14 @@ rescan_key:
         pop     bx
         cmp     ax,-1
         je      .go
-        mov     si,ax
-        shl     si,1
-        mov     ax,[gs:si]
-        mov     fs,ax
-        test    byte [fs:N_FLAGS],F_DIR
+        push    bx
+        mov     bx,ax
+        call    ent_node
+        pop     bx
+        push    ax
+        call    nflags
+        test    al,F_DIR
+        pop     ax
         jz      .go
         mov     bx,ax
 .go:    mov     [rs_target],bx
@@ -3908,51 +4291,65 @@ rescan_key:
 
 ; take del_node out of the tree and its size off every folder above it
 tree_remove:
-        mov     fs,[del_node]
-        mov     eax,[fs:N_SIZE]
-        mov     edx,[fs:N_SIZE+4]
-        add     dword [freed+N_SIZE],eax
-        adc     dword [freed+N_SIZE+4],edx
-        not     eax
-        not     edx
-        add     eax,1
-        adc     edx,0
-        mov     dword [add_app],eax
-        mov     dword [add_app+4],edx
-        mov     eax,[fs:N_DISK]
-        mov     edx,[fs:N_DISK+4]
-        add     dword [freed+N_DISK],eax
-        adc     dword [freed+N_DISK+4],edx
-        not     eax
-        not     edx
-        add     eax,1
-        adc     edx,0
-        mov     dword [add_disk],eax
-        mov     dword [add_disk+4],edx
-        mov     eax,[fs:N_DESC]
-        inc     eax
-        neg     eax
-        mov     [add_desc],eax
-        mov     ax,[fs:N_PARENT]
+        push    es
+        mov     es,[del_node]
+        xor     bx,bx                   ; freed += its sizes; add_* = minus them
+.q:     mov     ax,[es:bx]
+        mov     dx,[es:bx+2]
+        mov     cx,[es:bx+4]
+        mov     si,[es:bx+6]
+        add     [freed+bx],ax
+        adc     [freed+bx+2],dx
+        adc     [freed+bx+4],cx
+        adc     [freed+bx+6],si
+        not     ax
+        not     dx
+        not     cx
+        not     si
+        add     ax,1
+        adc     dx,0
+        adc     cx,0
+        adc     si,0
+        mov     [add_app+bx],ax         ; add_disk follows add_app
+        mov     [add_app+bx+2],dx
+        mov     [add_app+bx+4],cx
+        mov     [add_app+bx+6],si
+        add     bx,8
+        cmp     bx,16
+        jb      .q
+        mov     ax,[es:N_DESC]          ; -(descendants + 1)
+        mov     dx,[es:N_DESC+2]
+        add     ax,1
+        adc     dx,0
+        not     ax
+        not     dx
+        add     ax,1
+        adc     dx,0
+        mov     [add_desc],ax
+        mov     [add_desc+2],dx
+        mov     ax,[es:N_PARENT]
+        mov     dx,[es:N_NEXT]
         call    add_up
-        mov     dx,[fs:N_NEXT]
-        mov     bx,[del_node]
-        mov     fs,ax
-        dec     word [fs:N_COUNT]
-        mov     ax,[fs:N_CHILD]
+        mov     bx,[del_node]           ; out of its parent's children
+        mov     es,ax
+        dec     word [es:N_COUNT]
+        mov     ax,[es:N_CHILD]
         cmp     ax,bx
         jne     .walk
-        mov     [fs:N_CHILD],dx
+        mov     [es:N_CHILD],dx
+        pop     es
         ret
 .walk:  test    ax,ax
         jz      .r
-        mov     fs,ax
-        mov     ax,[fs:N_NEXT]
+        mov     es,ax
+        mov     ax,[es:N_NEXT]
         cmp     ax,bx
         jne     .walk
-        mov     [fs:N_NEXT],dx
-.r:     ret
+        mov     [es:N_NEXT],dx
+.r:     pop     es
+        ret
 
+include 'SOFTFP.ASM'
 include 'PANEL.ASM'
 include 'PREVIEW.ASM'
 include 'PNG.ASM'
@@ -3972,7 +4369,7 @@ apparent        db 0
 spin            db 0
 recurse_ok      db 0
 size_off        dw N_DISK
-clus            dd 512
+clus            dw 512,0
 entseg          dw 0
 pendseg         dw 0
 old_strategy    dw 0
@@ -3991,18 +4388,25 @@ nfiles          dw 0
 zoom            dw 0
 sel             dw -1
 depth           dw 0
-seen            dd 0
-last_tick       dd 0
-last_input      dd 0
-freed           dq 0,0                  ; apparent, on disk: as a node's sizes
+seen            dw 0
+last_tick       dw 0
+last_input      dw 0
+freed           dw 0,0,0,0,0,0,0,0      ; apparent, on disk: as a node's sizes
 navsp           dw 0
 click_idx       dw -1
 left_node       dw 0
 presses         dw 0
-click_time      dd 0
+click_time      dw 0
 del_node        dw 0
 del_idx         dw 0
 del_err         dw 0
+del_flags       db 0
+st_flags        db 0
+dt_flags        db 0
+st_node         dw 0
+st_di           dw 0
+dt_node         dw 0
+rs_bytes        dw 0
 rm_depth        dw 0
 rs_old          dw 0
 rs_new          dw 0
@@ -4020,22 +4424,10 @@ bnd_h           dw 21
 panel_on        db 1
 focus           db 0            ; 0 the list, 1 the treemap
 
-cw_near         dw 027Fh                ; double precision, round to nearest, all masked
-cw_chop         dw 0E7Fh                ; the same, truncating
-c_ratio         dq 2.5
-c_half          dq 0.5
-c_minh          dq 3.0
-c_minw          dq 8.0
-c_65535         dq 65535.0
-c_100           dq 100.0
-c_ten           dq 10.0
-c_1000          dq 1000.0
-c_g             dq 999999999.0
-c_m             dq 999999.0
-c_k             dq 999.0
-c_gib           dq 1073741824.0
-c_mib           dq 1048576.0
-c_kib           dq 1024.0
+; the treemap's doubles (SOFTFP.ASM), computed at start-up
+k_g             dw 0C9FFh,3B9Ah,0,0     ; 999,999,999: DisplaySize's thresholds
+k_m             dw 423Fh,000Fh,0,0      ; 999,999
+k_k             dw 999,0,0,0
 
 gaps            dw 10941,4376,1750,701,301,132,57,23,10,4,1,0
 
@@ -4063,10 +4455,9 @@ s_dot           db ' ',0FAh,' ',0
 s_of_scan       db '% of scan',0
 s_folders       db ' folders, ',0,' files here',0
 s_dirs          db ' dirs, ',0,' files',0
-s_disk_used     db 'disk used ',0
+s_disk_used     db 'disk used ',0,', ',0  ; each followed by what goes between the sizes
 s_not_scanned   db ' not scanned',0
-s_disk          db 'disk ',0
-s_comma_plus    db ', +',0
+s_disk          db 'disk ',0,', +',0
 s_more          db '... ',0
 s_more2         db ' more',0
 s_loading       db '...',0
@@ -4099,50 +4490,63 @@ msg_usage       db 'diskonaut for DOS: a treemap of what fills your disk.',13,10
                 db '  -s FILE  then write the screen to FILE and quit',13,10,'$'
 msg_notdir      db 'diskonaut: not a folder',13,10,'$'
 msg_nomem       db 'diskonaut: not enough memory',13,10,'$'
-msg_cpu         db 'diskonaut: needs a 386 or later',13,10,'$'
-msg_fpu         db 'diskonaut: needs a math coprocessor (387)',13,10,'$'
+msg_cpu         db 'diskonaut: needs an 80186, a 286 or later',13,10,'$'
 
 ; the treemap's working values
-em_x            dq 0.0
-em_y            dq 0.0
-em_w            dq 0.0
-em_h            dq 0.0
-tot_area        dq 0.0
-ftotal          dq 0.0
-ftotal0         dq 0.0                  ; the same before the zoom
-eq_pct          dq 0.0
-len             dq 0.0
-min1            dq 0.0
-min2            dq 0.0
-min_prod        dq 0.0
-w_sum           dq 0.0
-w_size          dq 0.0
-w_first         dq 0.0
-w_second        dq 0.0
-w_worst         dq 0.0
-w_cur           dq 0.0
-w_nxt           dq 0.0
-l_total         dq 0.0
-l_prog          dq 0.0
-l_second        dq 0.0
-l_tsecond       dq 0.0
-l_size          dq 0.0
-l_first         dq 0.0
-r_x             dq 0.0
-r_y             dq 0.0
-r_w             dq 0.0
-r_h             dq 0.0
-tmp64           dq 0
-tmp32           dd 0
-add_app         dq 0
-add_disk        dq 0
-add_desc        dd 0
-ent_size        dq 0
-pctv            dd 0
-pctv_even       dd 0
-share10         dd 0
-disk_used       dq 0
-disk_out        dq 0
+em_x            rb F_SIZE
+em_y            rb F_SIZE
+em_w            rb F_SIZE
+em_h            rb F_SIZE
+tot_area        rb F_SIZE
+ftotal          rb F_SIZE
+ftotal0         rb F_SIZE
+eq_pct          rb F_SIZE
+f_len           rb F_SIZE
+min1            rb F_SIZE
+min2            rb F_SIZE
+w_sum           rb F_SIZE
+w_first         rb F_SIZE
+w_second        rb F_SIZE
+w_worst         rb F_SIZE
+w_cur           rb F_SIZE
+l_total         rb F_SIZE
+l_prog          rb F_SIZE
+l_second        rb F_SIZE
+l_tsecond       rb F_SIZE
+l_first         rb F_SIZE
+r_x             rb F_SIZE
+r_y             rb F_SIZE
+r_w             rb F_SIZE
+r_h             rb F_SIZE
+f_t1            rb F_SIZE
+f_t2            rb F_SIZE
+f_pct           rb F_SIZE
+f_area          rb F_SIZE
+f_sz            rb F_SIZE
+f_unit          rb F_SIZE
+fc_one          rb F_SIZE
+fc_ratio        rb F_SIZE
+fc_min_hr       rb F_SIZE
+fc_min_wr       rb F_SIZE
+fc_min_prod     rb F_SIZE
+fc_100          rb F_SIZE
+fc_g            rb F_SIZE
+fc_m            rb F_SIZE
+fc_k            rb F_SIZE
+add_app         dw 0,0,0,0              ; then add_disk: tree_remove relies on it
+add_disk        dw 0,0,0,0
+add_desc        dw 0,0
+ent_size        dw 0,0,0,0
+ld_size         dw 0,0,0,0
+sum64           dw 0,0,0,0
+area_size       dw 0,0,0,0
+bf_a            dw 0,0,0,0
+area_cached     db 0
+pctv            dw 0
+pctv_even       dw 0
+share10         dw 0
+disk_used       dw 0,0,0,0
+disk_out        dw 0,0,0,0
 disk_known      db 0
 lw_first        dw 0
 lw_count        dw 0
@@ -4222,5 +4626,6 @@ has_small       db 0,0
 tiles           rb MAXTILES*T_SIZE
 tiles_end:
 include 'PVDATA.ASM'
+include 'FPDATA.ASM'
 boxbits         rb 256
 scr             rw 80*25

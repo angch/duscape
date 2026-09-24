@@ -55,15 +55,20 @@ list_cursor_index:
         test    dx,dx
         jz      .r
         xor     bx,bx
+        push    es
+        mov     es,[entseg]
+        xor     si,si
 .l:     cmp     bx,[nent]
-        jae     .r
-        mov     si,bx
-        shl     si,1
-        cmp     [gs:si],dx
+        jae     .none
+        cmp     [es:si],dx
         je      .f
         inc     bx
+        add     si,2
         jmp     .l
-.f:     mov     ax,bx
+.none:  pop     es
+        ret
+.f:     pop     es
+        mov     ax,bx
 .r:     ret
 
 ; ax = a listing index → ax = its tile, or -1
@@ -118,10 +123,13 @@ sync_board:
 set_list_cursor:
         cmp     ax,[nent]
         jae     .r
-        mov     si,ax
-        shl     si,1
-        mov     dx,[gs:si]
-        mov     [list_cur],dx
+        push    bx
+        mov     bx,ax
+        push    ax
+        call    ent_node
+        mov     [list_cur],ax
+        pop     ax
+        pop     bx
         call    tile_of
         mov     [sel],ax
 .r:     ret
@@ -133,16 +141,20 @@ move_list:
         push    ax
         call    list_pos
         pop     dx
-        movsx   eax,ax
-        movsx   edx,dx
-        add     eax,edx
+        add     ax,dx                   ; both within ±32767: an overflow says which end
+        jno     @f
+        mov     ax,7FFFh
+        test    dx,dx
         jns     @f
-        xor     eax,eax
-@@:     movzx   edx,[nent]
-        dec     edx
-        cmp     eax,edx
+        xor     ax,ax
+@@:     test    ax,ax
+        jns     @f
+        xor     ax,ax
+@@:     mov     dx,[nent]
+        dec     dx
+        cmp     ax,dx
         jle     @f
-        mov     eax,edx
+        mov     ax,dx
 @@:     call    set_list_cursor
 .r:     ret
 
@@ -179,8 +191,13 @@ list_window:
         cmp     cx,LIST_ROWS
         jbe     .r
         mov     cx,LIST_ROWS-1
-        call    list_pos
-        sub     ax,(LIST_ROWS-1)/2
+        push    cx
+        call    selected_entry          ; around the entry highlighted, whichever panel
+        pop     cx
+        cmp     ax,-1
+        jne     @f
+        xor     ax,ax
+@@:     sub     ax,(LIST_ROWS-1)/2
         jns     @f
         xor     ax,ax
 @@:     mov     dx,[nent]
@@ -253,28 +270,20 @@ panel_line:
 
 ; the entry at listing index bx → l1buf, cx = length: its name, '/' for a folder
 entry_name:
-        push    fs
-        push    si
-        shl     bx,1
-        mov     fs,[gs:bx]
-        shr     bx,1
+        push    ax
+        call    ent_node
         mov     di,l1buf
-        movzx   cx,byte [fs:N_NLEN]
-        xor     si,si
-@@:     jcxz    @f
-        mov     al,[fs:N_NAME+si]
-        stosb
-        inc     si
-        dec     cx
-        jmp     @b
-@@:     test    byte [fs:N_FLAGS],F_DIR
+        push    ax
+        call    nname
+        pop     ax
+        call    nflags
+        test    al,F_DIR
         jz      @f
-        mov     al,'/'
-        stosb
+        mov     byte [di],'/'
+        inc     di
 @@:     mov     cx,di
         sub     cx,l1buf
-        pop     si
-        pop     fs
+        pop     ax
         ret
 
 draw_panel:
@@ -306,21 +315,8 @@ draw_panel:
         mov     bx,[lw_first]
         add     bx,bp
         push    bx
-        call    entry_name
-        mov     si,l1buf                ; the name, cut to fit beside a 7-wide size
-        cmp     cx,PANEL_TEXT-7
-        jbe     .nm
-        call    fit_panel
-        push    ds
-        pop     es
-        mov     si,tb
-        mov     di,l1buf
-        mov     cx,PANEL_TEXT
-        rep     movsb
-        ; fit again, to the name's own width
-        mov     si,l1buf
-        mov     cx,PANEL_TEXT
-.nm:    mov     [lw_nlen],cx
+        call    entry_name              ; the name, cut to fit beside a 7-wide size
+        mov     [lw_nlen],cx
         pop     bx
         push    bx
         ; the row: name, then the size right-aligned in 7
@@ -339,8 +335,10 @@ draw_panel:
         rep     movsb
         pop     bx
         push    bx
-        call    load_size
+        call    ent_node
+        call    nsize
         mov     di,s1buf
+        mov     si,f_sz
         call    fmt_size
         mov     cx,di
         sub     cx,s1buf
@@ -364,10 +362,11 @@ draw_panel:
         mov     ah,A_OFFBOARD
         je      .put
         mov     ah,A_ONBOARD
-        mov     si,bx
-        shl     si,1
-        mov     fs,[gs:si]
-        test    byte [fs:N_FLAGS],F_DIR
+        push    ax
+        call    ent_node
+        call    nflags
+        test    al,F_DIR
+        pop     ax
         jz      .put
         mov     ah,A_DIR
 .put:   mov     dx,bp
@@ -387,13 +386,10 @@ draw_panel:
         mov     di,l2buf
         mov     si,s_more
         call    append_z
-        movzx   eax,ax
-        push    eax
         mov     ax,[nent]
         sub     ax,[lw_count]
-        movzx   eax,ax
+        xor     dx,dx
         call    u32dec_c
-        pop     eax
         mov     si,s_more2
         call    append_z
         mov     cx,di
@@ -439,33 +435,36 @@ name_cut:
         pop     si
         ret
 
-; "5.2G · 68,175 files · 100.0% of scan", or less of it
+; "5.2G · 68,175 files · 12.5% of scan", or less of it; the share only below the root, as the
+; terminal viewer has no scan total to give at the top
 draw_panel_sizes:
         push    ds
         pop     es
-        mov     fs,[cur]
-        ; the share of the whole scan, in tenths of a percent
-        mov     si,[size_off]
-        fild    qword [fs:si]
+        mov     [share10],-1
+        mov     ax,[cur]
+        cmp     ax,[root]
+        je      .size
+        call    nsize                   ; size / total × 100, then {:.1}
+        mov     si,f_sz
+        mov     bx,f_t1
+        call    f_copy
         mov     ax,[root]
-        mov     gs,ax
-        fild    qword [gs:si]
-        mov     gs,[entseg]
-        ftst
-        fnstsw  ax
-        sahf
-        je      .noshare
-        fdivp   st1,st0
-        fmul    qword [c_1000]
-        call    round_even              ; {:.1}
-        mov     [share10],eax
-        jmp     .size
-.noshare:
-        fcompp
-        mov     dword [share10],-1
-.size:  mov     di,s1buf                ; the size
-        mov     si,[size_off]
-        fild    qword [fs:si]
+        call    nsize
+        cmp     byte [f_sz+F_C],FC_ZERO
+        je      .size
+        mov     si,f_t1
+        mov     di,f_sz
+        mov     bx,f_t1
+        call    f_div
+        mov     di,fc_100
+        call    f_mul
+        mov     cx,10
+        call    f_round_even
+        mov     [share10],ax
+.size:  mov     ax,[cur]                ; the size
+        call    nsize
+        mov     di,s1buf
+        mov     si,f_sz
         call    fmt_size
         mov     [s1len],di
         ; the first that fits
@@ -473,7 +472,8 @@ draw_panel_sizes:
         call    .sz
         mov     si,s_dot
         call    append_z
-        mov     eax,[fs:N_DESC]
+        mov     ax,[cur]
+        call    ndesc
         call    u32dec_c
         mov     si,s_files
         call    append_z
@@ -499,18 +499,17 @@ draw_panel_sizes:
         sub     cx,s1buf
         rep     movsb
         ret
-.share: cmp     dword [share10],-1
+.share: cmp     [share10],-1
         je      @f
         mov     si,s_dot
         call    append_z                ; lodsb: AL is not safe across it
-        mov     eax,[share10]
-        xor     edx,edx
-        mov     ecx,10
-        div     ecx
+        mov     ax,[share10]
+        xor     dx,dx
+        call    div10
         call    u32dec
         mov     al,'.'
         stosb
-        mov     al,dl
+        mov     al,bl
         add     al,'0'
         stosb
         mov     si,s_of_scan
@@ -529,10 +528,9 @@ draw_panel_counts:
         xor     dx,dx                   ; folders
 .l:     cmp     bx,[nent]
         jae     .c
-        mov     si,bx
-        shl     si,1
-        mov     fs,[gs:si]
-        test    byte [fs:N_FLAGS],F_DIR
+        call    ent_node
+        call    nflags
+        test    al,F_DIR
         jz      @f
         inc     dx
 @@:     inc     bx
@@ -550,42 +548,60 @@ draw_panel_counts:
         mov     ah,A_DETAILS
         jmp     panel_line
 .text:  mov     di,l2buf
-        push    si
-        movzx   eax,[lw_dirs]
+        mov     ax,[lw_dirs]
+        xor     dx,dx
         call    u32dec_c
-        pop     si
         call    append_z                ; " folders, " or " dirs, "
-        movzx   eax,[nent]
+        mov     ax,[nent]
         sub     ax,[lw_dirs]
+        xor     dx,dx
         call    u32dec_c
         call    append_z                ; " files here" or " files": the next string
         mov     cx,di
         sub     cx,l2buf
         ret
 
-; "disk used 9.1G, 3.9G not scanned" when the drive says more is used than the scan found
+; "disk used 9.1G, 3.9G not scanned": at the top, once the scan is done, sizes on disk, when
+; the drive says more is used than the scan found and has freed since (as the terminal viewer)
 draw_panel_disk:
         cmp     [disk_known],0
         je      .r
-        mov     fs,[root]
-        mov     eax,dword [disk_used]
-        mov     edx,dword [disk_used+4]
-        sub     eax,[fs:N_DISK]
-        sbb     edx,[fs:N_DISK+4]
+        cmp     [scanning],0
+        jne     .r
+        cmp     [apparent],0
+        jne     .r
+        mov     ax,[cur]
+        cmp     ax,[root]
+        jne     .r
+        push    es
+        mov     es,ax
+        mov     ax,[es:N_DISK]          ; outside = used - (found + freed)
+        mov     dx,[es:N_DISK+2]
+        mov     cx,[es:N_DISK+4]
+        mov     bx,[es:N_DISK+6]
+        pop     es
+        add     ax,[freed+N_DISK]
+        adc     dx,[freed+N_DISK+2]
+        adc     cx,[freed+N_DISK+4]
+        adc     bx,[freed+N_DISK+6]
+        mov     si,[disk_used]
+        sub     si,ax
+        mov     [disk_out],si
+        mov     si,[disk_used+2]
+        sbb     si,dx
+        mov     [disk_out+2],si
+        mov     si,[disk_used+4]
+        sbb     si,cx
+        mov     [disk_out+4],si
+        mov     si,[disk_used+6]
+        sbb     si,bx
+        mov     [disk_out+6],si
         jb      .r
-        mov     dword [disk_out],eax
-        mov     dword [disk_out+4],edx
         push    ds
         pop     es
         mov     di,l2buf
         mov     si,s_disk_used
-        call    append_z
-        fild    qword [disk_used]
-        call    fmt_size
-        mov     si,s_comma
-        call    append_z
-        fild    qword [disk_out]
-        call    fmt_size
+        call    .both
         mov     si,s_not_scanned
         call    append_z
         mov     cx,di
@@ -594,13 +610,7 @@ draw_panel_disk:
         jbe     .put
         mov     di,l2buf
         mov     si,s_disk
-        call    append_z
-        fild    qword [disk_used]
-        call    fmt_size
-        mov     si,s_comma_plus
-        call    append_z
-        fild    qword [disk_out]
-        call    fmt_size
+        call    .both
         mov     cx,di
         sub     cx,l2buf
 .put:   mov     si,l2buf
@@ -609,6 +619,21 @@ draw_panel_disk:
         mov     ah,A_DETAILS
         jmp     panel_line
 .r:     ret
+; si's text, the used size, ", " or ", +" (the string after si's), the outside size
+.both:  call    append_z
+        push    si
+        mov     si,disk_used
+        mov     bx,f_sz
+        call    f_from_u64
+        mov     si,f_sz
+        call    fmt_size
+        pop     si
+        call    append_z
+        mov     si,disk_out
+        mov     bx,f_sz
+        call    f_from_u64
+        mov     si,f_sz
+        jmp     fmt_size
 
 ; the caption and the preview under the list
 draw_preview:
@@ -625,7 +650,9 @@ draw_preview:
         mov     si,s_dot
         call    append_z
         pop     bx
-        call    load_size
+        call    ent_node
+        call    nsize
+        mov     si,f_sz
         call    fmt_size
         cmp     [pv_state],PV_PICTURE
         jne     @f
@@ -677,7 +704,8 @@ draw_preview:
         mov     si,bx
         shl     si,5
         add     si,pv_text
-        movzx   cx,[pv_tlen+bx]
+        mov     cl,[pv_tlen+bx]
+        xor     ch,ch
         mov     dl,0
         mov     dh,PREVIEW_Y+1
         add     dh,bl

@@ -47,10 +47,10 @@ class Screen:
         rest = rest[8 + 16 * MAXTILES:]
         self.palette = [tuple(rest[i * 3:i * 3 + 3]) for i in range(16)]
         self.preview_state = rest[48]
-        self.blocks_wide, self.blocks_high = struct.unpack("<II", rest[49:57])
-        pixels = rest[57:57 + PV_PIXELS * 4]
+        self.blocks_wide, self.blocks_high = struct.unpack("<HH", rest[49:53])
+        pixels = rest[53:53 + PV_PIXELS * 4]
         self.block_rgb = [tuple(pixels[i * 4:i * 4 + 4]) for i in range(PV_PIXELS)]
-        self.block_colour = list(rest[57 + PV_PIXELS * 4:57 + PV_PIXELS * 5])
+        self.block_colour = list(rest[53 + PV_PIXELS * 4:53 + PV_PIXELS * 5])
         self.text = "\n".join(self.rows)
 
     def __contains__(self, text):
@@ -66,6 +66,9 @@ def dosbox(commands, *, lfn=True, limit=300, extra=()):
     with open(batch, "w", newline="\r\n") as f:
         f.write("\n".join(commands) + "\n")
     settings = ["dos ver=7.1", "dos lfn=true"] if lfn else ["dos ver=5.0", "dos lfn=false"]
+    # a 286 with no coprocessor, the least it runs on; the normal core is the one that faults on
+    # an instruction the machine does not have
+    settings += ["cpu cputype=286", "cpu fpu=false", "cpu core=normal"]
     args = ["dosbox-x", "-silent", "-fastlaunch", "-nogui", "-nomenu", "-defaultconf",
             "-time-limit", str(limit), "-set", "cpu cycles=max"]
     for setting in list(settings) + list(extra):
@@ -110,11 +113,14 @@ def fixtures():
     for i in range(30):
         write(os.path.join(fix, "src", "deep", f"f{i:02}.o"), 1000 * (i + 1))
     os.makedirs(os.path.join(fix, "empty"))
-    for copy in ("del", "del2", "part"):
+    for copy in ("del", "del2", "del3", "part"):
         shutil.copytree(fix, os.path.join(WORK, copy))
     # a read-only file deleted with the rest; a folder that refuses to let go of what is in it
     os.chmod(os.path.join(WORK, "del", "src", "lib.rs"), 0o444)
     os.chmod(os.path.join(WORK, "part", "src", "deep", "er"), 0o555)
+    # a name longer than the list's column
+    write(os.path.join(WORK, "names", "IMG_20240101_1200.jpg"), 9000)
+    write(os.path.join(WORK, "names", "b.txt"), 10)
     # a long name outside ASCII that CP437 has (DOSBox-X hides one it has not, so the short-name
     # path for those cannot be tried here)
     write(os.path.join(WORK, "wide", "café", "inside.txt"), 5000)
@@ -157,7 +163,12 @@ def picture_fixtures():
     os.makedirs(os.path.dirname(text))
     with open(text, "wb") as f:
         f.write("a\tb\r\n\x1b[2Jcleared\nhéllo wörld ½\n".encode() + b"x" * 60 + b"\nlast")
+    tiny = os.path.join(WORK, "pv", "tinyjpeg", "a.jpg")
+    os.makedirs(os.path.dirname(tiny))
+    subprocess.run(["magick", "-size", "5x4", "xc:orange", "-quality", "95",
+                    "-sampling-factor", "2x2", "JPEG:" + tiny], check=True)
     for folder, data in [("binary", b"ELF\x00\x01\x02"), ("empty", b""),
+                         ("head64k", b"x" * 65536), ("binary64k", b"x" * 65535 + b"\x00"),
                          ("broken", open(os.path.join(WORK, "pv", "rgb", "a.png"), "rb")
                           .read()[:900])]:
         os.makedirs(os.path.join(WORK, "pv", folder))
@@ -298,10 +309,9 @@ def eight_three_names():
 
 
 @check
-def old_machines_are_refused():
+def an_8086_is_refused():
     out = []
-    for setting, message in [("cpu cputype=286", "needs a 386"),
-                             ("cpu fpu=false", "needs a math coprocessor")]:
+    for setting, message in [("cpu cputype=8086", "needs an 80186")]:
         log = os.path.join(WORK, "OUT.TXT")
         if os.path.exists(log):
             os.remove(log)
@@ -363,8 +373,8 @@ def layout_matches_the_rust_treemap():
 def the_side_panel():
     s, = screens([(f"-a {DOS_WORK}\\FIX", "")])
     expect(s.row(1).startswith("C:\\target\\dos\\t\\fix"), "the folder: " + s.row(1))
-    expect(s.row(2).startswith("1.1M · 46 files · 100.0%") or
-           s.row(2).startswith("1.1M · 100.0% of scan"), s.row(2))
+    # at the top there is no share of the scan to give, as in the terminal viewer
+    expect(s.row(2).startswith("1.1M · 46 files "), s.row(2))
     expect(s.row(3).startswith("3 folders, 6 files here"), s.row(3))
     expect(s.row(5)[:PV_COLS] == "src/               605.5K", s.row(5))
     expect(s.attrs[5][0] == 0x70, "the list's cursor, on its top row, has the keyboard")
@@ -408,6 +418,32 @@ def deleting_an_entry_without_a_tile():
 
 
 @check
+def long_names_keep_their_ends():
+    s, = screens([(f"-a {DOS_WORK}\\NAMES", "")])
+    expect(s.row(5)[:PV_COLS] == "IMG_20240~1200.jpg   8.8K", s.row(5))
+    return [s]
+
+
+@check
+def after_a_delete_the_neighbour():
+    s, = screens([(f"-a {DOS_WORK}\\DEL3", "jdy")])     # big.bin, the second
+    expect(not os.path.exists(os.path.join(WORK, "del3", "big.bin")), "big.bin is gone")
+    expect(s.row(6).startswith("medium.dat") and s.attrs[6][0] == 0x70,
+           "the cursor on the entry that took its place: " + s.row(6))
+    expect("Delete" not in s, "and nothing asked again: it was placed, not picked")
+    return [s]
+
+
+@check
+def a_tiny_jpeg_keeps_its_colour():
+    s, = screens([(f"-a {DOS_WORK}\\PV\\TINYJPEG", "")])
+    expect(s.preview_state == PREVIEWED, s.row(16))
+    r, g, b, opaque = s.block_rgb[0]
+    expect(opaque and r > 200 and 100 < g < 200 and b < 80, f"orange, not {r, g, b}")
+    return [s]
+
+
+@check
 def the_panel_can_be_hidden():
     s, = screens([(f"-a {DOS_WORK}\\FIX", "s")])
     expect(s.row(1).startswith("┌"), "the treemap takes the whole width: " + s.row(1))
@@ -426,12 +462,15 @@ def text_previews():
 
 @check
 def previews_say_what_a_file_is():
-    binary, empty, broken = screens([(f"-a {DOS_WORK}\\PV\\{f}", "")
-                                     for f in ("BINARY", "EMPTY", "BROKEN")])
+    binary, empty, broken, head, late = screens([(f"-a {DOS_WORK}\\PV\\{f}", "")
+                                                 for f in ("BINARY", "EMPTY", "BROKEN",
+                                                           "HEAD64K", "BINARY64K")])
     expect(binary.row(16).startswith("binary file"), binary.row(16))
     expect(empty.row(16).startswith("empty file"), empty.row(16))
     expect(broken.row(16).startswith("PNG image, unreadable: t"), broken.row(16))
-    return [binary, empty, broken]
+    expect(head.row(16).startswith("x" * PV_COLS), "a 64 KiB head, one line: " + head.row(16))
+    expect(late.row(16).startswith("binary file"), "a NUL in the head's last byte: binary")
+    return [binary, empty, broken, head, late]
 
 
 @check
@@ -465,6 +504,91 @@ def picture_previews():
                 best = min(weighted(got, p) for p in s.palette)
                 expect(weighted(got, s.palette[colour]) == best, f"{folder}: nearest colour")
     return shown
+
+
+def hostile_pictures():
+    """Damaged and hostile pictures, each alone in a folder: (folder, file name, bytes)."""
+    random.seed(11)
+    cases = []
+    for source in ("rgb", "interlaced", "palette", "baseline", "progressive", "restarts"):
+        name = "a.png" if os.path.exists(os.path.join(WORK, "pv", source, "a.png")) else "a.jpg"
+        good = open(os.path.join(WORK, "pv", source, name), "rb").read()
+        for cut in (10, 40, 100, len(good) // 3, len(good) - 5):
+            cases.append((f"{source}-cut{cut}", name, good[:cut]))
+        for flips in range(8):
+            bad = bytearray(good)
+            for _ in range(1 + flips * 3):
+                at = random.randrange(8, len(bad))
+                bad[at] = random.randrange(256)
+            cases.append((f"{source}-flip{flips}", name, bytes(bad)))
+
+    def png(width, height, depth, colour, interlace=0, chunks=(), data=None):
+        def chunk(kind, body):
+            import zlib
+            return (struct.pack(">I", len(body)) + kind + body +
+                    struct.pack(">I", zlib.crc32(kind + body) & 0xFFFFFFFF))
+        import zlib
+        head = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(
+            ">IIBBBBB", width, height, depth, colour, 0, 0, interlace))
+        body = b"".join(chunk(k, v) for k, v in chunks)
+        if data is None:
+            data = zlib.compress(b"\x00" * (height * (1 + width)))
+        return head + body + chunk(b"IDAT", data) + chunk(b"IEND", b"")
+
+    cases += [
+        ("png-zero", "a.png", png(0, 0, 8, 0)),
+        ("png-huge", "a.png", png(40000, 40000, 8, 2)),
+        ("png-wide", "a.png", png(20000, 2, 16, 6)),
+        ("png-one", "a.png", png(1, 1, 8, 0)),
+        ("png-nopalette", "a.png", png(4, 4, 8, 3)),
+        ("png-bigtrns", "a.png", png(4, 4, 8, 3, chunks=[(b"PLTE", b"\xff\x00\x00"),
+                                                        (b"tRNS", b"\x80" * 300)])),
+        ("png-baddepth", "a.png", png(4, 4, 3, 2)),
+        ("png-emptyidat", "a.png", png(4, 4, 8, 0, data=b"")),
+        ("png-garbageidat", "a.png", png(8, 8, 8, 2, data=bytes(range(256)) * 4)),
+        ("png-interlace1px", "a.png", png(1, 1, 8, 2, interlace=1,
+                                          data=__import__("zlib").compress(b"\x00\x01\x02\x03"))),
+    ]
+    soi, eoi = b"\xff\xd8", b"\xff\xd9"
+
+    def seg(marker, body):
+        return b"\xff" + bytes([marker]) + struct.pack(">H", len(body) + 2) + body
+
+    sof = seg(0xC0, b"\x08" + struct.pack(">HH", 16, 16) + b"\x03" +
+              b"\x01\x22\x00\x02\x11\x00\x03\x11\x00")
+    cases += [
+        ("jpeg-sosfirst", "a.jpg", soi + seg(0xDA, b"\x01\x01\x00\x00\x3f\x00") + eoi),
+        ("jpeg-zerosize", "a.jpg", soi + seg(0xC0, b"\x08\x00\x00\x00\x00\x01\x01\x11\x00") + eoi),
+        ("jpeg-nohuffman", "a.jpg", soi + sof + seg(0xDA, b"\x03\x01\x00\x02\x11\x03\x11"
+                                                          b"\x00\x3f\x00") + b"\x12\x34" * 50 + eoi),
+        ("jpeg-sampling3", "a.jpg", soi + seg(0xC0, b"\x08\x00\x10\x00\x10\x03\x01\x33\x00"
+                                                   b"\x02\x11\x00\x03\x11\x00") + eoi),
+        ("jpeg-sameids", "a.jpg", soi + seg(0xC0, b"\x08\x00\x10\x00\x10\x03\x01\x11\x00"
+                                                 b"\x01\x11\x00\x01\x11\x00") + eoi),
+        ("jpeg-bighuffman", "a.jpg", soi + seg(0xC4, b"\x00" + b"\xff" * 16 + b"\x00" * 40) + eoi),
+        ("jpeg-restartnone", "a.jpg", soi + seg(0xDD, b"\x00\x01") + sof + eoi),
+        ("jpeg-onlysoi", "a.jpg", soi),
+        ("jpeg-markers", "a.jpg", soi + b"\xff" * 5000),
+    ]
+    return cases
+
+
+@check
+def damaged_pictures_do_not_hang():
+    cases = hostile_pictures()
+    for folder, name, data in cases:
+        path = os.path.join(WORK, "hostile", folder, name)
+        os.makedirs(os.path.dirname(path))
+        with open(path, "wb") as f:
+            f.write(data)
+    shots = screens([(f"-a {DOS_WORK}\\HOSTILE\\{folder.upper()}", "") for folder, _, _ in cases],
+                    limit=600)
+    for (folder, _, _), shot in zip(cases, shots):
+        expect(shot is not None, f"{folder}: no screen: it hung or crashed (and so did the rest)")
+        # FF D8 alone is text, as preview::sniff has it
+        allowed = (1,) if folder == "jpeg-onlysoi" else (2, PREVIEWED)
+        expect(shot.preview_state in allowed, f"{folder}: state {shot.preview_state}")
+    return []
 
 
 # the treemap's area, x y width height: beside the side panel, and with it hidden

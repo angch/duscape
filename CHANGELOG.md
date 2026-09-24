@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The MS-DOS viewer runs on a 286 (or an 80186) with no coprocessor: 16-bit registers only, no
+  FS/GS, conditional jumps a 286 can take (`J286.INC`), and the treemap in IEEE doubles computed in
+  software (`SOFTFP.ASM`), so it still lays out exactly as Rust's f64 code does. Checked by a lint
+  for 386 instructions, 150,000 random soft-float operations against the host's doubles, and the
+  whole test suite on an emulated 286 without an FPU. With it, fixes from a review: a tiny JPEG
+  could hang the decoder for hours (a scan now ends at its end marker, and keys are read each
+  row); JPEG Huffman tables are checked before use; sniff read only every other byte; long names
+  lost their ends in the list; small JPEGs came out blank; the list followed the treemap's
+  selection only when the list had the keyboard; the cursor went to the top after a delete; a
+  file whose name DOS converted could not be previewed; the disk line and the share of the scan
+  differed from the terminal viewer's; restart markers could swallow the next marker; 4-byte
+  UTF-8 showed the wrong character; a 64 KiB head with no newline previewed blank.
 - The MS-DOS viewer's side panel and previews: the folder's details and its entries beside the
   treemap, with the TUI's focus rules (the list has the keyboard, Tab and the arrows cross over,
   Page Up/Down, Home/End), and under them the entry in hand previewed — text in CP437, or a PNG

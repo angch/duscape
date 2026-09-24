@@ -4,9 +4,13 @@
 ; A block pixel of the preview covers many 8x8 blocks of the image, and the mean of a block is
 ; its DC coefficient alone: DC x the quantiser / 8 + 128. So no inverse DCT: the Huffman codes
 ; are decoded (the AC ones only to be skipped) and each block's mean is averaged into acc, as Y,
-; Cb and Cr, converted to RGB at the end. Baseline and extended sequential JPEGs, and
-; progressive ones from their first DC scans (the AC scans are skipped). Grayscale or YCbCr, any
-; sampling factors, restart intervals. Not lossless, arithmetic-coded, 12-bit or CMYK.
+; Cb and Cr, converted to RGB at the end; only every jstep-th block each way is averaged, about
+; eight to a block pixel a side. Baseline and extended sequential JPEGs, and progressive ones
+; from their first DC scans (the AC scans are skipped). Grayscale or YCbCr, any sampling
+; factors, restart intervals. Not lossless, arithmetic-coded, 12-bit or CMYK.
+;
+; A scan ends at the first marker that is not a restart, so data cut short cannot keep it going,
+; and the keyboard is looked at every row of blocks.
 
 J_TABLE         = 32+256        ; a Huffman table: 16 word counts, then up to 256 symbols
 
@@ -16,6 +20,8 @@ jpeg_decode:
         mov     [jri],0
         mov     [jdone],0
         mov     [jmarker],0
+        mov     [jhdef],0               ; the tables defined so far, a bit each
+        mov     [jqdef],0
         mov     [acc_mode],1
 .marker:
         call    jnext_marker
@@ -47,10 +53,7 @@ jpeg_decode:
         ja      .skip
         mov     ax,s_jpeg_kind          ; lossless, hierarchical or arithmetic-coded
         jmp     dec_fail
-.skip:  call    rd_be16
-        movzx   ecx,ax
-        sub     ecx,2
-        jb      .bad
+.skip:  call    .seglen
         call    rd_skip
         jmp     .marker
 .eoi:   cmp     [jdone],0
@@ -62,6 +65,14 @@ jpeg_decode:
         jmp     dec_fail
 .bad:   mov     ax,s_jpeg_bad
         jmp     dec_fail
+; dx:cx ← a segment's length, less its own two bytes
+.seglen:
+        call    rd_be16
+        sub     ax,2
+        jb      .bad
+        mov     cx,ax
+        xor     dx,dx
+        ret
 
 .sofp:  mov     [jprog],1
         jmp     .frame
@@ -71,15 +82,12 @@ jpeg_decode:
         cmp     al,8
         jne     .kind
         call    rd_be16
-        movzx   eax,ax
-        mov     [img_h],eax
+        mov     [img_h],ax
         call    rd_be16
-        movzx   eax,ax
-        mov     [img_w],eax
-        cmp     dword [img_h],0         ; the height in a DNL marker
+        mov     [img_w],ax
+        cmp     [img_h],0               ; the height in a DNL marker
         je      .kind
-        cmp     dword [img_w],0
-        je      .bad
+        call    pv_check_size
         call    rd_byte
         mov     [jnf],al
         cmp     al,1
@@ -95,7 +103,10 @@ jpeg_decode:
         mov     [jc_id+bx],al
         call    rd_byte
         mov     ah,al
-        shr     ah,4
+        shr     ah,1
+        shr     ah,1
+        shr     ah,1
+        shr     ah,1
         and     al,0Fh
         jz      .bad
         test    ah,ah
@@ -121,76 +132,112 @@ jpeg_decode:
         call    jpeg_describe
         call    acc_setup
         mov     [acc_mode],1
+        call    jpeg_steps
         jmp     .marker
 .kind:  mov     ax,s_jpeg_kind
         jmp     dec_fail
 .cmyk:  mov     ax,s_jpeg_cmyk
         jmp     dec_fail
 
-.dht:   call    rd_be16
-        movzx   ebp,ax
-        sub     ebp,2
-.table: cmp     ebp,17
-        jl      .marker
+.dht:   call    .seglen
+        mov     bp,cx                   ; what is left of the segment
+.table: cmp     bp,17
+        jb      .dhtend
         call    rd_byte
         mov     ah,al
-        shr     ah,4                    ; 0 DC, 1 AC
+        shr     ah,1
+        shr     ah,1
+        shr     ah,1
+        shr     ah,1                    ; 0 DC, 1 AC
         cmp     ah,1
         ja      .bad
         and     al,3
-        shl     ah,2
+        shl     ah,1
+        shl     ah,1
         add     al,ah
-        movzx   di,al
-        imul    di,di,J_TABLE
-        add     di,jhuff
-        xor     edx,edx                 ; how many symbols
-        mov     cx,16
-.cnt:   call    rd_byte
-        movzx   ax,al
-        mov     [di],ax
+        mov     [jslot],al
+        xor     dx,dx                   ; how many symbols
+        xor     bx,bx
+.cnt:   call    rd_byte                 ; the counts, kept aside until they are known good
+        xor     ah,ah
+        mov     [jtmp+bx],ax
         add     dx,ax
-        add     di,2
-        loop    .cnt
-        sub     di,32
+        add     bx,2
+        cmp     bx,32
+        jb      .cnt
+        sub     bp,17
         cmp     dx,256
         ja      .bad
-        sub     ebp,17
-        sub     ebp,edx
-        jb      .bad
-        mov     cx,dx
+        cmp     dx,bp
+        ja      .bad
+        sub     bp,dx
+        mov     cx,dx                   ; the symbols (mul takes dx)
+        mov     al,[jslot]
+        xor     ah,ah
+        mov     di,J_TABLE
+        mul     di
+        mov     di,ax
+        add     di,jhuff
         xor     bx,bx
-        jcxz    .table
+@@:     mov     ax,[jtmp+bx]
+        mov     [di+bx],ax
+        add     bx,2
+        cmp     bx,32
+        jb      @b
+        xor     bx,bx
+        jcxz    .def
 @@:     call    rd_byte
         mov     [di+32+bx],al
         inc     bx
         loop    @b
+.def:   mov     cl,[jslot]
+        mov     al,1
+        shl     al,cl
+        or      [jhdef],al
         jmp     .table
+.dhtend:
+        mov     cx,bp
+        xor     dx,dx
+        call    rd_skip
+        jmp     .marker
 
-.dqt:   call    rd_be16
-        movzx   ebp,ax
-        sub     ebp,2
-.q:     cmp     ebp,65
-        jl      .marker
+.dqt:   call    .seglen
+        mov     bp,cx
+.q:     cmp     bp,65
+        jb      .dqtend
         call    rd_byte
         mov     bl,al
         and     bx,3
+        mov     cl,bl
+        mov     ah,1
+        shl     ah,cl
+        or      [jqdef],ah
         shl     bx,1
-        shr     al,4
-        mov     ecx,63
-        sub     ebp,65
+        shr     al,1
+        shr     al,1
+        shr     al,1
+        shr     al,1
+        mov     cx,63
+        sub     bp,65
         test    al,al
         jz      .q8
         call    rd_be16                 ; 16-bit values
         mov     [jq+bx],ax
-        mov     ecx,126
-        sub     ebp,64
+        mov     cx,126
+        sub     bp,64
         jb      .bad
         jmp     .qrest
 .q8:    call    rd_byte
-        movzx   ax,al
+        xor     ah,ah
         mov     [jq+bx],ax
-.qrest: call    rd_skip                 ; only the DC one matters
+.qrest: xor     dx,dx
+        call    rd_skip                 ; only the DC one matters
         jmp     .q
+.dqtend:
+        mov     cx,bp
+        xor     dx,dx
+        call    rd_skip
+        jmp     .marker
 
 .dri:   call    rd_be16
         call    rd_be16
@@ -201,13 +248,14 @@ jpeg_decode:
         je      .bad
         call    rd_be16
         call    rd_byte
-        mov     byte [jnscan],al           ; a word, compared with si
+        mov     byte [jnscan],al        ; a word, compared with si
+        mov     byte [jnscan+1],0
         cmp     al,1
         jb      .bad
         cmp     al,[jnf]
         ja      .bad
         xor     si,si
-.sc:    cmp     si,word [jnscan]
+.sc:    cmp     si,[jnscan]
         jae     .scd
         call    rd_byte                 ; the component, by id
         xor     bx,bx
@@ -220,7 +268,10 @@ jpeg_decode:
 @@:     mov     [jsc+si],bl
         call    rd_byte
         mov     ah,al
-        shr     ah,4
+        shr     ah,1
+        shr     ah,1
+        shr     ah,1
+        shr     ah,1
         and     ax,0303h
         mov     [jc_td+bx],ah
         mov     [jc_ta+bx],al
@@ -232,7 +283,10 @@ jpeg_decode:
         mov     [jse],al
         call    rd_byte
         mov     ah,al
-        shr     ah,4
+        shr     ah,1
+        shr     ah,1
+        shr     ah,1
+        shr     ah,1
         and     al,0Fh
         mov     [jah],ah
         mov     [jal],al
@@ -243,13 +297,13 @@ jpeg_decode:
         cmp     [jah],0
         jne     .pass
 .decode:
+        call    jscan_tables            ; every table the scan names must be there
         call    jscan
         xor     si,si
-@@:     cmp     si,word [jnscan]
+@@:     cmp     si,[jnscan]
         jae     @f
-        movzx   bx,[jsc+si]
+        mov     cl,[jsc+si]
         mov     al,1
-        mov     cl,bl
         shl     al,cl
         or      [jdone],al
         inc     si
@@ -265,6 +319,90 @@ jpeg_decode:
 .pass:  call    jskip_scan
         jmp     .marker
 
+; the scan's Huffman and quantisation tables defined, else corrupt
+jscan_tables:
+        xor     si,si
+.l:     cmp     si,[jnscan]
+        jae     .r
+        mov     bl,[jsc+si]
+        xor     bh,bh
+        mov     cl,[jc_td+bx]           ; its DC table
+        mov     al,1
+        shl     al,cl
+        test    [jhdef],al
+        jz      .bad
+        cmp     [jprog],0               ; and AC table, when the AC is decoded (skipped)
+        jne     @f
+        mov     cl,[jc_ta+bx]
+        add     cl,4
+        mov     al,1
+        shl     al,cl
+        test    [jhdef],al
+        jz      .bad
+@@:     mov     cl,[jc_tq+bx]
+        mov     al,1
+        shl     al,cl
+        test    [jqdef],al
+        jz      .bad
+        inc     si
+        jmp     .l
+.r:     ret
+.bad:   mov     ax,s_jpeg_bad
+        jmp     dec_fail
+
+; for each component, every how many blocks each way are averaged: about eight to a block
+; pixel, so the sums stay small
+jpeg_steps:
+        xor     bx,bx
+.l:     cmp     bl,[jnf]
+        jae     .r
+        mov     al,[jc_h+bx]
+        mov     cx,[img_w]
+        mov     dl,[jhmax]
+        push    word [acc_cols]
+        call    .one
+        pop     cx
+        mov     [jstep_x+bx],al
+        mov     al,[jc_v+bx]
+        mov     cx,[img_h]
+        mov     dl,[jvmax]
+        push    word [acc_hrows]
+        call    .one
+        pop     cx
+        mov     [jstep_y+bx],al
+        inc     bx
+        jmp     .l
+.r:     ret
+; al = the sampling factor, cx = the side, dl = the largest factor, [sp+2] = the block pixels →
+; al = max(1, the component's blocks / block pixels / 8), at most 255
+.one:   push    bx
+        push    bp
+        mov     bp,sp
+        mov     bl,dl                   ; the largest factor
+        xor     bh,bh
+        xor     ah,ah
+        mul     cx                      ; the component's side: side × factor / max, in blocks
+        div     bx
+        add     ax,7
+        shr     ax,1
+        shr     ax,1
+        shr     ax,1
+        xor     dx,dx
+        mov     cx,[bp+6]
+        shl     cx,1
+        shl     cx,1
+        shl     cx,1
+        div     cx
+        test    ax,ax
+        jnz     @f
+        inc     ax
+@@:     cmp     ax,255
+        jbe     @f
+        mov     ax,255
+@@:     pop     bp
+        pop     bx
+        ret
+
 ; "JPEG 1920x1080"
 jpeg_describe:
         push    es
@@ -273,11 +411,13 @@ jpeg_describe:
         mov     di,pv_desc
         mov     si,s_jpeg
         call    append_z
-        mov     eax,[img_w]
+        mov     ax,[img_w]
+        xor     dx,dx
         call    u32dec
         mov     al,'x'
         stosb
-        mov     eax,[img_h]
+        mov     ax,[img_h]
+        xor     dx,dx
         call    u32dec
         mov     byte [di],0
         pop     es
@@ -337,154 +477,173 @@ jbyte:
 .ff:    mov     al,0FFh
 .r:     ret
 
-; the next bit, most significant first → eax
+; ZF=0 if the data has run into a marker that is not a restart: the scan is over
+jat_end:
+        mov     al,[jmarker]
+        test    al,al
+        jz      .r                      ; ZF=1: go on
+        cmp     al,0D0h
+        jb      .end
+        cmp     al,0D7h
+        jbe     .rst
+.end:   or      sp,sp                   ; ZF=0
+.r:     ret
+.rst:   cmp     al,al                   ; ZF=1
+        ret
+
+; the next bit, most significant first → ax
 jbit:
         cmp     [jcnt],0
         jne     @f
-        push    ax
         call    jbyte
         mov     [jbits_buf],al
-        pop     ax
         mov     [jcnt],8
 @@:     mov     al,[jbits_buf]
         shl     [jbits_buf],1
         dec     [jcnt]
-        shr     al,7
-        movzx   eax,al
+        rol     al,1
+        and     ax,1
         ret
 
-; cl bits → eax
+; cl bits (up to 16) → ax
 jbits:
-        push    edx
+        push    dx
         push    cx
-        xor     edx,edx
+        xor     dx,dx
         test    cl,cl
         jz      .r
 @@:     call    jbit
-        shl     edx,1
-        or      edx,eax
+        shl     dx,1
+        or      dx,ax
         dec     cl
         jnz     @b
-.r:     mov     eax,edx
+.r:     mov     ax,dx
         pop     cx
-        pop     edx
+        pop     dx
         ret
 
-; si = a table → eax = the next symbol
+; si = a table → al = the next symbol
 jdecode:
-        push    ebx
-        push    ecx
-        push    edx
-        push    edi
-        push    esi
-        movzx   esi,si
-        xor     edx,edx
-        xor     ebx,ebx
-        xor     edi,edi
-        mov     ecx,1
+        push    bx
+        push    cx
+        push    dx
+        push    di
+        xor     dx,dx                   ; code
+        xor     bx,bx                   ; first
+        xor     di,di                   ; index
+        xor     cx,cx                   ; the count's offset: (length - 1) × 2
 .l:     call    jbit
-        or      edx,eax
-        movzx   eax,word [esi+ecx*2-2]  ; codes of length ecx: JPEG counts from 1
-        add     ebx,eax
-        cmp     edx,ebx
+        or      dx,ax
+        push    si
+        add     si,cx
+        mov     ax,[si]                 ; codes of this length
+        pop     si
+        add     bx,ax
+        cmp     dx,bx
         jb      .found
-        add     edi,eax
-        shl     ebx,1
-        shl     edx,1
-        inc     ecx
-        cmp     ecx,16
-        jbe     .l
+        add     di,ax
+        shl     bx,1
+        shl     dx,1
+        add     cx,2
+        cmp     cx,32
+        jb      .l
         mov     ax,s_jpeg_bad
         jmp     dec_fail
-.found: sub     edx,ebx
-        add     edx,eax
-        add     edx,edi
-        movzx   eax,byte [esi+32+edx]
-        pop     esi
-        pop     edi
-        pop     edx
-        pop     ecx
-        pop     ebx
+.found: sub     dx,bx
+        add     dx,ax
+        add     dx,di
+        cmp     dx,256                  ; the counts were checked, but not against 256 codes
+        jae     .bad
+        mov     bx,dx
+        mov     al,[si+32+bx]
+        pop     di
+        pop     dx
+        pop     cx
+        pop     bx
         ret
+.bad:   mov     ax,s_jpeg_bad
+        jmp     dec_fail
 
 ; one scan's blocks
 jscan:
         mov     [jcnt],0
-        xor     eax,eax
-        mov     [jpred],eax
-        mov     [jpred+4],eax
-        mov     [jpred+8],eax
+        mov     [jpred],0
+        mov     [jpred+2],0
+        mov     [jpred+4],0
         mov     ax,[jri]
         mov     [jtogo],ax
         cmp     [jnscan],1
         jne     .mcus
         ; one component: its own blocks, row by row
-        movzx   bx,[jsc]
+        mov     bl,[jsc]
+        xor     bh,bh
         mov     [jcur],bl
-        movzx   eax,[jc_h+bx]
-        mul     dword [img_w]
-        movzx   ecx,[jhmax]
-        add     eax,ecx
-        dec     eax
-        xor     edx,edx
-        div     ecx
-        add     eax,7
-        shr     eax,3
-        mov     [jbw],eax
-        movzx   eax,[jc_v+bx]
-        mul     dword [img_h]
-        movzx   ecx,[jvmax]
-        add     eax,ecx
-        dec     eax
-        xor     edx,edx
-        div     ecx
-        add     eax,7
-        shr     eax,3
-        mov     [jbh],eax
-        mov     dword [jby],0
-.r1:    mov     eax,[jby]
-        cmp     eax,[jbh]
+        mov     al,[jc_h+bx]
+        mov     cl,[jhmax]
+        mov     dx,[img_w]
+        call    .blocks
+        mov     [jbw],ax
+        mov     al,[jc_v+bx]
+        mov     cl,[jvmax]
+        mov     dx,[img_h]
+        call    .blocks
+        mov     [jbh],ax
+        mov     [jby],0
+.r1:    mov     ax,[jby]
+        cmp     ax,[jbh]
         jae     .done
-        mov     dword [jbx],0
-.c1:    mov     eax,[jbx]
-        cmp     eax,[jbw]
+        mov     [jbx],0
+.c1:    mov     ax,[jbx]
+        cmp     ax,[jbw]
         jae     .n1
         call    jrestart
         call    jblock
-        inc     dword [jbx]
+        call    jat_end
+        jnz     .done
+        inc     [jbx]
         jmp     .c1
-.n1:    inc     dword [jby]
+.n1:    inc     [jby]
+        call    .key
         jmp     .r1
 .mcus:  ; interleaved: MCU by MCU
-        movzx   ecx,[jhmax]
-        shl     ecx,3
-        mov     eax,[img_w]
-        add     eax,ecx
-        dec     eax
-        xor     edx,edx
-        div     ecx
-        mov     [jmcux],eax
-        movzx   ecx,[jvmax]
-        shl     ecx,3
-        mov     eax,[img_h]
-        add     eax,ecx
-        dec     eax
-        xor     edx,edx
-        div     ecx
-        mov     [jmcuy],eax
-        mov     dword [jmy],0
-.rm:    mov     eax,[jmy]
-        cmp     eax,[jmcuy]
+        mov     al,[jhmax]
+        xor     ah,ah
+        shl     ax,1
+        shl     ax,1
+        shl     ax,1
+        mov     cx,ax
+        mov     ax,[img_w]
+        add     ax,cx
+        dec     ax
+        xor     dx,dx
+        div     cx
+        mov     [jmcux],ax
+        mov     al,[jvmax]
+        xor     ah,ah
+        shl     ax,1
+        shl     ax,1
+        shl     ax,1
+        mov     cx,ax
+        mov     ax,[img_h]
+        add     ax,cx
+        dec     ax
+        xor     dx,dx
+        div     cx
+        mov     [jmcuy],ax
+        mov     [jmy],0
+.rm:    mov     ax,[jmy]
+        cmp     ax,[jmcuy]
         jae     .done
-        mov     dword [jmx],0
-.cm:    mov     eax,[jmx]
-        cmp     eax,[jmcux]
+        mov     [jmx],0
+.cm:    mov     ax,[jmx]
+        cmp     ax,[jmcux]
         jae     .nm
         call    jrestart
         xor     si,si
-.k:     cmp     si,word [jnscan]
+.k:     cmp     si,[jnscan]
         jae     .kd
-        movzx   bx,[jsc+si]
+        mov     bl,[jsc+si]
+        xor     bh,bh
         mov     [jcur],bl
         mov     byte [jv],0
 .v:     mov     al,[jv]
@@ -494,16 +653,20 @@ jscan:
 .h:     mov     al,[jh]
         cmp     al,[jc_h+bx]
         jae     .vn
-        movzx   eax,[jc_h+bx]           ; the block: mx*Hc + h, my*Vc + v
-        mul     dword [jmx]
-        movzx   ecx,[jh]
-        add     eax,ecx
-        mov     [jbx],eax
-        movzx   eax,[jc_v+bx]
-        mul     dword [jmy]
-        movzx   ecx,[jv]
-        add     eax,ecx
-        mov     [jby],eax
+        mov     al,[jc_h+bx]            ; the block: mx*Hc + h, my*Vc + v
+        xor     ah,ah
+        mul     [jmx]
+        mov     cl,[jh]
+        xor     ch,ch
+        add     ax,cx
+        mov     [jbx],ax
+        mov     al,[jc_v+bx]
+        xor     ah,ah
+        mul     [jmy]
+        mov     cl,[jv]
+        xor     ch,ch
+        add     ax,cx
+        mov     [jby],ax
         push    si
         push    bx
         call    jblock
@@ -515,16 +678,38 @@ jscan:
         jmp     .v
 .kn:    inc     si
         jmp     .k
-.kd:    inc     dword [jmx]
+.kd:    call    jat_end
+        jnz     .done
+        inc     [jmx]
         jmp     .cm
-.nm:    inc     dword [jmy]
-        test    byte [jmy],7            ; now and then, whether a key is waiting
-        jnz     .rm
-        call    key_ready
-        jz      .rm
+.nm:    inc     [jmy]
+        call    .key
+        jmp     .rm
+.done:  ret
+; a key waiting stops the decode (for now)
+.key:   call    key_ready
+        jz      @f
         xor     ax,ax
         jmp     dec_fail
-.done:  ret
+@@:     ret
+; al = the factor, cl = the largest, dx = the image side → ax = the component's blocks that way:
+; ceil(ceil(side × factor / largest) / 8)
+.blocks:
+        push    bx
+        xor     ah,ah
+        mul     dx
+        xor     ch,ch
+        add     ax,cx
+        adc     dx,0
+        sub     ax,1
+        sbb     dx,0
+        div     cx
+        add     ax,7
+        shr     ax,1
+        shr     ax,1
+        shr     ax,1
+        pop     bx
+        ret
 
 ; before each MCU: every jri of them, a restart marker, and the predictions start over
 jrestart:
@@ -535,62 +720,72 @@ jrestart:
         mov     ax,[jri]
         mov     [jtogo],ax
         mov     [jcnt],0
-        xor     eax,eax
-        mov     [jpred],eax
-        mov     [jpred+4],eax
-        mov     [jpred+8],eax
+        mov     [jpred],0
+        mov     [jpred+2],0
+        mov     [jpred+4],0
         mov     al,[jmarker]
         test    al,al
         jnz     .have
-@@:     call    rd_byte                 ; the marker, not read yet
+.find:  call    rd_byte                 ; the marker, not read yet
         cmp     al,0FFh
-        jne     @b
+        jne     .find
 @@:     call    rd_byte
         cmp     al,0FFh
         je      @b
+        test    al,al                   ; stuffed data, not a marker
+        jz      .find
 .have:  cmp     al,0D0h
-        jb      .count
+        jb      .other
         cmp     al,0D7h
-        ja      .count
-        mov     [jmarker],0
+        ja      .other
+        mov     [jmarker],0             ; the restart: on with the data
+        jmp     .count
+.other: mov     [jmarker],al            ; the scan's end: jat_end sees it
 .count: dec     [jtogo]
 .r:     ret
 
 ; the block jbx, jby of component jcur: its DC, its AC skipped, its mean into acc
 jblock:
-        movzx   bx,[jcur]
-        movzx   si,[jc_td+bx]
-        imul    si,si,J_TABLE
+        mov     bl,[jcur]
+        xor     bh,bh
+        mov     al,[jc_td+bx]
+        xor     ah,ah
+        mov     si,J_TABLE
+        mul     si
+        mov     si,ax
         add     si,jhuff
         call    jdecode
         cmp     al,11
         ja      .bad
         mov     cl,al
-        xor     edx,edx
+        xor     dx,dx
         test    cl,cl
         jz      .dc
         call    jbits                   ; extend: below 2^(s-1) it is negative
-        mov     edx,eax
-        mov     eax,1
+        mov     dx,ax
+        mov     ax,1
         dec     cl
-        shl     eax,cl
+        shl     ax,cl
         inc     cl
-        cmp     edx,eax
+        cmp     dx,ax
         jae     .dc
-        mov     eax,-1
-        shl     eax,cl
-        inc     eax
-        add     edx,eax
-.dc:    shl     bx,2
-        add     edx,[jpred+bx]
-        mov     [jpred+bx],edx
-        shr     bx,2
+        mov     ax,-1
+        shl     ax,cl
+        inc     ax
+        add     dx,ax
+.dc:    shl     bx,1
+        add     dx,[jpred+bx]
+        mov     [jpred+bx],dx
+        shr     bx,1
         cmp     [jprog],0
         jne     .mean
         ; baseline: the AC coefficients, skipped
-        movzx   si,[jc_ta+bx]
-        add     si,4
-        imul    si,si,J_TABLE
+        mov     al,[jc_ta+bx]
+        xor     ah,ah
+        add     ax,4
+        mov     si,J_TABLE
+        mul     si
+        mov     si,ax
         add     si,jhuff
         mov     di,1
 .ac:    cmp     di,64
@@ -598,74 +793,129 @@ jblock:
         call    jdecode
         mov     cl,al
         and     cl,0Fh
-        shr     al,4
+        shr     al,1
+        shr     al,1
+        shr     al,1
+        shr     al,1
         test    cl,cl
         jnz     .coef
         cmp     al,15
         jne     .mean                   ; end of block
         add     di,16
         jmp     .ac
-.coef:  movzx   ax,al
+.coef:  xor     ah,ah
         add     di,ax
         inc     di
         call    jbits
         jmp     .ac
-.mean:  shl     bx,2
-        mov     eax,[jpred+bx]
-        shr     bx,2
-        mov     cl,[jal]
-        shl     eax,cl
-        movzx   si,[jc_tq+bx]
+.mean:  ; only every jstep-th block each way is averaged
+        mov     ax,[jbx]
+        xor     dx,dx
+        mov     cl,[jstep_x+bx]
+        xor     ch,ch
+        div     cx
+        test    dx,dx
+        jnz     .r
+        mov     ax,[jby]
+        xor     dx,dx
+        mov     cl,[jstep_y+bx]
+        div     cx
+        test    dx,dx
+        jnz     .r
+        ; the block's origin in the image: past its edge, only padding
+        mov     al,[jhmax]
+        xor     ah,ah
+        mov     cl,[jc_h+bx]
+        call    .scale
+        mov     cx,[jbx]
+        mov     di,[img_w]
+        call    .pos
+        cmp     ax,[img_w]
+        jae     .r
+        mov     [jx],dx
+        mov     al,[jvmax]
+        xor     ah,ah
+        mov     cl,[jc_v+bx]
+        call    .scale
+        mov     cx,[jby]
+        mov     di,[img_h]
+        call    .pos
+        cmp     ax,[img_h]
+        jae     .r
+        mov     [jy],dx
+        ; the mean: DC << Al × the quantiser / 8 + 128, clamped
+        push    bx
+        shl     bx,1
+        mov     ax,[jpred+bx]
+        pop     bx
+        mov     cl,[jc_tq+bx]
+        xor     ch,ch
+        mov     si,cx
         shl     si,1
-        movzx   ecx,word [jq+si]
-        imul    eax,ecx
-        sar     eax,3
-        add     eax,128
-        jns     @f
-        xor     eax,eax
-@@:     cmp     eax,255
-        jbe     @f
-        mov     eax,255
-@@:     push    eax
-        ; the block's centre in the image, and how much of it the block stands for
-        movzx   ecx,[jhmax]
-        mov     eax,[jbx]
-        shl     eax,3
-        add     eax,4
-        mul     ecx
-        movzx   ecx,[jc_h+bx]
-        div     ecx
-        mov     [jx],eax
-        movzx   ecx,[jvmax]
-        mov     eax,[jby]
-        shl     eax,3
-        add     eax,4
-        mul     ecx
-        movzx   ecx,[jc_v+bx]
-        div     ecx
-        mov     [jy],eax
-        pop     eax
-        mov     ecx,[jx]
-        cmp     ecx,[img_w]
-        jae     .r
-        mov     ecx,[jy]
-        cmp     ecx,[img_h]
-        jae     .r
-        push    eax
-        movzx   eax,[jhmax]
-        xor     edx,edx
-        movzx   ecx,[jc_h+bx]
-        div     ecx
-        push    eax
-        movzx   eax,[jvmax]
-        xor     edx,edx
-        movzx   ecx,[jc_v+bx]
-        div     ecx
-        pop     edx
-        imul    edx,eax                 ; the weight
-        pop     eax
+        imul    word [jq+si]            ; dx:ax
+        mov     cl,[jal]
+        jcxz    .shifted
+@@:     shl     ax,1
+        rcl     dx,1
+        loop    @b
+.shifted:
+        mov     cx,3
+@@:     sar     dx,1
+        rcr     ax,1
+        loop    @b
+        add     ax,128
+        adc     dx,0
+        test    dx,dx
+        js      .black
+        jnz     .white
+        cmp     ax,255
+        jbe     .v
+.white: mov     ax,255
+        jmp     .v
+.black: xor     ax,ax
+.v:     push    ax
+        ; how much of the image the block stands for: (max / h) × (max / v)
+        mov     al,[jhmax]
+        xor     ah,ah
+        div     byte [jc_h+bx]
+        mov     dl,al
+        mov     al,[jvmax]
+        xor     ah,ah
+        div     byte [jc_v+bx]
+        mul     dl
+        mov     dx,ax
+        pop     ax
         mov     cl,bl                   ; the channel: Y, Cb, Cr in frame order
         call    acc_add_c
 .r:     ret
 .bad:   mov     ax,s_jpeg_bad
         jmp     dec_fail
+; ax = the largest factor, cl = the component's → jsc_num (the image pixels in 8 of its pixels,
+; × the factor: 8 × max) and jsc_den (its factor)
+.scale: shl     ax,1
+        shl     ax,1
+        shl     ax,1
+        mov     [jsc_num],ax
+        xor     ch,ch
+        mov     [jsc_den],cx
+        ret
+; cx = the block, di = the image's side → ax = its origin in the image, dx = its centre,
+; clamped to the image
+.pos:   mov     ax,cx
+        mul     [jsc_num]
+        div     [jsc_den]
+        push    ax
+        mov     ax,cx
+        shl     ax,1
+        inc     ax                      ; (2 × block + 1) × 8 × max / (2 × h): the centre
+        mul     [jsc_num]
+        mov     cx,[jsc_den]
+        shl     cx,1
+        div     cx
+        mov     dx,ax
+        pop     ax
+        dec     di
+        cmp     dx,di
+        jbe     @f
+        mov     dx,di
+@@:     ret

@@ -72,7 +72,8 @@ a window that draws one picture. See [`viewers/linux/README.md`](viewers/linux/R
 ## MS-DOS
 
 `viewers/dos/` is the treemap for MS-DOS: a 16-bit real-mode program in assembly (FASM), about
-**26 KB**, that runs in DOSBox-X or on a 386 with a 387. It is not built from the Rust code but
+**29 KB**, that runs in DOSBox-X or on a 286 with no coprocessor (the treemap's doubles are
+computed in software, bit for bit as Rust's f64). It is not built from the Rust code but
 ported from it — the squarify layout, navigation, zoom, tile text, the side panel and size formats
 — and its tiles match `libdiskonaut`'s on every folder it was compared on. It scans with long file
 names where DOS has them, draws the treemap live during the scan, deletes and rescans, and

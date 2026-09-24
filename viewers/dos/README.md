@@ -1,8 +1,8 @@
 # diskonaut for MS-DOS
 
-The treemap viewer as a 16-bit real-mode DOS program, in FASM, about 26 KB assembled. It is not
-built from the Rust code; the Rust code is its reference, and the layout is checked against it
-tile for tile.
+The treemap viewer as a 16-bit real-mode DOS program, in FASM, about 29 KB assembled, for a 286
+(or an 80186) with no coprocessor. It is not built from the Rust code; the Rust code is its
+reference, and the layout is checked against it tile for tile.
 
 | File | What it holds |
 | --- | --- |
@@ -11,6 +11,9 @@ tile for tile.
 | [`PREVIEW.ASM`](PREVIEW.ASM) | the preview: text, what a file is, pictures in half blocks, the palette |
 | [`PNG.ASM`](PNG.ASM), [`JPEG.ASM`](JPEG.ASM) | the two picture decoders |
 | [`PVDATA.ASM`](PVDATA.ASM) | the data of the last three |
+| [`SOFTFP.ASM`](SOFTFP.ASM), [`FPDATA.ASM`](FPDATA.ASM) | IEEE doubles in 16-bit code, and their working storage |
+| [`J286.INC`](J286.INC) | conditional jumps a 286 can take |
+| [`tests/`](tests/) | the soft float against the host's doubles, and a lint for 386 instructions |
 
 ```sh
 make dos        # target/dos/DISKONAU.EXE (and diskonaut.exe, the same file)
@@ -48,8 +51,10 @@ scan stops it.
 - **Scans** with DOS's own find calls: long file names (INT 21h `71xxh`) when DOS has them, as
   DOSBox-X does with `lfn=true`, else 8.3 names. The treemap of the folder is drawn live while
   the walk runs. Space on disk is the length rounded up to the drive's cluster size.
-- **Lays out** with the squarify algorithm of `common/src/tiles/treemap.rs` on the 387, in double
-  precision: the same row decisions, the same `RectFloat::round`, the same "small files" corner.
+- **Lays out** with the squarify algorithm of `common/src/tiles/treemap.rs` in IEEE doubles
+  computed in software, in Rust's order of operations, so every intermediate value is the f64
+  the Rust code has: the same row decisions, the same `RectFloat::round`, the same "small files"
+  corner.
   Navigation (`board.rs`, `tile.rs`), the tile text and colours (`draw_rect.rs`), and the size and
   count formats (`display_size.rs`, `display_count.rs`, `truncate.rs`) are the same too, drawn
   in CP437 box characters that join where tiles meet.
@@ -75,14 +80,38 @@ scan stops it.
     the colours the picture needs, picked farthest first and refined once, and each block pixel
     takes its nearest of the 16. They are put back when the picture goes.
   - In DOSBox-X at `cycles=max` a 4000x3000 JPEG takes about 2 s, a 1920x1080 PNG about 3.5 s;
-    on a real 386, many times that, which is why a key stops it.
+    on a real 286, many times that, which is why a key stops it.
 - **Deletes** a file, or a folder and everything in it, and takes it off every folder above it;
   the title shows what was freed. If part of a folder will not go, the error is shown and the
   folder is walked again, so the treemap shows what is left and "freed" what went.
 - **Rescans** a folder (`r`) or everything (`R`) into a new node grafted in place, the folders
   above it corrected by the difference.
 
-It needs a 386 and a 387 (DOSBox-X's default machine is a Pentium) and says so otherwise.
+## A 286 and no coprocessor
+
+It uses nothing a 286 does not have, and nothing of the 286 an 80186 lacks, and on an 8086 or
+8088 says so and stops (they shift by all of CL, the 186 by its low five bits):
+
+- **16-bit registers only.** Sizes are 64 bits in four words, counts and sums 32 bits in two;
+  a 32-bit decimal is two chained divides. Node and listing access that used FS and GS goes
+  through ES, reloaded as needed, so string instructions still write through ES = DS.
+- **No near conditional jumps.** The 386's 0F 8x forms do not exist on a 286, and FASM has no
+  286 mode, so [`J286.INC`](J286.INC) redefines every conditional jump as a macro: short when the
+  target is in reach, else the opposite condition over a near `jmp`.
+- **No coprocessor.** [`SOFTFP.ASM`](SOFTFP.ASM) is IEEE 754 double precision: add, subtract,
+  multiply, divide, compare, conversion from 64-bit integers, and the two roundings Rust uses
+  (`f64::round`, and `{:.N}`'s half to even, exact for a small multiplier). Values stay unpacked
+  (64-bit significand, exponent, sign, class) and each result is rounded to 53 bits, to nearest,
+  ties to even, so it is bit for bit what an IEEE double gives, as long as nothing overflows,
+  underflows or goes subnormal, which nothing here does. Sizes and percentages go through it
+  where Rust uses f64 (`size as f64 / total as f64`, `DisplaySize`'s division by 2^30, which is
+  an exact change of exponent); the JPEG colour conversion is in fixed point, which is only a
+  picture's colour.
+- A relayout of a folder of 46 entries takes about 0.12 s at 286 speed (DOSBox-X at
+  `cycles=fixed 3000`, about a 12 MHz 286).
+
+Ctrl-C and critical errors (a drive not ready) are its own while it runs, so neither leaves the
+screen or a search behind.
 Ctrl-C and critical errors (a drive not ready) are its own while it runs, so neither leaves the
 screen or a search behind.
 
@@ -120,17 +149,33 @@ is selected.
 ## Checking it
 
 ```sh
-python3 viewers/dos/test.py        # builds, then every check; -v prints the screens
-python3 viewers/dos/test.py layout # the checks with "layout" in their name
+python3 viewers/dos/test.py            # builds, then every check; -v prints the screens
+python3 viewers/dos/test.py layout     # the checks with "layout" in their name
+python3 viewers/dos/tests/softfp.py    # SOFTFP.ASM against the host's doubles, 20,000 random ops
+python3 viewers/dos/tests/lint286.py   # any instruction a 286 does not have
 ```
+
+Every run is on an emulated 286 with no coprocessor (DOSBox-X `cputype=286`, `fpu=false`,
+`core=normal`), which faults on any instruction the machine lacks, so a check that passes has
+executed only 286 code. The lint catches what no check reaches: 32-bit registers and operands, FS
+and GS, the 386's and the x87's instructions, and variables declared `dd` or `dq`, for which FASM
+emits 32-bit instructions without being asked. `softfp.py` assembles `tests/TESTFP.ASM` and runs
+it on the same 286: random additions, subtractions, products, quotients, comparisons, roundings
+and conversions (integers, fractions, ties, infinities, NaNs, zeros of both signs), each
+compared bit for bit with the host's IEEE result; 150,000 of them agreed.
 
 `-s` writes the screen and the tiles and `-k` types the keys, so each check runs the program on a
 fixture in `target/dos/t/` and reads what it drew. All of a pass's runs go in one batch file, so
 DOSBox-X starts once. The checks cover the scan and the treemap, entering and leaving, zoom,
 deleting (the question, a read-only file, a folder that will not let go of part of itself, no
-delete for an entry nobody picked), rescanning, names outside ASCII, 8.3 names, and a 286 and an
-FPU-less machine refused; the side panel, the list's keys and focus, jumps, deleting an entry that
-has no tile, hiding the panel; text previews and what a file is. The picture check makes sixteen
+delete for an entry nobody picked, the list's cursor on the neighbour after one), rescanning,
+names outside ASCII, 8.3 names, and an 8086 refused; the side panel, the list's keys and focus,
+jumps, deleting an entry that has no tile, a long name cut keeping its end, hiding the panel;
+text previews (a 64 KiB head as one line) and what a file is (a NUL in a 64 KiB head's last
+byte). A tiny JPEG keeps its colour, and 97 damaged or hostile pictures (cut short, bytes
+flipped, or made up: zero or huge sizes, no palette, empty or garbage image data, a scan before
+any frame, sampling factors of 3, repeated component ids, a DHT claiming 4080 symbols, restarts
+without markers) must each end in a picture or a line saying why, never hang or fault. The picture check makes sixteen
 pictures with ImageMagick (PNG: every colour type and depth, interlaced, transparent, tiny,
 tall; JPEG 4:2:0, 4:4:4, grayscale, progressive, restart intervals), decodes each with
 ImageMagick too, averages it into the same block pixels, and compares: the grid's size, the

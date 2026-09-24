@@ -188,10 +188,16 @@ Six kinds of thread communicate via `mpsc` channels (bounded, except the preview
   run it after changing the viewer (macOS, logged-in session, no permissions needed)
 - `mac/draw.rs` — painting, by `Layout`; `mac/mod.rs` — the app, delegate, menus, window
 
-**MS-DOS** (`viewers/dos/`) — FASM, real mode on a 386 + 387, not part of the Cargo workspace:
+**MS-DOS** (`viewers/dos/`) — FASM, real mode on a 286 (or 186) with no coprocessor, not part of
+the Cargo workspace:
 `DISKONAU.ASM` (the program), `PANEL.ASM` (side panel), `PREVIEW.ASM` (text and half-block
 pictures, the six adaptive DAC colours), `PNG.ASM` and `JPEG.ASM` (decoders; a JPEG block's mean
-is its DC coefficient, so no IDCT), `PVDATA.ASM` (their data). A port, not a binding: the squarify layout, `RectFloat::round`,
+is its DC coefficient, so no IDCT), `PVDATA.ASM` (their data), `SOFTFP.ASM`/`FPDATA.ASM` (IEEE doubles in software, unpacked,
+rounded after each operation), `J286.INC` (conditional jumps as short-or-inverted macros). No
+32-bit register, FS/GS, 386 or x87 instruction, and no `dd`/`dq` variable (FASM makes 32-bit
+code for those unasked): `python3 viewers/dos/tests/lint286.py` must say so, and test.py runs
+everything on an emulated 286 without an FPU. 16-bit addressing has no `[si+di]`, and `[bp+…]`
+is in SS. A port, not a binding: the squarify layout, `RectFloat::round`,
 `Board` navigation, the tile text and the size formats are rewritten from `common/` and the TUI's
 `grid/`, so a change to those should be carried over by hand. `make dos` fetches FASM and CWSDPMI
 into `target/dos/` (hash-checked) and assembles inside DOSBox-X; `make dos-run` opens the repo as
@@ -490,5 +496,6 @@ busybox. One job then publishes both tarballs: matrix jobs that each create the 
 | `scanners/src/macos.rs` | ~830 lines — macOS `getattrlistbulk` walker |
 | `scanners/src/windows.rs` | ~920 lines — Windows bulk-listing walker |
 | `viewers/tui/src/bench/mod.rs` | ~370 lines — `--benchmark` harness |
-| `viewers/dos/DISKONAU.ASM` | ~4200 lines — the MS-DOS viewer, one instruction a line |
+| `viewers/dos/DISKONAU.ASM` | ~4600 lines — the MS-DOS viewer, one instruction a line |
+| `viewers/dos/SOFTFP.ASM` | ~770 lines — IEEE doubles on a 286 |
 | `viewers/dos/PREVIEW.ASM` | ~1040 lines — its previews: text, blocks, the palette |

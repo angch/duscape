@@ -77,7 +77,8 @@ by copying it.
 | Configurable keys | yes (`config.toml`) | — | — | — |
 | Benchmark harness | yes (`--benchmark`) | — | — | — |
 
-The MS-DOS viewer (`viewers/dos/`) shares no code, so it is not in the table. It has the scan (DOS
+The MS-DOS viewer (`viewers/dos/`, 16-bit assembly for a 286 with no coprocessor) shares no
+code, so it is not in the table. It has the scan (DOS
 find calls, long names where there are), the live treemap, arrow-key and mouse selection, Enter/Esc,
 deleting one entry, zoom, the disk usage / apparent size toggle, rescans (`r` / `R`), the list
 beside the treemap, and previews of text, PNG and JPEG in half blocks; see its README.
