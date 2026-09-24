@@ -45,7 +45,7 @@ has_diskus=; [ -x "$diskus" ] && has_diskus=1
 cpu=$(grep -m1 "model name" /proc/cpuinfo 2>/dev/null | cut -d: -f2- | sed 's/^ *//' || sysctl -n machdep.cpu.brand_string 2>/dev/null || echo unknown)
 cores=$(nproc 2>/dev/null || sysctl -n hw.ncpu)
 mem=$(free -g 2>/dev/null | awk '/^Mem:/{print $2 " GiB"}' || echo unknown)
-virt=$(systemd-detect-virt 2>/dev/null || echo unknown)
+virt=$(systemd-detect-virt 2>/dev/null || true); [ -n "$virt" ] || virt=unknown  # exits 1 for "none"
 distro=$(. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME" || uname -s)
 {
     echo "# $host — $(date +%Y-%m-%d)"
@@ -54,7 +54,7 @@ distro=$(. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME" || uname -s)
     echo "| --- | --- |"
     echo "| machine | $cpu, $cores cores, $mem, virtualisation: $virt |"
     echo "| system | $distro, kernel $(uname -r) |"
-    echo "| diskonaut | $(git -C "$here" rev-parse --short HEAD) ($(git -C "$here" status --porcelain | grep -q . && echo "with local changes" || echo clean)), release profile |"
+    echo "| diskonaut | $(git -C "$here" rev-parse --short HEAD) ($(git -C "$here" status --porcelain -uno | grep -q . && echo "with local changes" || echo clean)), release profile |"
     echo "| diskus | $([ -n "$has_diskus" ] && "$diskus" --version || echo "not installed") |"
     echo "| cold runs | $([ -n "$can_drop" ] && echo "yes (caches dropped before each)" || echo "no: cannot drop caches without root") |"
     echo "| root runs | $([ -n "$can_root" ] && echo "yes" || echo "no: sudo -n $bin not allowed") |"
