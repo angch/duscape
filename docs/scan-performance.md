@@ -2893,3 +2893,33 @@ stage over `project` (375k entries) and `~/.cache` (1.05M, 169k hard-linked), th
 
 The CPU that remains is where it was: the kernel's `statx` work in the walk, and the model's
 cache misses in the ledger and the folder lookups (see "The tree build").
+
+
+## Roadmap step 1: ext4 metadata from the device (2026-09-24)
+
+The spike of `scan-roadmap.md` step 1, `--benchmark --bench-stage ext4-raw`, as root: read the
+superblock, the group descriptor table and the used part of every group's inode table from the
+block device in sequential reads, and sum every live inode's `i_blocks`. No names, no tree —
+the floor a device-reading walker could reach. On `/data` (503 GiB ext4, 4096 groups, 334 with
+inodes, 256-byte inodes; 2.14M live inodes, 2.75M names):
+
+| | warm | cold | total |
+| --- | --- | --- | --- |
+| `ext4-raw`: 600 MiB read, 334 reads | 0.20s (0.37s the first time) | 0.44s | 463.3 GiB |
+| `walk`, as root | 1.43s | | |
+| `sharded`, as root | 1.77s | 4.50s | 462.9 GiB |
+| `df` used | | | 463.3 GiB |
+
+The sum agrees with `df` to within 1 MB and is 0.08% above the scan's, which is what no
+directory reaches (open-but-unlinked files, and what is under mount points). So the floor is
+**7x the walk warm and 10x cold**, from reading 600 MiB sequentially instead of asking the
+kernel 2.75M times. The gate asks for the same on a second machine that is not a VM before
+the walker is built on it; the syscall share is inflated here, so the ratio will be smaller
+there, but it has a long way to fall.
+
+What a walker adds on top of the survey: the directory blocks, one 4 KiB block per directory
+at least — 370k directories here, ~1.5 GiB — read in physical order in batches and parsed for
+names (`ext4_dir_entry_2`, the same in htree leaves; index blocks and checksum tails have
+inode 0 and are skipped), so cold they are a sequential sweep rather than 370k dependent
+reads, and warm a copy out of the device's page cache, which is the buffer cache the kernel
+reads them from too. Mount points inside the tree are handed to the ordinary walker.

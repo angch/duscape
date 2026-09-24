@@ -42,6 +42,9 @@ pub enum BenchStage {
     /// `sharded`, then the second pass over small files that may share extents: what the app
     /// shows once it has finished refining.
     Refined,
+    /// ext4's inode tables read from the device (root): every live inode's size summed, no
+    /// names, no tree — the floor a device-reading walker could reach. Linux, ext4, root.
+    Ext4Raw,
     /// Run every stage in order.
     All,
 }
@@ -324,6 +327,66 @@ fn bench_sharded(
     finish("refined", start, entries, failed, tree)
 }
 
+/// The ext4 device read of the filesystem holding `path`: the whole filesystem, not the subtree,
+/// so compare it with a scan of the mount point, as root.
+#[cfg(target_os = "linux")]
+fn bench_ext4_raw(path: &Path) -> StageResult {
+    let start = Instant::now();
+    match diskonaut_scan::ext4::survey_for(path) {
+        Ok(survey) => {
+            eprintln!(
+                "  ext4-raw: {} — {} of {} groups read, {} read in {:.3}s ({:.0} MiB/s); {} files, {} directories; apparent {} ({} B); block {} B, inode {} B",
+                survey.device.display(),
+                survey.groups_read,
+                survey.groups,
+                human_size(u128::from(survey.bytes_read)),
+                survey.elapsed.as_secs_f64(),
+                survey.bytes_read as f64 / 1048576.0 / survey.elapsed.as_secs_f64().max(1e-9),
+                survey.files,
+                survey.directories,
+                human_size(u128::from(survey.apparent)),
+                survey.apparent,
+                survey.block_size,
+                survey.inode_size,
+            );
+            StageResult {
+                stage: "ext4-raw",
+                elapsed: start.elapsed(),
+                entries: survey.inodes,
+                failed: 0,
+                total_size: u128::from(survey.bytes_on_disk),
+                hard_linked: 0,
+                reflinked: 0,
+            }
+        }
+        Err(error) => {
+            eprintln!("  ext4-raw: {error}");
+            StageResult {
+                stage: "ext4-raw",
+                elapsed: start.elapsed(),
+                entries: 0,
+                failed: 1,
+                total_size: 0,
+                hard_linked: 0,
+                reflinked: 0,
+            }
+        }
+    }
+}
+#[cfg(not(target_os = "linux"))]
+fn bench_ext4_raw(_path: &Path) -> StageResult {
+    eprintln!("  ext4-raw: Linux only");
+    StageResult {
+        stage: "ext4-raw",
+        elapsed: Duration::ZERO,
+        entries: 0,
+        failed: 1,
+        total_size: 0,
+        hard_linked: 0,
+        reflinked: 0,
+    }
+}
+
 /// Run the requested benchmark stages against `path` and print a report.
 pub fn run(
     path: &Path,
@@ -354,6 +417,7 @@ pub fn run(
 
     let stages = match stage {
         BenchStage::All => ALL_STAGES,
+        BenchStage::Ext4Raw => &[BenchStage::Ext4Raw],
         other => std::slice::from_ref(
             ALL_STAGES
                 .iter()
@@ -373,6 +437,7 @@ pub fn run(
                 BenchStage::Pipeline | BenchStage::All => bench_pipeline(path, options),
                 BenchStage::Sharded => bench_sharded(path, options, shards, shard_depth, false),
                 BenchStage::Refined => bench_sharded(path, options, shards, shard_depth, true),
+                BenchStage::Ext4Raw => bench_ext4_raw(path),
             };
             result.report();
         }

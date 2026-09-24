@@ -45,7 +45,7 @@ most.
 `docs/benchmarks/`. Gate: none; this is the yardstick. Do it first on every new machine, and
 again after any step that merges.
 
-### 1. ext4 metadata from the device, as root — a spike
+### 1. ext4 metadata from the device, as root — a spike (done here: 7x warm, 10x cold)
 
 *Linux, ext4, root, warm and cold.* Warm, the scan is bound by the kernel's per-entry work in
 `statx` and `getdents64` (7 s of system time for 2.24M entries here), and the tree build is a
@@ -59,6 +59,9 @@ tree yet: it measures the floor.
 - Risk: consistency on a live filesystem — delayed allocation and an uncheckpointed journal
   mean recent writes are not on the device yet. Accept seconds of staleness, and say so in the
   title, as WizTree does.
+- Result on this machine (`scan-performance.md`, "Roadmap step 1"): 0.20s warm and 0.44s cold
+  for 2.14M inodes against 1.77s and 4.50s for the walk; the sum within 1 MB of `df`. Half the
+  gate; the second machine is still to come.
 
 ### 2. The ext4 device walker
 
