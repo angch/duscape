@@ -17,8 +17,9 @@ diskonaut/
 │   ├── windows/       # diskonaut-windows: the Win32/GDI viewer
 │   ├── macos/         # diskonaut-mac: the AppKit viewer (objc2)
 │   ├── linux/         # diskonaut-linux: the Wayland/X11 viewer, no toolkit (wayland-client, x11rb, fontdue)
-│   └── shared/        # diskonaut-viewer: what the macOS and Linux viewers share — the window's
-│                      #   state and layout (`Viewer`), the first scan with its outline, the previewer
+│   ├── shared/        # diskonaut-viewer: what the macOS and Linux viewers share — the window's
+│   │                  #   state and layout (`Viewer`), the first scan with its outline, the previewer
+│   └── dos/           # not a crate: the MS-DOS treemap in 16-bit FASM assembly, `make dos`
 ├── docs/features.md   # every feature, which package holds it, which viewer offers it
 ├── example/config.toml
 └── Cargo.toml         # Workspace root
@@ -186,6 +187,19 @@ Six kinds of thread communicate via `mpsc` channels (bounded, except the preview
   app's own event queue, and `state` dumps to assert on. `tests/smoke.sh` runs one on a fixture;
   run it after changing the viewer (macOS, logged-in session, no permissions needed)
 - `mac/draw.rs` — painting, by `Layout`; `mac/mod.rs` — the app, delegate, menus, window
+
+**MS-DOS** (`viewers/dos/`) — `DISKONAU.ASM`, one FASM source, real mode on a 386 + 387, not
+part of the Cargo workspace. A port, not a binding: the squarify layout, `RectFloat::round`,
+`Board` navigation, the tile text and the size formats are rewritten from `common/` and the TUI's
+`grid/`, so a change to those should be carried over by hand. `make dos` fetches FASM and CWSDPMI
+into `target/dos/` (hash-checked) and assembles inside DOSBox-X; `make dos-run` opens the repo as
+C:. `-k KEYS -s FILE` types keys and writes the screen and tiles; `python3 viewers/dos/test.py`
+runs the checks on fixtures that way, the layout ones against `TreeMap` through `viewers/dos/tiles`
+(a crate outside the workspace). Run it after changing the DOS viewer. DOSBox-X loses long-name
+search entries when two searches are open, so each folder is listed to the end before its
+subfolders are walked (a pending stack in its own segment), and the delete queues its entries the
+same way; keep it that way. Do not set attributes on host files needlessly: DOSBox-X stores them in
+`.DBLOCALFILE_ATR_*` files beside them.
 
 **`diskonaut-angch`** (`viewers/tui/`) — the ratatui viewer:
 - `main.rs` — entry point, thread spawning, channel setup
@@ -472,3 +486,4 @@ busybox. One job then publishes both tarballs: matrix jobs that each create the 
 | `scanners/src/macos.rs` | ~830 lines — macOS `getattrlistbulk` walker |
 | `scanners/src/windows.rs` | ~920 lines — Windows bulk-listing walker |
 | `viewers/tui/src/bench/mod.rs` | ~370 lines — `--benchmark` harness |
+| `viewers/dos/DISKONAU.ASM` | ~3900 lines — the whole MS-DOS viewer, one instruction a line |

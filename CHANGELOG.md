@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- diskonaut for MS-DOS (`viewers/dos/`): the treemap as a 16-bit real-mode program in FASM
+  assembly, about 12 KB, for a 386 with a 387 or DOSBox-X. Ported from the Rust code — the
+  squarify layout, rounding, navigation, zoom, tile text and size formats — with tiles identical to
+  `libdiskonaut`'s on 100 random folders. It scans with DOS's find calls (long names where DOS has
+  them), draws the treemap live during the scan, deletes files and whole folders, toggles apparent
+  size, rescans a folder or everything (`r`/`R`), and takes the mouse. What does not fit in
+  conventional memory is shown as one "(not in memory)" entry per folder, so totals stay right; a
+  folder that will not delete completely is walked again. `make dos` assembles it inside DOSBox-X
+  with FASM and CWSDPMI fetched into `target/dos/`; `make dos-run` opens this repository;
+  `viewers/dos/test.py` checks it headless on fixtures.
 - A Linux viewer, `diskonaut-linux` (`viewers/linux/`), with no toolkit: the frame is drawn in
   software and put on the screen natively on Wayland (`wayland-client`'s pure-Rust protocol:
   `wl_shm`, `xdg-shell`, `xdg-decoration`, the seat with the xkb keymap read by the viewer, the

@@ -12,6 +12,8 @@ viewers/macos/     diskonaut-mac     a native macOS window (AppKit, through objc
 viewers/linux/     diskonaut-linux   a Wayland or X11 window for Linux and FreeBSD, no toolkit (wayland-client, x11rb, fontdue)
 viewers/shared/    diskonaut-viewer  what the desktop viewers share: the window's state and layout,
                                      the first scan with its live outline, the preview reader
+viewers/dos/       (FASM, not Cargo) the treemap for MS-DOS in 16-bit assembly, ported from the
+                                     Rust code rather than built from it
 ```
 
 Dependencies run one way: `diskonaut-scan` depends on `libdiskonaut`, each viewer on both, and the
@@ -74,6 +76,11 @@ by copying it.
 | Volume used vs. what the scan found | yes, in the title | — | yes, in the status bar | yes, in the status bar |
 | Configurable keys | yes (`config.toml`) | — | — | — |
 | Benchmark harness | yes (`--benchmark`) | — | — | — |
+
+The MS-DOS viewer (`viewers/dos/`) shares no code, so it is not in the table. It has the scan (DOS
+find calls, long names where there are), the live treemap, arrow-key and mouse selection, Enter/Esc,
+deleting one entry, zoom, the disk usage / apparent size toggle and rescans (`r` / `R`); see its
+README.
 
 A gap in a GUI column is a missing viewer feature, not a missing library one: everything in it
 apart from drawing and input is already in the two libraries.

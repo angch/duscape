@@ -1,0 +1,12 @@
+# The Rust treemap's tiles for a list of sizes, for test.py to compare the DOS layout with. Not a
+# member of the workspace: it exists only for that check.
+[package]
+name = "dos-tiles"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+libdiskonaut = { path = "../../../common" }
+
+[workspace]

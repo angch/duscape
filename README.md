@@ -69,6 +69,20 @@ Why not GTK or Qt: both need their development packages to build and their libra
 rules out the static binaries this fork ships, and their Rust bindings bring hundreds of crates for
 a window that draws one picture. See [`viewers/linux/README.md`](viewers/linux/README.md).
 
+## MS-DOS
+
+`viewers/dos/` is the treemap for MS-DOS: a 16-bit real-mode program in assembly (FASM), about
+**12 KB**, that runs in DOSBox-X or on a 386 with a 387. It is not built from the Rust code but
+ported from it — the squarify layout, navigation, zoom, tile text and size formats — and its tiles
+match `libdiskonaut`'s on every folder it was compared on. It scans with long file names where DOS
+has them, draws the treemap live during the scan, and deletes files and folders.
+
+```sh
+make dos-run    # needs dosbox-x; fetches FASM, assembles, opens this repository as C:
+```
+
+See [`viewers/dos/README.md`](viewers/dos/README.md).
+
 ## Windows GUI (experimental)
 
 `diskonaut-windows` is a native Windows treemap window. The walker (`diskonaut-scan`) and the tree,

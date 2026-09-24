@@ -71,3 +71,7 @@ wau/
 tofi-rs/
 ashell/
 examples/ashell_config.toml
+
+# The DOS viewer's layout-comparison tool (viewers/dos/tiles), built by viewers/dos/test.py
+viewers/dos/tiles/target
+viewers/dos/tiles/Cargo.lock
