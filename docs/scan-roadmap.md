@@ -79,14 +79,14 @@ the hard-link ledger unchanged.
   warm one not — 2.5 GiB of directory blocks out of the page cache costs what the kernel's
   `statx` threads cost on eight cores. On by default as root; `--no-device-read` opts out.
 
-### 3. XFS bulkstat, as root
+### 3. XFS bulkstat, as root (needs an XFS machine; not run here)
 
 *Linux, XFS, root.* `XFS_IOC_BULKSTAT` returns every inode's stat in bulk, without paths, and
 is refused unprivileged (measured, `scan-performance.md`). As root it removes the `statx` call
 per entry; `getdents64` still supplies names, joined by inode number.
 - Gate: totals identical on the XFS fixtures; `walk` at least 1.5x warm.
 
-### 4. Windows: the MFT, as administrator
+### 4. Windows: the MFT, as administrator (needs a Windows machine; not run here)
 
 *Windows, NTFS, elevated.* The floor there is a fixed kernel and filter-driver cost per
 directory handle, 3x worse on the system volume (`scan-performance.md`, 2026-09-24). Reading the
@@ -96,7 +96,7 @@ reference in each record's `$FILE_NAME` attribute giving the tree.
 - Gate: totals identical to the handle walker on a data volume and on `C:\`; at least 3x.
 - Needs a Windows machine with an admin session; CI cannot run it.
 
-### 5. Workers that adapt
+### 5. Workers that adapt (tried here: negative — 3–4% slower cold, no gain warm; not merged)
 
 *All platforms.* The profile showed four builders starved to 982 ns an entry under 24 walkers
 on 8 cores, while cold needs those 24 for queue depth. A walker pool that grows while its
@@ -105,14 +105,19 @@ and remove the per-machine constant (`default_scan_threads`).
 - Gate: warm not slower than today on the 8-core and a 32-core box; cold not slower than
   today's 24 workers.
 - Measure: time in `statx`/`getdents64` per worker (a sampled `Instant` is enough).
+- Result (`scan-performance.md`, "Roadmap step 5"): the cold ramp costs more than the warm
+  side saves, because warm was never builder-bound on the wall clock. Worth another look only
+  on a machine with many more cores than the disk can feed.
 
-### 6. Inode-table readahead, as root, cold
+### 6. Inode-table readahead, as root, cold (largely overtaken by step 2 on ext4)
 
 *Linux, ext4, root, cold.* After the directory-block prefetch, the remaining 10k cold reads are
 inode blocks at 11 KiB each. With the device open, the superblock and group descriptors say
 where every inode is; a directory's children, already sorted by inode, can be advised in one
 range per run before their `statx` calls. Falls out of step 1's superblock code.
 - Gate: cold reads down by half on `project`; warm unchanged.
+- Since step 2, a root scan of ext4 reads the device and does not make these reads at all; this
+  step now matters for the kernel walk as root on other filesystems, and for `--no-device-read`.
 
 ### 7. The model's cache misses (done here: 5–6% of the build, under the 10% gate; kept, small)
 
@@ -125,7 +130,7 @@ cache of the last path's positions skips most of them.
   chase down the folder chain and the ledger's hash misses, which want a different layout,
   not fewer operations.
 
-### 8. Whole-queue inode order
+### 8. Whole-queue inode order (needs a spinning disk; not run here)
 
 *Linux, cold, spinning disks above all.* Serving the walk's queue smallest inode first halved
 the directory-block runs again over what is shipped, but sorting the local stacks cost 6% warm.

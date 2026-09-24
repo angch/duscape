@@ -3009,3 +3009,24 @@ being eighty lines that make the structures smaller and the lookups fewer, but r
 under the gate: what is left in `resolve` and `ledger` is pointer chasing and hash misses,
 which a different layout (folders in an arena, the ledger keyed for locality) would address,
 not fewer operations.
+
+
+## Roadmap step 5: workers that adapt (2026-09-24) — a negative result
+
+The idea: start the walk at one worker a core, which is right warm, and let a monitor raise the
+count while the workers wait on the disk, which is what cold wants, instead of the fixed three
+a core. Two signals were tried, twenty milliseconds apart each:
+
+- **The process's CPU against its cores** (`getrusage`). Never fired cold on this VM: a cold
+  walk keeps six of eight cores busy *inside the kernel* — the cold work is CPU, page cache
+  and buffer heads and completions, with a quarter of the time waiting — so utilisation never
+  fell under the threshold, the pool stayed at eight, and cold was 7–14% slower.
+- **Each worker's own time on CPU** (`/proc/self/task/<tid>/schedstat`), which tells waiting
+  from working: grow by doubling under 90% busy. Cold 3–4% slower than the fixed 24 (the
+  ramp costs 40–60 ms of a 770 ms scan); warm 1–2% slower, within noise — and that is the
+  finding. The gain the step was after, builders less starved with fewer walkers warm, did not
+  appear: at 24 walkers warm the builders were slow per entry but the wall clock was already
+  what the machine's cores allow.
+
+So the fixed count stays: three a core, at most 32. Not merged; the code is in the session's
+history if a machine with a different balance — many cores, a slow disk — wants to try it.
