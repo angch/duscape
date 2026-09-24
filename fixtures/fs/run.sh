@@ -27,7 +27,7 @@ if [ $build = 1 ]; then
   export CARGO_TARGET_DIR=$repo/target/static
   (cd "$repo" && cargo build -q --release --target "$target" --bin diskonaut)
   cp "$CARGO_TARGET_DIR/$target/release/diskonaut" "$work/bin/diskonaut"
-  for package in libdiskonaut diskonaut-angch; do
+  for package in libdiskonaut diskonaut-scan diskonaut-angch; do
     executable=$(cd "$repo" && cargo test -q -p "$package" --lib --target "$target" --no-run \
       --message-format=json | grep -oE '"executable":"[^"]+"' | cut -d'"' -f4 | tail -1)
     [ -n "$executable" ] || { echo "no test binary for $package" >&2; exit 1; }

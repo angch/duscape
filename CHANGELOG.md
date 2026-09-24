@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The workspace is split by role: `common/` (`libdiskonaut`: model, treemap, scan protocol,
+  deletion, preview reading, native clipboard), `scanners/` (the new `diskonaut-scan`: every
+  walker, the parallel build, the second pass, rescans), and `viewers/tui/` (`diskonaut-angch`) and
+  `viewers/windows/` (`diskonaut-gui`). Crate and binary names are unchanged; code that used
+  `libdiskonaut::scan::parallel`, `scan_directories` or `scan_into_tree` now takes them from
+  `diskonaut_scan`. `docs/features.md` describes every feature, where it lives, and which viewer
+  offers it.
 - The Windows walk uses two thirds of the cores, at most 12, instead of a fixed 8: `C:\` took
   5.9s instead of 6.3s on a 32-thread machine (`D:\` 0.18s instead of 0.23s), and a 12-thread
   one keeps its 8.
@@ -28,6 +35,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Windows GUI's Delete removed the entry from the treemap but never from disk, though its
+  dialog said it would. It now deletes through the same code as the terminal viewer, and like it
+  refuses NTFS's metadata files.
+- Deleting a junction or directory symbolic link on Windows failed: it is not a directory to
+  `symlink_metadata`, so it went to `remove_file`, which Windows refuses for a directory link. It
+  is now removed with `remove_dir`, which takes the link and leaves its target alone.
 - btrfs snapshots were counted once per snapshot. Every subvolume and snapshot has its own
   `st_dev`, which was folded into the identity of shared extents, so a snapshot's files never
   matched the live ones they share. On btrfs the identity now uses the filesystem's UUID

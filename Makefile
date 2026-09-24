@@ -7,7 +7,7 @@ run:
 	cargo run --bin diskonaut
 
 install:
-	cargo install --path diskonaut
+	cargo install --path viewers/tui
 
 test:
 	cargo test --workspace

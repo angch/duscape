@@ -356,6 +356,7 @@ name = "diskonaut-angch"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "diskonaut-scan",
  "dua-core",
  "image",
  "libc",
@@ -366,15 +367,25 @@ dependencies = [
  "tikv-jemallocator",
  "toml",
  "unicode-width",
- "windows-sys 0.59.0",
 ]
 
 [[package]]
 name = "diskonaut-gui"
 version = "0.1.0"
 dependencies = [
+ "diskonaut-scan",
  "libdiskonaut",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "diskonaut-scan"
+version = "0.1.0"
+dependencies = [
+ "dua-core",
+ "libc",
+ "libdiskonaut",
+ "rustix",
 ]
 
 [[package]]
@@ -574,11 +585,11 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 name = "libdiskonaut"
 version = "0.1.0"
 dependencies = [
- "dua-core",
- "libc",
+ "image",
  "rustix",
  "thiserror",
  "unicode-width",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

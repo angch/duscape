@@ -1,0 +1,26 @@
+[package]
+name = "libdiskonaut"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "What every diskonaut-angch viewer shares: the disk-usage model with hard-link and reflink accounting, the squarified treemap, the scan protocol, deletion, file previews and the native clipboard."
+readme = "../README.md"
+
+[dependencies]
+# Previews (`preview`): PNG and JPEG only.
+image = { workspace = true }
+rustix = { workspace = true }
+thiserror = { workspace = true }
+unicode-width = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+# The native clipboard (`clipboard`).
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+] }

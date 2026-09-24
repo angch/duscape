@@ -1,0 +1,29 @@
+[package]
+name = "diskonaut-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Windows GUI viewer for diskonaut-angch: the shared model and native walker, drawn with GDI."
+
+[[bin]]
+name = "diskonaut-gui"
+path = "src/main.rs"
+
+[dependencies]
+libdiskonaut = { workspace = true }
+diskonaut-scan = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+] }

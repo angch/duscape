@@ -23,8 +23,9 @@ This fork exists to **explore further performance optimizations for everyday dis
 
 ## Windows GUI (experimental)
 
-`diskonaut-gui` is a native Windows treemap window that reuses the fast walker and the squarify
-layout from `libdiskonaut` — the scan is the same one the terminal app runs. It is built on
+`diskonaut-gui` is a native Windows treemap window. The walker (`diskonaut-scan`) and the tree,
+layout and deletion (`libdiskonaut`) are the same code the terminal app runs; the window is only
+drawing and input. [`docs/features.md`](docs/features.md) lists what each viewer offers. It is built on
 `windows-sys` and GDI rather than a GUI framework, so the release binary is about **250 KB**.
 
 ```sh
@@ -35,7 +36,8 @@ cargo run -p diskonaut-gui --release -- C:\   # or run with no argument for a fo
 - **Live progress:** the window opens immediately and reports entries as the scan runs.
 - **Navigation:** left-click or Enter to open a folder, right-click / Backspace / the ◄ Up button to
   go back, arrow keys to move the selection.
-- **Deletion:** Delete removes the selected file or folder after a confirmation dialog.
+- **Deletion:** Delete removes the selected file or folder from disk after a confirmation dialog,
+  and refuses NTFS's own metadata files.
 - **Details:** the bottom bar shows the hovered tile; a "small files" block stands in for entries too
   small to draw; the window is DPI-aware and double-buffered (no flicker).
 

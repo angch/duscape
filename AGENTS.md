@@ -8,12 +8,22 @@ disk usage via a squarify treemap, supports live scanning, and allows deleting l
 **Workspace layout** (Rust 2024 edition, version 0.1.0; the `diskonaut-angch` fork — see README):
 ```
 diskonaut/
-├── libdiskonaut/     # Core library: model, scan, treemap, formatting, os
-├── diskonaut/        # TUI binary: CLI, UI, app state, input, config
-├── diskonaut-gui/    # Windows GUI binary: windows-sys + GDI treemap, reuses libdiskonaut
+├── common/            # libdiskonaut: what every viewer shares — model, treemap, scan protocol,
+│                      #   delete, preview reading, native clipboard, formatting, os
+├── scanners/          # diskonaut-scan: the walkers (Linux, macOS, Windows, fallback), NTFS,
+│                      #   the parallel build, the second pass, rescan/refine threads
+├── viewers/
+│   ├── tui/           # diskonaut-angch: the ratatui viewer (primary) — CLI, UI, input, config
+│   └── windows/       # diskonaut-gui: the Win32/GDI viewer
+├── docs/features.md   # every feature, which package holds it, which viewer offers it
 ├── example/config.toml
-└── Cargo.toml        # Workspace root
+└── Cargo.toml         # Workspace root
 ```
+Dependencies run one way: `diskonaut-scan` → `libdiskonaut`, and each viewer → both. A feature
+that is not drawing or input goes in `common` (or `scanners`, if it reads the disk), so the other
+viewer gets it by calling it. The scan protocol types (`ScanOptions`, `EntryMeta`, `DirEntries`,
+`Outline`, `Found`) are in `common` because the model consumes them; `diskonaut-scan` re-exports
+them, so `diskonaut_scan::X` works for either kind.
 
 ---
 
@@ -56,8 +66,8 @@ Six kinds of thread communicate via `mpsc` channels (bounded, except the preview
 | `event_executer` | Converts `Event` → `Instruction` (visual feedback). A clipboard flash gets a short-lived `clipboard_flash` thread that asks for a redraw when it expires; the flash carries its own deadline, so a lost redraw cannot leave it on screen |
 | `loading_loop` | Toggles loading indicator while scanning |
 | `ticker` | Sends `Instruction::Tick` with `try_send` (late ticks are dropped): every `ui::FRAME` (16 ms) while `App::ticker_pace` says the help line is sliding, else every `ui::IDLE_TICK` (250 ms), looking again one frame after each resting tick since a slide begins on one — twice per resting interval, not at frame rate. `App::tick` moves the help line (`ui::Ticker`/`Strip`) |
-| `refine_N` | The second pass (`rescan::Refiner` → `scan::refine::refine`, a few `refine_*` workers): FIEMAP on the small files the walk noted (`SmallFiles`, 4–64 KiB, `nlink == 1`, XFS/btrfs), directories under `App::refine_focus` (the folder shown) first → `Instruction::Refined(generation, Found, left)`; `FileTree::apply_found` charges them to the ledger. A new whole tree cancels it; folders rescanned meanwhile are skipped (`refine_skip`), since a folder rescan refines its own tree before grafting |
-| `rescan_N` | One per `r`/`R` (`rescan::Rescanner`). A folder the whole scan would not enter (`scan::walk_would_enter`: pseudo, network, `-x`, bind duplicate) or past `--max-depth` (counted from the scan root) is not rescanned (`Outcome::NotWalked`); a delete inside a folder being rescanned restarts that rescan. `parallel::build_tree` on the folder → `Instruction::Rescanned(id, Outcome)`. `App::rescan_done` grafts it (`FileTree::graft`, ancestors corrected by the difference) and leaks the old folder like `finish_scan` does. A rescan that another under way covers is not started; one the new rescan covers is cancelled and its result dropped |
+| `refine_N` | The second pass (`diskonaut_scan::rescan::Refiner` → `refine::refine`, a few `refine_*` workers): FIEMAP on the small files the walk noted (`SmallFiles`, 4–64 KiB, `nlink == 1`, XFS/btrfs), directories under `App::refine_focus` (the folder shown) first → `Instruction::Refined(generation, Found, left)`; `FileTree::apply_found` charges them to the ledger. A new whole tree cancels it; folders rescanned meanwhile are skipped (`refine_skip`), since a folder rescan refines its own tree before grafting |
+| `rescan_N` | One per `r`/`R` (`diskonaut_scan::rescan::Rescanner`). A folder the whole scan would not enter (`walk_would_enter`: pseudo, network, `-x`, bind duplicate) or past `--max-depth` (counted from the scan root) is not rescanned (`Outcome::NotWalked`); a delete inside a folder being rescanned restarts that rescan. `parallel::build_tree` on the folder → `Instruction::Rescanned(id, Outcome)`. `App::rescan_done` grafts it (`FileTree::graft`, ancestors corrected by the difference) and leaks the old folder like `finish_scan` does. A rescan that another under way covers is not started; one the new rescan covers is cancelled and its result dropped |
 | `previewer` | Reads the file in hand for the preview: first 64 KB as text, or a PNG/JPEG decoded and scaled after a 100 ms debounce (a newer request supersedes it) → `Instruction::PreviewReady(generation, _)`; answers to an older generation are dropped |
 | **main** | App state mutations + ratatui rendering. During the scan it renders from the *outline*; on `ScanComplete` it swaps in the finished tree, keeping the current folder |
 
@@ -65,32 +75,49 @@ Six kinds of thread communicate via `mpsc` channels (bounded, except the preview
 
 ### Crate Responsibilities
 
-**`libdiskonaut`** — pure logic, no TUI:
+**`libdiskonaut`** (`common/`) — what every viewer shares, no user interface:
 - `model/files/file_tree.rs` — `FileTree`: hierarchical navigation, deletion tracking;
   `deferring_shared_blocks` / `merge_from` / `replay_deferred` for the parallel build;
-  `add_summary` for the outline
-- `scan/mod.rs` — `scan_directories()`: per-directory batches, the seam every walker plugs into;
-  `parallel::build_tree()`: the app's tree build — shard by path prefix, merge, replay;
-  `Outline`/`DirSummary`: the depth-capped live view
-- `scan/macos.rs` — macOS walker on `getattrlistbulk(2)` (see `docs/scan-performance.md`)
-- `scan/linux.rs` — Linux walker on `getdents64`/`statx`, own thread pool; also the `FS_IOC_FIEMAP`
-  reflink probe. `dua-core` is only the fallback for other platforms and the benchmark baseline
-- `scan/ntfs.rs` — NTFS file-record parser: sizes `$MFT` and the other metadata files the Windows
-  walker adds at a volume root when elevated (records fetched with `FSCTL_GET_NTFS_FILE_RECORD`).
-  Platform-independent so its tests run on Linux CI
-- `scan/windows.rs` — Windows walker: one handle per directory, entries read in bulk with
-  `GetFileInformationByHandleEx(FileIdExtdDirectoryInfo)`. No listing carries a link count, so
-  files in hard-link hot spots (or all files ≥ `--hard-link-threshold`) are sent with
-  `LINKS_UNKNOWN` and the ledger dedupes them by file id — memory instead of a file open each
+  `add_summary` for the outline; `graft`, `apply_found`
+- `model/file_to_delete.rs` — `FileToDelete::in_current_folder`, what both viewers confirm
+- `scan/mod.rs` — the scan protocol: `ScanOptions`, `EntryMeta`, `DirEntries` (its `later` and
+  `extent_space` are filled by the Linux walker for the second pass), `Outline`/`DirSummary` (the
+  depth-capped live view), `Found`/`FoundFile`
 - `model/files/hard_links.rs` — charges shared blocks to each folder once, over interned directory
   ids; two ledgers, one keyed on inode (hard links) and one on physical extent (reflinks)
 - `model/files/hash.rs` — the fast hasher behind the folder and inode maps
 - `tiles/treemap.rs` — squarify algorithm (`HEIGHT_WIDTH_RATIO = 2.5`)
 - `tiles/board.rs` — `Board`: tile selection, zoom stack, navigation
+- `delete.rs` — `remove` (from disk, a link itself never its target) and `refused` (NTFS metadata)
+- `metafiles.rs` — NTFS metadata names, for the Windows walker and for `delete`
+- `preview.rs` — `read` (sniff the first 64 KiB: text lines, info, or a picture), `describe_picture`,
+  `decode_picture` (bounded). Scaling and encoding for display are the viewer's
+- `clipboard.rs` — native clipboard (`pbcopy`, Win32, `wl-copy`/`xclip`/`xsel`), `base64`
 - `format/display_size.rs` — byte → human-readable (B/KB/MB/GB/TB)
 - `os/unix.rs`, `os/windows.rs` — `is_user_admin()`, `size_on_disk_fast()`, `volume_id()`, `link_count()`
 
-**`diskonaut`** — TUI application:
+**`diskonaut-scan`** (`scanners/`) — reading the disk:
+- `lib.rs` — `scan_directories()`: per-directory batches, the seam every walker plugs into;
+  `parallel::build_tree()`: the app's tree build — shard by path prefix, merge, replay;
+  `walk_would_enter`, `thread_count`, `scan_into_tree`, the `dua-core` `fallback`
+- `macos.rs` — macOS walker on `getattrlistbulk(2)` (see `docs/scan-performance.md`)
+- `linux.rs` — Linux walker on `getdents64`/`statx`, own thread pool; also the `FS_IOC_FIEMAP`
+  reflink probe. `dua-core` is only the fallback for other platforms and the benchmark baseline
+- `ntfs.rs` — NTFS file-record parser: sizes `$MFT` and the other metadata files the Windows
+  walker adds at a volume root when elevated (records fetched with `FSCTL_GET_NTFS_FILE_RECORD`).
+  Platform-independent so its tests run on Linux CI
+- `windows.rs` — Windows walker: one handle per directory, entries read in bulk with
+  `GetFileInformationByHandleEx(FileIdExtdDirectoryInfo)`. No listing carries a link count, so
+  files in hard-link hot spots (or all files ≥ `--hard-link-threshold`) are sent with
+  `LINKS_UNKNOWN` and the ledger dedupes them by file id — memory instead of a file open each
+- `refine.rs` — the second pass (`SmallFiles`, `refine`)
+- `rescan.rs` — `Rescanner` and `Refiner`: rescans and the second pass on threads of their own,
+  results through a callback, for any viewer
+
+**`diskonaut-gui`** (`viewers/windows/`) — the Win32/GDI viewer: one `main.rs`. Scans with
+`parallel::build_tree`, draws the `Board`'s tiles, deletes through `libdiskonaut::delete`.
+
+**`diskonaut-angch`** (`viewers/tui/`) — the ratatui viewer:
 - `main.rs` — entry point, thread spawning, channel setup
 - `app/mod.rs` — `App` state machine, `UiMode` enum, render dispatch
 - `input/controls.rs` — per-mode keypress handlers
@@ -100,7 +127,7 @@ Six kinds of thread communicate via `mpsc` channels (bounded, except the preview
   the panel when ≥ 80 columns) and `entry_at` maps a cell to a row — used by both the renderer and
   the mouse, so they cannot disagree
 - `config/mod.rs` — TOML config (`~/.config/diskonaut/config.toml`)
-- `preview.rs` — the preview thread, file sniffing, and kitty/sixel graphics output (`Graphics`:
+- `preview.rs` — the preview thread (debounce, then `libdiskonaut::preview`), and kitty/sixel graphics output (`Graphics`:
   `KittyGraphics` writes after each frame, only on change; `q=2` so the terminal never answers
   on stdin, `z=-1` so dialogs cover it). `SixelGraphics` has nothing to delete a picture by and
   the frame never redraws cells it thinks blank, so `prepare` (before the frame) erases the old
@@ -117,7 +144,7 @@ Six kinds of thread communicate via `mpsc` channels (bounded, except the preview
   before any thread reads stdin (`try_main`). `pictures()` picks `Pictures::Kitty`, `Sixel`,
   `Blocks` (the fallback: `▀` cells the previewer colours as `Preview::Blocks` and `side_panel`
   draws into the frame) or `Described`
-- `clipboard.rs` — native clipboard (`pbcopy`, Win32, `wl-copy`/`xclip`/`xsel`), OSC 52 fallback;
+- `clipboard.rs` — `libdiskonaut::clipboard::copy`, else the terminal's OSC 52;
   paths are quoted by `libdiskonaut::format::quote_path_for_shell` before they get there
 - `cli/mod.rs` — clap CLI args
 
@@ -261,8 +288,8 @@ Exiting { app_loaded: bool }
 ## Adding Features — Agent Guidance
 
 ### Adding a new keybind
-1. Add field to `KeybindConfig` in `diskonaut/src/config/mod.rs`
-2. Add parsing in `diskonaut/src/config/keybind.rs`
+1. Add field to `KeybindConfig` in `viewers/tui/src/config/mod.rs`
+2. Add parsing in `viewers/tui/src/config/keybind.rs`
 3. Add to `Keybinds` struct and wire in `input/controls.rs`
 4. Update `example/config.toml`
 
@@ -273,11 +300,11 @@ Exiting { app_loaded: bool }
 4. Wire `Instruction` variants in `messages/instruction.rs`
 
 ### Adding a scan option
-1. Add field to `ScanOptions` in `libdiskonaut/src/scan/mod.rs`
-2. Thread it through **every** walker: `scan/macos.rs` (macOS), `scan/linux.rs`, `scan/windows.rs`,
-   and the `fallback` module in `scan/mod.rs` (everywhere else). The fallback is `cfg`-selected away on macOS, so it is only
+1. Add field to `ScanOptions` in `common/src/scan/mod.rs`
+2. Thread it through **every** walker in `scanners/src/`: `macos.rs` (macOS), `linux.rs`, `windows.rs`,
+   and the `fallback` module in `lib.rs` (everywhere else). The fallback is `cfg`-selected away on macOS, so it is only
    ever run by its tests here — do not assume compiling it means it works.
-3. Expose via CLI in `diskonaut/src/cli/mod.rs` and config if persistent
+3. Expose via CLI in `viewers/tui/src/cli/mod.rs` and config if persistent
 4. Add a `--benchmark` stage if it changes how the walk performs
 
 ### Filesystem fixtures — the standard for scan and accounting changes
@@ -313,8 +340,8 @@ opening by file id, closing off the walker threads and skipping the last listing
 measured and none helped — read the 2026-09-24 section before trying them again.
 
 ### Modifying treemap layout
-- Core algorithm: `libdiskonaut/src/tiles/treemap.rs`
-- Tile rendering: `diskonaut/src/ui/grid/`
+- Core algorithm: `common/src/tiles/treemap.rs`
+- Tile rendering: `viewers/tui/src/ui/grid/` (terminal), `viewers/windows/src/main.rs` (`paint`)
 - Adjust `HEIGHT_WIDTH_RATIO`, `MINIMUM_HEIGHT`, `MINIMUM_WIDTH` constants
 - Entries below the minimum tile size are never dropped: they fold into the "small files" `x`
   marker, whose corner is clamped by `SMALL_FILES_MINIMUM_WIDTH/HEIGHT` so it stays visible even
@@ -355,10 +382,15 @@ busybox. One job then publishes both tarballs: matrix jobs that each create the 
 
 | File | Purpose |
 |------|---------|
-| `diskonaut/src/main.rs` | ~225 lines — thread/channel setup |
-| `diskonaut/src/app/mod.rs` | ~300+ lines — core state machine |
-| `libdiskonaut/src/tiles/board.rs` | ~200+ lines — tile nav/zoom |
-| `libdiskonaut/src/tiles/treemap.rs` | ~150+ lines — squarify |
-| `libdiskonaut/src/model/files/file_tree.rs` | ~150 lines — folder tree, hard-link accounting |
-| `libdiskonaut/src/scan/macos.rs` | ~800 lines — macOS `getattrlistbulk` walker |
-| `diskonaut/src/bench/mod.rs` | ~230 lines — `--benchmark` harness |
+| `viewers/tui/src/lib.rs` | ~400 lines — terminal setup, thread/channel setup |
+| `viewers/tui/src/app/mod.rs` | ~1400 lines — the TUI's state machine |
+| `viewers/tui/src/preview.rs` | ~1300 lines — preview thread, kitty/sixel/half-block output, detection |
+| `viewers/windows/src/main.rs` | ~800 lines — the whole Windows viewer |
+| `common/src/tiles/board.rs` | ~230 lines — tile nav/zoom |
+| `common/src/tiles/treemap.rs` | ~270 lines — squarify |
+| `common/src/model/files/file_tree.rs` | ~450 lines — folder tree, hard-link accounting |
+| `scanners/src/lib.rs` | ~650 lines — walker selection, parallel build, fallback |
+| `scanners/src/linux.rs` | ~1250 lines — Linux `getdents64`/`statx` walker |
+| `scanners/src/macos.rs` | ~830 lines — macOS `getattrlistbulk` walker |
+| `scanners/src/windows.rs` | ~920 lines — Windows bulk-listing walker |
+| `viewers/tui/src/bench/mod.rs` | ~370 lines — `--benchmark` harness |

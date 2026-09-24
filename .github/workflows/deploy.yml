@@ -20,7 +20,7 @@ jobs:
     name: Build (${{ matrix.target }})
     runs-on: ubuntu-latest
     # A static musl binary runs on any Linux of its architecture: no glibc version floor, and
-    # Alpine too. jemalloc (the musl build's allocator, see diskonaut/Cargo.toml) is C, so each
+    # Alpine too. jemalloc (the musl build's allocator, see viewers/tui/Cargo.toml) is C, so each
     # target needs a musl C compiler: musl-gcc natively, zig (via cargo-zigbuild) for aarch64.
     strategy:
       fail-fast: false
@@ -132,5 +132,11 @@ jobs:
 
       - name: Publish libdiskonaut
         run: cargo publish -p libdiskonaut
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      # After libdiskonaut, which it depends on; `cargo publish` waits for that to be indexed.
+      - name: Publish diskonaut-scan
+        run: cargo publish -p diskonaut-scan
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

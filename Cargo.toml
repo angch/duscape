@@ -1,10 +1,10 @@
 [workspace]
-members = ["libdiskonaut", "diskonaut", "diskonaut-gui"]
+members = ["common", "scanners", "viewers/tui", "viewers/windows"]
 resolver = "3"
 
 # Small binaries are a feature of this fork: optimize release for size. `panic = "abort"` drops the
 # unwinding tables; the CLI stays safe because its terminal is restored by a panic hook, not only by
-# unwinding a drop guard (see `diskonaut/src/lib.rs`).
+# unwinding a drop guard (see `viewers/tui/src/lib.rs`).
 [profile.release]
 opt-level = "z"
 lto = true
@@ -26,7 +26,8 @@ version = "0.1.0"
 clap = { version = "4", features = ["derive"] }
 dua-core = "4"
 libc = "0.2"
-libdiskonaut = { path = "libdiskonaut" }
+libdiskonaut = { path = "common", version = "0.1.0" }
+diskonaut-scan = { path = "scanners", version = "0.1.0" }
 windows-sys = "0.59"
 rustix = { version = "1", default-features = false, features = ["std", "process", "fs"] }
 serde = { version = "1", features = ["derive"] }

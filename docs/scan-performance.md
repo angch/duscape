@@ -375,7 +375,7 @@ that does not fill them in gets the old additive behaviour rather than a wrong a
 | Firmlink handling | no, macOS has no counterpart elsewhere |
 | Inode-vs-listed-inode mount detection | the *technique* ports; on Linux `st_dev` is simpler and sufficient |
 
-Non-macOS builds use `fallback::group_by_directory` in `libdiskonaut/src/scan/mod.rs`, which groups
+Non-macOS builds use `fallback::group_by_directory` in `scanners/src/lib.rs` (then `libdiskonaut/src/scan/mod.rs`), which groups
 the `dua-core` walk into per-directory batches so the rest of the pipeline is identical. It is
 compiled on every platform (`#[cfg_attr(target_os = "macos", allow(dead_code))]`) and the tests in
 `scan/tests.rs` call it directly everywhere, so it is exercised on macOS even though it is never
@@ -1042,7 +1042,7 @@ native walker, not the two lines of one `all` run.**
 
 ### What the walker does
 
-`libdiskonaut/src/scan/linux.rs`. `getdents64` for names, `statx` for sizes, which is the same pair
+`scanners/src/linux.rs` (then `libdiskonaut/src/scan/linux.rs`). `getdents64` for names, `statx` for sizes, which is the same pair
 of syscalls `dua-core` ends up making — section 3 above measured that no portable change to *what*
 is asked per entry is worth anything. The whole difference is the thread model:
 

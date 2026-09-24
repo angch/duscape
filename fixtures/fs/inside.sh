@@ -163,7 +163,7 @@ run_suites() { # fs, dir for TMPDIR
   mkdir -p "$tmp" && chown "$U:$U" "$tmp"
   case $fs in xfs | btrfs) extra+=(DISKONAUT_TEST_REFLINK_DIR="$tmp") ;; esac
   [ "$fs" = btrfs ] && extra+=(DISKONAUT_TEST_BTRFS_DIR="$tmp")
-  for suite in libdiskonaut diskonaut-angch; do
+  for suite in libdiskonaut diskonaut-scan diskonaut-angch; do
     local out
     out=$(as_user env TMPDIR="$tmp" "${extra[@]}" "$W/bin/tests-$suite" --test-threads=4 2>&1)
     local summary
@@ -412,7 +412,7 @@ network() {
   if [[ " ${mounted[*]} " == *" nfs "* ]]; then
     check "network: an nfs mount named as the root is scanned" 5000000 "$(diskonaut_total "$m/nfs" -a)"
     local out
-    out=$(as_user env DISKONAUT_TEST_NETWORK_DIR="$m/nfs" "$W/bin/tests-libdiskonaut" \
+    out=$(as_user env DISKONAUT_TEST_NETWORK_DIR="$m/nfs" "$W/bin/tests-diskonaut-scan" \
       network_mounts 2>&1)
     if grep -q 'test result: ok. [1-9]' <<<"$out"; then
       say PASS "network: nfs is classified as network" "unit test on the mount"
