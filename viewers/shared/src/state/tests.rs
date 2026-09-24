@@ -316,3 +316,29 @@ fn file_colours_follow_the_extension_and_stay_clear_of_folder_blue() {
         assert!(!bluish, "{extension}: {r:.2} {g:.2} {b:.2}");
     }
 }
+
+#[test]
+fn a_top_inset_moves_everything_down_and_the_bounds_stay_whole() {
+    let plain = Layout::new(1200.0, 800.0, true);
+    let inset = Layout::with_top(1200.0, 800.0, true, 32.0);
+    assert_eq!(inset.bounds, plain.bounds);
+    assert_eq!(inset.path_bar.y, 32.0);
+    assert_eq!(inset.list.unwrap().y, plain.list.unwrap().y + 32.0);
+    assert_eq!(inset.treemap.y, plain.treemap.y + 32.0);
+    assert_eq!(
+        inset.status, plain.status,
+        "the status bar stays at the bottom"
+    );
+    assert!(
+        inset.rows < plain.rows,
+        "the treemap lost the rows the title bar took"
+    );
+    let mut viewer = viewer();
+    viewer.top_inset = 32.0;
+    viewer.resize(1200.0, 800.0);
+    assert_eq!(viewer.layout.path_bar.y, 32.0);
+    assert!(
+        matches!(viewer.hit(600.0, 10.0), Hit::Nothing),
+        "the title bar is not the viewer's"
+    );
+}

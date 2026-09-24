@@ -1,6 +1,7 @@
 # Features, and where they live
 
-diskonaut is five packages. Two are libraries every viewer shares; three are viewers.
+diskonaut is seven packages. Two are libraries every viewer shares, one is what the desktop
+viewers share, and four are viewers.
 
 ```
 common/            libdiskonaut      what a viewer shows and does, with no user interface
@@ -8,9 +9,15 @@ scanners/          diskonaut-scan    reading the disk: one walker per platform, 
 viewers/tui/       diskonaut-angch   the terminal viewer (ratatui) — the primary one
 viewers/windows/   diskonaut-gui     a native Windows window (Win32 and GDI)
 viewers/macos/     diskonaut-mac     a native macOS window (AppKit, through objc2)
+viewers/linux/     diskonaut-linux   a Wayland or X11 window for Linux and FreeBSD, no toolkit (wayland-client, x11rb, fontdue)
+viewers/shared/    diskonaut-viewer  what the desktop viewers share: the window's state and layout,
+                                     the first scan with its live outline, the preview reader
 ```
 
-Dependencies run one way: `diskonaut-scan` depends on `libdiskonaut`, and each viewer on both.
+Dependencies run one way: `diskonaut-scan` depends on `libdiskonaut`, each viewer on both, and the
+macOS and Linux viewers on `diskonaut-viewer` as well, which holds everything about the window
+that is not drawing or input (it depends on `diskonaut-scan` for rescans, so it cannot live in
+`common`).
 Nothing in `common` or `scanners` knows about a terminal or a window. A feature that is not about
 drawing or input belongs in one of them, so that a second viewer gets it by calling it rather than
 by copying it.
@@ -44,32 +51,34 @@ by copying it.
 
 ## What each viewer offers
 
-| | terminal (`diskonaut-angch`) | Windows (`diskonaut-gui`) | macOS (`diskonaut-mac`) |
-| --- | --- | --- | --- |
-| Scan with the native walker | yes | yes | yes |
-| Live treemap while scanning | yes (`Outline`) | progress count in the title | yes (`Outline`) |
-| Treemap | yes, in cells | yes, GDI | yes, AppKit |
-| List of entries beside it | yes | — | yes, with the entry's details under it (⌃⌘S hides) |
-| Move by arrow keys, select by click | yes | yes; hovering names a tile in the status bar | yes; hovering names an entry in the status bar |
-| Enter a folder, go up | Enter or double-click / Esc | Enter or click / Backspace, right-click or ◄ Up | Return, ⌘↓ or double-click / Esc, ⌫, ⌘↑ or a breadcrumb |
-| Delete | yes, one or every marked entry | yes, one | to the Trash (⌘⌫) or immediately (⌥⌘⌫), every marked entry |
-| Refuse NTFS metadata | yes | yes | yes |
-| Mark several entries | yes (Shift+arrows, Ctrl+click) | — | yes (⇧ arrows or ⇧-click, ⌘-click, ⌘A) |
-| Copy a path, shell-quoted | yes (right-click; double for absolute) | — | yes (⌘C; ⌥⌘C plain, like Finder) |
-| Preview text and pictures | yes (kitty graphics, sixels or half blocks) | — | yes, in the side panel (any format macOS decodes), and Quick Look (Space) |
-| Show in Finder, open with the default app | — | — | yes (⌥⌘R, ⌘↓ on a file) |
-| Context menu | — | — | yes (right-click or Control-click) |
-| Scan a folder dropped on the window | — | — | yes |
-| Zoom | yes | — | yes (⌘+ / ⌘- / ⌘0) |
-| Disk usage / apparent size toggle | yes | — | yes (`a`, View menu) |
-| Rescan a folder / everything | yes (`r` / `R`) | — | yes (⌘R / ⇧⌘R, or `r` / `R`) |
-| Second pass for small shared files | yes (Linux) | not needed (Windows) | not needed (macOS) |
-| Volume used vs. what the scan found | yes, in the title | — | yes, in the status bar |
-| Configurable keys | yes (`config.toml`) | — | — |
-| Benchmark harness | yes (`--benchmark`) | — | — |
+| | terminal (`diskonaut-angch`) | Windows (`diskonaut-gui`) | macOS (`diskonaut-mac`) | Linux (`diskonaut-linux`) |
+| --- | --- | --- | --- | --- |
+| Scan with the native walker | yes | yes | yes | yes |
+| Live treemap while scanning | yes (`Outline`) | progress count in the title | yes (`Outline`) | yes (`Outline`) |
+| Treemap | yes, in cells | yes, GDI | yes, AppKit | yes, software-drawn; native Wayland or X11 |
+| List of entries beside it | yes | — | yes, with the entry's details under it (⌃⌘S hides) | yes, with the entry's details under it (`s` hides) |
+| Move by arrow keys, select by click | yes | yes; hovering names a tile in the status bar | yes; hovering names an entry in the status bar | yes; hovering names an entry in the status bar |
+| Enter a folder, go up | Enter or double-click / Esc | Enter or click / Backspace, right-click or ◄ Up | Return, ⌘↓ or double-click / Esc, ⌫, ⌘↑ or a breadcrumb | Enter or double-click / Esc, Backspace or a breadcrumb |
+| Delete | yes, one or every marked entry | yes, one | to the Trash (⌘⌫) or immediately (⌥⌘⌫), every marked entry | to the Trash (`d`, Delete) or immediately (`D`, Shift+Delete), every marked entry |
+| Refuse NTFS metadata | yes | yes | yes | yes |
+| Mark several entries | yes (Shift+arrows, Ctrl+click) | — | yes (⇧ arrows or ⇧-click, ⌘-click, ⌘A) | yes (Shift+arrows or Shift+click, Ctrl+click, Ctrl+A) |
+| Copy a path, shell-quoted | yes (right-click; double for absolute) | — | yes (⌘C; ⌥⌘C plain, like Finder) | yes (Ctrl+C, right-click); the window holds the selection itself when no clipboard tool is installed |
+| Preview text and pictures | yes (kitty graphics, sixels or half blocks) | — | yes, in the side panel (any format macOS decodes), and Quick Look (Space) | yes, in the side panel (PNG, JPEG) |
+| Show in Finder, open with the default app | — | — | yes (⌥⌘R, ⌘↓ on a file) | — |
+| Context menu | — | — | yes (right-click or Control-click) | — |
+| Scan a folder dropped on the window | — | — | yes | — |
+| Zoom | yes | — | yes (⌘+ / ⌘- / ⌘0) | yes (`+` / `-` / `0`) |
+| Disk usage / apparent size toggle | yes | — | yes (`a`, View menu) | yes (`a`) |
+| Rescan a folder / everything | yes (`r` / `R`) | — | yes (⌘R / ⇧⌘R, or `r` / `R`) | yes (`r` / `R`, F5) |
+| Second pass for small shared files | yes (Linux) | not needed (Windows) | not needed (macOS) | not yet (the tree is the walk's) |
+| Volume used vs. what the scan found | yes, in the title | — | yes, in the status bar | yes, in the status bar |
+| Configurable keys | yes (`config.toml`) | — | — | — |
+| Benchmark harness | yes (`--benchmark`) | — | — | — |
 
 A gap in a GUI column is a missing viewer feature, not a missing library one: everything in it
 apart from drawing and input is already in the two libraries.
+The macOS and Linux columns agree wherever the shared state decides: the same keys move the same
+entry, and a change to `diskonaut-viewer` reaches both.
 
 ## What stays in a viewer
 

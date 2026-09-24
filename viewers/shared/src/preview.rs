@@ -87,8 +87,8 @@ mod tests {
 
     #[test]
     fn text_is_read_as_lines() {
-        let dir =
-            ::std::env::temp_dir().join(format!("diskonaut-mac-preview-{}", ::std::process::id()));
+        let dir = ::std::env::temp_dir()
+            .join(format!("diskonaut-viewer-preview-{}", ::std::process::id()));
         ::std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("notes.txt");
         ::std::fs::write(&file, "one\ntwo\n").unwrap();

@@ -1,0 +1,25 @@
+[package]
+name = "diskonaut-linux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Linux GUI viewer for diskonaut-angch: the shared model and native walker, drawn straight onto an X11 window with no toolkit."
+
+[[bin]]
+name = "diskonaut-linux"
+path = "src/main.rs"
+
+[dependencies]
+libdiskonaut = { workspace = true }
+diskonaut-scan = { workspace = true }
+diskonaut-viewer = { path = "../shared", version = "0.1.0" }
+image = { workspace = true }
+x11rb = { version = "0.14.0", features = ["image", "resource_manager"] }
+fontdue = "0.9.4"
+libc.workspace = true
+wayland-client = "0.31.15"
+wayland-protocols = { version = "0.32.13", features = ["client", "unstable", "staging"] }
+wayland-cursor = "0.31.14"

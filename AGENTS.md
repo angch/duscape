@@ -15,14 +15,19 @@ diskonaut/
 ├── viewers/
 │   ├── tui/           # diskonaut-angch: the ratatui viewer (primary) — CLI, UI, input, config
 │   ├── windows/       # diskonaut-gui: the Win32/GDI viewer
-│   └── macos/         # diskonaut-mac: the AppKit viewer (objc2)
+│   ├── macos/         # diskonaut-mac: the AppKit viewer (objc2)
+│   ├── linux/         # diskonaut-linux: the Wayland/X11 viewer, no toolkit (wayland-client, x11rb, fontdue)
+│   └── shared/        # diskonaut-viewer: what the macOS and Linux viewers share — the window's
+│                      #   state and layout (`Viewer`), the first scan with its outline, the previewer
 ├── docs/features.md   # every feature, which package holds it, which viewer offers it
 ├── example/config.toml
 └── Cargo.toml         # Workspace root
 ```
-Dependencies run one way: `diskonaut-scan` → `libdiskonaut`, and each viewer → both. A feature
-that is not drawing or input goes in `common` (or `scanners`, if it reads the disk), so the other
-viewer gets it by calling it. The scan protocol types (`ScanOptions`, `EntryMeta`, `DirEntries`,
+Dependencies run one way: `diskonaut-scan` → `libdiskonaut`, each viewer → both, and the macOS and
+Linux viewers → `diskonaut-viewer` too. A feature that is not drawing or input goes in `common`
+(or `scanners`, if it reads the disk), so the other viewers get it by calling it; what is about the
+*window* but not about a toolkit (which entry is in hand, marks, the layout in points, what a
+delete changes) goes in `viewers/shared`, so the macOS and Linux viewers behave alike. The scan protocol types (`ScanOptions`, `EntryMeta`, `DirEntries`,
 `Outline`, `Found`) are in `common` because the model consumes them; `diskonaut-scan` re-exports
 them, so `diskonaut_scan::X` works for either kind.
 
@@ -118,13 +123,60 @@ Six kinds of thread communicate via `mpsc` channels (bounded, except the preview
 **`diskonaut-gui`** (`viewers/windows/`) — the Win32/GDI viewer: one `main.rs`. Scans with
 `parallel::build_tree`, draws the `Board`'s tiles, deletes through `libdiskonaut::delete`.
 
-**`diskonaut-mac`** (`viewers/macos/`) — the AppKit viewer, on `objc2`/`objc2-app-kit`:
-- `state.rs` — `Viewer`: everything the window shows and how it answers input, with no AppKit —
-  `Layout` (points; tiles in 2.4×6 pt cells, the treemap's 2.5 ratio), the entry in hand kept by
-  *name* so a relayout cannot move it, marks, navigation, zoom, delete bookkeeping, rescans.
-  Built under `cfg(test)` off macOS, so its tests run on the Linux CI
-- `scan.rs` — the first scan with the live `Outline`; `preview.rs` — the latest-wins preview
-  reader (pictures are handed over as bytes for `NSImage` to decode)
+**`diskonaut-viewer`** (`viewers/shared/`) — what the desktop viewers share, with no toolkit:
+- `state.rs` — `Viewer`: everything the window shows and how it answers input — `Layout` (points;
+  tiles in 2.4×6 pt cells, the treemap's 2.5 ratio), the entry in hand kept by *name* so a
+  relayout cannot move it, marks, navigation, zoom, delete bookkeeping, rescans, the status bar's
+  words. Its tests run on every platform; a behaviour both windows should have goes here first
+- `scan.rs` — the first scan with the live `Outline`, results through callbacks on the scan's
+  thread; `preview.rs` — the latest-wins preview reader (pictures are handed over as bytes for
+  the viewer to decode: `NSImage` on macOS, the `image` crate on Linux)
+
+**`diskonaut-linux`** (`viewers/linux/`) — the Wayland and X11 viewer, pure Rust, no C library
+(not libwayland, not Xlib), so it builds static for musl and runs on any compositor or X server:
+- `backend.rs` — the `Backend` trait (present a canvas, set the title, own the clipboard, move/
+  maximise/minimise for the app's own title bar) and `Input`, what either windowing system
+  reports, in points; `keys` has the non-character keysyms both speak; `level_keysym` picks the
+  shifted level (Caps Lock only on letters); `open` chooses: `DISKONAUT_BACKEND`, else Wayland when
+  `WAYLAND_DISPLAY` is set, else X11, trying the other if the first fails
+- `wayland.rs` — `wayland-client`'s pure-Rust protocol: `wl_shm` double buffers in a memfd,
+  `xdg_shell` (configure → `Input::Resized`, close), `xdg-decoration` asking for a server title bar
+  and reporting `Input::Decorated(false)` where there is none, `wl_seat` keyboard (xkb keymap by
+  `xkb`, repeat done here since the compositor leaves it to clients) and pointer (cursor from the
+  theme via `wayland-cursor`; discrete or smooth wheel), `wl_output`/`preferred_buffer_scale` for
+  the scale, `wl_data_device` offering the clipboard with the last input serial. Events are
+  dispatched on a thread of their own; the app thread sends requests to the same connection
+- `xkb.rs` — reads the compositor's xkb keymap text: `xkb_keycodes` names → codes (aliases too)
+  and `xkb_symbols` first-group levels → keysyms, by name; keys it lacks fall back to a US
+  layout by evdev code, keys it has but cannot name mean nothing. Tested against a keymap dumped
+  by `xkbcomp` (`xkb_test_keymap.xkb`)
+- `x11.rs` — `X11` on `x11rb`: the window, its properties and size hints, the events (read on a
+  thread of their own into `Input`), the frame put up whole with `PutImage` (re-encoded only for
+  an unusual visual), the core keyboard mapping, and the clipboard: when no `wl-copy`/`xclip`/
+  `xsel` is installed the window owns `CLIPBOARD` itself and answers `SelectionRequest`. The
+  scale (pixels per point) is `DISKONAUT_SCALE`, else `GDK_SCALE`, else `Xft.dpi`/96
+- `canvas.rs` — the software framebuffer in points: fills with alpha, gradients, strokes,
+  anti-aliased rounded rectangles, and `blit` (a picture fitted by box-filtering)
+- `font.rs` — `Fonts::system` finds the sans, bold and mono faces through `fc-match` (else
+  well-known paths, else `DISKONAUT_FONT*`); `Face` caches `fontdue` glyphs by character and
+  quarter-pixel size; `Pen` draws into a rect, aligned, vertically centred, cut with "…"
+- `draw.rs` — the frame, by `Layout`: the same panels as `mac/draw.rs`, in a fixed dark theme;
+  `dialog` paints the confirm/notice box and returns its buttons for clicks; `title_bar` the
+  app's own title bar (`Viewer::top_inset`, `Layout::with_top`) where the compositor draws none
+- `trash.rs` — freedesktop Trash: `gio trash` if present, else `~/.local/share/Trash` or
+  `.Trash-<uid>` at the filesystem's top, with the `.trashinfo`
+- `app.rs` — the loop over one `mpsc` channel (`Msg`: `Input` from the backend, scan batches,
+  the finished tree, rescans, decoded previews, ticks, snapshot), draining what has piled up
+  before one redraw; keys and mouse → `Viewer` calls like `mac/view.rs`'s; `Dialog` for asking
+  before a removal; the title bar's buttons, drag and double-click → the backend.
+  `DISKONAUT_SNAPSHOT=out.png` writes the frame after the scan and quits — how the drawing was
+  checked here: X11 on an `Xvfb` (which `x11rb` reaches over TCP, `-listen tcp -ac`, since it
+  does not do abstract sockets) with `xdotool` for keys and clicks; Wayland on a headless
+  `weston --backend=headless-backend.so --shell=kiosk-shell.so`, unpacked from its .deb, with
+  `weston-screenshooter` (it has no input to inject, so keys are covered by `xkb`'s tests)
+
+**`diskonaut-mac`** (`viewers/macos/`) — the AppKit viewer, on `objc2`/`objc2-app-kit`, over
+`diskonaut-viewer`:
 - `mac/view.rs` — the one `NSView`: events, menu commands, dialogs, Trash, pasteboard, Finder,
   Quick Look, drag and drop. Other threads come back through `on_main` (the main dispatch queue).
   The `Viewer` is in a `RefCell`; never hold a borrow across a modal (`NSAlert::runModal`, the
@@ -405,8 +457,13 @@ busybox. One job then publishes both tarballs: matrix jobs that each create the 
 | `viewers/tui/src/app/mod.rs` | ~1400 lines — the TUI's state machine |
 | `viewers/tui/src/preview.rs` | ~1300 lines — preview thread, kitty/sixel/half-block output, detection |
 | `viewers/windows/src/main.rs` | ~800 lines — the whole Windows viewer |
-| `viewers/macos/src/state.rs` | ~1150 lines — the macOS viewer's state, no AppKit |
+| `viewers/shared/src/state.rs` | ~1170 lines — the desktop viewers' shared state, no toolkit |
 | `viewers/macos/src/mac/view.rs` | ~1050 lines — the macOS viewer's view, events and commands |
+| `viewers/linux/src/wayland.rs` | ~980 lines — the Wayland backend: shm, xdg-shell, seat, clipboard |
+| `viewers/linux/src/app.rs` | ~810 lines — the Linux viewer's loop, keys, mouse, dialogs, title bar |
+| `viewers/linux/src/draw.rs` | ~650 lines — the Linux viewer's painting |
+| `viewers/linux/src/x11.rs` | ~520 lines — the X11 backend: window, events, `PutImage`, keymap, clipboard |
+| `viewers/linux/src/xkb.rs` | ~360 lines — the xkb keymap reader |
 | `common/src/tiles/board.rs` | ~230 lines — tile nav/zoom |
 | `common/src/tiles/treemap.rs` | ~270 lines — squarify |
 | `common/src/model/files/file_tree.rs` | ~450 lines — folder tree, hard-link accounting |

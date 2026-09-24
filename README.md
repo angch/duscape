@@ -36,6 +36,39 @@ cargo run -p diskonaut-mac --release -- ~   # or run with no argument, or drop a
 - **Marks:** ⇧-arrows, ⇧-click and ⌘-click mark several entries; Trash, copy and Finder act on all.
 - **Also:** breadcrumbs, zoom (⌘+/⌘-/⌘0), apparent sizes (`a`), rescans (⌘R/⇧⌘R), light and dark mode.
 
+## Linux GUI (experimental)
+
+`diskonaut-linux` is a window on the same walker and model for Linux and FreeBSD, drawn with no
+toolkit at all: the frame is painted in software and put on the screen by one of two backends,
+native Wayland (`wayland-client`, `xdg-shell`, a `wl_shm` buffer) or X11 (`x11rb`), both pure
+Rust, with text from the system's fonts (`fontconfig`'s sans-serif, rasterised by `fontdue`).
+Nothing is linked from the system — not libwayland, not Xlib — so it builds static
+(`--target x86_64-unknown-linux-musl`, about **1.7 MB**) and runs on any compositor or X server.
+It shares its state — the layout, what is in hand, marks, navigation, rescans — with the macOS
+viewer (`viewers/shared/`).
+
+```sh
+cargo run -p diskonaut-linux --release -- ~   # or run with no argument for the current folder
+```
+
+- **The same window as the Mac's:** breadcrumbs, the list beside the treemap with the entry in hand
+  previewed under it (text, PNG and JPEG), live while the scan runs; a status bar.
+- **Keys:** arrows, Enter/Esc, Tab, Page Up/Down, Home/End; `d` or Delete moves to the Trash
+  (freedesktop, through `gio trash` when it is installed), `D` or Shift+Delete deletes at once,
+  each after asking; `a` apparent sizes, `+`/`-`/`0` zoom, `r`/`R` rescan, `s` hides the list,
+  Ctrl+C copies the path, Ctrl+A marks everything, `q` quits.
+- **Mouse:** click, double-click to open, Ctrl+click and Shift+click to mark, right-click to copy
+  the path, wheel over the list, breadcrumbs to go up.
+- **Wayland or X11:** Wayland when `WAYLAND_DISPLAY` is set, else X11; `DISKONAUT_BACKEND=x11`
+  or `wayland` picks. On Wayland the compositor is asked for a title bar (`xdg-decoration`); where
+  it draws none (GNOME) the window draws its own, with move, maximise and close.
+- **HiDPI:** on Wayland the compositor's scale; on X11 `Xft.dpi` (or `GDK_SCALE`, or
+  `DISKONAUT_SCALE`).
+
+Why not GTK or Qt: both need their development packages to build and their libraries to run, which
+rules out the static binaries this fork ships, and their Rust bindings bring hundreds of crates for
+a window that draws one picture. See [`viewers/linux/README.md`](viewers/linux/README.md).
+
 ## Windows GUI (experimental)
 
 `diskonaut-gui` is a native Windows treemap window. The walker (`diskonaut-scan`) and the tree,

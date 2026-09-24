@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A Linux viewer, `diskonaut-linux` (`viewers/linux/`), with no toolkit: the frame is drawn in
+  software and put on the screen natively on Wayland (`wayland-client`'s pure-Rust protocol:
+  `wl_shm`, `xdg-shell`, `xdg-decoration`, the seat with the xkb keymap read by the viewer, the
+  data device) or on X11 (`x11rb`), text comes from the system's fonts through `fontdue`, and
+  nothing is linked from the system, so it builds static for musl (about 1.7 MB) and runs on any
+  compositor or X server. Where the compositor draws no title bar, the window draws its own. The
+  same window as the macOS viewer's —
+  breadcrumbs, the list beside the treemap with the entry in hand previewed under it, live while
+  scanning — with the Trash (freedesktop; `gio trash` when installed), immediate deletion, marks,
+  copying paths (the window owns the clipboard itself when no tool is installed), zoom, apparent
+  sizes, rescans, and HiDPI by `Xft.dpi`. `DISKONAUT_SNAPSHOT=out.png` writes the frame after the
+  scan, for looking at the drawing without a screen.
+- `diskonaut-viewer` (`viewers/shared/`): the desktop viewers' shared state — the window's layout
+  in points, the entry in hand, marks, navigation, zoom, rescans, what a delete changes, the first
+  scan with its live outline, and the preview reader — moved out of the macOS viewer so the Linux
+  one behaves the same and both are tested once.
 - A native macOS viewer, `diskonaut-mac` (`viewers/macos/`), on AppKit through `objc2`: the
   treemap with the list beside it, live while scanning; previews in the side panel and Quick
   Look; the Trash or immediate deletion of every marked entry; copying paths, Show in Finder, a

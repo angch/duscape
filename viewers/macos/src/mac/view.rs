@@ -35,10 +35,10 @@ use objc2_quick_look_ui::{
 };
 
 use super::draw::{Frame, draw};
-use crate::preview::{Loaded, Previewer};
-use crate::scan;
-use crate::state::{Direction, Jump, Mods, Preview, ROW, Rect, Viewer, drop_later};
 use diskonaut_scan::rescan::{Outcome, Rescanner};
+use diskonaut_viewer::preview::{Loaded, Previewer};
+use diskonaut_viewer::scan;
+use diskonaut_viewer::state::{Direction, Jump, Mods, Preview, ROW, Rect, Viewer, drop_later};
 use libdiskonaut::format::quote_path_for_shell;
 use libdiskonaut::model::SizeKind;
 use libdiskonaut::{DirSummary, DisplayCount, DisplaySize, FileToDelete, FileTree, ScanOptions};
@@ -147,7 +147,7 @@ define_class!(
             };
             let double = event.clickCount() == 2 && mods == Mods::default();
             let clicked = self.update(|viewer| {
-                if matches!(viewer.hit(x, y), crate::state::Hit::SmallFiles) {
+                if matches!(viewer.hit(x, y), diskonaut_viewer::state::Hit::SmallFiles) {
                     viewer.say("Entries too small for a tile of their own: they are all in the list");
                 }
                 let name = viewer.click(x, y, mods)?;

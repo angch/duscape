@@ -1,8 +1,9 @@
-//! What the window shows and how it answers input, with no AppKit in it: the tree and its
+//! What the window shows and how it answers input, with no toolkit in it: the tree and its
 //! board, where each panel sits, the entry in hand, marks, navigation, zoom, rescans, and what a
-//! delete changes. The AppKit side (`mac`) turns events into calls here and draws what is here.
+//! delete changes. Each desktop viewer (AppKit on macOS, X11 on Linux) turns its events into
+//! calls here and draws what is here.
 //!
-//! Kept free of AppKit so that its tests run on the Linux CI like the rest of the workspace.
+//! Kept free of any toolkit so that its tests run on the Linux CI like the rest of the workspace.
 
 use ::std::ffi::{OsStr, OsString};
 use ::std::mem::ManuallyDrop;
@@ -84,13 +85,20 @@ pub struct Layout {
 
 impl Layout {
     pub fn new(width: f64, height: f64, sidebar: bool) -> Self {
+        Self::with_top(width, height, sidebar, 0.0)
+    }
+
+    /// A layout that leaves the top `top` points to the viewer — a title bar it draws itself,
+    /// where the windowing system draws none (Wayland without server-side decorations).
+    pub fn with_top(width: f64, height: f64, sidebar: bool, top: f64) -> Self {
         let width = width.max(0.0);
         let height = height.max(0.0);
+        let top = top.clamp(0.0, height);
         let body = Rect::new(
             0.0,
-            PATH_BAR,
+            top + PATH_BAR,
             width,
-            (height - PATH_BAR - STATUS_BAR).max(0.0),
+            (height - top - PATH_BAR - STATUS_BAR).max(0.0),
         );
         let (list, info, treemap) = if sidebar && width >= SIDEBAR_MIN_WIDTH {
             let panel = (width / 3.0).clamp(240.0, 420.0);
@@ -110,7 +118,7 @@ impl Layout {
         let cells = |points: f64, cell: f64| (points / cell).floor().clamp(1.0, 4096.0) as u16;
         Layout {
             bounds: Rect::new(0.0, 0.0, width, height),
-            path_bar: Rect::new(0.0, 0.0, width, PATH_BAR),
+            path_bar: Rect::new(0.0, top, width, PATH_BAR),
             list,
             info,
             treemap,
@@ -191,7 +199,7 @@ pub enum Hit {
 /// Modifier keys held during a click.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Mods {
-    /// ⌘: add or take away one entry from the marks.
+    /// ⌘ (Ctrl on Linux): add or take away one entry from the marks.
     pub toggle: bool,
     /// ⇧: mark every entry from the anchor to this one.
     pub range: bool,
@@ -206,7 +214,7 @@ pub enum Preview {
     /// A line instead of the contents: empty, binary, unreadable.
     Info(String),
     Text(Vec<String>),
-    /// A picture; the image itself is the AppKit side's, which decodes it. This is its caption.
+    /// A picture; the image itself is the viewer's, which decodes it. This is its caption.
     Picture(String),
 }
 
@@ -231,6 +239,8 @@ pub struct Viewer {
     pub board: Board,
     pub layout: Layout,
     pub sidebar: bool,
+    /// Points at the top left to the viewer for a title bar of its own; see [`Layout::with_top`].
+    pub top_inset: f64,
     pub focus: Focus,
     /// The entry in hand, by name, so that it stays in hand when the tiles are laid out again —
     /// a resize, a zoom, or new sizes arriving during a scan. Both panels show it.
@@ -277,6 +287,7 @@ impl Viewer {
             board,
             layout: Layout::default(),
             sidebar: true,
+            top_inset: 0.0,
             focus: Focus::List,
             selected: None,
             marked: Vec::new(),
@@ -312,7 +323,7 @@ impl Viewer {
     // ---------------------------------------------------------------- layout
 
     pub fn resize(&mut self, width: f64, height: f64) {
-        self.layout = Layout::new(width, height, self.sidebar);
+        self.layout = Layout::with_top(width, height, self.sidebar, self.top_inset);
         self.board.change_area(&Area {
             x: 0,
             y: 0,
@@ -985,6 +996,15 @@ impl Viewer {
 
     pub fn say(&mut self, message: impl Into<String>) {
         self.message = Some((message.into(), Instant::now()));
+    }
+
+    /// How long the status bar's message has left, if one is showing: a viewer without a timer
+    /// of its own arranges a redraw for then.
+    pub fn message_left(&self) -> Option<Duration> {
+        let (_, at) = self.message.as_ref()?;
+        MESSAGE_TIME
+            .checked_sub(at.elapsed())
+            .filter(|left| !left.is_zero())
     }
 
     /// The window's title: the folder shown.

@@ -26,7 +26,7 @@ jobs:
       - name: Run tests (musl)
         env:
           CC_x86_64_unknown_linux_musl: musl-gcc
-        run: cargo test -p libdiskonaut -p diskonaut-scan -p diskonaut-angch --target x86_64-unknown-linux-musl
+        run: cargo test -p libdiskonaut -p diskonaut-scan -p diskonaut-angch -p diskonaut-viewer -p diskonaut-linux --target x86_64-unknown-linux-musl
 
   test-coverage:
     runs-on: ubuntu-latest

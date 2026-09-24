@@ -1,4 +1,4 @@
-.PHONY: build run install test test-fs static static-aarch64
+.PHONY: build run install test test-fs static static-aarch64 static-linux-gui
 
 build:
 	cargo build --workspace
@@ -27,3 +27,8 @@ static:
 # at build time; 64K pages (2^16) also run on 4K and 16K kernels.
 static-aarch64:
 	JEMALLOC_SYS_WITH_LG_PAGE=16 cargo zigbuild -p diskonaut-angch --release --target aarch64-unknown-linux-musl
+
+# The Linux GUI viewer, fully static: pure Rust down to the X11 protocol, so it needs no musl-gcc
+# and no system library, and runs under XWayland as well as on any X server.
+static-linux-gui:
+	cargo build -p diskonaut-linux --release --target x86_64-unknown-linux-musl

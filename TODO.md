@@ -188,3 +188,48 @@ mistake first and drew every folder as a long flat band; swapping the constants
       If they are flat bands, set `CELL_W = 4` and `CELL_H = 10` (and fix the comment above them,
       which says the opposite), check the tiles look square, and that the minimum tile (8×3 cells,
       now 32×30 px) still fits a label or reads as a tile.
+
+## Linux viewer (`diskonaut-linux`): tried under Xvfb and a headless weston, not on a desktop
+
+`viewers/linux/` was checked on an `Xvfb` with `xdotool` (see `viewers/linux/README.md`): the
+scan, the list and treemap, arrows, Enter/Esc, Tab, Shift ranges, the Trash and delete dialogs,
+click, right-click copy, double-click, `a`, resizing below the side panel's width, Ctrl+Q. The
+Wayland backend was checked on a headless weston (kiosk shell, no input devices): connecting,
+the first configure, the frame in a `wl_shm` buffer, the compositor's screenshot of it, and the
+viewer's own title bar where the shell draws none. What neither can show:
+
+- [ ] **Wayland input:** on GNOME, KDE or sway, keys (a US and a non-US layout, the keypad, Caps
+      Lock, holding an arrow down for repeat), clicks, Ctrl/Shift-click, the wheel (a mouse's
+      notches and a touchpad's smooth scrolling), hover, and the cursor showing as an arrow
+      (`wayland.rs`; the keymap reading is `xkb.rs`).
+- [ ] **Wayland decorations:** KDE and sway give a server title bar (`xdg-decoration`), and the
+      viewer draws none; GNOME gives none, and the viewer's own appears — drag moves the window,
+      double-click maximises, the three buttons work. Resizing from the edges is the
+      compositor's; with the viewer's own bar there is no resize handle yet.
+- [ ] **Wayland scale:** on a 2× output the buffer is drawn at 2× and text is crisp
+      (`preferred_buffer_scale`, else `wl_output.scale`); dragging between a 1× and a 2× output
+      switches.
+- [ ] **Wayland clipboard:** right-click, then paste elsewhere; the offer carries the last input
+      serial (`Shared::serial`), which a compositor may refuse if the click was long ago.
+- [ ] **Backend choice:** under a Wayland session `WAYLAND_DISPLAY` picks Wayland; with
+      `DISKONAUT_BACKEND=x11` it runs through XWayland instead; a session with neither says so.
+
+- [ ] **Under a window manager:** the window opens at 1180×760, the minimum size (520×340) holds,
+      the title bar shows the folder and its size, closing the window quits (`WM_DELETE_WINDOW`).
+- [ ] **On Wayland (XWayland):** GNOME, KDE and sway start it; the scale follows the desktop
+      (`Xft.dpi`, else set `DISKONAUT_SCALE=2`) and the text is not blurred.
+- [ ] **HiDPI:** with `Xft.dpi: 192`, everything is twice the size and the mouse still lands on
+      the right row and tile (`app.rs` divides by `Display::scale`).
+- [ ] **Focus:** the highlighted row dims when another window takes focus and comes back after.
+- [ ] **Hover** names the tile or row in the status bar; leaving the window clears it.
+- [ ] **Clipboard:** right-click, then paste into a terminal — through `wl-copy`/`xclip`/`xsel`
+      when installed, else from the window's own selection (which ends with the window).
+- [ ] **Trash:** `d` on a small file, then look in the desktop's Trash and put it back; without
+      `gio`, `~/.local/share/Trash/info/*.trashinfo` names where it came from. A file on another
+      filesystem (a USB stick) goes to its `.Trash-<uid>`.
+- [ ] **Keyboard layouts:** `+`/`-` on a non-US layout, the keypad's arrows and Enter, Caps Lock
+      leaving `d` as `d` and `D` as `D` (`x11.rs`, `Keymap::keysym`).
+- [ ] **A large scan (`/`, `~`):** folders appear and grow while the status bar counts; the window
+      stays responsive (batches are drained before each frame, `App::run`).
+- [ ] **Fonts:** a system without DejaVu (Alpine, a fresh Arch) finds one through `fc-match`, and
+      says what to set when it finds none.

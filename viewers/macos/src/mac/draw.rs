@@ -17,7 +17,7 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{NSAttributedStringKey, NSDictionary, NSPoint, NSRect, NSSize, NSString};
 
-use crate::state::{Focus, Preview, ROW, Rect, Viewer, tile_color};
+use diskonaut_viewer::state::{Focus, Preview, ROW, Rect, Viewer, tile_color};
 use libdiskonaut::tiles::FileType;
 use libdiskonaut::{DisplayCount, DisplaySize};
 

@@ -66,9 +66,9 @@ marked, the entry in hand is.
 
 | File | |
 | --- | --- |
-| `src/state.rs` | `Viewer`: what the window shows and how it answers input, with no AppKit. Layout in points, the entry in hand kept by name, marks, navigation, zoom, deletes, rescans. Its tests run on every platform |
-| `src/scan.rs` | The first scan on its own thread, with the live outline |
-| `src/preview.rs` | The preview reader: the latest request wins |
+| `../shared/src/state.rs` | `Viewer` (`diskonaut-viewer`): what the window shows and how it answers input, with no AppKit — shared with the Linux viewer. Layout in points, the entry in hand kept by name, marks, navigation, zoom, deletes, rescans. Its tests run on every platform |
+| `../shared/src/scan.rs` | The first scan on its own thread, with the live outline |
+| `../shared/src/preview.rs` | The preview reader: the latest request wins |
 | `src/mac/view.rs` | The one `NSView`: events, menu commands, dialogs, the Trash, the pasteboard, Finder, Quick Look, drag and drop |
 | `src/mac/draw.rs` | Painting the view, by `state::Layout` |
 | `src/mac/mod.rs` | The application, its delegate, menus and window |
