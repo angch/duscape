@@ -20,7 +20,9 @@ diskonaut/
 │   ├── shared/        # diskonaut-viewer: what the macOS and Linux viewers share — the window's
 │   │                  #   state and layout (`Viewer`), the first scan with its outline, the previewer
 │   └── dos/           # not a crate: the MS-DOS treemap in 16-bit FASM assembly, `make dos`
-├── docs/features.md   # every feature, which package holds it, which viewer offers it
+├── docs/              # features.md (every feature, per viewer), sizes.md (how sizes are counted),
+│                      #   terminal.md, viewers.md, benchmarking.md, scan-performance.md (the measurements),
+│                      #   probes/ (bench-diskus.sh and the C/Python probes behind the measurements)
 ├── example/config.toml
 └── Cargo.toml         # Workspace root
 ```
@@ -427,7 +429,12 @@ is the floor (~0.40s for 4.2M entries, at the kernel's `statx` cost) and the tre
 behind it on `parallel::SHARDS` threads. On macOS and Windows the walk is the whole scan — macOS
 waits on 4 KiB metadata reads and is fastest at six workers — so `SHARDS` is 1 there and any
 serial work after the walk shows directly in the scan time. `--bench-stage sharded` is the app's
-path; `pipeline` is the single-threaded build it replaced. Anything you change must keep `sharded`'s totals identical
+path; `pipeline` is the single-threaded build it replaced. Those are warm numbers. Cold (caches
+dropped) the walk is bound by reads in flight, one directory's inode and blocks per blocked
+worker, which is why Linux runs three workers a core, stats a directory in inode order, walks children
+smallest inode first, and as root reads the directories' blocks ahead through the device
+(`linux::dirblocks`, ext4 only — `DISKONAUT_DIRBLOCKS_DEVICE=<file>` forces the path for testing);
+`docs/probes/bench-diskus.sh` measures warm and cold against `diskus` — see "Cold cache" in the doc. Anything you change must keep `sharded`'s totals identical
 to `pipeline`'s — that comparison is the correctness check, not just the speed one. On Windows the
 floor is a fixed kernel and filter-driver cost per directory handle (3× on the system volume);
 opening by file id, closing off the walker threads and skipping the last listing call were all

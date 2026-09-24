@@ -1847,6 +1847,86 @@ deliberately and with the user's agreement rather than by accident.
 Asked for more speed, memory allowed to give. Two changes landed and three were refused by
 measurement, which by now is the expected ratio.
 
+### Fewer reads, or more sequential ones?
+
+The 34k reads split, single-threaded and in inode order (`docs/probes` scripts, `/proc/diskstats`):
+
+| what is read | reads | MiB | how |
+| --- | --- | --- | --- |
+| the directories' inodes | 8.9k | 96 | `lstat` of each; ext4 inode readahead makes them 11 KiB |
+| the directories' blocks | +25.5k | +100 | `getdents64`: one 4 KiB read per directory, no readahead, no merging |
+| the files' inodes | +1.1k | +38 | `statx`, in inode order: readahead does nearly all of it |
+
+So 72% of the reads are directory blocks, one synchronous 4 KiB read each, and nothing an
+unprivileged process does changes their number: `posix_fadvise(SEQUENTIAL)` on the directory fd
+does nothing (its readahead is on the inode's own mapping, which ext4 directories do not use), and
+at 24 workers the block layer merges no more than at one, since the reads that could merge are
+never in flight together.
+
+Their **order**, though, is ours to choose, and it matters more than expected: `FS_IOC_FIEMAP`
+works on a directory fd, so `docs/probes/dirblock_prefetch.py --dry` can put every directory's
+block on the disk and score a walk order by the contiguous runs those blocks form.
+
+| order of directories | runs (31k dirs) | jumps back | seek distance | runs (310k dirs) |
+| --- | --- | --- | --- | --- |
+| depth first, readdir order (before) | 24.9k | 12.5k | 411 TB | 164k |
+| depth first, each directory's children smallest inode first (now) | 6.0k | 1.6k | 60 TB | 64k |
+| whole queue smallest inode first | 3.6k | 0.9k | 33 TB | 20k |
+
+ext4 puts a directory's blocks in its inode's block group, so inode order is disk order. The
+walker stacked a directory's children in inode order and popped the *largest* first; reversing
+that costs nothing and turned 25k runs into 6k. Single-threaded and cold that is 7.3s → 6.2s
+(same reads: the device answers a forward pattern in 0.09 ms instead of 0.13 ms), and the whole
+queue in inode order 6.0s — but that needs sorting the queue, 6% warm on 2.2M entries, and at 24
+workers neither is measurable on this SSD (0.73–0.77s throughout), which is at its IOPS floor
+whatever the order. A spinning disk, where the order is the seek, is where the 7x shorter
+distance would show. Kept: the free one.
+
+**Reading fewer blocks is possible, with root — and the walker now does it.** In this order the
+blocks come in runs of 5 to 9, and one `posix_fadvise(WILLNEED)` on the *block device* from the
+first block of a run fetches the run in one read — the buffer cache `getdents64` looks in is the
+device's page cache, so the siblings' blocks are then already in core. Where the filesystem is
+ext2/3/4 and the device opens for reading (root, or the `disk` group; found through
+`/sys/dev/block/<maj>:<min>/uevent` and checked against `st_rdev`), the walker asks FIEMAP where
+each directory's first block is as it opens it and advises a 32 KiB window from there, unless
+the last window covers it (`linux::dirblocks`; one window per worker, since workers are in
+different subtrees). Anywhere else the walk is exactly the unprivileged one.
+
+Measured as root, cold, 24 workers, the block layer through `/proc/diskstats`:
+
+| | reads | avg read | MiB | `project` | `home` |
+| --- | --- | --- | --- | --- | --- |
+| unprivileged | 35.5k | 6.8 KiB | 236 | 0.745s | 5.25s |
+| root, blocks read ahead | 12.1k | 23 KiB | 274 | 0.70s | 4.21s |
+| `diskus` (24 threads) | 35.4k | 6.8 KiB | 235 | 0.77s | 4.93s |
+
+The reads fell by the predicted 3x, from one 4 KiB read per directory to one 23 KiB read per run,
+and diskonaut as root is now ahead of `diskus` cold on both trees, 9% and 15%. But the clock
+moved less than the reads: 6% on `project`, 20% on `home`. The reason is in the CPU columns.
+A cold scan of `project` burns 4.2–4.7s of *system* time against 1.0s warm, whatever the walker,
+and diskonaut's 24 workers spend it on 8 cores: 6.7 cores busy for the 0.7s. Cold, the kernel's
+work per entry — instantiating 385k inodes and dentries from the buffers, the page cache and
+buffer heads for every block, the completion of every request through virtio — is four times
+the warm walk, and on this box that is the floor once the reads are in flight. Fewer requests
+did trim it (the 23k requests saved were 0.4s of system time, about 17 µs each, and `home` saved
+4s of 28), which is the gain seen. A machine with more cores per disk, or a slower disk where the
+round trip rather than the completion is the cost, has more to gain from the same change.
+
+Warm, as root, the FIEMAP and the advice cost 5% on `project` (233 → 245 ms), 3% on `home`;
+the totals are unchanged, forced onto a regular file (`DISKONAUT_DIRBLOCKS_DEVICE=<file>`) or
+as root; the fixtures, which run as root on loop-mounted ext4 and so take the real path, agree
+with their oracles. `docs/probes/dirblock_prefetch.py` is the same idea single-threaded
+(`--window 0` to switch it off, `--dry` for the runs without root): there, one thread, the
+reads do *not* fall (35.6k either way), because a single thread's `WILLNEED` is answered in the
+order it was asked and the thread is already waiting on that very block — the prefetch only
+pays when other workers open the siblings meanwhile.
+
+**Further, with root: the inode tables too.** The remaining 10k reads are inode blocks, already
+11 KiB each thanks to ext4's readahead. With the device open, the superblock and group
+descriptors give where every inode is, and a directory's children — known in sorted inode order
+before their stats — could be advised in one range per inode-table run. Perhaps 10k reads to 3k;
+not attempted.
+
 ### Where it stands
 
 | | |
@@ -2624,3 +2704,78 @@ trusting a round.
   `HashMap<OsString, FileOrFolder>` per directory and every `File` pays the size of the larger
   `Folder` variant. An arena or an interned-name representation would cut this substantially, and
   the allocator pressure may be costing time as well — unmeasured.
+
+
+## Cold cache (2026-09-24)
+
+Every number above this section was taken warm. This one was not: `/proc/sys/vm/drop_caches`
+before every run, `hyperfine` over `diskus` 0.9.0 and `--benchmark --bench-stage sharded`, on an
+8-core VM with a virtio SSD (`docs/probes/bench-diskus.sh` does exactly this, warm and cold; the
+cache drop needs one sudoers line, `NOPASSWD: /usr/bin/tee /proc/sys/vm/drop_caches`). Two ext4
+trees: `project`, 375k entries in 29.7k directories, and `home`, 2.2M entries with 171k hard links.
+
+### What was found
+
+Warm, `diskus` and diskonaut were within noise on the small tree and 15% apart on the big one:
+that gap is the tree build, which `diskus` does not do. Cold, `diskus` was **1.6x faster on
+both**, 0.74s to 1.22s and 5.0s to 8.1s, and the block layer says why. Every run reads the same
+34k requests and the same 228 MiB — the access pattern was identical — but `diskus` kept 7.5 reads
+in flight and diskonaut 3.3. `diskus` gives rayon three threads a core and stats every entry of a
+directory as its own task; diskonaut gave the walk one worker a core, and one worker stats one
+directory's entries one after another.
+
+The 34k reads are the floor, not waste: a names-only walk (`statbench` mode 0) already issues
+33k of them, since opening a directory reads its inode synchronously and `getdents64` its blocks,
+one round trip each, and ext4's inode readahead (32 blocks, 512 inodes) then brings the files'
+inodes in almost for nothing — the `statx` pass adds 1k reads and 40 MiB. Bytes are near the
+minimum too: 92 MiB of inode table for 375k inodes at 256 bytes plus one 4 KiB block per
+directory is about 210 MiB. So nothing in userspace can make the walk *read less*; what it can do
+is keep more of those reads in flight, and every directory is a dependency chain (inode, then
+blocks, then children's inodes), so in-flight depth is the number of directories being worked on
+at once, which is the number of workers blocked in the kernel.
+
+The device serves about 70k random 4 KiB reads a second from queue depth 8 up (`O_DIRECT`
+`preadv` from threads, the same file). Every configuration below that reached 24 or more workers
+sits at 47–49k reads a second with the same 34k reads — the floor for this pattern on this device,
+with merging — and `diskus` is at the same floor.
+
+### What was tried
+
+Cold, `project`, 3–4 runs each (the two-phase read is what the walker does now):
+
+| walker | 8 workers | 16 | 24 | 48 |
+| --- | --- | --- | --- | --- |
+| before | 1.22s | | 0.92s | |
+| stats in inode order | 1.12s | | | |
+| big directories' stats shared over helpers | 1.00s | | | |
+| both | 1.01s | 0.79s | 0.74s | 0.70s |
+| `diskus` | 1.17s (`-j 8`) | | 0.74s | 0.75s |
+
+- **Inode order.** `getdents64` returns hash order; sorting a directory by `d_ino` before the
+  stats made the inode table reads forward, 8% on this SSD. It changes nothing warm (the listing
+  is copied into an arena and sorted, a few percent of user time on 2.2M entries, inside noise on
+  wall time) and a spinning disk has a great deal more to gain from a seek order than an SSD.
+- **Sharing a big directory's stats.** `@mui/icons-material`, 43k entries in one directory,
+  took 0.40s alone, one worker, while the others had run out of work; `diskus` took 0.15s.
+  A directory of 2048 entries or more now has its stats split over helper threads, 1024 each, up
+  to the walk's worker count. 18% cold on `project`; nothing on `home`, which has no such
+  directory, and nothing warm, where the calls are microseconds.
+- **Workers.** The lever that is most of it. On `home` the two changes above did nothing at 8
+  workers (8.19s to 8.14s) and 24 workers took it to 5.3s, 48 to 5.1s, against `diskus` at 5.0s.
+  The Linux default is now three a core, at most 32, where it was one a core, at most 24. Warm,
+  that cost 9% on `project` (198 → 216 ms; the walk shares eight cores with four tree builders)
+  and nothing measurable on `home` (1.87s at 8, 1.79s at 16, 1.84s at 24).
+- **`io_uring` `statx`, cold.** The earlier verdict (3.8x slower, warm) was worth rechecking
+  where a blocking opcode has something to hide. On the 43k-entry directory it does: 0.16s to
+  0.37s serial, the same as threads give. Over the whole tree it does not — 6.5s to 6.7s, single
+  threaded — because 91% of directories have fewer than sixteen entries and a per-directory batch
+  is nothing to overlap. Threads across directories are what overlap; still not worth a ring.
+
+### Where it stands
+
+Cold, diskonaut at its new default matches `diskus` on both trees, at the device's floor for the
+reads this walk has to make: 0.74s and 5.3s against 0.74s and 5.0s. Warm, unchanged. As root, the
+directories' blocks are read ahead through the device: 3x fewer reads, 6–20% faster cold,
+ahead of `diskus` (above); what is left is the kernel's CPU per cold entry. The measured
+regime is one ext4 SSD in a VM; on NVMe the floor is higher and the workers matter more, and on a
+spinning disk the inode order matters more. Neither was available to measure.

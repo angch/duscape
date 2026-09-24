@@ -50,7 +50,8 @@ pub struct Opt {
     /// Scan with a single thread
     #[arg(long)]
     pub single_thread: bool,
-    /// Number of scan worker threads (default: one per core)
+    /// Number of scan worker threads (default: one per core; three on Linux, where a cold cache
+    /// keeps them waiting on the disk)
     #[arg(long, value_name = "N")]
     pub threads: Option<usize>,
 }

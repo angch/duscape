@@ -8,11 +8,14 @@
 //!
 //! The shape is deliberately plain: one shared queue of directories behind one mutex, N workers,
 //! results to the consumer over a bounded channel. A directory is read by exactly one worker and
-//! leaves as exactly one [`DirEntries`], so the tree builder resolves each parent once.
+//! leaves as exactly one [`DirEntries`], so the tree builder resolves each parent once. Within a
+//! directory the names are listed first and the stats made after, in inode order, and a directory
+//! of thousands has its stats shared over helper threads: both for the cold cache, where a stat
+//! of an inode not in core is a disk read (see `docs/scan-performance.md`, "Cold cache").
 
 use ::std::ffi::OsStr;
 use ::std::mem::MaybeUninit;
-use ::std::os::fd::AsFd;
+use ::std::os::fd::{AsFd, BorrowedFd};
 use ::std::os::unix::ffi::OsStrExt;
 use ::std::path::{Path, PathBuf};
 use ::std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -44,6 +47,9 @@ struct Job {
     /// Whether this filesystem will say what a file's extents occupy after compression: btrfs,
     /// to a caller with `CAP_SYS_ADMIN`. See [`btrfs_extents`].
     compressed_sizes: filesystem::Compressed,
+    /// The block device under this filesystem, open for reading, where the caller may (root):
+    /// the directories' blocks are read ahead through it. See [`dirblocks`].
+    dirblocks: Option<Arc<dirblocks::Device>>,
 }
 
 struct Shared {
@@ -65,9 +71,14 @@ struct Shared {
     stop: AtomicBool,
     /// The scan root, for deciding whether a bind mount's source is inside the scan.
     root: Arc<Path>,
+    /// How many workers the walk was given: the most helpers one directory's stats are shared
+    /// over, so that a huge directory does not fan out past what the machine was asked to give.
+    threads: usize,
     /// The mount table, read the first time the walk meets a mount root, which most walks of a
     /// home directory never do.
     mounts: ::std::sync::OnceLock<Vec<mounts::Mount>>,
+    /// The block devices opened for [`dirblocks`], by `st_dev`; `None` where one could not be.
+    devices: Mutex<::std::collections::HashMap<u64, Option<Arc<dirblocks::Device>>>>,
 }
 
 impl Shared {
@@ -75,6 +86,16 @@ impl Shared {
     fn mount_table(&self) -> &[mounts::Mount] {
         self.mounts
             .get_or_init(|| mounts::read().unwrap_or_default())
+    }
+
+    /// The block device under `device`, opened the first time it is asked for.
+    fn device_for(&self, device: u64) -> Option<Arc<dirblocks::Device>> {
+        self.devices
+            .lock()
+            .expect("device table poisoned")
+            .entry(device)
+            .or_insert_with(|| dirblocks::Device::open(device).map(Arc::new))
+            .clone()
     }
 
     /// Wait for a directory published by another worker, or for the walk to end.
@@ -134,11 +155,180 @@ const WANTED: StatxFlags = StatxFlags::TYPE
     .union(StatxFlags::MNT_ID);
 
 /// Read one directory, returning its entries and the subdirectories to descend into.
+/// What one entry came to.
+struct Inspected {
+    meta: EntryMeta,
+    child: Option<Job>,
+    later: bool,
+}
+
+/// One entry of a listing: `statx` and everything decided from it.
+fn inspect(
+    dir: BorrowedFd<'_>,
+    name: &::std::ffi::CStr,
+    job: &Job,
+    options: &ScanOptions,
+    scan_device: u64,
+    shared: &Shared,
+    descend: bool,
+) -> Option<Inspected> {
+    // NO_AUTOMOUNT matters as much as SYMLINK_NOFOLLOW here. `stat`, `lstat` and `fstatat` all
+    // behave as though it were set; bare `statx` does not, and the man page names this exact
+    // case: "can be used in tools that scan directories to prevent mass-automounting of a
+    // directory of automount points". Without it, merely *looking at* an autofs placeholder
+    // mounts it, so a directory of NFS home maps would be mounted wholesale and one dead
+    // server would hang the scan. This fires before the descent decision, so the care taken
+    // over autofs in `filesystem` would not have covered it.
+    let stat = statx(
+        dir,
+        name,
+        AtFlags::SYMLINK_NOFOLLOW | AtFlags::NO_AUTOMOUNT,
+        WANTED,
+    )
+    .ok()?;
+
+    let kind = FileType::from_raw_mode(u32::from(stat.stx_mode));
+    let is_dir = kind == FileType::Directory;
+    let allocated = stat.stx_blocks.saturating_mul(512);
+    // `stx_blocks` on btrfs is the size before compression. Where the extents can be read,
+    // what they occupy is the size on disk. A single block cannot be made smaller, so a file
+    // of one block (or an inline one) is not asked about.
+    let compressed = match job.compressed_sizes {
+        filesystem::Compressed::Never => false,
+        filesystem::Compressed::Marked => stat
+            .stx_attributes
+            .contains(::rustix::fs::StatxAttributes::COMPRESSED),
+        filesystem::Compressed::Maybe => true,
+    };
+    let on_disk = if compressed && kind == FileType::RegularFile && allocated > 4096 {
+        btrfs_extents::on_disk(dir, stat.stx_ino).unwrap_or(allocated)
+    } else {
+        allocated
+    };
+
+    let device = device_of(&stat);
+    // Only where the filesystem this directory sits on was found to support sharing at all —
+    // not merely where it is the scan root's. Probing means *opening* the file, so an NFS, SMB
+    // or FUSE mount reached part-way through a scan must not be probed: those are excluded by
+    // magic number rather than by device, which also lets btrfs subvolumes and a second XFS
+    // volume be probed, and they are exactly where the sharing lives.
+    let may_share = job.reflinks && device == job.device && kind == FileType::RegularFile;
+    let shared_extent = if may_share && allocated >= reflink::PROBE_ABOVE_BYTES {
+        reflink::shared_identity(dir, name, job.extent_space).unwrap_or(0)
+    } else {
+        0
+    };
+    // Too small to probe now, but not too small to matter across a snapshot: left for the
+    // second pass (`refine`). A hard-linked one is already held once by its inode, and one of
+    // 2 KiB or less is likely inline on btrfs, where there is no extent to share.
+    let later = may_share
+        && (super::refine::REFINE_ABOVE_BYTES..reflink::PROBE_ABOVE_BYTES).contains(&allocated)
+        && stat.stx_size > 2048
+        && stat.stx_nlink == 1;
+
+    let mut child = None;
+    if is_dir && descend {
+        let path = job.path.join(OsStr::from_bytes(name.to_bytes()));
+        // A mount root showing a directory the walk reaches anyway — a bind mount of a folder
+        // inside the scan, or a second mount of a filesystem already in it — is left empty:
+        // same `st_dev`, often, so nothing below would notice the files were seen already.
+        let mount_root = stat
+            .stx_attributes_mask
+            .contains(::rustix::fs::StatxAttributes::MOUNT_ROOT)
+            && stat
+                .stx_attributes
+                .contains(::rustix::fs::StatxAttributes::MOUNT_ROOT);
+        let duplicate = mount_root && {
+            mounts::reached_elsewhere(
+                shared.mount_table(),
+                stat.stx_mnt_id,
+                &path,
+                &shared.root,
+                |path| {
+                    statx(
+                        rustix::fs::CWD,
+                        path.as_os_str(),
+                        AtFlags::NO_AUTOMOUNT,
+                        StatxFlags::INO,
+                    )
+                    .is_ok_and(|other| device_of(&other) == device && other.stx_ino == stat.stx_ino)
+                },
+            )
+        };
+        // A different device means this entry is a mount point, and the only point at which
+        // the walk has a decision to make. Everything below it is on one filesystem, already
+        // judged, so the `statfs` costs one call per mount rather than one per directory.
+        let crossing = device != job.device;
+        let (allowed, reflinks, extent_space, compressed_sizes, dirblocks) = if crossing {
+            let same_filesystem = device == scan_device;
+            let kind = filesystem::classify_with(&path, shared.mount_table());
+            (
+                (!options.one_file_system || same_filesystem) && !kind.pseudo && !kind.network,
+                kind.reflinks,
+                kind.extent_space.unwrap_or(device),
+                kind.compressed_sizes,
+                kind.ext.then(|| shared.device_for(device)).flatten(),
+            )
+        } else {
+            (
+                true,
+                job.reflinks,
+                job.extent_space,
+                job.compressed_sizes,
+                job.dirblocks.clone(),
+            )
+        };
+        if allowed && !duplicate {
+            child = Some(Job {
+                path: Arc::from(path.as_path()),
+                depth: job.depth + 1,
+                device,
+                reflinks,
+                extent_space,
+                compressed_sizes,
+                dirblocks,
+            });
+        }
+    }
+
+    Some(Inspected {
+        meta: EntryMeta {
+            size: on_disk,
+            apparent: stat.stx_size,
+            inode: stat.stx_ino,
+            links: u64::from(stat.stx_nlink),
+            is_dir,
+            shared_extent,
+        },
+        child,
+        later,
+    })
+}
+
+/// A listed name, before it is looked at: where it sits in the arena, and its inode.
+#[derive(Clone, Copy)]
+struct Listed {
+    ino: u64,
+    offset: u32,
+    len: u32,
+}
+
+/// A directory with at least this many entries has its `statx` calls shared out over helper
+/// threads, `STAT_CHUNK` each, rather than made one after another by the worker that listed it.
+///
+/// On a cold cache every `statx` of an inode not yet in core is a disk read the worker sits
+/// through, and one directory of 43,000 entries took 0.40s alone while the rest of the walk's
+/// workers had nothing left to do; shared out it took 0.15s. Warm, the calls are a few
+/// microseconds each and the threads are not worth spawning below a few thousand of them.
+const STAT_SHARED_ABOVE: usize = 2048;
+const STAT_CHUNK: usize = 1024;
+
 fn read_directory(
     job: &Job,
     options: &ScanOptions,
     scan_device: u64,
     shared: &Shared,
+    prefetch: &mut dirblocks::Prefetcher,
 ) -> (DirEntries, Vec<Job>) {
     let mut directory = DirEntries::new(Arc::clone(&job.path));
     directory.extent_space = job.extent_space;
@@ -157,10 +347,27 @@ fn read_directory(
         }
     };
 
+    // Before this directory's blocks are read: ask where they are, and read the run they are in
+    // through the device, so that the next directories' blocks are in core when they are opened.
+    if let Some(device) = &job.dirblocks
+        && let Some(at) = reflink::first_extent(dir.as_fd())
+    {
+        prefetch.ahead(device, at);
+    }
+
     let descend = options.max_depth.is_none_or(|max| job.depth + 1 < max);
     let mut buffer = [MaybeUninit::<u8>::uninit(); 64 * 1024];
     let mut reader = RawDir::new(&dir, &mut buffer);
 
+    // The whole listing first, then the stats, in inode order. ext4 and XFS hand back a
+    // directory in name-hash order, which is uncorrelated with where the inodes sit on disk;
+    // sorted by `d_ino` — which `getdents64` returns for free — the inode table is read forwards,
+    // so the kernel's inode readahead (32 blocks on ext4) is used rather than wasted. Warm it
+    // changes nothing; cold it was 8% of a scan of 375k entries on an SSD, and a spinning disk
+    // has far more to gain from a seek order than that. The names are copied into one arena
+    // with their NULs, since `RawDir` reuses its buffer.
+    let mut arena: Vec<u8> = Vec::new();
+    let mut listed: Vec<Listed> = Vec::new();
     while let Some(entry) = reader.next() {
         let entry = match entry {
             Ok(entry) => entry,
@@ -182,140 +389,76 @@ fn read_directory(
         if name == c"." || name == c".." {
             continue;
         }
+        let bytes = name.to_bytes_with_nul();
+        listed.push(Listed {
+            ino: entry.ino(),
+            offset: u32::try_from(arena.len()).expect("a directory's names fit in 4 GiB"),
+            len: u32::try_from(bytes.len()).expect("a name fits in 4 GiB"),
+        });
+        arena.extend_from_slice(bytes);
+    }
+    listed.sort_unstable_by_key(|l| l.ino);
 
-        // NO_AUTOMOUNT matters as much as SYMLINK_NOFOLLOW here. `stat`, `lstat` and `fstatat` all
-        // behave as though it were set; bare `statx` does not, and the man page names this exact
-        // case: "can be used in tools that scan directories to prevent mass-automounting of a
-        // directory of automount points". Without it, merely *looking at* an autofs placeholder
-        // mounts it, so a directory of NFS home maps would be mounted wholesale and one dead
-        // server would hang the scan. This fires before the descent decision, so the care taken
-        // over autofs in `filesystem` would not have covered it.
-        let Ok(stat) = statx(
-            &dir,
-            name,
-            AtFlags::SYMLINK_NOFOLLOW | AtFlags::NO_AUTOMOUNT,
-            WANTED,
-        ) else {
+    let name_of = |l: &Listed| -> &::std::ffi::CStr {
+        let start = l.offset as usize;
+        ::std::ffi::CStr::from_bytes_with_nul(&arena[start..start + l.len as usize])
+            .expect("stored with its NUL")
+    };
+    let look = |l: &Listed| {
+        inspect(
+            dir.as_fd(),
+            name_of(l),
+            job,
+            options,
+            scan_device,
+            shared,
+            descend,
+        )
+    };
+    let mut keep = |directory: &mut DirEntries, l: &Listed, found: Option<Inspected>| {
+        let Some(found) = found else {
             // A file that vanished between the readdir and the stat, or one whose parent we may
             // list but not interrogate. Counted, not guessed at.
             directory.failed += 1;
-            continue;
+            return;
         };
-
-        let kind = FileType::from_raw_mode(u32::from(stat.stx_mode));
-        let is_dir = kind == FileType::Directory;
-        let allocated = stat.stx_blocks.saturating_mul(512);
-        // `stx_blocks` on btrfs is the size before compression. Where the extents can be read,
-        // what they occupy is the size on disk. A single block cannot be made smaller, so a file
-        // of one block (or an inline one) is not asked about.
-        let compressed = match job.compressed_sizes {
-            filesystem::Compressed::Never => false,
-            filesystem::Compressed::Marked => stat
-                .stx_attributes
-                .contains(::rustix::fs::StatxAttributes::COMPRESSED),
-            filesystem::Compressed::Maybe => true,
-        };
-        let on_disk = if compressed && kind == FileType::RegularFile && allocated > 4096 {
-            btrfs_extents::on_disk(dir.as_fd(), stat.stx_ino).unwrap_or(allocated)
-        } else {
-            allocated
-        };
-
-        let device = device_of(&stat);
-        // Only where the filesystem this directory sits on was found to support sharing at all —
-        // not merely where it is the scan root's. Probing means *opening* the file, so an NFS, SMB
-        // or FUSE mount reached part-way through a scan must not be probed: those are excluded by
-        // magic number rather than by device, which also lets btrfs subvolumes and a second XFS
-        // volume be probed, and they are exactly where the sharing lives.
-        let may_share = job.reflinks && device == job.device && kind == FileType::RegularFile;
-        let shared_extent = if may_share && allocated >= reflink::PROBE_ABOVE_BYTES {
-            reflink::shared_identity(dir.as_fd(), name, job.extent_space).unwrap_or(0)
-        } else {
-            0
-        };
-        // Too small to probe now, but not too small to matter across a snapshot: left for the
-        // second pass (`refine`). A hard-linked one is already held once by its inode, and one of
-        // 2 KiB or less is likely inline on btrfs, where there is no extent to share.
-        let later = may_share
-            && (super::refine::REFINE_ABOVE_BYTES..reflink::PROBE_ABOVE_BYTES).contains(&allocated)
-            && stat.stx_size > 2048
-            && stat.stx_nlink == 1;
-
-        if is_dir && descend {
-            let child = job.path.join(OsStr::from_bytes(name.to_bytes()));
-            // A mount root showing a directory the walk reaches anyway — a bind mount of a folder
-            // inside the scan, or a second mount of a filesystem already in it — is left empty:
-            // same `st_dev`, often, so nothing below would notice the files were seen already.
-            let mount_root = stat
-                .stx_attributes_mask
-                .contains(::rustix::fs::StatxAttributes::MOUNT_ROOT)
-                && stat
-                    .stx_attributes
-                    .contains(::rustix::fs::StatxAttributes::MOUNT_ROOT);
-            let duplicate = mount_root && {
-                mounts::reached_elsewhere(
-                    shared.mount_table(),
-                    stat.stx_mnt_id,
-                    &child,
-                    &shared.root,
-                    |path| {
-                        statx(
-                            rustix::fs::CWD,
-                            path.as_os_str(),
-                            AtFlags::NO_AUTOMOUNT,
-                            StatxFlags::INO,
-                        )
-                        .is_ok_and(|other| {
-                            device_of(&other) == device && other.stx_ino == stat.stx_ino
-                        })
-                    },
-                )
-            };
-            // A different device means this entry is a mount point, and the only point at which
-            // the walk has a decision to make. Everything below it is on one filesystem, already
-            // judged, so the `statfs` costs one call per mount rather than one per directory.
-            let crossing = device != job.device;
-            let (allowed, reflinks, extent_space, compressed_sizes) = if crossing {
-                let same_filesystem = device == scan_device;
-                let kind = filesystem::classify_with(&child, shared.mount_table());
-                (
-                    (!options.one_file_system || same_filesystem) && !kind.pseudo && !kind.network,
-                    kind.reflinks,
-                    kind.extent_space.unwrap_or(device),
-                    kind.compressed_sizes,
-                )
-            } else {
-                (true, job.reflinks, job.extent_space, job.compressed_sizes)
-            };
-            if allowed && !duplicate {
-                children.push(Job {
-                    path: Arc::from(child.as_path()),
-                    depth: job.depth + 1,
-                    device,
-                    reflinks,
-                    extent_space,
-                    compressed_sizes,
-                });
-            }
+        if let Some(child) = found.child {
+            children.push(child);
         }
-
-        if later {
+        if found.later {
             directory
                 .later
                 .push(u32::try_from(directory.len()).unwrap_or(u32::MAX));
         }
-        // Straight from the `getdents64` buffer into the packed one: no allocation per entry.
-        directory.push(
-            OsStr::from_bytes(name.to_bytes()),
-            EntryMeta {
-                size: on_disk,
-                apparent: stat.stx_size,
-                inode: stat.stx_ino,
-                links: u64::from(stat.stx_nlink),
-                is_dir,
-                shared_extent,
-            },
-        );
+        directory.push(OsStr::from_bytes(name_of(l).to_bytes()), found.meta);
+    };
+
+    let helpers = (listed.len() / STAT_CHUNK).min(shared.threads);
+    if listed.len() >= STAT_SHARED_ABOVE && helpers > 1 {
+        // This worker takes the first chunk itself; the helpers take the rest, and hand their
+        // findings back in listing order so the packed directory comes out the same either way.
+        let chunk = listed.len().div_ceil(helpers);
+        let found: Vec<Vec<Option<Inspected>>> = ::std::thread::scope(|scope| {
+            let mut chunks = listed.chunks(chunk);
+            let first = chunks.next().unwrap_or(&[]);
+            let handles: Vec<_> = chunks
+                .map(|part| scope.spawn(move || part.iter().map(look).collect::<Vec<_>>()))
+                .collect();
+            let mut all = vec![first.iter().map(look).collect::<Vec<_>>()];
+            all.extend(handles.into_iter().map(|handle| {
+                handle
+                    .join()
+                    .unwrap_or_else(|panic| ::std::panic::resume_unwind(panic))
+            }));
+            all
+        });
+        for (l, found) in listed.iter().zip(found.into_iter().flatten()) {
+            keep(&mut directory, l, found);
+        }
+    } else {
+        for l in &listed {
+            keep(&mut directory, l, look(l));
+        }
     }
 
     directory.shrink();
@@ -323,6 +466,100 @@ fn read_directory(
 }
 
 pub(crate) use reflink::shared_identity;
+
+/// Reading the directories' blocks ahead, through the block device. Root, in practice.
+///
+/// A cold walk pays one synchronous 4 KiB read per directory for its data block, inside
+/// `getdents64`, with no readahead across directories: 72% of every read a cold ext4 scan makes
+/// (see `docs/scan-performance.md`, "Cold cache"). ext4 puts a directory's blocks in its inode's
+/// block group and the walk reads children smallest inode first, so those blocks come in
+/// contiguous runs of five to nine. Where the device can be opened for reading — root, or the
+/// `disk` group — one `posix_fadvise(WILLNEED)` on it from the first block of a run fetches the
+/// run in one read; the buffer cache ext4 reads directories from is the device's page cache, so
+/// the siblings' blocks are then in core. Where it cannot be opened, nothing changes: the walk
+/// is exactly what an unprivileged one is.
+///
+/// `DISKONAUT_DIRBLOCKS_DEVICE=<path>` names the file to advise instead of the device, for
+/// exercising this path without the device: on a regular file the advice is harmless.
+mod dirblocks {
+    use ::std::os::fd::{AsRawFd, OwnedFd};
+
+    use ::rustix::fs::{Mode, OFlags, open};
+
+    /// How much is read ahead from a run's first block. Runs average five to nine 4 KiB blocks;
+    /// what is read past the run is bandwidth spent for nothing, and a run longer than this is
+    /// read in two.
+    const WINDOW: u64 = 32 * 1024;
+
+    /// A block device open for reading.
+    pub struct Device {
+        fd: OwnedFd,
+    }
+
+    impl Device {
+        /// The device `st_dev` names, if it can be opened for reading.
+        pub fn open(device: u64) -> Option<Self> {
+            if let Ok(path) = ::std::env::var("DISKONAUT_DIRBLOCKS_DEVICE") {
+                let fd = open(path, OFlags::RDONLY | OFlags::CLOEXEC, Mode::empty()).ok()?;
+                return Some(Self { fd });
+            }
+            #[allow(clippy::cast_possible_truncation)]
+            let (major, minor) = (
+                libc::major(device as libc::dev_t),
+                libc::minor(device as libc::dev_t),
+            );
+            let uevent =
+                ::std::fs::read_to_string(format!("/sys/dev/block/{major}:{minor}/uevent")).ok()?;
+            let name = uevent
+                .lines()
+                .find_map(|line| line.strip_prefix("DEVNAME="))?;
+            let fd = open(
+                format!("/dev/{name}"),
+                OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NONBLOCK,
+                Mode::empty(),
+            )
+            .ok()?;
+            // The device the filesystem is on, and nothing else, whatever `/dev` says.
+            let stat = ::rustix::fs::fstat(&fd).ok()?;
+            // `st_rdev` is not the same width on every libc.
+            #[allow(clippy::unnecessary_cast)]
+            let rdev = stat.st_rdev as u64;
+            (rdev == device).then_some(Self { fd })
+        }
+    }
+
+    /// One worker's view of what has been asked for: the end of the last window, so that the
+    /// directories inside it are not asked for again. Workers walk different subtrees, so each
+    /// keeps its own.
+    #[derive(Default)]
+    pub struct Prefetcher {
+        /// Where the last window started and ended.
+        window: Option<(u64, u64)>,
+    }
+
+    impl Prefetcher {
+        /// A directory's first block is at byte `at`: read the window from there, unless the
+        /// last one covers it.
+        pub fn ahead(&mut self, device: &Device, at: u64) {
+            if let Some((start, end)) = self.window
+                && (start..end).contains(&at)
+            {
+                return;
+            }
+            #[allow(clippy::cast_possible_wrap)]
+            // SAFETY: `posix_fadvise` takes a descriptor and three integers, and `fd` is open.
+            unsafe {
+                libc::posix_fadvise(
+                    device.fd.as_raw_fd(),
+                    at as libc::off_t,
+                    WINDOW as libc::off_t,
+                    libc::POSIX_FADV_WILLNEED,
+                );
+            }
+            self.window = Some((at, at.saturating_add(WINDOW)));
+        }
+    }
+}
 
 /// Copy-on-write sharing, asked about one file at a time.
 ///
@@ -378,6 +615,25 @@ mod reflink {
         extent_count: u32,
         reserved: u32,
         extents: [Extent; MAX_EXTENTS],
+    }
+
+    /// Where the first extent of the open file or directory `fd` is, as a byte offset into the
+    /// device, if it has one. Inline data (ext4 keeps a very small directory in its inode) has no
+    /// extent. Asks for one extent, so the cost is the `ioctl` alone.
+    pub fn first_extent(fd: BorrowedFd<'_>) -> Option<u64> {
+        let mut request = Request {
+            start: 0,
+            length: u64::MAX,
+            flags: 0,
+            mapped_extents: 0,
+            extent_count: 1,
+            reserved: 0,
+            extents: [Extent::default(); MAX_EXTENTS],
+        };
+        // SAFETY: `request` is a live, correctly shaped `struct fiemap` with room for the extent
+        // it promises, and `fd` is open for the duration of the call.
+        let result = unsafe { libc::ioctl(fd.as_raw_fd(), FS_IOC_FIEMAP, &raw mut request) };
+        (result == 0 && request.mapped_extents >= 1).then_some(request.extents[0].physical)
     }
 
     /// An identity for `name`'s blocks, if every one of them is shared with another file.
@@ -604,6 +860,9 @@ pub(crate) mod filesystem {
         pub extent_space: Option<u64>,
         /// Which files to ask what their extents occupy after compression (btrfs, as root).
         pub compressed_sizes: Compressed,
+        /// ext2, ext3 or ext4: a directory's blocks can be found with FIEMAP and read ahead
+        /// through the device, given the right to open it. See [`super::dirblocks`].
+        pub ext: bool,
     }
 
     /// Which files of a filesystem may be compressed, and so are worth reading the extents of.
@@ -635,6 +894,8 @@ pub(crate) mod filesystem {
     }
 
     const BTRFS_MAGIC: u32 = 0x9123_683e;
+    /// ext2, ext3 and ext4 all report `EXT4_SUPER_MAGIC`.
+    const EXT_MAGIC: u32 = 0xEF53;
 
     /// `_IOR(0x94, 31, struct btrfs_ioctl_fs_info_args)`, a 1024-byte struct.
     const BTRFS_IOC_FS_INFO: libc::Ioctl = 0x8400_941f_u32 as libc::Ioctl;
@@ -689,6 +950,7 @@ pub(crate) mod filesystem {
                 reflinks: false,
                 extent_space: None,
                 compressed_sizes: Compressed::Never,
+                ext: false,
             },
             |fs| {
                 let magic = magic_of(&fs);
@@ -707,6 +969,7 @@ pub(crate) mod filesystem {
                     } else {
                         Compressed::Marked
                     },
+                    ext: magic == EXT_MAGIC,
                 }
             },
         )
@@ -1144,22 +1407,30 @@ pub fn walk_linux(root: &Path, threads: usize, options: ScanOptions) -> LinuxWal
     .map(|stat| device_of(&stat))
     .unwrap_or_default();
 
+    let threads = threads.max(1);
     let root_kind = filesystem::classify(&root);
     let shared = Arc::new(Shared {
-        jobs: Mutex::new(vec![Job {
-            path: Arc::clone(&root),
-            depth: 0,
-            device: scan_device,
-            reflinks: root_kind.reflinks,
-            extent_space: root_kind.extent_space.unwrap_or(scan_device),
-            compressed_sizes: root_kind.compressed_sizes,
-        }]),
+        jobs: Mutex::new(Vec::new()),
         ready: Condvar::new(),
         queued: AtomicUsize::new(1),
         pending: AtomicUsize::new(1),
         stop: AtomicBool::new(false),
         root: Arc::clone(&root),
+        threads,
         mounts: ::std::sync::OnceLock::new(),
+        devices: Mutex::new(::std::collections::HashMap::new()),
+    });
+    shared.jobs.lock().expect("scan queue poisoned").push(Job {
+        path: Arc::clone(&root),
+        depth: 0,
+        device: scan_device,
+        reflinks: root_kind.reflinks,
+        extent_space: root_kind.extent_space.unwrap_or(scan_device),
+        compressed_sizes: root_kind.compressed_sizes,
+        dirblocks: root_kind
+            .ext
+            .then(|| shared.device_for(scan_device))
+            .flatten(),
     });
 
     // Bounded so a slow consumer bounds the walk's memory rather than letting it run ahead of the
@@ -1167,7 +1438,6 @@ pub fn walk_linux(root: &Path, threads: usize, options: ScanOptions) -> LinuxWal
     let (sender, batches): (SyncSender<Vec<DirEntries>>, Receiver<Vec<DirEntries>>) =
         sync_channel(64);
 
-    let threads = threads.max(1);
     let donate_below = threads;
 
     let workers = (0..threads)
@@ -1204,6 +1474,7 @@ fn worker(
     let mut local: Vec<Job> = Vec::new();
     let mut outbox: Vec<DirEntries> = Vec::new();
     let mut outbox_entries = 0usize;
+    let mut prefetch = dirblocks::Prefetcher::default();
 
     // Every job on `local` is counted in `pending`, so any path out of this function has to hand
     // the whole stack back or the walk never finishes.
@@ -1215,7 +1486,8 @@ fn worker(
     }
 
     while let Some(job) = local.pop().or_else(|| shared.steal()) {
-        let (directory, children) = read_directory(&job, &options, scan_device, shared);
+        let (directory, children) =
+            read_directory(&job, &options, scan_device, shared, &mut prefetch);
 
         // `max(1)` so that a run of empty directories still flushes. Counting only entries, a
         // worker walking a wide tree of empty directories would hold every one of them until it
@@ -1233,7 +1505,14 @@ fn worker(
         }
 
         shared.pending.fetch_add(children.len(), Ordering::Relaxed);
-        local.extend(children);
+        // The children come in inode order and the stack is popped from the end, so they go on
+        // reversed: the smallest inode is read next. On ext4 a directory's blocks are allocated in
+        // its inode's block group, so this walks the disk forwards through each subtree — the
+        // directory blocks of a 31k-directory tree fall into 6k contiguous runs this way against
+        // 25k in readdir order, and a single-threaded cold walk took 6.2s against 7.3s. (Serving
+        // the whole queue in inode order, not just each directory's children, halves the runs
+        // again but cost 6% warm in sorting; see `docs/scan-performance.md`, "Cold cache".)
+        local.extend(children.into_iter().rev());
         // Publish while the queue is thin enough that a worker could be about to go idle, rather
         // than only when it is empty: by the time it is empty the others are already asleep.
         if local.len() > 1 && shared.queued.load(Ordering::Relaxed) < donate_below {

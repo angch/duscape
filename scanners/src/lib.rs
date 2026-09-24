@@ -388,57 +388,56 @@ mod fallback {
     }
 }
 
-/// Workers for the walker the app actually uses.
+/// Workers for the walker the app actually uses: `--threads`, else [`default_scan_threads`].
 pub fn thread_count(options: ScanOptions) -> usize {
-    capped(options, max_scan_threads())
-}
-
-/// Workers for the `dua-core` walk, wherever it is still reached.
-///
-/// It needs its own number. The cap below is a property of a walker, not of a machine: raising the
-/// native walker's cap to 24 and letting `dua-core` inherit it made the `dua-*` benchmark stages —
-/// and `scan_folder`, which is public — 38% slower on this box, by running the one walker that
-/// collapses past eight workers at 24 of them.
-fn dua_thread_count(options: ScanOptions) -> usize {
-    capped(options, MAX_DUA_THREADS)
-}
-
-fn capped(options: ScanOptions, cap: usize) -> usize {
     if let Some(threads) = options.threads {
         return threads.max(1);
     }
     if options.parallel {
-        std::thread::available_parallelism()
-            .map_or(1, NonZero::get)
-            .min(cap)
+        default_scan_threads()
     } else {
         1
     }
 }
 
-/// Worker cap for the scan, past which more workers stop paying for themselves.
+/// Workers for the `dua-core` walk, wherever it is still reached.
 ///
-/// The two numbers come from different walkers and do not transfer to each other.
-///
-/// On macOS the `getattrlistbulk` walk really does contend: a whole-disk scan is fastest at six
-/// workers on a 14-core machine. Eight is 3% slower and burns 60% more kernel time, and it gets
-/// steadily worse beyond that. The walk is bound by synchronous 4 KiB metadata reads, and past six
-/// the extra queue depth is spent contending in the kernel rather than reading.
-///
-/// On Linux the old cap of eight was a property of the `dua-core` walk, which collapsed past it —
-/// not of the kernel, which serves sixteen concurrent walkers at near-linear throughput. With the
-/// native walker the curve is flat from twelve workers up: on a 32-core box, XFS and ext4 both
-/// bottom out around twenty-four and give up only a few percent by thirty-two.
-#[cfg(target_os = "linux")]
-const MAX_SCAN_THREADS: usize = 24;
-#[cfg(target_os = "macos")]
-const MAX_SCAN_THREADS: usize = 6;
-#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-const MAX_SCAN_THREADS: usize = 8;
+/// It needs its own number. The cap is a property of a walker, not of a machine: raising the
+/// native walker's cap to 24 and letting `dua-core` inherit it made the `dua-*` benchmark stages —
+/// and `scan_folder`, which is public — 38% slower on this box, by running the one walker that
+/// collapses past eight workers at 24 of them.
+fn dua_thread_count(options: ScanOptions) -> usize {
+    if let Some(threads) = options.threads {
+        return threads.max(1);
+    }
+    if options.parallel {
+        cores().min(MAX_DUA_THREADS)
+    } else {
+        1
+    }
+}
 
-/// The scan's worker cap on this machine: `MAX_SCAN_THREADS`, except on Windows.
+fn cores() -> usize {
+    std::thread::available_parallelism().map_or(1, NonZero::get)
+}
+
+/// The scan's workers on this machine, past which more stop paying for themselves. The numbers
+/// come from different walkers and do not transfer to each other.
 ///
-/// There the walk is bound by a fixed cost per directory handle in the kernel and its filter
+/// On Linux, three workers a core, at most 32. Warm, the walk is CPU-bound and one a core would
+/// do: on a 32-core box XFS and ext4 are flat from twelve workers up and give up only a few
+/// percent by thirty-two. Cold, every directory costs the worker that opens it two synchronous
+/// disk reads (its inode, then its blocks) before its entries can be looked at, so the disk sees
+/// as many reads in flight as there are workers blocked in them, and at one a core an SSD that
+/// serves seventy thousand reads a second is handed four at a time: 8 workers took 1.01s over
+/// 375k entries on 8 cores, 16 took 0.79s and 24 took 0.74s, the device's floor for those 34k
+/// reads. Warm, 24 cost 9% on a tree that scans in 0.2s and nothing on one of 2.2M entries. See
+/// `docs/scan-performance.md`, "Cold cache".
+#[cfg(target_os = "linux")]
+fn default_scan_threads() -> usize {
+    (cores() * 3).clamp(1, 32)
+}
+/// On Windows the walk is bound by a fixed cost per directory handle in the kernel and its filter
 /// drivers (Defender among them): on a system volume about 55µs of thread time per directory,
 /// three times what the same walk pays on a data volume. The kernel side stops scaling at a
 /// number of workers that grows with the machine, not at a fixed count. On a 12-thread machine 8
@@ -446,18 +445,21 @@ const MAX_SCAN_THREADS: usize = 8;
 /// at 12, interleaved over four rounds, then 6.9s at 16 and 7.3s at 32. Two thirds of the cores,
 /// capped at 12, gives 8 on the first and 12 on the second.
 #[cfg(windows)]
-fn max_scan_threads() -> usize {
-    let cores = std::thread::available_parallelism().map_or(1, NonZero::get);
-    (cores * 2 / 3).clamp(1, WINDOWS_MAX_SCAN_THREADS)
+fn default_scan_threads() -> usize {
+    (cores() * 2 / 3).clamp(1, 12)
 }
-#[cfg(not(windows))]
-fn max_scan_threads() -> usize {
-    MAX_SCAN_THREADS
+/// On macOS the `getattrlistbulk` walk really does contend: a whole-disk scan is fastest at six
+/// workers on a 14-core machine. Eight is 3% slower and burns 60% more kernel time, and it gets
+/// steadily worse beyond that. The walk is bound by synchronous 4 KiB metadata reads, and past six
+/// the extra queue depth is spent contending in the kernel rather than reading.
+#[cfg(target_os = "macos")]
+fn default_scan_threads() -> usize {
+    cores().min(6)
 }
-
-/// The most workers a Windows walk is given, however many cores there are.
-#[cfg(windows)]
-const WINDOWS_MAX_SCAN_THREADS: usize = 12;
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn default_scan_threads() -> usize {
+    cores().min(8)
+}
 
 /// Worker cap for the `dua-core` walk, which collapses past eight on every machine measured.
 const MAX_DUA_THREADS: usize = 8;
