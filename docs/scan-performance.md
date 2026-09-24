@@ -2786,7 +2786,10 @@ Against `diskus` 0.9.0 (24 threads), 3 runs each, after the tree build work of t
 Level with `diskus` warm and cold, on both trees, while building the tree it does not; as
 root, with the directories' blocks read ahead through the device, 9% and 21% ahead of it. The
 measured regime is one ext4 SSD in a VM; on NVMe the floor is higher and the workers matter
-more, and on a spinning disk the inode order matters more. Neither was available to measure.
+more, and on a spinning disk the inode order matters more. NVMe was measured the next day
+(`docs/benchmarks/badwolf-20260925-full.md`, bare metal, 16 cores): level with `diskus` warm
+again, but cold it leads diskonaut by 10–25% on every tree (`home`, 673k entries: 651 against
+719 ms), so the reads in flight are what to look at there. A spinning disk is still unmeasured.
 
 ## The tree build (2026-09-24)
 
@@ -2982,6 +2985,35 @@ would close the gap and are left for another day: reading only the blocks of dir
 are not already in the tree's way (the runs' merging reads twice the bytes of the blocks
 wanted), and folding the batch build into the parse. Cold is where the change lives, and it
 is a clean 2x there.
+
+### On bare metal it is not a win (2026-09-25)
+
+`docs/benchmarks/badwolf-20260925-full.md`: a Ryzen 7 7735HS, 16 cores, one ext4 partition on a
+Samsung NVMe, kernel 7.0, no virtualisation. Same pairs as above:
+
+| tree | warm: device / kernel walk (root) | cold: device / kernel walk (root) | cold, unprivileged | cold, `diskus` |
+| --- | --- | --- | --- | --- |
+| `project`, 21k entries | 28 / 21 ms | 74 / 77 ms | 47 ms | 38 ms |
+| `~/.cache`, 104k, 31k hard-linked | 74 / 62 ms | **156** / 218 ms | 166 ms | 133 ms |
+| `home`, 673k entries | 343 / 281 ms | 692 / 753 ms | 719 ms | 651 ms |
+| `/usr`, 290k entries | 156 / 129 ms | 327 / 352 ms | 317 ms | 290 ms |
+
+Totals are identical to the kernel walk's on `/usr` (on `home`, a live tree, the two differ by
+21 blocks: the device read sees the page cache, not the last seconds of writes). But the walker
+is *slower* warm, by 20–30%, and cold it gains 6–40% instead of the VM's 1.7x. The device is
+not the cost: the inode survey alone (`--bench-stage ext4-raw`) reads the partition's 261 inode
+groups, 414 MiB, in 97 ms at 4.2 GiB/s. What changed is the other side of the comparison. On
+this kernel and CPU, without a hypervisor, `statx` costs about a third of what it did in the VM,
+and there are twice the cores to run it on: the unprivileged kernel walk does 2.5M entries/s
+warm against the VM's 1.5M. The device walker's generation-by-generation parse (16 generations
+on `/usr`, 73 ms fetching blocks and inodes, 19 ms emitting) is serial where the kernel walk is
+not, so the ceiling it hid behind on the VM is gone. Cold, the NVMe serves the kernel's reads
+fast enough that saving them is worth a tenth, not half.
+
+So the default is in question. As root on such a machine the device read costs a quarter to a
+third warm for a tenth cold, and the warm scan is the one people repeat. Making the choice
+depend on what is measured (the first generation's time against a `statx` sample, say) or
+simply on virtualisation is left open; `--no-device-read` is the way out today.
 
 
 ## Roadmap step 7: the model's cache misses (2026-09-24) — under its gate
