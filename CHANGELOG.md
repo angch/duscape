@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The MS-DOS viewer, from a review of its 286 port: deleting or rescanning a folder whose path is
+  too long for DOS is refused (the check was lost to a flag overwritten before it was tested),
+  and a rescan no longer takes a folder out of the tree before knowing it can be read, so one
+  DOS cannot open neither vanishes nor counts as freed; colour averages round to nearest; a 16-bit
+  JPEG quantiser above 32767 is clamped; the disk line shows "0 not scanned" instead of nothing
+  when the drive reports less than was found; invalid UTF-8 is read exactly as Rust's lossy
+  decoding reads it; and PNG transparency (tRNS) works for gray and RGB as well as palettes.
 - The MS-DOS viewer runs on a 286 (or an 80186) with no coprocessor: 16-bit registers only, no
   FS/GS, conditional jumps a 286 can take (`J286.INC`), and the treemap in IEEE doubles computed in
   software (`SOFTFP.ASM`), so it still lays out exactly as Rust's f64 code does. Checked by a lint

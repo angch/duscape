@@ -2,7 +2,7 @@
 """SOFTFP.ASM against the host's IEEE doubles: tests/TESTFP.ASM runs random operations in
 DOSBox-X on an emulated 286 without a coprocessor, and every result must be the same bits.
 
-    python3 viewers/dos/tests/softfp.py [count]
+    python3 viewers/dos/tests/softfp.py [count [seed]]
 """
 import math, os, random, struct, subprocess, sys
 
@@ -10,6 +10,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 WORK = os.path.join(REPO, "target", "dos", "fp")
 COUNT = int(sys.argv[1]) if len(sys.argv) > 1 else 20000
+SEED = int(sys.argv[2]) if len(sys.argv) > 2 else 5
 
 
 def dosbox(commands, cpu286=False):
@@ -65,7 +66,7 @@ def expected(op, k, a, b):
 
 def main():
     os.makedirs(WORK, exist_ok=True)
-    rng = random.Random(5)
+    rng = random.Random(SEED)
     records, wants = [], []
     while len(records) < COUNT:
         op = rng.randrange(8)

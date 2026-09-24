@@ -10,6 +10,8 @@ pal_want        db 0
 acc_mode        db 0                    ; 0 RGBA sums, 1 Y Cb Cr
 hd_wrapped      db 0
 u8_len          db 0
+u8_bad          db 0                    ; an invalid byte seen in the head
+u8_lo           db 80h,0BFh             ; the next byte's range
 near_c          db 0
 pv_len          dw 0,0                  ; the head's length, up to 65536
 sn_hi           dw 0
@@ -88,6 +90,8 @@ cp437_hi:
 ; PNG
 png_hdr         db 0
 png_plte        db 0
+png_trns        db 0                    ; tRNS gave gray or RGB a transparent colour
+png_key         db 0,0,0,0,0,0          ; that colour's samples, 16 bits each, big-endian
 png_depth       db 0
 png_ctype       db 0
 png_interlace   db 0

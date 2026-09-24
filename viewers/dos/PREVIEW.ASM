@@ -269,6 +269,7 @@ text_lines:
         pop     es
         xor     si,si
         mov     [hd_wrapped],0
+        mov     [u8_bad],0
         mov     [pv_nlines],0
 .line:  cmp     [pv_nlines],PV_ROWS
         jae     .done
@@ -354,13 +355,17 @@ text_lines:
         inc     dx
 @@:     ret
 
-; the character at the head's si → ax, si past it; U+FFFD, and anything beyond U+FFFF (which
-; CP437 has none of), as '?'. CF=1 when the head ends inside a sequence.
+; the character at the head's si → ax, si past it, as String::from_utf8_lossy reads it: each
+; maximal invalid subpart is one U+FFFD, shown '?', and so is anything beyond U+FFFF (which
+; CP437 has none of). The second byte's range depends on the first (no overlong forms, no
+; surrogates, nothing past U+10FFFF). CF=1 when the head ends inside a sequence and nothing
+; invalid came before: then text_lines stops there, as preview::text_lines does.
 utf8_next:
         call    head_byte
         xor     ah,ah
         cmp     al,80h
         jb      .r
+        mov     word [u8_lo],0BF80h     ; lo 80, hi BF
         mov     cl,1
         mov     bx,1Fh
         cmp     al,0C2h
@@ -369,12 +374,23 @@ utf8_next:
         jb      .seq
         mov     cl,2
         mov     bx,0Fh
-        cmp     al,0F0h
+        cmp     al,0E0h
+        jne     @f
+        mov     byte [u8_lo],0A0h       ; E0 A0..BF
+@@:     cmp     al,0EDh
+        jne     @f
+        mov     byte [u8_lo+1],9Fh      ; ED 80..9F
+@@:     cmp     al,0F0h
         jb      .seq
         mov     cl,3
         mov     bx,07h
-        cmp     al,0F5h
-        jae     .bad
+        cmp     al,0F0h
+        jne     @f
+        mov     byte [u8_lo],90h        ; F0 90..BF
+@@:     cmp     al,0F4h
+        jb      .seq
+        ja      .bad
+        mov     byte [u8_lo+1],8Fh      ; F4 80..8F
 .seq:   mov     [u8_len],cl
         and     bx,ax                   ; the lead byte's bits
 .more:  call    head_end
@@ -383,10 +399,11 @@ utf8_next:
         mov     es,[lineseg]
         mov     al,[es:si]
         pop     es
-        mov     ah,al
-        and     ah,0C0h
-        cmp     ah,80h
-        jne     .bad                    ; not a continuation: this one alone is replaced
+        cmp     al,[u8_lo]
+        jb      .bad                    ; this one is not consumed: it starts afresh
+        cmp     al,[u8_lo+1]
+        ja      .bad
+        mov     word [u8_lo],0BF80h     ; the rest: any continuation byte
         call    head_byte
         and     ax,3Fh
         push    cx
@@ -399,10 +416,15 @@ utf8_next:
         mov     ax,bx
         cmp     [u8_len],3              ; four bytes: beyond U+FFFF
         jne     .r
-.bad:   mov     ax,'?'
+        mov     ax,'?'
+        jmp     .r
+.bad:   mov     [u8_bad],1
+        mov     ax,'?'
 .r:     clc
         ret
-.cut:   stc
+.cut:   cmp     [u8_bad],0              ; cut off at the end: dropped, unless the head was
+        jne     .bad                    ; already invalid (then the whole is read lossily)
+        stc
         ret
 
 ; ---------------------------------------------------------------------------------------------
@@ -738,8 +760,8 @@ acc_add_c:
         pop     ax
         ret
 
-; dx:ax / (the 32-bit count at [bx+2]:[bx]) → ax; the count is not 0 and the quotient under
-; 65536. Both are halved until the count fits in 16 bits.
+; dx:ax / (the 32-bit count at [bx+2]:[bx]) → ax, rounded to nearest; the count is not 0 and
+; the quotient under 65536. Both are halved until the count fits in 16 bits.
 div_count:
         push    cx
         push    di
@@ -752,7 +774,12 @@ div_count:
         shr     dx,1
         rcr     ax,1
         jmp     @b
-@@:     div     cx
+@@:     push    cx                      ; + half the count, then the division
+        shr     cx,1
+        add     ax,cx
+        adc     dx,0
+        pop     cx
+        div     cx
         pop     di
         pop     cx
         ret
@@ -859,8 +886,9 @@ ycc_rgb:
         pop     cx
         pop     bx
         ret
-; ax (1/128ths, signed, within 16 bits) → al = Y + ax/128, clamped to 0..255
-.add_y: sar     ax,1
+; ax (1/128ths, signed, within 16 bits) → al = Y + ax/128 rounded to nearest, clamped to 0..255
+.add_y: add     ax,64
+        sar     ax,1
         sar     ax,1
         sar     ax,1
         sar     ax,1

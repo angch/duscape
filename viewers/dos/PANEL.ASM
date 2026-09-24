@@ -596,7 +596,12 @@ draw_panel_disk:
         mov     si,[disk_used+6]
         sbb     si,bx
         mov     [disk_out+6],si
-        jb      .r
+        jnb     @f
+        mov     [disk_out],0            ; the drive says less: 0 not scanned (saturating_sub)
+        mov     [disk_out+2],0
+        mov     [disk_out+4],0
+        mov     [disk_out+6],0
+@@:
         push    ds
         pop     es
         mov     di,l2buf

@@ -152,6 +152,29 @@ PICTURES = [
 ]
 
 
+def png_file(width, height, colour, depth, rows, chunks=()):
+    """A PNG made byte by byte: rows are the raw scanlines, filter type 0 put in front."""
+    import zlib
+
+    def chunk(kind, body):
+        return (struct.pack(">I", len(body)) + kind + body +
+                struct.pack(">I", zlib.crc32(kind + body) & 0xFFFFFFFF))
+    data = zlib.compress(b"".join(b"\x00" + row for row in rows))
+    return (b"\x89PNG\r\n\x1a\n" +
+            chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, depth, colour, 0, 0, 0)) +
+            b"".join(chunk(k, v) for k, v in chunks) + chunk(b"IDAT", data) + chunk(b"IEND", b""))
+
+
+# text heads with UTF-8 that is not quite: each shown as String::from_utf8_lossy reads it
+UTF8_CASES = {
+    "overlong": b"a\xe0\x80\x41b",
+    "surrogate": b"\xed\xa0\x80z",
+    "beyond": b"\xf4\x90\x80\x80y",
+    "cut": b"ok \xc3",
+    "cutbad": b"\xff ok \xc3",
+}
+
+
 def picture_fixtures():
     for folder, name, how in PICTURES:
         out = os.path.join(WORK, "pv", folder, name)
@@ -163,6 +186,25 @@ def picture_fixtures():
     os.makedirs(os.path.dirname(text))
     with open(text, "wb") as f:
         f.write("a\tb\r\n\x1b[2Jcleared\nhéllo wörld ½\n".encode() + b"x" * 60 + b"\nlast")
+    # tRNS for gray and RGB: the left half is the key colour, so transparent
+    rgb = [bytes([255, 0, 0] * 8 + [0, 0, 255] * 8)] * 8
+    gray = [b"\x12\x34" * 8 + b"\x80\x00" * 8] * 8
+    for folder, data in [
+            ("trnsrgb", png_file(16, 8, 2, 8, rgb, [(b"tRNS", b"\x00\xff\x00\x00\x00\x00")])),
+            ("trnsgray", png_file(16, 8, 0, 16, gray, [(b"tRNS", b"\x12\x34")]))]:
+        os.makedirs(os.path.join(WORK, "pv", folder))
+        with open(os.path.join(WORK, "pv", folder, "a.png"), "wb") as f:
+            f.write(data)
+    for name, data in UTF8_CASES.items():
+        os.makedirs(os.path.join(WORK, "pv", "u8" + name))
+        with open(os.path.join(WORK, "pv", "u8" + name, "t.txt"), "wb") as f:
+            f.write(data)
+    # a folder whose path is longer than the walk goes (250), in one DOS can still list:
+    # C:\TARGET\DOS\T\LONGPATH is 24, then three of 63 and one of 46
+    deep = os.path.join(WORK, "longpath")
+    for level in range(3):
+        deep = os.path.join(deep, f"{level}" + "x" * 61)
+    write(os.path.join(deep, "y" * 45, "f.bin"), 1000)
     tiny = os.path.join(WORK, "pv", "tinyjpeg", "a.jpg")
     os.makedirs(os.path.dirname(tiny))
     subprocess.run(["magick", "-size", "5x4", "xc:orange", "-quality", "95",
@@ -441,6 +483,42 @@ def a_tiny_jpeg_keeps_its_colour():
     r, g, b, opaque = s.block_rgb[0]
     expect(opaque and r > 200 and 100 < g < 200 and b < 80, f"orange, not {r, g, b}")
     return [s]
+
+
+@check
+def png_transparency_for_gray_and_rgb():
+    for folder in ("TRNSRGB", "TRNSGRAY"):
+        s, = screens([(f"-a {DOS_WORK}\\PV\\{folder}", "")])
+        expect(s.preview_state == PREVIEWED, s.row(16))
+        left, right = s.block_rgb[0], s.block_rgb[1]
+        expect(not left[3] and right[3], f"{folder}: the key colour is transparent")
+    return []
+
+
+@check
+def invalid_utf8_as_rust_reads_it():
+    shots = screens([(f"-a {DOS_WORK}\\PV\\U8{name.upper()}", "") for name in UTF8_CASES])
+    for (name, data), s in zip(UTF8_CASES.items(), shots):
+        if name == "cut":   # the head ends inside a sequence, and it was all valid before
+            want = "ok "
+        else:
+            want = data.decode("utf-8", "replace").replace("\ufffd", "?")
+        got = s.row(16)[:PV_COLS].rstrip()
+        expect(got == want.rstrip(), f"{name}: {got!r}, not {want!r}")
+    return shots
+
+
+@check
+def a_path_too_long_for_dos_is_left_alone():
+    base = f"-a {DOS_WORK}\\LONGPATH"
+    before, delete, rescan = screens([(base, "EEE"), (base, "EEEjdy"), (base, "EEEjr")])
+    expect("yyyy" in before.row(5), "the folder is listed: " + before.row(5))
+    expect("freed: 0" in delete.row(0), "nothing freed: " + delete.row(0))
+    expect("Could not delete" in delete, "and the refusal said")
+    expect(os.path.exists(os.path.join(WORK, "longpath")), "the folder is still there")
+    expect(before.row(0) == rescan.row(0) and before.row(5) == rescan.row(5),
+           "a rescan of it changes nothing")
+    return [before, delete, rescan]
 
 
 @check

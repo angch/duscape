@@ -64,11 +64,12 @@ scan stops it.
   in the middle, "... N more" under them), each coloured by whether it has a tile. Under the list,
   the entry in hand, and its preview.
 - **Previews** the file in hand as `common/src/preview.rs` reads it: the first lines of a text
-  file (tabs to four, control characters as `?`, UTF-8 shown in CP437 where it has the
-  character), "binary file", "empty file", or a PNG or JPEG drawn in half blocks, two pixels to a
+  file (tabs to four, control characters as `?`, UTF-8 read as `String::from_utf8_lossy` reads
+  it, one `?` for each invalid subpart, and shown in CP437 where it has the character), "binary
+  file", "empty file", or a PNG or JPEG drawn in half blocks, two pixels to a
   cell, fitted into 25 by 7 cells the way the image crate's `thumbnail` fits it. A picture waits
   until the keyboard has been still for 100 ms, and a key stops it.
-  - PNG: every colour type and bit depth, Adam7, palette transparency. Inflate is Mark Adler's
+  - PNG: every colour type and bit depth, Adam7, transparency (tRNS) for palettes, gray and RGB. Inflate is Mark Adler's
     puff, a bit at a time; every eighth pixel of every eighth row a block pixel covers is
     averaged, which is plenty for 25 by 14.
   - JPEG: baseline, extended and progressive, grayscale or YCbCr, any sampling, restart markers.
@@ -172,7 +173,11 @@ delete for an entry nobody picked, the list's cursor on the neighbour after one)
 names outside ASCII, 8.3 names, and an 8086 refused; the side panel, the list's keys and focus,
 jumps, deleting an entry that has no tile, a long name cut keeping its end, hiding the panel;
 text previews (a 64 KiB head as one line) and what a file is (a NUL in a 64 KiB head's last
-byte). A tiny JPEG keeps its colour, and 97 damaged or hostile pictures (cut short, bytes
+byte), invalid UTF-8 (overlong, a surrogate, past U+10FFFF, a head cut inside a sequence with
+and without an invalid byte before it) against Python's lossy decoding, which follows the same
+rule. A folder whose path is longer than the walk goes is neither deleted nor lost on a
+rescan. PNG transparency for gray and RGB, a tiny JPEG keeps its colour, and 97 damaged or
+hostile pictures (cut short, bytes
 flipped, or made up: zero or huge sizes, no palette, empty or garbage image data, a scan before
 any frame, sampling factors of 3, repeated component ids, a DHT claiming 4080 symbols, restarts
 without markers) must each end in a picture or a line saying why, never hang or fault. The picture check makes sixteen

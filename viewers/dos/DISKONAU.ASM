@@ -3720,6 +3720,7 @@ delete_sel:
         cmp     ax,-1
         je      .r
         mov     [del_idx],ax
+        mov     [del_started],0
         mov     bx,ax
         call    ent_node
         mov     [del_node],ax
@@ -3797,12 +3798,17 @@ delete_sel:
         mov     ax,[del_node]
         mov     [np_disk],1
         call    node_path
+        pushf                           ; its CF: the path was too long to write
         mov     cx,di
         sub     cx,pathbuf
         mov     [pathlen],cx
+        popf
         mov     ax,3                    ; path not found
         jc      .failed
+        cmp     cx,PATHMAX              ; longer than DOS takes
+        jae     .failed
         mov     [rm_depth],0
+        mov     [del_started],1
         test    [del_flags],F_DIR
         jz      .file
         call    rm_tree
@@ -3825,8 +3831,10 @@ delete_sel:
 .r2:    ret
 .failed:
         mov     [del_err],ax
-        test    [del_flags],F_DIR       ; some of a folder may have gone: walk it again
+        test    [del_flags],F_DIR       ; some of a folder may have gone: walk it again,
         jz      @f
+        cmp     [del_started],0         ; unless it was refused before anything was tried
+        je      @f
         mov     [rs_freed],1
         mov     ax,[del_node]
         call    rescan_node
@@ -4098,7 +4106,8 @@ rm_attrs:
         ret
 
 ; ax = a folder: walked again from disk into a new node in its place (the Rescanner), which is
-; returned in ax (0 if the folder has gone). pathbuf = its path, as DOS needs it. With rs_freed
+; returned in ax (0 if the folder has gone or cannot be opened, and is taken out; the old node
+; itself if there is no memory for a new one, and nothing changes). pathbuf = its path, as DOS needs it. With rs_freed
 ; set, what it lost since counts as freed. The old node is leaked, like everything taken out.
 rescan_node:
         mov     [rs_old],ax
@@ -4109,9 +4118,7 @@ rescan_node:
         mov     [rs_parent],bx
         test    bx,bx
         jz      .root
-        mov     [del_node],ax
-        call    tree_remove             ; freed += all of it, for now
-        call    probe_dir
+        call    probe_dir               ; still there, and can be opened?
         jc      .gone
         push    es                      ; a node like it: the name, its NUL, a short name
         mov     es,[rs_old]
@@ -4126,7 +4133,7 @@ rescan_node:
         dec     cx
         mov     al,1
         call    alloc_node
-        jc      .gone
+        jc      .keep                   ; no memory: the old one stays as it was
         mov     [rs_new],ax
         mov     cx,[rs_bytes]
         push    ds
@@ -4154,11 +4161,14 @@ rescan_node:
         mov     word [add_desc],1
         mov     ax,bx
         call    add_up
+        mov     ax,[rs_old]             ; now the old one out: freed += all of it, for now
+        mov     [del_node],ax
+        call    tree_remove
         jmp     .walk
 .root:  mov     cx,[pathlen]            ; everything: a new root
         mov     al,1
         call    alloc_node
-        jc      .fail
+        jc      .keep
         mov     [rs_new],ax
         mov     es,ax
         mov     byte [es:N_FLAGS],F_DIR
@@ -4194,12 +4204,18 @@ rescan_node:
 .done:  mov     [rs_freed],0
         mov     ax,[rs_new]
         ret
-.gone:  cmp     [rs_freed],0            ; all of it gone: freed if we deleted it
+.gone:  mov     ax,[rs_old]             ; gone from the disk: out of the tree too
+        mov     [del_node],ax
+        call    tree_remove
+        cmp     [rs_freed],0            ; freed, if we deleted it
         jne     .fail
         mov     ax,[rs_old]
         call    freed_less
 .fail:  mov     [rs_freed],0
         xor     ax,ax
+        ret
+.keep:  mov     [rs_freed],0
+        mov     ax,[rs_old]
         ret
 
 ; freed less node ax's sizes
@@ -4260,10 +4276,14 @@ rescan_key:
         mov     ax,[rs_target]
         mov     [np_disk],1
         call    node_path
+        pushf
         mov     cx,di
         sub     cx,pathbuf
         mov     [pathlen],cx
+        popf
         jc      .r
+        cmp     cx,PATHMAX              ; a folder too deep to walk: left as it is
+        jae     .r
         mov     ax,[rs_target]
         call    rescan_node
         mov     bx,[rs_target]
@@ -4401,6 +4421,7 @@ del_node        dw 0
 del_idx         dw 0
 del_err         dw 0
 del_flags       db 0
+del_started     db 0            ; the delete got as far as DOS
 st_flags        db 0
 dt_flags        db 0
 st_node         dw 0

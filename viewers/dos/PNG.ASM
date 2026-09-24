@@ -26,6 +26,7 @@ png_decode:
         rep     stosb
         mov     [png_hdr],0
         mov     [png_plte],0
+        mov     [png_trns],0
 .chunk: call    rd_be32
         mov     [chunk_len],ax
         mov     [chunk_len+2],dx
@@ -110,7 +111,11 @@ png_decode:
         xor     dx,dx
         call    rd_skip
         jmp     .chunk
-.trns:  cmp     [png_ctype],3
+.trns:  cmp     [png_ctype],0           ; gray and RGB: the one colour that is transparent
+        je      .tkey
+        cmp     [png_ctype],2
+        je      .tkey
+        cmp     [png_ctype],3
         jne     .skip
         xor     bx,bx
 @@:     call    .left
@@ -121,6 +126,17 @@ png_decode:
         mov     [pal_a+bx],al
         inc     bx
         jmp     @b
+.tkey:  xor     bx,bx                   ; up to three 16-bit samples, as they are stored
+@@:     call    .left
+        jz      .tkeyd
+        call    rd_byte
+        cmp     bx,6
+        jae     @b
+        mov     [png_key+bx],al
+        inc     bx
+        jmp     @b
+.tkeyd: mov     [png_trns],1
+        jmp     .crc
 .idat:  cmp     [png_hdr],0
         je      .bad
         cmp     [png_ctype],3           ; a palette image needs its palette
@@ -527,12 +543,35 @@ png_pixel:
         mov     [px_r],al
         mov     [px_g],al
         mov     [px_b],al
-        cmp     [png_ctype],4
+        cmp     [png_ctype],0
+        jne     @f
+        xor     di,di                   ; gray: its key
+        call    .key
+        jnc     .r
+        mov     [px_a],0
+        ret
+@@:     cmp     [png_ctype],4
         jne     .r
         mov     al,[es:si+bx]
         mov     [px_a],al
         ret
-.rgb:   mov     al,[es:si]              ; samples bx bytes apart
+.rgb:   cmp     [png_ctype],2
+        jne     .rgbv
+        push    si                      ; RGB: all three samples must be the key's
+        xor     di,di
+        call    .key
+        jnc     @f
+        add     si,bx
+        mov     di,2
+        call    .key
+        jnc     @f
+        add     si,bx
+        mov     di,4
+        call    .key
+        jnc     @f
+        mov     [px_a],0
+@@:     pop     si
+.rgbv:  mov     al,[es:si]              ; samples bx bytes apart
         mov     [px_r],al
         add     si,bx
         mov     al,[es:si]
@@ -574,10 +613,17 @@ png_pixel:
         and     al,ah                   ; the value
         cmp     [png_ctype],3
         jne     .gray
-        mov     bl,al
+.pidx:  mov     bl,al
         xor     bh,bh
         jmp     .index
-.gray:  mov     cl,255
+.gray:  cmp     [png_trns],0            ; the key is the value before it is scaled
+        je      .scale
+        cmp     byte [png_key],0
+        jne     .scale
+        cmp     al,[png_key+1]
+        jne     .scale
+        mov     [px_a],0
+.scale: mov     cl,255
         cmp     [png_depth],1
         je      @f
         mov     cl,85
@@ -588,6 +634,29 @@ png_pixel:
         mov     [px_r],al
         mov     [px_g],al
         mov     [px_b],al
+        ret
+; es:si = a raw sample (8 or 16 bits), di = which of the key's (0, 2, 4) → CF=1 if tRNS gave
+; this value
+.key:   cmp     [png_trns],0
+        je      .nokey
+        cmp     [png_depth],16
+        jne     .k8
+        mov     al,[es:si]
+        cmp     al,[png_key+di]
+        jne     .nokey
+        mov     al,[es:si+1]
+        cmp     al,[png_key+di+1]
+        jne     .nokey
+        stc
+        ret
+.k8:    cmp     byte [png_key+di],0
+        jne     .nokey
+        mov     al,[es:si]
+        cmp     al,[png_key+di+1]
+        jne     .nokey
+        stc
+        ret
+.nokey:   clc
         ret
 .index: mov     al,[pal_a+bx]
         mov     [px_a],al

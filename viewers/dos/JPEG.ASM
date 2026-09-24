@@ -221,8 +221,11 @@ jpeg_decode:
         sub     bp,65
         test    al,al
         jz      .q8
-        call    rd_be16                 ; 16-bit values
-        mov     [jq+bx],ax
+        call    rd_be16                 ; 16-bit values, at most 32767 as libjpeg has them (the
+        cmp     ax,7FFFh                ; mean is taken signed)
+        jbe     @f
+        mov     ax,7FFFh
+@@:     mov     [jq+bx],ax
         mov     cx,126
         sub     bp,64
         jb      .bad
@@ -874,7 +877,9 @@ jblock:
         jmp     .v
 .black: xor     ax,ax
 .v:     push    ax
-        ; how much of the image the block stands for: (max / h) × (max / v)
+        ; how much of the image the block stands for: (max / h) × (max / v). The same for every
+        ; block of a component, and each channel is averaged over its own weights, so a factor
+        ; of 3 rounding it down changes nothing
         mov     al,[jhmax]
         xor     ah,ah
         div     byte [jc_h+bx]
