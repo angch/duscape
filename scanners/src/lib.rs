@@ -36,6 +36,10 @@ pub mod ext4;
 #[cfg(windows)]
 pub mod windows;
 
+/// NTFS read from its master file table, elevated. The parsing and the tree run everywhere, so
+/// their tests do; only reading the volume is Windows.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub mod mft;
 /// NTFS record parsing. Compiled everywhere so that its tests run everywhere; only the Windows
 /// walker uses it.
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -276,11 +280,41 @@ pub fn scan_directories(root: &Path, options: ScanOptions) -> impl Iterator<Item
     }
     #[cfg(windows)]
     {
-        windows::walk_windows(root, thread_count(options), options)
+        // From the volume's master file table where the process may open the volume
+        // (elevated, NTFS) and asks for it, else through the filesystem.
+        let device = if options.read_device {
+            mft::walk_mft(root, thread_count(options), options)
+        } else {
+            None
+        };
+        match device {
+            Some(walk) => WindowsScan::Table(walk),
+            None => {
+                WindowsScan::Kernel(windows::walk_windows(root, thread_count(options), options))
+            }
+        }
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         fallback::group_by_directory(root, options)
+    }
+}
+
+/// The Windows walk: from the volume's table, or through the filesystem.
+#[cfg(windows)]
+enum WindowsScan {
+    Table(mft::MftWalk),
+    Kernel(windows::WindowsWalk),
+}
+
+#[cfg(windows)]
+impl Iterator for WindowsScan {
+    type Item = DirEntries;
+    fn next(&mut self) -> Option<DirEntries> {
+        match self {
+            WindowsScan::Table(walk) => walk.next(),
+            WindowsScan::Kernel(walk) => walk.next(),
+        }
     }
 }
 

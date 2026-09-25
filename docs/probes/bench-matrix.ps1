@@ -10,7 +10,9 @@
 # is timed in its export mode (`/export`, folders only, `/admin=0`), which scans, writes a CSV and
 # exits — unelevated it walks the directories as everyone else does; from an elevated shell it
 # reads the MFT, and so does diskonaut read the volume's metadata files, which is what the
-# "elevated runs" line records. Cold rows need the file cache emptied before each run
+# "elevated runs" line records; elevated, diskonaut reads the master file table, and a row with
+# `--no-device-read` beside it walks the directories at the same privilege. Cold rows need the
+# file cache emptied before each run
 # (`drop-cache.ps1`, beside this script), which an elevated shell can do; unelevated there are
 # none, and the file says so rather than silently skipping them.
 # Only the trees are positional: without this, PowerShell binds the first tree to `-Tag`.
@@ -157,6 +159,11 @@ function Bench([string]$title, [string]$dir, [string[]]$hyperfineArgs) {
     if ($diskus) { $cmds += @("-n", "diskus", "$(Program $diskus) --directories excluded $(Arg $dir) >NUL 2>&1") }
     $cmds += @("-n", "diskonaut sharded", "$(Program $bin) --benchmark --bench-stage sharded $(Arg $dir) >NUL")
     $cmds += @("-n", "diskonaut refined", "$(Program $bin) --benchmark --bench-stage refined $(Arg $dir) >NUL")
+    if ($elevated) {
+        # Elevated, the scan reads the volume's master file table; the walk through the
+        # filesystem at the same privilege separates the table read from the rest.
+        $cmds += @("-n", "diskonaut sharded, kernel walk", "$(Program $bin) --benchmark --bench-stage sharded --no-device-read $(Arg $dir) >NUL")
+    }
     if ($wiztree) { $cmds += @("-n", "WizTree export", "$(Program $wiztree) $(Arg $dir) /export=`"$wizcsv`" /admin=0 /exportfolders=0 /exportfiles=0") }
     # hyperfine's warnings (outliers, say) go to stderr, which under `Stop` would end the run;
     # a cell that fails is recorded with what hyperfine said, and the run goes on.

@@ -81,6 +81,10 @@ profiles and `WindowsApps` whatever their permissions say. It grants reading onl
 needs ordinary permission. On one `C:\`, unelevated, 192 folders were unreadable and 108.6 GiB of
 the 424.4 GiB in use was outside the scan; elevated, none were.
 
+Elevated, a whole-volume scan reads the master file table rather than walking the directories
+(see `scan-performance.md`, "The master file table"), which reaches every folder, so nothing is
+outside the scan but the filesystem's own reserved space.
+
 Elevated, a scan of a whole NTFS volume also shows the filesystem's own files at its root, under
 their real names: `$MFT` (the master file table, 2.7 GiB on that `C:\`), `$LogFile`, `$Bitmap`,
 `$Secure`, and `$Extend` with the change journal and the rest in it. No folder lists them, so they

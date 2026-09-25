@@ -25,8 +25,9 @@ diskonaut --benchmark --threads 6 --bench-repeat 3 /
 
 Other flags: `--max-depth N` stops the descent (a partial scan), `--threads N` sets the worker
 count, `--bench-repeat N` repeats each stage, `--single-thread` forces one worker,
-`--no-device-read` asks the kernel for every entry even as root on ext4 (the two rows the
-harness prints as root differ by exactly that),
+`--no-device-read` asks the kernel for every entry even as root on ext4, or elevated on NTFS,
+where the scan otherwise reads the master file table (the two rows the harness prints as root
+or elevated differ by exactly that),
 `--bench-shards N` and `--bench-shard-depth N` vary the parallel build. Whatever is changed,
 `sharded`'s totals must stay identical to `pipeline`'s: that comparison is the correctness check.
 

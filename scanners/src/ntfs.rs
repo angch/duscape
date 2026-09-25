@@ -38,12 +38,66 @@ pub struct Record {
 const ATTRIBUTE_LIST: u32 = 0x20;
 const END: u32 = 0xFFFF_FFFF;
 
-/// Clusters with disk space behind them in a run list (NTFS "mapping pairs").
+/// One run of a non-resident attribute: the cluster it starts at on the volume, or `None` for
+/// a hole, and how many clusters it covers.
+pub type Run = (Option<u64>, u64);
+
+/// A run list (NTFS "mapping pairs") decoded.
 ///
 /// Each run is a header byte whose low nibble is the size of the run's length and whose high
-/// nibble is the size of its starting cluster, relative to the previous run's. A run with no
-/// starting cluster is a hole.
-fn occupied_clusters(runs: &[u8]) -> u64 {
+/// nibble is the size of its starting cluster — a signed number relative to the previous run's
+/// start, so a file can be laid out backwards. A run with no starting cluster is a hole.
+#[must_use]
+pub fn decode_runs(runs: &[u8]) -> Vec<Run> {
+    let mut decoded = Vec::new();
+    let mut at = 0;
+    let mut lcn = 0i64;
+    while let Some(&header) = runs.get(at) {
+        if header == 0 {
+            break;
+        }
+        let length_size = usize::from(header & 0x0F);
+        let offset_size = usize::from(header >> 4);
+        if length_size > 8 || offset_size > 8 {
+            break;
+        }
+        let Some(length_bytes) = runs.get(at + 1..at + 1 + length_size) else {
+            break;
+        };
+        let Some(offset_bytes) = runs.get(at + 1 + length_size..at + 1 + length_size + offset_size)
+        else {
+            break;
+        };
+        let length = length_bytes
+            .iter()
+            .rev()
+            .fold(0u64, |value, &byte| (value << 8) | u64::from(byte));
+        if offset_size == 0 {
+            decoded.push((None, length));
+        } else {
+            let mut offset = offset_bytes
+                .iter()
+                .rev()
+                .fold(0i64, |value, &byte| (value << 8) | i64::from(byte));
+            let bits = offset_size * 8;
+            if bits < 64 && offset & (1i64 << (bits - 1)) != 0 {
+                offset -= 1i64 << bits;
+            }
+            lcn = lcn.saturating_add(offset);
+            if lcn < 0 {
+                break;
+            }
+            decoded.push((Some(lcn as u64), length));
+        }
+        at += 1 + length_size + offset_size;
+    }
+    decoded
+}
+
+/// Clusters with disk space behind them in a run list: every run that is not a hole.
+pub(crate) fn occupied_clusters(runs: &[u8]) -> u64 {
+    // The same walk as `decode_runs`, without decoding the offsets or allocating: this runs
+    // once per attribute of every record when a whole table is read.
     let mut clusters = 0u64;
     let mut at = 0;
     while let Some(&header) = runs.get(at) {
@@ -52,17 +106,20 @@ fn occupied_clusters(runs: &[u8]) -> u64 {
         }
         let length_size = usize::from(header & 0x0F);
         let offset_size = usize::from(header >> 4);
+        if length_size > 8 || offset_size > 8 {
+            break;
+        }
         let Some(length_bytes) = runs.get(at + 1..at + 1 + length_size) else {
             break;
         };
-        if length_size > 8 || at + 1 + length_size + offset_size > runs.len() {
+        if at + 1 + length_size + offset_size > runs.len() {
             break;
         }
-        let length = length_bytes
-            .iter()
-            .rev()
-            .fold(0u64, |value, &byte| (value << 8) | u64::from(byte));
         if offset_size > 0 {
+            let length = length_bytes
+                .iter()
+                .rev()
+                .fold(0u64, |value, &byte| (value << 8) | u64::from(byte));
             clusters = clusters.saturating_add(length);
         }
         at += 1 + length_size + offset_size;
@@ -70,15 +127,15 @@ fn occupied_clusters(runs: &[u8]) -> u64 {
     clusters
 }
 
-fn u16_at(bytes: &[u8], at: usize) -> Option<u16> {
+pub(crate) fn u16_at(bytes: &[u8], at: usize) -> Option<u16> {
     Some(u16::from_le_bytes(bytes.get(at..at + 2)?.try_into().ok()?))
 }
 
-fn u32_at(bytes: &[u8], at: usize) -> Option<u32> {
+pub(crate) fn u32_at(bytes: &[u8], at: usize) -> Option<u32> {
     Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?))
 }
 
-fn u64_at(bytes: &[u8], at: usize) -> Option<u64> {
+pub(crate) fn u64_at(bytes: &[u8], at: usize) -> Option<u64> {
     Some(u64::from_le_bytes(bytes.get(at..at + 8)?.try_into().ok()?))
 }
 
@@ -89,7 +146,7 @@ fn u64_at(bytes: &[u8], at: usize) -> Option<u64> {
 /// value it is replaced by the saved bytes; where the saved bytes are already there, replacing
 /// them with themselves changes nothing. So this is right whether or not the caller's copy was
 /// fixed up.
-fn apply_fixups(record: &mut [u8]) -> Option<()> {
+pub(crate) fn apply_fixups(record: &mut [u8]) -> Option<()> {
     let array = usize::from(u16_at(record, 0x04)?);
     let count = usize::from(u16_at(record, 0x06)?);
     if count == 0 {

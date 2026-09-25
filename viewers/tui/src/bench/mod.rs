@@ -398,9 +398,19 @@ fn device_read_words(path: &Path, options: ScanOptions) -> &'static str {
         "no (not ext4, or not root)"
     }
 }
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
+fn device_read_words(path: &Path, options: ScanOptions) -> &'static str {
+    if !options.read_device {
+        "off (--no-device-read)"
+    } else if diskonaut_scan::mft::would_read_device(path) {
+        "yes (NTFS master file table, elevated)"
+    } else {
+        "no (not NTFS, or not elevated)"
+    }
+}
+#[cfg(not(any(target_os = "linux", windows)))]
 fn device_read_words(_path: &Path, _options: ScanOptions) -> &'static str {
-    "no (Linux only)"
+    "no (Linux and Windows only)"
 }
 
 /// Run the requested benchmark stages against `path` and print a report.

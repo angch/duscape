@@ -89,6 +89,33 @@ the hard-link ledger unchanged.
   VM's per-call price. Whether it should stay on by default there is open: as it stands the
   default costs a root user on such a machine 25–40% warm for a 10% cold gain.
 
+### 2b. NTFS's master file table (done: Windows, elevated, whole volume — 1.7x the walk warm, 2.6x cold, 1.8x WizTree)
+
+*Windows, NTFS, elevated.* The Windows shape of step 2, and what WizTree does: the `$MFT` read
+sequentially along its runs, every record parsed for its names and their directories, the
+unnamed stream's sizes and the directory and reparse flags, the tree handed on breadth-first
+from the scan root's record as one `DirEntries` per directory (`scanners/src/mft.rs`). The
+volume is flushed first, so the table is current.
+- Gate: entries and hard links identical to the walk's on a quiet tree; faster than the walk
+  wherever it is chosen over it.
+- Result (`scan-performance.md`, "The master file table"; `benchmarks/tiamat-20260925-mft.md`):
+  on a 2.46M-entry `C:\`, 3.7 s against the walk's 6.1 s warm and 3.0 s against 9.1 s cold,
+  with 0.6 s of system CPU against 46 s; WizTree's export, reading the same table, 7.1 s and
+  6.7 s. Entries and hard-linked counts came out
+  identical on `C:\Windows` and `C:\Program Files`, and on the volume the table sees the
+  folders the walk is refused. Sizes differ by 0.0015–0.017% on quiet trees: the directory
+  listings' lazily updated size copies, which the walk reads and the table does not.
+- Used only for a volume root, and only where a sample of the table says the volume's
+  directories are small (`TABLE_UP_TO`, 8 entries a directory): the table costs every record
+  on the volume (about 1.3 µs each) and the walk a handle per directory (about 12 µs on a system
+  volume with its filter drivers), so a subtree (`C:\Program Files`: 2.3 s against 0.6 s) or a
+  data volume of large files (`D:\`, 16 entries a directory: 0.63 s against 0.15 s) walks
+  faster.
+- Open: memory (about 600 MB for 2.5M records, against WizTree's 180 MB); the cold read, which
+  the synchronous 32 MiB reads make 0.5 GB/s where the device does 3; and whether the sample
+  (2.2 entries a directory on a volume whose true figure is 5.4) is the right predictor on other
+  machines.
+
 ### 3. XFS bulkstat, as root (needs an XFS machine; not run here)
 
 *Linux, XFS, root.* `XFS_IOC_BULKSTAT` returns every inode's stat in bulk, without paths, and

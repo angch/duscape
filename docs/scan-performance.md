@@ -3155,3 +3155,104 @@ outside the timing). `tiamat-20260925-elevated.md` now holds both. Means of thre
 - WizTree's home-tree cold figure (12.1 ± 2.8 s, against 6.7 warm) is the one exception to its
   cache-independence, and its variance says why: its export of a folder is filtered from a
   whole-volume MFT read plus the folder's own walk for what the MFT lacks, and that part is cold.
+
+
+## The master file table (2026-09-25)
+
+Windows, NTFS, elevated: `scanners/src/mft.rs`, roadmap step 2b, on by default for a
+whole-volume scan; `--no-device-read` walks instead. The same machine as the matrix above
+(tiamat: Ryzen 9 7950X, NVMe). The `$MFT` is 2.3 GB for `C:\`'s 2.46M records and 422 MB for
+`D:\`'s 415k.
+
+What it does: opens `\\.\C:` (an administrator may), decides whether the table is worth
+reading (below), and if so opens it for writing too and calls `FlushFileBuffers` on it, so
+NTFS writes out the metadata it was holding — the table on disk otherwise lags the filesystem
+by seconds, and a first version without the flush was compared against the walk while cargo
+was writing thousands of files. The flush comes after the decision because it is not free: a
+first version flushed on opening, and on `D:\` (3 TB) the probe alone then cost 0.4 s before
+declining. Then it reads the table along its runs in 32 MiB chunks, parses each chunk's records on a worker thread (the update sequence
+undone in place; the cluster count without allocating, since a volume of large fragmented files
+has long run lists), assembles every record's names under their directories, and hands the tree
+on breadth-first. Hard links come out counted from the records, so only files with several
+names go through the ledger; NTFS's own files are sized by their clusters as `ntfs.rs` sizes
+them.
+
+### Timings
+
+`docs/benchmarks/tiamat-20260925-mft.md` is the matrix with the table walker in, elevated,
+warm and cold: its `diskonaut sharded` row is what the scan does now (the table where the gate
+takes it, the walk elsewhere) and `diskonaut sharded, kernel walk` the walk at the same
+privilege. On the whole system volume, means of three:
+
+| `C:\`, 2.46M entries | table | kernel walk | WizTree export |
+| --- | --- | --- | --- |
+| warm | **3.69 s** | 6.07 s | 7.05 s |
+| cold | **3.01 s** (`refined`; `sharded` 3.50 ± 0.72) | 9.12 s | 6.73 s |
+
+The table where the gate declines it, from the runs that set the gate (hyperfine, warm, the
+table forced against the walk):
+
+| tree | entries | table | kernel walk |
+| --- | --- | --- | --- |
+| `C:\Users` | 1.61M | **2.56 s** | 3.79 s |
+| `C:\Users\angch` | 1.61M | 2.87 s | **2.56 s** |
+| `C:\Windows` | 415k | 2.3 s (5.7 s with the table cold) | **4.6 s** |
+| `C:\Program Files` | 292k | 2.29 s | **0.64 s** |
+| `C:\Users\angch\project` | 132k | 2.65 s | **0.19 s** |
+| `D:\` | 415k | 0.63 s | **0.15 s** |
+
+In the matrix, `D:\`'s default row is the walk plus the gate's probe — the volume opened, the
+table's runs fetched and an 8 MiB slice read, twice under `--benchmark` (once for its header):
+0.19–0.30 s against 0.17 s in a check straight after, 0.53 ± 0.14 s in the matrix's noisier
+warm cell, 0.50 s against 0.47 s cold.
+
+Where the table's time goes on `C:\`, warm: 1.1–1.25 s to read and parse 2.3 GB (1.8–2.1 GB/s
+across eight parsers), 0.8 s to assemble 2.46M records under 337k directories, and the rest
+handing the tree on and building it. The walk spends 45 s of system time across twelve threads
+for the same tree; the table 0.6 s — a laptop notices.
+
+### The gate
+
+The table costs the whole volume's records whatever the tree is asked for — every row above
+reads and parses the same 2.3 GB — and the walk costs a handle per directory: about 12 µs on
+the system volume with its filter drivers (`C:\` 5.6 s for 456k directories, `C:\Users\angch`
+2.6 s for 206k) and 6 µs on the data volume (`D:\` 0.15 s for 25k). So the table pays only for
+the whole volume, and only where its directories are small: `C:\` has 5.4 entries a directory
+and the table wins by 1.7x; `D:\` has 16 and loses by 4x. A subtree loses however small its
+directories, since it is a fraction of the volume: `C:\Users`, two thirds of it, still wins,
+`C:\Windows` and `C:\Program Files` do not.
+
+Hence `mft::volume::chosen`: a volume root only; and an 8 MiB slice from the middle of the
+table's first run, counted for files against directories among its base records — 2.2 a
+directory on this `C:\` (biased low: the middle of the table is files made after their
+directories), and no directory at all among the 8,192 records of `D:\`'s slice, so it declines
+— with `TABLE_UP_TO` at 8. The benchmark's header says what was chosen (`device read: yes (NTFS
+master file table, elevated)`), and `--bench-profile` prints the sample's figure and, when the
+table is read, its timings.
+
+### Correctness
+
+The first comparison against the walk was short by hundreds of entries on every tree, the same
+number as its shortfall in hard-linked files: a file hard-linked twice in one directory kept
+one name, because the DOS-name filter keyed on the parent alone. With that fixed (a DOS name is
+dropped only beside a Win32 name in the same directory; two Win32 names there are two links,
+and a unit test has one), entries and hard-linked counts are identical to the walk's on the
+quiet trees (`C:\Windows`: 415,083 and 39,869 both ways; `C:\Program Files` likewise), and on
+`C:\Users` and `C:\` the table lists one and 23 entries *more*: what is inside the two folders
+the walk is refused even elevated.
+
+Sizes agree to 0.0015% on `C:\Windows` and 0.017% on `C:\Program Files`, the walk's larger.
+The flush made no difference to that, so it is not the table lagging; the remaining explanation
+is the one the 2026-09-23 section found the other way round: a directory listing returns the
+index entry's copy of a file's sizes, which NTFS updates lazily, and the walk reads listings
+while the table reads the record. On the whole volume the table is 126 MB *larger* — most
+likely `$Extend\$UsnJrnl`, which the table has and no listing shows; not yet confirmed.
+
+### Open
+
+Memory: about 600 MB at peak for 2.46M records (the parsed records, then the entries under
+their directories), against WizTree's 180 MB; the records could be freed as they are assembled,
+and the names kept once. The cold read: the synchronous 32 MiB reads through the cache manager
+got 0.5 GB/s on one cold run (`C:\Windows`: 4.4 s to read and parse) where the device does
+3 GB/s; overlapped reads would take the cold `C:\` from 3.1 s towards 2 s. The sample is one
+machine's predictor, and its threshold is set from two volumes.

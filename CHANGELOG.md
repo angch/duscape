@@ -26,6 +26,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `diskonaut_scan::rescan::Rescans`'s, as the terminal viewer's are; a status message shows over
   the marks' summary while it lasts; the status bar says the zoom; `wanted_preview_sized` asks for
   a preview again when the pixels it will take change.
+- Elevated on Windows, a whole-volume scan reads NTFS's master file table instead of walking
+  the directories — the volume flushed, then one sequential read of the `$MFT`, parsed on a
+  few threads, the tree handed on from it exactly as the walk would (the roadmap's step 2 for
+  Windows, and what WizTree does). On a 2.46M-entry `C:\` that is 3.7 s against the walk's
+  6.1 s warm and 3.0 s against 9.1 s cold, and against WizTree's 7.1 s; entries and hard links
+  come out the same as the walk's, and the table sees the folders the walk is refused. Hard
+  links come counted from the records, so only files with several names go through the ledger.
+  It is used only for a volume root, and only where a sample of the table says the volume's
+  directories are small enough for it to pay (the table costs every record on the volume, the
+  walk a handle per directory: a subtree, or a data volume of big files, walks faster).
+  `--no-device-read` walks instead, and a rescan (`r`) always does. The benchmark's header
+  says which ran (`device read: yes (NTFS master file table, elevated)`), and the Windows
+  matrix has a `kernel walk` row beside it when elevated.
 - `docs/probes/bench-matrix.ps1`: the cross-machine benchmark matrix on Windows, in the same
   file format as the Linux script — diskonaut against `diskus` and WizTree's export mode, with
   WizTree's own figures beside the trees for the sizes cross-check. From an elevated shell it
