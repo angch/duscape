@@ -98,5 +98,16 @@ blocks are read from the disk again. It takes about fifteen seconds on a 128 GiB
 hyperfine leaves out of the timing, and makes a 415k-entry NVMe volume scan 3.4x slower than
 warm — the disk, not a reboot: what a kernel keeps outside the page lists stays.
 
+On macOS the same `bench-matrix.sh` runs: the machine from `sysctl` and `sw_vers`, the disk from
+`diskutil` (the volume, then the physical store under its APFS container), cold rows after
+`sudo purge`, and [WizTreeMac](https://diskanalyzer.com) in its export mode (`--export`,
+folders only, `--admin=0`) with its figures listed for the sizes cross-check. WizTreeMac checks
+Full Disk Access for itself and refuses an export from a shell, whose responsible process is the
+terminal, even under `sudo`; so it is started through `open -W -n -a`, and has no root row (its
+admin mode asks for a password in a dialog). An empty folder's export takes 0.45 s, the app's
+start-up, which is in every WizTreeMac cell. `purge` barely empties APFS's metadata: cold is
+within 10% of warm (`benchmarks/handles-20260925.md`), so a macOS cold row is not the
+disk-bound number a Linux one is.
+
 `scan-performance.md` has every measurement, the reasoning, and notes for repeating the exercise
 on another platform.

@@ -40,6 +40,11 @@ walk is the kernel's cost on either. Cold, the NVMe is 2.5–3x the warm time wh
 shows once the disk is the floor. Cold on a spinning disk has not been seen at all, and it is
 where the inode-order and prefetch work should show most.
 
+On macOS (`handles-20260925.md`: M4 Pro, APFS on the internal SSD) the walk is about 300–350k
+entries/s warm, a seventh of Linux's, and `diskus` takes 1.6x as long and WizTreeMac 5.4x (0.45 s
+of which is its start-up). Root changes nothing: macOS has no device read. `purge` leaves APFS's
+metadata cached, so cold is within 10% of warm there and a true cold cell still needs a reboot.
+
 ## The steps, in order of expected payoff
 
 ### 0. Baseline capture — done here, repeat on each machine
