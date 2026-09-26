@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `diskonaut_scan::rescan::Rescans`'s, as the terminal viewer's are; a status message shows over
   the marks' summary while it lasts; the status bar says the zoom; `wanted_preview_sized` asks for
   a preview again when the pixels it will take change.
+- `make` on Windows without make: `.\make <target>` (`make.cmd`, `make.ps1`) reads the
+  Makefile and runs its recipes in Git's bash — targets, prerequisites, variables, `$(shell)`,
+  continuations, `VAR=value` — so `make quality`, `make test` and the rest are one recipe
+  everywhere.
 - Quality measurements: `cargo clippy` now holds every crate to `clippy.toml`'s limits (a
   function of at most 100 lines and cognitive complexity 25), on every target; a function over
   them is split or carries `#[allow(clippy::too_many_lines)]` with its reason, the debt register

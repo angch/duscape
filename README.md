@@ -62,6 +62,9 @@ scan did not reach. [`docs/sizes.md`](docs/sizes.md) explains all of this, inclu
 does about hard links and why running as administrator there shows more (and, for a whole
 volume, reads the master file table instead of walking, as WizTree does).
 
+On Windows, `.\make <target>` runs the Makefile's targets without make installed (it reads the
+Makefile and uses Git's bash).
+
 ## Benchmarking the scan
 
 `--benchmark` scans headlessly and prints timings for each stage of the scan instead of starting

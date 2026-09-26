@@ -46,6 +46,11 @@ cargo fmt --all                  # Format code
 cargo fmt --all -- --check       # Format check (CI)
 ```
 
+On Windows without `make`: `.\make <target>` runs the same Makefile — `make.cmd` starts
+`make.ps1`, which reads it and runs each recipe line in Git for Windows's bash (`MAKE_SHELL`
+names another). It interprets the subset of make this file uses and stops on anything else, so
+a recipe is written once. `.\make -n <target>` prints what it would run.
+
 **Static release binaries** (what `deploy.yml` ships; see "Releases" below):
 ```bash
 make static           # x86_64-unknown-linux-musl, needs musl-gcc (apt install musl-tools)
