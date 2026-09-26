@@ -35,7 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   windows can have it by drawing the rows' depth.
 - The Windows viewer's treemap is nested: a folder's tile holds its entries' tiles, laid out
   under its label, and theirs in turn, as deep as there is room (each level a shade darker,
-  labelled where it fits). Hovering a nested tile names it in the status bar; clicking it
+  labelled where it fits — the name at the left, the size at the right, as every tile is
+  now). Hovering a nested tile names it in the status bar; clicking it
   opens the folders above it in the list and puts its row in hand, so the two panels show the
   same thing. The layout is `libdiskonaut::tiles::nest`, the hit-testing the shared viewer's.
 - `make` on Windows without make: `.\make <target>` (`make.cmd`, `make.ps1`) reads the

@@ -13,7 +13,7 @@ use diskonaut_viewer::state::{
 use libdiskonaut::DisplaySize;
 use libdiskonaut::format::without_verbatim_prefix;
 use libdiskonaut::tiles::FileType;
-use libdiskonaut::tiles::Row;
+use libdiskonaut::tiles::{Row, Tile};
 
 use windows_sys::Win32::Foundation::{COLORREF, HWND, RECT, SIZE};
 use windows_sys::Win32::Graphics::Gdi::{
@@ -266,7 +266,6 @@ fn draw_treemap(canvas: &Canvas, window: &Window, layout: &Layout) {
     let hover = viewer.hover.as_deref();
     for (index, tile) in board.tiles.iter().enumerate() {
         let rect = layout.cells_to_rect(tile.x, tile.y, tile.width, tile.height);
-        let is_dir = tile.file_type == FileType::Folder;
         let marked = viewer.is_marked(&tile.name);
         canvas.fill(
             rect,
@@ -279,24 +278,8 @@ fn draw_treemap(canvas: &Canvas, window: &Window, layout: &Layout) {
         canvas.frame(rect, BORDER, 1);
         if rect.w > 40.0 && rect.h > LINE {
             let ink = if marked { INK } else { rgb(240, 240, 240) };
-            let name = tile.name.to_string_lossy();
-            let label = if is_dir {
-                format!("{name}\\")
-            } else {
-                name.into_owned()
-            };
             let line = Rect::new(rect.x + pad, rect.y + pad / 2.0, rect.w - 2.0 * pad, LINE);
-            canvas.text(line, &label, ink, fonts.bold, false);
-            if rect.h > LINE * 2.0 {
-                let size = Rect::new(line.x, line.bottom(), line.w, LINE);
-                canvas.text(
-                    size,
-                    &DisplaySize(tile.size as f64).to_string(),
-                    ink,
-                    fonts.ui,
-                    false,
-                );
-            }
+            draw_tile_label(canvas, fonts, line, tile, ink, fonts.bold);
         }
         if hover == Some(tile.name.as_os_str()) && board.get_selected_index() != Some(index) {
             canvas.frame(rect, rgb(170, 170, 170), 1);
@@ -439,18 +422,42 @@ fn draw_nested(canvas: &Canvas, window: &Window, layout: &Layout) {
         canvas.fill(rect, rgb(byte(r), byte(g), byte(b)));
         canvas.frame(rect, BORDER, 1);
         if rect.w > 30.0 && rect.h > LINE {
-            let name = t.name.to_string_lossy();
-            let label = if t.file_type == FileType::Folder {
-                format!("{name}\\")
-            } else {
-                name.into_owned()
-            };
             let line = Rect::new(rect.x + pad, rect.y + 1.0, rect.w - 2.0 * pad, LINE);
-            canvas.text(line, &label, rgb(235, 235, 235), fonts.ui, false);
+            draw_tile_label(canvas, fonts, line, t, rgb(235, 235, 235), fonts.ui);
         }
         if viewer.hover_nested == Some(index) {
             canvas.frame(rect, rgb(200, 200, 200), 1);
         }
+    }
+}
+
+/// A tile's label on one line: the name at the left (a folder's with its `\`), the size at the
+/// right, in `ink`; the size only when the name keeps room enough to read.
+fn draw_tile_label(
+    canvas: &Canvas,
+    fonts: &Fonts,
+    line: Rect,
+    tile: &Tile,
+    ink: COLORREF,
+    font: HFONT,
+) {
+    /// The least the name may keep beside the size, in points.
+    const NAME_ROOM: f64 = 24.0;
+    let name = tile.name.to_string_lossy();
+    let label = if tile.file_type == FileType::Folder {
+        format!("{name}\\")
+    } else {
+        name.into_owned()
+    };
+    let size = DisplaySize(tile.size as f64).to_string();
+    let size_width = canvas.width(&size, fonts.ui);
+    if line.w - size_width - LIST_PAD >= NAME_ROOM {
+        let name_rect = Rect::new(line.x, line.y, line.w - size_width - LIST_PAD, line.h);
+        canvas.text(name_rect, &label, ink, font, false);
+        let size_rect = Rect::new(line.right() - size_width, line.y, size_width, line.h);
+        canvas.text(size_rect, &size, ink, fonts.ui, true);
+    } else {
+        canvas.text(line, &label, ink, font, false);
     }
 }
 
