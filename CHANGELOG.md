@@ -140,6 +140,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Windows viewer's contents follow a resize. Dragging an edge, the caption's maximise
+  button and the system menu run inside `DefWindowProcW`, which was called behind the window's
+  re-entrancy guard, so the `WM_SIZE` they send arrived while the guard was up and was dropped:
+  the window grew, the treemap and the list did not. Messages the window does nothing with now
+  go straight to the system, outside the guard.
 - The Windows viewer answers while a volume is scanned elevated. The table read hands the tree
   on in a burst — dozens of outline batches a second — and the window laid the view out for
   each (15–25 ms: the listing sorted, the tree rows and the nested tiles rebuilt), so its

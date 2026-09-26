@@ -175,6 +175,9 @@ shared `Viewer`, not in `win/`:
   (`Refused::Declined`) or failed, the scan goes on unelevated
 - `win/mod.rs` — the window: input → `Viewer` calls (points are pixels over the DPI scale), then
   `changed()` (a preview request at the drawn size — `wanted_preview_sized` — title, redraw).
+  Messages the window does nothing with go to `DefWindowProcW` *outside* the re-entrancy guard
+  (`handles`): the frame's own loops (an edge dragged, maximise, the system menu) run inside
+  that call and send `WM_SIZE` and `WM_PAINT` re-entrantly, which the guard would drop.
   Threads post one boxed `AppMsg`; one arriving during a modal loop (message box, context menu)
   is queued FIFO in `PENDING` and handled when the handler returns — order matters, the outline's
   last batch comes before the finished tree. Outline batches are absorbed as they come and the

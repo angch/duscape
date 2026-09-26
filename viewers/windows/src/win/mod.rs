@@ -611,7 +611,33 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         // SAFETY: the message's own arguments, passed on unchanged.
         return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
     }
+    if !handles(msg) {
+        // Straight to the system, outside the guard: `DefWindowProcW` runs the frame's own
+        // loops in here — dragging an edge, the title bar or a system-menu command — and the
+        // WM_SIZE and WM_PAINT they send arrive re-entrantly. Behind the guard those were
+        // dropped, so the window's contents never followed a resize.
+        // SAFETY: the message's own arguments, passed on unchanged.
+        return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
+    }
     run_handler(state, |window| dispatch(window, hwnd, msg, wparam, lparam))
+}
+
+/// Whether [`dispatch`] does anything with `msg`; the rest is the system's.
+fn handles(msg: u32) -> bool {
+    matches!(
+        msg,
+        WM_SIZE
+            | WM_PAINT
+            | WM_LBUTTONDOWN
+            | WM_LBUTTONDBLCLK
+            | WM_RBUTTONUP
+            | WM_XBUTTONUP
+            | WM_MOUSEWHEEL
+            | WM_MOUSEMOVE
+            | WM_KEYDOWN
+            | WM_CHAR
+            | WM_TIMER
+    )
 }
 
 /// Run `handler` with an exclusive `&mut Window`, behind the re-entrancy guard, then the reports
