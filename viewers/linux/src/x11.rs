@@ -299,6 +299,7 @@ impl X11 {
                                 3 => Button::Right,
                                 4 => Button::WheelUp,
                                 5 => Button::WheelDown,
+                                8 => Button::Back,
                                 _ => Button::Other,
                             };
                             deliver(Input::Button {

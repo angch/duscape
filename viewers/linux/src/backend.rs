@@ -51,6 +51,8 @@ pub enum Button {
     Right,
     WheelUp,
     WheelDown,
+    /// The mouse's back (thumb) button.
+    Back,
     Other,
 }
 

@@ -21,7 +21,16 @@ const OTHER_PICTURES: [&str; 8] = ["heic", "heif", "gif", "tif", "tiff", "bmp", 
 pub enum Loaded {
     Info(String),
     Text(Vec<String>),
-    Picture { bytes: Vec<u8>, caption: String },
+    /// A binary file: its description (`binary file · 1.7M`, then where its blocks are) and its
+    /// first bytes as a hex dump (`libdiskonaut::preview::hex_dump`).
+    Binary {
+        info: Vec<String>,
+        dump: Vec<String>,
+    },
+    Picture {
+        bytes: Vec<u8>,
+        caption: String,
+    },
 }
 
 /// The thread that reads files for the preview. A newer request supersedes any still waiting.
@@ -56,11 +65,10 @@ pub fn load(path: &Path) -> Loaded {
     match read(path) {
         Contents::Info(info) => Loaded::Info(info),
         Contents::Text(lines) => Loaded::Text(lines),
-        // A binary file is described (`binary file · 1.7M`, then where its blocks are); one the
-        // system can decode is shown instead.
-        Contents::Binary { info, .. } => match other_picture(path) {
+        // A binary file is described and dumped; one the system can decode is shown instead.
+        Contents::Binary { info, dump } => match other_picture(path) {
             Some(format) => picture(path, format!("{format} image")),
-            None => Loaded::Text(info),
+            None => Loaded::Binary { info, dump },
         },
         Contents::Picture { kind, .. } => picture(path, describe_picture(path, kind)),
     }
@@ -100,6 +108,25 @@ mod tests {
         match loaded {
             Loaded::Text(lines) => assert_eq!(lines[..2], ["one", "two"]),
             _ => panic!("a text file should load as text"),
+        }
+    }
+
+    #[test]
+    fn a_binary_file_is_described_and_dumped() {
+        let dir = ::std::env::temp_dir()
+            .join(format!("diskonaut-viewer-binary-{}", ::std::process::id()));
+        ::std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("blob.bin");
+        ::std::fs::write(&file, [0u8, 1, 2, 0xff, 0, 0x41]).unwrap();
+        let loaded = load(&file);
+        ::std::fs::remove_dir_all(&dir).unwrap();
+        match loaded {
+            Loaded::Binary { info, dump } => {
+                assert!(info[0].starts_with("binary file"), "{info:?}");
+                assert_eq!(dump.len(), 1);
+                assert!(dump[0].starts_with("00 01 02 FF 00 41"), "{dump:?}");
+            }
+            _ => panic!("a binary file should load as one"),
         }
     }
 

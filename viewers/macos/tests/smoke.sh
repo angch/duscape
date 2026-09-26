@@ -65,6 +65,11 @@ key space
 wait 500
 state $out/quicklook
 key space
+wait 300
+click 14 41
+state $out/opened
+key down
+state $out/nested
 quit
 SCRIPT
 
@@ -110,6 +115,10 @@ expect alert "key window:  (_NSAlertPanel), active true"
 expect deleted "listing: alpha | beta | other.log | it's \$odd.txt"
 expect deleted "status: Deleted 1 item, freeing 52.0K"
 expect quicklook "key window:  (QLPreviewPanel), active true"
+# alpha's expander, at the list's left: it opens in place, and ↓ goes into it.
+expect opened "rows: alpha | alpha/inner | alpha/a.dat | beta | other.log | it's \$odd.txt"
+expect opened "cursor: alpha"
+expect nested "cursor: alpha/inner"
 [ -e "$fx/victim.log" ] && { echo "FAIL victim.log is still on disk"; failures=$((failures + 1)); }
 [ -e "$fx/other.log" ] || { echo "FAIL other.log was deleted"; failures=$((failures + 1)); }
 

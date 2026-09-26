@@ -5,7 +5,7 @@
 //! colour. Tiles use `state::tile_color`, the same in either mode.
 
 use ::std::ffi::OsStr;
-use ::std::path::Path;
+use ::std::path::{MAIN_SEPARATOR, Path};
 
 use objc2::AnyThread;
 use objc2::rc::Retained;
@@ -17,8 +17,10 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{NSAttributedStringKey, NSDictionary, NSPoint, NSRect, NSSize, NSString};
 
-use diskonaut_viewer::state::{Focus, Preview, ROW, Rect, Viewer, tile_color};
-use libdiskonaut::tiles::FileType;
+use diskonaut_viewer::state::{
+    EXPANDER, Focus, LIST_PAD, Preview, ROW, ROW_INDENT, Rect, Viewer, tile_color,
+};
+use libdiskonaut::tiles::{FileType, Row, Tile};
 use libdiskonaut::{DisplayCount, DisplaySize};
 
 pub fn ns_rect(rect: Rect) -> NSRect {
@@ -32,6 +34,19 @@ fn srgb((r, g, b): (f64, f64, f64), alpha: f64) -> Retained<NSColor> {
 fn lighter((r, g, b): (f64, f64, f64), by: f64) -> (f64, f64, f64) {
     (r + (1.0 - r) * by, g + (1.0 - g) * by, b + (1.0 - b) * by)
 }
+
+/// `shade` of a colour: 1.0 as it is, less for darker.
+fn darker((r, g, b): (f64, f64, f64), shade: f64) -> (f64, f64, f64) {
+    (r * shade, g * shade, b * shade)
+}
+
+const MARK: (f64, f64, f64) = (1.0, 0.84, 0.04);
+/// A tile's label line: the band `libdiskonaut::tiles::nest` leaves at the top of a folder's
+/// tile, three cells of `state::CELL_H`.
+const TILE_LINE: f64 = 18.0;
+/// The monospace size a hex dump starts from, and the least it is shrunk to so a line fits.
+const MONO_SIZE: f64 = 10.5;
+const MONO_MIN: f64 = 5.0;
 
 fn fill(rect: Rect, color: &NSColor) {
     color.setFill();
@@ -96,7 +111,10 @@ struct Pens {
     secondary_right: Pen,
     strong: Pen,
     tile_name: Pen,
+    nested_name: Pen,
     tile_size: Pen,
+    tile_size_right: Pen,
+    expander: Pen,
     row: Pen,
     row_right: Pen,
     row_selected: Pen,
@@ -135,10 +153,28 @@ impl Pens {
                 middle,
             ),
             tile_name: Pen::new(&system(11.0, medium), &white, left, middle),
+            nested_name: Pen::new(
+                &system(10.5, regular),
+                &white.colorWithAlphaComponent(0.92),
+                left,
+                middle,
+            ),
             tile_size: Pen::new(
                 &system(10.0, regular),
                 &white.colorWithAlphaComponent(0.8),
                 left,
+                tail,
+            ),
+            tile_size_right: Pen::new(
+                &system(10.0, regular),
+                &white.colorWithAlphaComponent(0.8),
+                right,
+                tail,
+            ),
+            expander: Pen::new(
+                &small,
+                &NSColor::secondaryLabelColor(),
+                NSTextAlignment::Center,
                 tail,
             ),
             row: Pen::new(&body, &NSColor::labelColor(), left, middle),
@@ -208,7 +244,6 @@ fn treemap(viewer: &Viewer, pens: &Pens) {
         pens.center.draw(words, middle);
         return;
     }
-    let hover = viewer.hover.as_deref();
     for (index, tile) in viewer.board.tiles.iter().enumerate() {
         let rect = layout
             .cells_to_rect(tile.x, tile.y, tile.width, tile.height)
@@ -224,29 +259,23 @@ fn treemap(viewer: &Viewer, pens: &Pens) {
             // In a flipped view, 90° runs top to bottom: lit from above.
             gradient.drawInRect_angle(ns_rect(rect), 90.0);
         }
+        if rect.w >= 36.0 && rect.h >= 15.0 {
+            tile_label(pens, rect, 4.0, tile, &pens.tile_name);
+        }
+    }
+    nested(viewer, pens);
+    // Hovering and marks over the nesting, so a marked folder reads as marked all through.
+    let hover = viewer.hover.as_deref();
+    for tile in &viewer.board.tiles {
+        let rect = layout
+            .cells_to_rect(tile.x, tile.y, tile.width, tile.height)
+            .inset(0.5, 0.5);
         if hover == Some(tile.name.as_os_str()) {
             fill(rect, &NSColor::whiteColor().colorWithAlphaComponent(0.14));
         }
         if viewer.is_marked(&tile.name) {
-            fill(rect, &srgb((1.0, 0.84, 0.04), 0.30));
-            stroke(rect, &srgb((1.0, 0.84, 0.04), 0.9), 1.5);
-        }
-        if rect.w >= 36.0 && rect.h >= 15.0 {
-            let name = tile.name.to_string_lossy();
-            let top = if rect.h >= 30.0 {
-                rect.y + (rect.h / 2.0 - 15.0).clamp(1.0, 4.0)
-            } else {
-                rect.y + (rect.h - 15.0) / 2.0
-            };
-            pens.tile_name
-                .draw(&name, Rect::new(rect.x + 4.0, top, rect.w - 8.0, 15.0));
-            if rect.h >= 30.0 {
-                let size = DisplaySize(tile.size as f64).to_string();
-                pens.tile_size.draw(
-                    &size,
-                    Rect::new(rect.x + 4.0, top + 14.0, rect.w - 8.0, 14.0),
-                );
-            }
+            fill(rect, &srgb(MARK, 0.30));
+            stroke(rect, &srgb(MARK, 0.9), 1.5);
         }
     }
     // Entries too small for a tile of their own, as one marked corner.
@@ -272,21 +301,100 @@ fn treemap(viewer: &Viewer, pens: &Pens) {
             );
         }
     }
+    let alpha = if viewer.focus == Focus::Treemap {
+        1.0
+    } else {
+        0.7
+    };
     if let Some(tile) = viewer.board.currently_selected() {
         let rect = layout.cells_to_rect(tile.x, tile.y, tile.width, tile.height);
         stroke(rect, &srgb((0.0, 0.0, 0.0), 0.6), 1.0);
-        let alpha = if viewer.focus == Focus::Treemap {
-            1.0
-        } else {
-            0.7
-        };
-        stroke(rect.inset(1.0, 1.0), &srgb((1.0, 0.84, 0.04), alpha), 2.5);
+        stroke(rect.inset(1.0, 1.0), &srgb(MARK, alpha), 2.5);
+    }
+    // The row in hand, when it is a tile inside a folder's.
+    if let Some(index) = viewer.cursor_nested() {
+        let t = &viewer.nested()[index].tile;
+        let rect = layout.cells_to_rect(t.x, t.y, t.width, t.height);
+        stroke(rect, &srgb((0.0, 0.0, 0.0), 0.6), 1.0);
+        stroke(rect.inset(1.0, 1.0), &srgb(MARK, alpha), 2.0);
     }
 }
 
+/// The tiles inside the folder tiles — the nesting — parents first, so each level paints over
+/// its parent's body and under the parent's label; a level deeper is a shade darker, and a
+/// label goes on whatever has the room for one.
+fn nested(viewer: &Viewer, pens: &Pens) {
+    let layout = &viewer.layout;
+    let edge = srgb((0.0, 0.0, 0.0), 0.35);
+    for (index, nested) in viewer.nested().iter().enumerate() {
+        let t = &nested.tile;
+        let rect = layout
+            .cells_to_rect(t.x, t.y, t.width, t.height)
+            .inset(0.5, 0.5);
+        let shade = 1.0 - 0.12 * nested.depth.min(4) as f64;
+        fill(
+            rect,
+            &srgb(darker(tile_color(&t.name, t.file_type, index), shade), 1.0),
+        );
+        stroke(rect, &edge, 1.0);
+        if rect.w > 30.0 && rect.h >= 15.0 {
+            tile_label(pens, rect, 3.0, t, &pens.nested_name);
+        }
+        if viewer.hover_nested == Some(index) {
+            stroke(
+                rect,
+                &NSColor::whiteColor().colorWithAlphaComponent(0.8),
+                1.0,
+            );
+        }
+    }
+}
+
+/// A tile's label, `pad` in from the sides, on the line `nest` leaves at the top of a folder's
+/// tile. A folder's is one line, its name (with its `/`) at the left and its size at the right,
+/// since its entries take the rest of the tile; a file's name has the whole top line, and its
+/// size goes at the bottom right when the tile has room for a second line, since the name is
+/// the longer and the one to read. Beside a name, a size is left out where the name would keep
+/// too little room.
+fn tile_label(pens: &Pens, rect: Rect, pad: f64, tile: &Tile, name: &Pen) {
+    /// The least the name may keep beside the size, in points.
+    const NAME_ROOM: f64 = 24.0;
+    let is_dir = tile.file_type == FileType::Folder;
+    let mut label = tile.name.to_string_lossy().into_owned();
+    if is_dir {
+        label.push(MAIN_SEPARATOR);
+    }
+    // AppKit draws from the top of the rectangle: a line of 15 points, centred in the band.
+    let line_h = 15.0_f64.min(rect.h);
+    let line = Rect::new(
+        rect.x + pad,
+        rect.y + ((TILE_LINE.min(rect.h) - line_h) / 2.0).max(0.0),
+        rect.w - 2.0 * pad,
+        line_h,
+    );
+    let size = DisplaySize(tile.size as f64).to_string();
+    let size_w = pens.tile_size_right.width(&size) + 1.0;
+    if !is_dir && rect.h >= 2.0 * TILE_LINE + pad {
+        name.draw(&label, line);
+        let below = Rect::new(line.x, rect.bottom() - pad - 14.0, line.w, 14.0);
+        pens.tile_size_right.draw(&size, below);
+    } else if line.w - size_w - LIST_PAD >= NAME_ROOM {
+        name.draw(
+            &label,
+            Rect::new(line.x, line.y, line.w - size_w - LIST_PAD, line.h),
+        );
+        let right = Rect::new(line.right() - size_w, line.y + 1.0, size_w, line.h);
+        pens.tile_size_right.draw(&size, right);
+    } else {
+        name.draw(&label, line);
+    }
+}
+
+/// The list as a tree: each level indented, a folder's expander before its swatch, and its
+/// share of its parent as a bar under its name from where its level starts.
 fn rows(viewer: &Viewer, list: Rect, key_window: bool, pens: &Pens) {
-    let listing = viewer.board.listing();
-    if listing.is_empty() {
+    let rows = viewer.rows();
+    if rows.is_empty() {
         let words = if viewer.scanning {
             "Scanning…"
         } else {
@@ -299,67 +407,88 @@ fn rows(viewer: &Viewer, list: Rect, key_window: bool, pens: &Pens) {
         return;
     }
     let emphasised = key_window && viewer.focus == Focus::List;
-    let selected = viewer.selected.as_deref();
-    let hover = viewer.hover.as_deref();
-    let visible = listing
+    let cursor = viewer.cursor_row();
+    let top = viewer.list_top.min(rows.len());
+    // A top-level row's colour follows its place in the listing, as its tile's does.
+    let mut listed = rows[..top].iter().filter(|row| row.depth == 0).count();
+    let visible = rows
         .iter()
         .enumerate()
-        .skip(viewer.list_top)
+        .skip(top)
         .take(viewer.layout.list_rows());
-    for (row, (index, entry)) in visible.enumerate() {
-        let rect = Rect::new(list.x, list.y + row as f64 * ROW, list.w, ROW);
-        let is_selected = selected == Some(entry.name.as_os_str());
+    for (shown, (index, row)) in visible.enumerate() {
+        let color_index = if row.depth == 0 {
+            listed += 1;
+            listed - 1
+        } else {
+            index
+        };
+        let rect = Rect::new(list.x, list.y + shown as f64 * ROW, list.w, ROW);
+        let in_hand = cursor == Some(index);
         let pill = rect.inset(5.0, 1.0);
-        if is_selected {
+        if in_hand {
             let color = if emphasised {
                 NSColor::selectedContentBackgroundColor()
             } else {
                 NSColor::unemphasizedSelectedContentBackgroundColor()
             };
             rounded(pill, 5.0, &color);
-        } else if viewer.is_marked(&entry.name) {
+        } else if row.depth == 0 && viewer.is_marked(&row.entry.name) {
             rounded(
                 pill,
                 5.0,
                 &NSColor::controlAccentColor().colorWithAlphaComponent(0.25),
             );
-        } else if hover == Some(entry.name.as_os_str()) {
+        } else if viewer.hover_row == Some(index) {
             rounded(
                 pill,
                 5.0,
                 &NSColor::labelColor().colorWithAlphaComponent(0.06),
             );
         }
-        let color = tile_color(&entry.name, entry.file_type, index);
-        // Its share of the folder, as a bar under the name.
-        let bar_w = (pill.w - 30.0) * entry.percentage.clamp(0.0, 1.0);
-        fill(
-            Rect::new(pill.x + 22.0, pill.bottom() - 3.0, bar_w, 2.0),
-            &srgb(color, 0.55),
-        );
-        let swatch = Rect::new(pill.x + 7.0, rect.y + (ROW - 10.0) / 2.0, 10.0, 10.0);
-        if entry.file_type == FileType::Folder {
-            rounded(swatch, 2.5, &srgb(color, 1.0));
-        } else {
-            rounded(swatch, 5.0, &srgb(color, 1.0));
-        }
-        let size = DisplaySize(entry.size as f64).to_string();
-        let (name_pen, size_pen) = if is_selected && emphasised {
-            (&pens.row_selected, &pens.row_selected_right)
-        } else {
-            (&pens.row, &pens.row_right)
-        };
-        let size_w = 70.0;
-        let text_y = rect.y + (ROW - 16.0) / 2.0;
-        name_pen.draw(
-            &entry.name.to_string_lossy(),
-            Rect::new(pill.x + 22.0, text_y, pill.w - 30.0 - size_w, 16.0),
-        );
-        size_pen.draw(
-            &size,
-            Rect::new(pill.right() - 8.0 - size_w, text_y + 1.0, size_w, 16.0),
-        );
+        row_words(pens, row, rect, color_index, in_hand && emphasised);
     }
+}
+
+/// A row's expander, swatch, name and size.
+fn row_words(pens: &Pens, row: &Row, rect: Rect, color_index: usize, selected: bool) {
+    const SIZE_W: f64 = 70.0;
+    let entry = &row.entry;
+    let is_dir = entry.file_type == FileType::Folder;
+    let (name_pen, size_pen) = if selected {
+        (&pens.row_selected, &pens.row_selected_right)
+    } else {
+        (&pens.row, &pens.row_right)
+    };
+    let text_y = rect.y + (ROW - 16.0) / 2.0;
+    // Where `Viewer::hit` looks for the expander.
+    let indent = rect.x + LIST_PAD + row.depth as f64 * ROW_INDENT;
+    if is_dir {
+        let glyph = if row.open { "▾" } else { "▸" };
+        pens.expander
+            .draw(glyph, Rect::new(indent, text_y + 1.0, EXPANDER, 16.0));
+    }
+    let swatch_x = indent + EXPANDER + 1.0;
+    let name_x = swatch_x + 15.0;
+    let right = rect.right() - 13.0;
+    let color = tile_color(&entry.name, entry.file_type, color_index);
+    // Its share of its parent, as a bar under the name.
+    let bar_w = (right - name_x).max(0.0) * entry.percentage.clamp(0.0, 1.0);
+    fill(
+        Rect::new(name_x, rect.bottom() - 4.0, bar_w, 2.0),
+        &srgb(color, 0.55),
+    );
+    let swatch = Rect::new(swatch_x, rect.y + (ROW - 10.0) / 2.0, 10.0, 10.0);
+    let radius = if is_dir { 2.5 } else { 5.0 };
+    rounded(swatch, radius, &srgb(color, 1.0));
+    name_pen.draw(
+        &entry.name.to_string_lossy(),
+        Rect::new(name_x, text_y, (right - SIZE_W - name_x).max(0.0), 16.0),
+    );
+    size_pen.draw(
+        &DisplaySize(entry.size as f64).to_string(),
+        Rect::new(right - SIZE_W, text_y + 1.0, SIZE_W, 16.0),
+    );
 }
 
 fn details(viewer: &Viewer, info: Rect, image: Option<&NSImage>, pens: &Pens) {
@@ -368,7 +497,12 @@ fn details(viewer: &Viewer, info: Rect, image: Option<&NSImage>, pens: &Pens) {
         &NSColor::separatorColor(),
     );
     let inner = info.inset(12.0, 10.0);
-    let Some(entry) = viewer.selected_entry() else {
+    // The row in hand — nested in the tree or not — is what the preview is of.
+    let Some(entry) = viewer
+        .cursor_entry()
+        .map(|row| &row.entry)
+        .or_else(|| viewer.selected_entry())
+    else {
         return;
     };
     pens.strong.draw(
@@ -409,7 +543,8 @@ fn details(viewer: &Viewer, info: Rect, image: Option<&NSImage>, pens: &Pens) {
         Preview::Info(info) => pens
             .secondary
             .draw(info, Rect::new(body.x, body.y, body.w, 15.0)),
-        Preview::Text(lines) | Preview::Hex(lines) => {
+        Preview::Hex { info, dump } => hex(body, info, dump, pens),
+        Preview::Text(lines) => {
             rounded(body, 6.0, &NSColor::textBackgroundColor());
             let text = body.inset(8.0, 6.0);
             for (row, line) in lines.iter().enumerate() {
@@ -447,6 +582,61 @@ fn details(viewer: &Viewer, info: Rect, image: Option<&NSImage>, pens: &Pens) {
                 Rect::new(body.x, body.bottom() - 16.0, body.w, 15.0),
             );
         }
+    }
+}
+
+/// A binary file: what can be said about it, then its hex dump with the monospace font shrunk
+/// until a whole line fits the width, so the characters' column is never cut off.
+fn hex(body: Rect, info: &[String], dump: &[String], pens: &Pens) {
+    let mut y = body.y;
+    for line in info {
+        if y + 15.0 > body.bottom() {
+            return;
+        }
+        pens.secondary
+            .draw(line, Rect::new(body.x, y, body.w, 15.0));
+        y += 15.0;
+    }
+    let body = Rect::new(body.x, y + 4.0, body.w, (body.bottom() - y - 4.0).max(0.0));
+    let Some(widest) = dump.iter().max_by_key(|line| line.len()) else {
+        return;
+    };
+    if body.h < 20.0 {
+        return;
+    }
+    rounded(body, 6.0, &NSColor::textBackgroundColor());
+    let text = body.inset(8.0, 6.0);
+    let mono = |size: f64| {
+        // SAFETY: reading AppKit's font weight constant.
+        let regular = unsafe { NSFontWeightRegular };
+        Pen::new(
+            &NSFont::monospacedSystemFontOfSize_weight(size, regular),
+            &NSColor::labelColor(),
+            NSTextAlignment::Left,
+            NSLineBreakMode::ByClipping,
+        )
+    };
+    let full = pens.mono.width(widest);
+    let mut size = MONO_SIZE;
+    let mut pen = None;
+    if full > text.w && full > 0.0 {
+        // In proportion first, then down until it really fits.
+        size = (MONO_SIZE * text.w / full).max(MONO_MIN);
+        let mut fitted = mono(size);
+        while size > MONO_MIN && fitted.width(widest) > text.w {
+            size = (size - 0.25).max(MONO_MIN);
+            fitted = mono(size);
+        }
+        pen = Some(fitted);
+    }
+    let pen = pen.as_ref().unwrap_or(&pens.mono);
+    let line_h = 13.0 * size / MONO_SIZE;
+    for (row, line) in dump.iter().enumerate() {
+        let y = text.y + row as f64 * line_h;
+        if y + line_h > text.bottom() {
+            break;
+        }
+        pen.draw(line, Rect::new(text.x, y, text.w, line_h + 1.0));
     }
 }
 

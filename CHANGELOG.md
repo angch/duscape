@@ -51,6 +51,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   top-level folder as they would the folder's own tile. The layout is
   `libdiskonaut::tiles::nest`, the hit-testing the shared viewer's; each folder is listed by
   `largest_in_folder`, only as many entries as its tile has room for.
+- The macOS and Linux viewers have what the Windows viewer gained: the list as a tree (→ opens
+  a folder in place, ← closes it, or its expander), the treemap nested down to the files with
+  each tile labelled with its name at the left and its size at the right, a binary file
+  previewed as a hex dump under its description (on Linux, where its blocks are) with the font
+  shrunk until a line fits, the wheel over the treemap zooming (on macOS a mouse's wheel or a
+  pinch), and the mouse's back button going up a folder. A nested row is what the details, the
+  preview, Open and a double-click act on. Outline batches are laid out once per burst rather
+  than once each, as on Windows. `diskonaut_viewer::preview::Loaded::Binary` carries the dump,
+  and `Preview::Hex` the description beside it.
+- One context menu for every desktop viewer, on a right-click: Open (a file with its default
+  app), Show in Explorer / Finder / the file manager, Copy Path and Copy Full Path, Rescan
+  Folder and Rescan Everything, Move to Trash and Delete Immediately — the same items, order and
+  words in all three, counted when several are marked (`diskonaut_viewer::menu`). The Linux
+  viewer gains a menu of its own, drawn by the window, which a right-click used to copy the path
+  instead; it copies with Ctrl+C (Ctrl+Shift+C the full path), as on Windows. Windows gains Show
+  in Explorer and opening a file; macOS gains Copy Path and Rescan Everything in its menu.
+  `libdiskonaut::launch` opens and reveals entries on each platform.
 - `make` on Windows without make: `.\make <target>` (`make.cmd`, `make.ps1`) reads the
   Makefile and runs its recipes in Git's bash — targets, prerequisites, variables, `$(shell)`,
   continuations, `VAR=value` — so `make quality`, `make test` and the rest are one recipe
@@ -144,6 +161,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Copying the path of a row nested in the tree (Ctrl+C, the context menu) copied its top-level
+  folder's; it copies the row's own (`Viewer::copied_paths`).
+- A window started from the desktop, whose working directory is `/`, copied "relative" paths
+  from the filesystem's root; it copies absolute ones.
+- The Windows viewer's elevation test assumed Windows path parsing and failed on Linux CI; the
+  drive-letter roots are asserted on Windows only. `typos` no longer flags xkb's `AGAI` key.
 - `r` and the context menu's rescan act on the row in hand — a nested folder itself, a nested
   file's folder — as the menu says, not on the top-level folder.
 - With entries marked, hovering a tile inside a folder's tile still names it in the status bar,

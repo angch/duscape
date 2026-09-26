@@ -15,10 +15,10 @@ use crate::draw::{self, TitleButton};
 use crate::font::Fonts;
 use crate::trash;
 use diskonaut_scan::rescan::{Outcome, Rescanner};
+use diskonaut_viewer::menu::{Action, Entry, Platform};
 use diskonaut_viewer::preview::{Loaded, Previewer};
 use diskonaut_viewer::scan;
 use diskonaut_viewer::state::{Direction, Hit, Jump, Preview, Rect, Viewer, drop_later};
-use libdiskonaut::format::quote_path_for_shell;
 use libdiskonaut::model::SizeKind;
 use libdiskonaut::{DirSummary, DisplayCount, DisplaySize, FileToDelete, FileTree, ScanOptions};
 
@@ -64,6 +64,36 @@ enum Dialog {
     },
 }
 
+/// The context menu, while it is open: where it was opened, what it offers (from
+/// `Viewer::context_menu`), and the item under the pointer or the keyboard.
+struct Popup {
+    at: (f64, f64),
+    entries: Vec<Entry>,
+    hover: Option<usize>,
+}
+
+/// What the context menu offers here beyond every viewer's items.
+const PLATFORM: Platform = Platform {
+    reveal: "Show in File Manager",
+    quick_look: false,
+    pathname: false,
+    trash: true,
+};
+
+/// The key that does what a menu item does, shown beside it.
+fn key_hint(action: Action) -> Option<&'static str> {
+    Some(match action {
+        Action::Open => "Enter",
+        Action::CopyPath => "Ctrl+C",
+        Action::CopyFullPath => "Ctrl+Shift+C",
+        Action::Rescan => "r",
+        Action::RescanAll => "R",
+        Action::Trash => "d",
+        Action::Delete => "D",
+        _ => return None,
+    })
+}
+
 pub struct App {
     backend: Box<dyn Backend>,
     canvas: Canvas,
@@ -76,6 +106,9 @@ pub struct App {
     crumbs: Vec<(Rect, usize)>,
     buttons: draw::Buttons,
     title_buttons: Vec<(Rect, TitleButton)>,
+    popup: Option<Popup>,
+    /// Where the last frame drew the menu's items, and each one's index in its entries.
+    popup_rows: Vec<(Rect, usize)>,
     options: ScanOptions,
     running: Arc<AtomicBool>,
     scans: u64,
@@ -85,6 +118,9 @@ pub struct App {
     last_click: Option<(Instant, f64, f64)>,
     focused: bool,
     dirty: bool,
+    /// Outline batches taken into the tree and not yet laid out: done once for all that
+    /// arrived together, since a relayout (the nesting with it) costs more than a batch.
+    outline_behind: bool,
     quit: bool,
     title: String,
     /// When a `Tick` is already on its way.
@@ -131,6 +167,8 @@ impl App {
             crumbs: Vec::new(),
             buttons: Vec::new(),
             title_buttons: Vec::new(),
+            popup: None,
+            popup_rows: Vec::new(),
             options,
             running: Arc::new(AtomicBool::new(false)),
             scans: 0,
@@ -140,6 +178,7 @@ impl App {
             last_click: None,
             focused: true,
             dirty: true,
+            outline_behind: false,
             quit: false,
             title: String::new(),
             tick_due: None,
@@ -157,6 +196,10 @@ impl App {
             // Whatever else has arrived meanwhile, before drawing once for all of it.
             while let Ok(msg) = self.rx.try_recv() {
                 self.handle(msg);
+            }
+            if ::std::mem::take(&mut self.outline_behind) {
+                self.viewer.catch_up();
+                self.changed();
             }
             if self.quit {
                 break;
@@ -179,6 +222,30 @@ impl App {
             self.focused,
         );
         let bounds = self.viewer.layout.bounds;
+        self.popup_rows = match &self.popup {
+            Some(popup) => {
+                let entries: Vec<_> = popup
+                    .entries
+                    .iter()
+                    .map(|entry| {
+                        let hint = match entry {
+                            Entry::Item { action, .. } => key_hint(*action),
+                            Entry::Separator => None,
+                        };
+                        (entry.clone(), hint)
+                    })
+                    .collect();
+                draw::menu(
+                    &mut self.canvas,
+                    &self.fonts,
+                    bounds,
+                    popup.at,
+                    &entries,
+                    popup.hover,
+                )
+            }
+            None => Vec::new(),
+        };
         self.buttons = match &self.dialog {
             Dialog::None => Vec::new(),
             Dialog::Confirm {
@@ -259,8 +326,8 @@ impl App {
             Msg::Input(input) => self.input(input),
             Msg::Batch(scan_id, summaries) => {
                 if scan_id == self.viewer.scan_id {
-                    self.viewer.add_summaries(summaries);
-                    self.changed();
+                    self.viewer.absorb_summaries(summaries);
+                    self.outline_behind = true;
                 }
             }
             Msg::Done(scan_id, tree) => self.scan_done(scan_id, tree),
@@ -331,18 +398,25 @@ impl App {
             }
             Input::Key { keysym, mods } => self.key(keysym, mods),
             Input::Button { button, x, y, mods } => self.button(button, x, y, mods),
+            Input::Motion { x, y } if self.popup.is_some() => self.popup_hover(x, y),
             Input::Motion { x, y } => {
                 if matches!(self.dialog, Dialog::None) && self.viewer.hover_at(x, y) {
                     self.dirty = true;
                 }
             }
             Input::Leave => {
-                if self.viewer.hover.take().is_some() {
+                // Nothing is under a pointer that has gone: the row, the tile and the nested
+                // tile it was over all let go.
+                if self.viewer.hover_at(-1.0, -1.0) {
                     self.dirty = true;
                 }
             }
             Input::Focus(focused) => {
                 self.focused = focused;
+                // A menu closes when its window loses the keyboard, as a toolkit's does.
+                if !focused {
+                    self.popup = None;
+                }
                 self.dirty = true;
             }
             Input::Close => self.quit = true,
@@ -354,6 +428,9 @@ impl App {
     fn key(&mut self, keysym: u32, mods: Mods) {
         let (shift, control) = (mods.shift, mods.control);
         let ch = char::from_u32(keysym).filter(|_| keysym < 0x100);
+        if self.popup.is_some() {
+            return self.popup_key(keysym);
+        }
         if !matches!(self.dialog, Dialog::None) {
             match (keysym, ch) {
                 (keys::RETURN | keys::KP_ENTER, _) | (_, Some('y' | 'Y')) => self.answer(true),
@@ -384,7 +461,7 @@ impl App {
             keys::KP_0 => self.viewer.reset_zoom(),
             keys::F5 => self.viewer.rescan_all(),
             _ => match (control, ch) {
-                (true, Some('c' | 'C')) => return self.copy_paths(),
+                (true, Some('c' | 'C')) => return self.copy_paths(shift),
                 (true, Some('a' | 'A')) => self.viewer.mark_all(),
                 (true, Some('q' | 'Q' | 'w' | 'W')) => self.quit = true,
                 (true, Some('r')) => self.viewer.rescan_selected(),
@@ -409,6 +486,9 @@ impl App {
     // ---------------------------------------------------------------- the mouse
 
     fn button(&mut self, button: Button, x: f64, y: f64, mods: Mods) {
+        if self.popup.is_some() {
+            return self.popup_click(button, x, y, mods);
+        }
         if !matches!(self.dialog, Dialog::None) {
             if button == Button::Left
                 && let Some((_, confirms)) = self
@@ -426,66 +506,78 @@ impl App {
             return;
         }
         match button {
-            Button::Left => {
-                if let Some(&(_, depth)) = self.crumbs.iter().find(|(rect, _)| rect.contains(x, y))
-                {
-                    self.viewer.go_to_depth(depth);
-                    self.last_click = None;
-                    return self.changed();
-                }
-                let now = Instant::now();
-                let double = self.last_click.is_some_and(|(at, lx, ly)| {
-                    now.duration_since(at) < DOUBLE_CLICK
-                        && (lx - x).abs() <= DOUBLE_CLICK_SLOP
-                        && (ly - y).abs() <= DOUBLE_CLICK_SLOP
-                });
-                let mods = diskonaut_viewer::state::Mods {
-                    toggle: mods.control,
-                    range: mods.shift,
-                };
-                if double && !mods.toggle && !mods.range {
-                    self.last_click = None;
-                    if self
-                        .viewer
-                        .click(x, y, diskonaut_viewer::state::Mods::default())
-                        .is_some()
-                    {
-                        self.viewer.enter_selected();
-                    }
-                } else {
-                    self.last_click = Some((now, x, y));
-                    if self.viewer.click(x, y, mods).is_none()
-                        && matches!(self.viewer.hit(x, y), Hit::SmallFiles)
-                    {
-                        self.viewer
-                            .say("The entries too small for a tile are all in the list");
-                    }
-                }
-                self.changed();
+            Button::Left => self.left_click(x, y, mods),
+            Button::Right => self.open_popup(x, y),
+            Button::WheelUp | Button::WheelDown => self.wheel(button == Button::WheelUp, x, y),
+            Button::Back if self.viewer.go_up() => self.changed(),
+            Button::Back | Button::Other => {}
+        }
+    }
+
+    fn left_click(&mut self, x: f64, y: f64, mods: Mods) {
+        if let Some(&(_, depth)) = self.crumbs.iter().find(|(rect, _)| rect.contains(x, y)) {
+            self.viewer.go_to_depth(depth);
+            self.last_click = None;
+            return self.changed();
+        }
+        let now = Instant::now();
+        let double = self.last_click.is_some_and(|(at, lx, ly)| {
+            now.duration_since(at) < DOUBLE_CLICK
+                && (lx - x).abs() <= DOUBLE_CLICK_SLOP
+                && (ly - y).abs() <= DOUBLE_CLICK_SLOP
+        });
+        // A folder row's expander opens it in place; the second click of a double is not a
+        // second toggle.
+        if let Hit::Expander(index) = self.viewer.hit(x, y) {
+            if double {
+                self.last_click = None;
+            } else {
+                self.last_click = Some((now, x, y));
+                self.viewer.toggle_row(index);
             }
-            Button::Right => {
-                if self.viewer.context_click(x, y) {
-                    self.copy_paths();
-                    self.changed();
-                }
-            }
-            Button::WheelUp | Button::WheelDown
-                if self
-                    .viewer
-                    .layout
-                    .list
-                    .is_some_and(|list| list.contains(x, y)) =>
+            return self.changed();
+        }
+        let mods = diskonaut_viewer::state::Mods {
+            toggle: mods.control,
+            range: mods.shift,
+        };
+        if double && !mods.toggle && !mods.range {
+            self.last_click = None;
+            if self
+                .viewer
+                .click(x, y, diskonaut_viewer::state::Mods::default())
+                .is_some()
             {
-                let rows = if button == Button::WheelUp {
-                    -WHEEL_ROWS
-                } else {
-                    WHEEL_ROWS
-                };
-                self.viewer.scroll_list(rows);
-                self.viewer.hover_at(x, y);
-                self.dirty = true;
+                self.viewer.enter_selected();
             }
-            _ => {}
+        } else {
+            self.last_click = Some((now, x, y));
+            if self.viewer.click(x, y, mods).is_none()
+                && matches!(self.viewer.hit(x, y), Hit::SmallFiles)
+            {
+                self.viewer
+                    .say("The entries too small for a tile are all in the list");
+            }
+        }
+        self.changed();
+    }
+
+    /// A wheel notch: over the list it scrolls, over the treemap it zooms.
+    fn wheel(&mut self, up: bool, x: f64, y: f64) {
+        let layout = self.viewer.layout;
+        if layout.list.is_some_and(|list| list.contains(x, y)) {
+            self.viewer
+                .scroll_list(if up { -WHEEL_ROWS } else { WHEEL_ROWS });
+            self.viewer.hover_at(x, y);
+            self.dirty = true;
+        } else if layout.treemap.contains(x, y) {
+            if up {
+                self.viewer.zoom_in();
+            } else {
+                self.viewer.zoom_out();
+            }
+            self.viewer.hover_at(x, y);
+            self.changed();
         }
     }
 
@@ -533,6 +625,7 @@ impl App {
         self.viewer.cancel_rescans();
         let mut viewer = Viewer::new(&root, kind, scan_id);
         viewer.sidebar = sidebar;
+        viewer.set_tree_view(true);
         let done = self.tx.clone();
         viewer.enable_rescans(Rescanner::new(
             options,
@@ -594,25 +687,19 @@ impl App {
 
     // ---------------------------------------------------------------- acting on entries
 
-    /// Copy the marked entries' paths, or the one in hand's, or the folder's, quoted for the
-    /// shell: through a clipboard tool if there is one, else this window holds the selection.
-    fn copy_paths(&mut self) {
-        let mut paths = self.viewer.target_paths();
-        if paths.is_empty() {
-            paths.push(self.viewer.tree.get_current_path());
-        }
-        let text = paths
-            .iter()
-            .map(|path| quote_path_for_shell(path))
-            .collect::<Vec<_>>()
-            .join(" ");
-        let copied = libdiskonaut::clipboard::copy(&text) || self.backend.copy(&text);
-        let message = match (copied, paths.len()) {
-            (false, _) => "Could not copy to the clipboard".to_string(),
-            (true, 1) => format!("Copied {text}"),
-            (true, n) => format!("Copied {} paths", DisplayCount(n as u64)),
+    /// Copy the marked entries' paths, or the one in hand's, quoted for the shell — relative to
+    /// the working directory unless `absolute` (`Viewer::copied_paths`): through a clipboard
+    /// tool if there is one, else this window holds the selection.
+    fn copy_paths(&mut self, absolute: bool) {
+        let Some((text, label)) = self.viewer.copied_paths(absolute) else {
+            return;
         };
-        self.viewer.say(message);
+        let copied = libdiskonaut::clipboard::copy(&text) || self.backend.copy(&text);
+        self.viewer.say(if copied {
+            format!("{label} {text}")
+        } else {
+            "Could not copy to the clipboard".to_string()
+        });
         self.dirty = true;
     }
 
@@ -701,12 +788,147 @@ impl App {
     }
 }
 
+// ---------------------------------------------------------------- the context menu
+
+impl App {
+    /// A right-click: the entry under the pointer into hand (the marks kept if it is one of
+    /// them), and the menu of what can be done with it.
+    fn open_popup(&mut self, x: f64, y: f64) {
+        if !self.viewer.context_click(x, y) {
+            return;
+        }
+        let entries = self.viewer.context_menu(&PLATFORM);
+        if !entries.is_empty() {
+            self.popup = Some(Popup {
+                at: (x, y),
+                entries,
+                hover: None,
+            });
+        }
+        self.changed();
+    }
+
+    fn popup_hover(&mut self, x: f64, y: f64) {
+        let under = self.popup_item_at(x, y);
+        if let Some(popup) = &mut self.popup
+            && popup.hover != under
+        {
+            popup.hover = under;
+            self.dirty = true;
+        }
+    }
+
+    /// The item that can be chosen under a point.
+    fn popup_item_at(&self, x: f64, y: f64) -> Option<usize> {
+        let popup = self.popup.as_ref()?;
+        self.popup_rows
+            .iter()
+            .find(|(rect, _)| rect.contains(x, y))
+            .map(|&(_, index)| index)
+            .filter(|&index| popup.entries[index].chosen().is_some())
+    }
+
+    /// A click while the menu is open: an item is chosen; anywhere else closes the menu, and a
+    /// right-click there opens it again on what is under it.
+    fn popup_click(&mut self, button: Button, x: f64, y: f64, mods: Mods) {
+        let on_menu = self.popup_rows.iter().any(|(rect, _)| rect.contains(x, y));
+        if on_menu {
+            if button == Button::Left
+                && let Some(index) = self.popup_item_at(x, y)
+            {
+                self.choose(index);
+            }
+            return;
+        }
+        self.popup = None;
+        self.dirty = true;
+        match button {
+            Button::Right => self.open_popup(x, y),
+            Button::Left => self.button(button, x, y, mods),
+            _ => {}
+        }
+    }
+
+    /// ↑ and ↓ move through the items that can be chosen, Enter chooses, Esc closes.
+    fn popup_key(&mut self, keysym: u32) {
+        let Some(popup) = &mut self.popup else {
+            return;
+        };
+        let choosable: Vec<usize> = (0..popup.entries.len())
+            .filter(|&index| popup.entries[index].chosen().is_some())
+            .collect();
+        let at = popup
+            .hover
+            .and_then(|hover| choosable.iter().position(|&index| index == hover));
+        match keysym {
+            keys::DOWN | keys::KP_DOWN => {
+                let next = at.map_or(0, |at| (at + 1) % choosable.len().max(1));
+                popup.hover = choosable.get(next).copied();
+            }
+            keys::UP | keys::KP_UP => {
+                let last = choosable.len().saturating_sub(1);
+                let next = at.map_or(last, |at| at.checked_sub(1).unwrap_or(last));
+                popup.hover = choosable.get(next).copied();
+            }
+            keys::RETURN | keys::KP_ENTER => {
+                if let Some(index) = popup.hover {
+                    return self.choose(index);
+                }
+            }
+            keys::ESCAPE => self.popup = None,
+            _ => return,
+        }
+        self.dirty = true;
+    }
+
+    /// Close the menu and carry out its item `index`.
+    fn choose(&mut self, index: usize) {
+        let Some(popup) = self.popup.take() else {
+            return;
+        };
+        self.dirty = true;
+        let Some(action) = popup.entries.get(index).and_then(Entry::chosen) else {
+            return;
+        };
+        let failed = match action {
+            Action::Open => self
+                .viewer
+                .open_in_hand()
+                .and_then(|path| libdiskonaut::launch::open(&path).err()),
+            Action::Reveal => {
+                let paths = self.viewer.target_paths();
+                let paths: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
+                libdiskonaut::launch::reveal(&paths).err()
+            }
+            Action::CopyPath | Action::CopyFullPath => {
+                return self.copy_paths(action == Action::CopyFullPath);
+            }
+            Action::Rescan => {
+                self.viewer.rescan_selected();
+                None
+            }
+            Action::RescanAll => {
+                self.viewer.rescan_all();
+                None
+            }
+            Action::Trash | Action::Delete => return self.remove(action == Action::Delete),
+            // Not offered here (`PLATFORM`).
+            Action::QuickLook | Action::CopyPathname => None,
+        };
+        if let Some(error) = failed {
+            self.viewer.say(error);
+        }
+        self.changed();
+    }
+}
+
 /// What was read for the preview, decoded here on the previewer's thread: a picture becomes
 /// RGBA, shrunk to `PICTURE_SIDE`, so that the window only ever scales something small.
 fn decode(loaded: Loaded) -> (Preview, Option<Rgba>) {
     match loaded {
         Loaded::Info(info) => (Preview::Info(info), None),
         Loaded::Text(lines) => (Preview::Text(lines), None),
+        Loaded::Binary { info, dump } => (Preview::Hex { info, dump }, None),
         Loaded::Picture { bytes, caption } => match decode_picture(&bytes) {
             Ok(picture) => (Preview::Picture(caption), Some(picture)),
             Err(error) => (Preview::Info(format!("{caption}, {error}")), None),

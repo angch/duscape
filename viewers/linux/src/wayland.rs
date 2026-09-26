@@ -50,6 +50,9 @@ use crate::xkb::Xkb;
 /// Linux input codes for the mouse buttons.
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
+/// The thumb button, and the one some mice report for it instead.
+const BTN_SIDE: u32 = 0x113;
+const BTN_BACK: u32 = 0x116;
 /// A wheel notch, in the axis's surface units, when the compositor sends no discrete steps.
 const WHEEL_NOTCH: f64 = 10.0;
 
@@ -524,6 +527,7 @@ impl Dispatch<WlPointer, ()> for State {
                 let button = match button {
                     BTN_LEFT => Button::Left,
                     BTN_RIGHT => Button::Right,
+                    BTN_SIDE | BTN_BACK => Button::Back,
                     _ => Button::Other,
                 };
                 let (x, y) = state.pointer_at;

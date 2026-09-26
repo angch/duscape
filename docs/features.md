@@ -33,6 +33,7 @@ by copying it.
 | `scan` | The protocol between a walker and the model: `ScanOptions` (apparent size, one filesystem, depth, threads, hard-link tracking), `EntryMeta` and `DirEntries` (one directory's entries as read), `Outline` and `DirSummary` (the folder-only live view shown while a scan runs), and `Found` (what the second pass found). |
 | `delete` | `remove`: a file, or a folder and everything in it, from disk — a link itself, never its target. `refused`: NTFS's own metadata files, which a whole-volume scan shows and no viewer may delete. |
 | `preview` | `read`: what a file is from its first 64 KiB — empty, text (its first lines, made safe to draw), a PNG or JPEG, or binary, for which `describe_binary` gives its size and, on Linux, where its blocks are: `placement::describe` — extents, sparseness, shared blocks, and the physical disk (model, SSD or HDD) and offset, through a partition; the members of an LVM or md volume; a loop device's file. `describe_picture` from the header alone, `decode_picture` within limits (40,000 pixels a side, 1 GiB), and `fit`, which scales down and never up. `Reader`: the preview thread — the latest request only, a picture decoded once the selection has rested on it 100 ms, prepared by whatever the viewer passes it. Only regular files are read, and on macOS never one that is only in iCloud. |
+| `launch` | `open`: a file with its default app; `reveal`: entries in the file manager, selected — `open`/`open -R` on macOS, `ShellExecuteW` and `explorer.exe /select` on Windows, `xdg-open` and `org.freedesktop.FileManager1` elsewhere. Neither makes the window wait. |
 | `clipboard` | `copy`: text on the native clipboard — `pbcopy`, Win32, `wl-copy`/`xclip`/`xsel` — saying whether it worked, so a viewer with another way (a terminal's OSC 52) can fall back. |
 | `format` | Sizes (`DisplaySize`: B to TB), counts, truncating names to a width, quoting a path for the shell the user is in (`quote_path_for_shell`), and `copied_path`: a path as a viewer copies it — relative to the working directory or absolute, `./` before a leading `-`, quoted. |
 | `metafiles` | NTFS's metadata file names (`$MFT`, `$LogFile`, `$Extend`…), for the walker that sizes them and for `delete`, which refuses them. |
@@ -59,20 +60,20 @@ by copying it.
 | --- | --- | --- | --- | --- |
 | Scan with the native walker | yes | yes | yes | yes |
 | Live treemap while scanning | yes (`Outline`) | yes (`Outline`) | yes (`Outline`) | yes (`Outline`) |
-| Treemap | yes, in cells | yes, GDI, nested: a folder's tile holds its entries' tiles, and theirs in turn, down to the files wherever there is room; a file's size sits at its tile's bottom right; clicking a nested tile opens the tree to it, Ctrl+click marks its folder | yes, AppKit | yes, software-drawn; native Wayland or X11 |
-| List of entries beside it | yes | yes, as a tree: folders open in place (→ / ←, or the expander), their entries indented under them with each one's share of its parent — WizTree's tree view; the entry's details under it (`s` hides) | yes, with the entry's details under it (⌃⌘S hides) | yes, with the entry's details under it (`s` hides) |
+| Treemap | yes, in cells | yes, GDI, nested: a folder's tile holds its entries' tiles, and theirs in turn, down to the files wherever there is room; a file's size sits at its tile's bottom right; clicking a nested tile opens the tree to it, Ctrl+click marks its folder | yes, AppKit, nested as on Windows, the same labels | yes, software-drawn (native Wayland or X11), nested as on Windows, the same labels |
+| List of entries beside it | yes | yes, as a tree: folders open in place (→ / ←, or the expander), their entries indented under them with each one's share of its parent — WizTree's tree view; the entry's details under it (`s` hides) | yes, as the same tree (→ / ←, or the expander), with the entry's details under it (⌃⌘S hides) | yes, as the same tree (→ / ←, or the expander), with the entry's details under it (`s` hides) |
 | Move by arrow keys, select by click | yes | yes, and PgUp / PgDn / Home / End; hovering names the entry in the status bar | yes; hovering names an entry in the status bar | yes; hovering names an entry in the status bar |
-| Enter a folder, go up | Enter or double-click / Esc | Enter or double-click / Esc, Backspace, a breadcrumb or the mouse's back button | Return, ⌘↓ or double-click / Esc, ⌫, ⌘↑ or a breadcrumb | Enter or double-click / Esc, Backspace or a breadcrumb |
+| Enter a folder, go up | Enter or double-click / Esc | Enter or double-click / Esc, Backspace, a breadcrumb or the mouse's back button | Return, ⌘↓ or double-click / Esc, ⌫, ⌘↑, a breadcrumb or the mouse's back button | Enter or double-click / Esc, Backspace, a breadcrumb or the mouse's back button |
 | Delete | yes, one or every marked entry | yes (Del or `d`), one or every marked entry | to the Trash (⌘⌫) or immediately (⌥⌘⌫), every marked entry | to the Trash (`d`, Delete) or immediately (`D`, Shift+Delete), every marked entry |
 | Refuse NTFS metadata | yes | yes | yes | yes |
 | Run as administrator | from an elevated terminal | asks (the UAC prompt) when the folder is a whole volume, and starts itself again elevated; `--no-elevate` scans as it is | run as root | run as root |
 | Mark several entries | yes (Shift+arrows, Ctrl+click) | yes (Shift+arrows or Shift+click, Ctrl+click, Ctrl+A) | yes (⇧ arrows or ⇧-click, ⌘-click, ⌘A) | yes (Shift+arrows or Shift+click, Ctrl+click, Ctrl+A) |
-| Copy a path, shell-quoted | yes (right-click; double for absolute) | yes (Ctrl+C; Ctrl+Shift+C absolute; marking copies; the context menu) | yes (⌘C; ⌥⌘C plain, like Finder) | yes (Ctrl+C, right-click); the window holds the selection itself when no clipboard tool is installed |
-| Preview text and pictures | yes (kitty graphics, sixels or half blocks) | yes, under the list (a bitmap, full colour); a binary file as a hex dump, sixteen bytes a line with the characters beside, the font shrunk to fit | yes, in the side panel (any format macOS decodes), and Quick Look (Space) | yes, in the side panel (PNG, JPEG) |
-| Show in Finder, open with the default app | — | — | yes (⌥⌘R, ⌘↓ on a file) | — |
-| Context menu | — | yes (right-click: open, copy, rescan, delete) | yes (right-click or Control-click) | — |
+| Copy a path, shell-quoted | yes (right-click; double for absolute) | yes (Ctrl+C; Ctrl+Shift+C absolute; marking copies; the context menu) | yes (⌘C; ⌥⌘C plain, like Finder) | yes (Ctrl+C; Ctrl+Shift+C absolute; the context menu); the window holds the selection itself when no clipboard tool is installed |
+| Preview text and pictures | yes (kitty graphics, sixels or half blocks) | yes, under the list (a bitmap, full colour); a binary file as a hex dump, sixteen bytes a line with the characters beside, the font shrunk to fit | yes, in the side panel (any format macOS decodes), and Quick Look (Space); a binary file as a hex dump under its description, the font shrunk to fit | yes, in the side panel (PNG, JPEG); a binary file as a hex dump under its description (where its blocks are), the font shrunk to fit |
+| Show in the file manager, open with the default app | — | yes (the context menu: Explorer) | yes (⌥⌘R, ⌘↓ on a file, the context menu) | yes (the context menu: `FileManager1`, else the folder by `xdg-open`) |
+| Context menu | — | yes (right-click) | yes (right-click or Control-click) | yes (right-click; drawn by the window, ↑↓ Enter Esc) |
 | Scan a folder dropped on the window | — | — | yes | — |
-| Zoom | yes | yes (`+` / `-` / `0`, the wheel over the treemap) | yes (⌘+ / ⌘- / ⌘0) | yes (`+` / `-` / `0`) |
+| Zoom | yes | yes (`+` / `-` / `0`, the wheel over the treemap) | yes (⌘+ / ⌘- / ⌘0, a pinch or a mouse's wheel over the treemap) | yes (`+` / `-` / `0`, the wheel over the treemap) |
 | Disk usage / apparent size toggle | yes | yes (`a`) | yes (`a`, View menu) | yes (`a`) |
 | Rescan a folder / everything | yes (`r` / `R`) | yes (`r` / `R`, F5 / Shift+F5) | yes (⌘R / ⇧⌘R, or `r` / `R`) | yes (`r` / `R`, F5) |
 | Second pass for small shared files | yes (Linux) | not needed (Windows) | not needed (macOS) | not yet (the tree is the walk's) |
@@ -90,6 +91,15 @@ A gap in a GUI column is a missing viewer feature, not a missing library one: ev
 apart from drawing and input is already in the two libraries.
 The Windows, macOS and Linux columns agree wherever the shared state decides: the same keys move
 the same entry, and a change to `diskonaut-viewer` reaches all three.
+
+The context menu is the same in all three: `diskonaut_viewer::menu` decides its items, their
+order and words, and which can be chosen — Open (a folder goes in, a file opens with its default
+app; not with several marked), Show in the file manager (Quick Look beside it on macOS), Copy
+Path (relative to the folder the window was started in, when it was started in one) and Copy
+Full Path (Copy as Pathname beside them on macOS), Rescan Folder (or the enclosing folder, for a
+file) and Rescan Everything, then Move to Trash and Delete Immediately (Windows, with no Recycle
+Bin yet, has Delete only). The counts follow the marks: Copy 3 Paths, Delete 3 Items. Each window
+draws it, shows its own keys beside the items, and carries out the one chosen.
 
 The rules behind these are the terminal viewer's, kept once in `viewers/shared/src/state.rs` (no
 toolkit in it, tested on every platform) on the shared pieces `Rescans`, `copied_path`,

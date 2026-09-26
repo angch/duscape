@@ -17,7 +17,7 @@ use ::std::sync::atomic::{AtomicBool, Ordering};
 
 use dispatch2::DispatchQueue;
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject, Sel};
+use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
 use objc2::{AnyThread, DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSApplication, NSBitmapImageFileType,
@@ -36,9 +36,10 @@ use objc2_quick_look_ui::{
 
 use super::draw::{Frame, draw};
 use diskonaut_scan::rescan::{Outcome, Rescanner};
+use diskonaut_viewer::menu::{Action, Entry, Platform};
 use diskonaut_viewer::preview::{Loaded, Previewer};
 use diskonaut_viewer::scan;
-use diskonaut_viewer::state::{Direction, Jump, Mods, Preview, ROW, Rect, Viewer, drop_later};
+use diskonaut_viewer::state::{Direction, Hit, Jump, Mods, Preview, ROW, Rect, Viewer, drop_later};
 use libdiskonaut::format::quote_path_for_shell;
 use libdiskonaut::model::SizeKind;
 use libdiskonaut::{DirSummary, DisplayCount, DisplaySize, FileToDelete, FileTree, ScanOptions};
@@ -59,6 +60,11 @@ pub struct Ivars {
     options: Cell<ScanOptions>,
     /// Scrolling not yet a whole row.
     scrolled: Cell<f64>,
+    /// A pinch not yet a whole zoom step.
+    magnified: Cell<f64>,
+    /// Outline batches taken into the tree and not yet laid out: one relayout is queued behind
+    /// whatever batches are already waiting on the main queue, and does for them all.
+    outline_behind: Cell<bool>,
     /// The context menu last opened, for a script to choose from or close (`script`): while it
     /// is open, it reads events itself.
     context_menu: RefCell<Option<Retained<NSMenu>>>,
@@ -149,12 +155,23 @@ define_class!(
             };
             let double = event.clickCount() == 2 && mods == Mods::default();
             let clicked = self.update(|viewer| {
-                if matches!(viewer.hit(x, y), diskonaut_viewer::state::Hit::SmallFiles) {
-                    viewer.say("Entries too small for a tile of their own: they are all in the list");
+                match viewer.hit(x, y) {
+                    // A folder row's expander opens it in place; the second click of a double
+                    // is not a second toggle.
+                    Hit::Expander(index) => {
+                        if event.clickCount() == 1 {
+                            viewer.toggle_row(index);
+                        }
+                        return None;
+                    }
+                    Hit::SmallFiles => viewer
+                        .say("Entries too small for a tile of their own: they are all in the list"),
+                    _ => {}
                 }
-                let name = viewer.click(x, y, mods)?;
-                // A double click opens a folder; a file is shown in Quick Look.
-                Some(double && !viewer.enter(&name))
+                viewer.click(x, y, mods)?;
+                // A double click opens a folder — the row in hand, nested or not; a file is
+                // shown in Quick Look.
+                Some(double && !viewer.enter_selected())
             });
             if clicked.flatten() == Some(true) {
                 self.toggle_quick_look();
@@ -166,8 +183,16 @@ define_class!(
         #[unsafe(method_id(menuForEvent:))]
         fn menu_for_event(&self, event: &NSEvent) -> Option<Retained<NSMenu>> {
             let (x, y) = self.point(event);
-            let on_entry = self.update(|viewer| viewer.context_click(x, y)).unwrap_or(false);
-            let menu = on_entry.then(|| context_menu(self.mtm()));
+            let entries = self
+                .update(|viewer| {
+                    if viewer.context_click(x, y) {
+                        viewer.context_menu(&PLATFORM)
+                    } else {
+                        Vec::new()
+                    }
+                })
+                .unwrap_or_default();
+            let menu = (!entries.is_empty()).then(|| context_menu(self.mtm(), &entries));
             self.ivars().context_menu.replace(menu.clone());
             menu
         }
@@ -182,7 +207,8 @@ define_class!(
 
         #[unsafe(method(mouseExited:))]
         fn mouse_exited(&self, _event: &NSEvent) {
-            if self.with(|viewer| viewer.hover.take().is_some()) == Some(true) {
+            // Nothing is under a pointer that has gone: the row, the tile and the nested tile.
+            if self.with(|viewer| viewer.hover_at(-1.0, -1.0)) == Some(true) {
                 self.setNeedsDisplay(true);
             }
         }
@@ -190,9 +216,26 @@ define_class!(
         #[unsafe(method(scrollWheel:))]
         fn scroll_wheel(&self, event: &NSEvent) {
             let (x, y) = self.point(event);
-            let over_list = self
-                .with(|viewer| viewer.layout.list.is_some_and(|list| list.contains(x, y)))
-                .unwrap_or(false);
+            let (over_list, over_treemap) = self
+                .with(|viewer| {
+                    let layout = viewer.layout;
+                    (
+                        layout.list.is_some_and(|list| list.contains(x, y)),
+                        layout.treemap.contains(x, y),
+                    )
+                })
+                .unwrap_or_default();
+            // A mouse's wheel over the treemap zooms; a trackpad's two fingers do not, as
+            // they scroll everywhere else — a pinch zooms instead (`magnifyWithEvent:`).
+            if over_treemap && !event.hasPreciseScrollingDeltas() {
+                let delta = event.scrollingDeltaY();
+                if delta > 0.0 {
+                    self.update(Viewer::zoom_in);
+                } else if delta < 0.0 {
+                    self.update(Viewer::zoom_out);
+                }
+                return;
+            }
             if !over_list {
                 return;
             }
@@ -208,6 +251,33 @@ define_class!(
             if rows != 0.0 {
                 self.with(|viewer| viewer.scroll_list(rows as isize));
                 self.setNeedsDisplay(true);
+            }
+        }
+
+        #[unsafe(method(magnifyWithEvent:))]
+        fn magnify_with_event(&self, event: &NSEvent) {
+            let (x, y) = self.point(event);
+            if self.with(|viewer| viewer.layout.treemap.contains(x, y)) != Some(true) {
+                return;
+            }
+            // A step for each quarter of magnification, however the pinch arrives.
+            let pinched = self.ivars().magnified.get() + event.magnification() * 4.0;
+            let steps = pinched.trunc();
+            self.ivars().magnified.set(pinched - steps);
+            for _ in 0..(steps.abs() as usize) {
+                if steps > 0.0 {
+                    self.update(Viewer::zoom_in);
+                } else {
+                    self.update(Viewer::zoom_out);
+                }
+            }
+        }
+
+        /// The mouse's back (thumb) button goes up a folder.
+        #[unsafe(method(otherMouseDown:))]
+        fn other_mouse_down(&self, event: &NSEvent) {
+            if event.buttonNumber() == 3 {
+                self.update(Viewer::go_up);
             }
         }
 
@@ -230,12 +300,7 @@ define_class!(
 
         #[unsafe(method(openSelected:))]
         fn open_selected(&self, _sender: Option<&AnyObject>) {
-            let file = self.update(|viewer| {
-                if viewer.enter_selected() {
-                    return None;
-                }
-                viewer.selected.clone().map(|name| viewer.path_of(&name))
-            });
+            let file = self.update(Viewer::open_in_hand);
             if let Some(url) = file.flatten().and_then(NSURL::from_file_path) {
                 NSWorkspace::sharedWorkspace().openURL(&url);
             }
@@ -280,6 +345,21 @@ define_class!(
         #[unsafe(method(copyAsPathname:))]
         fn copy_as_pathname(&self, _sender: Option<&AnyObject>) {
             self.copy_paths(false);
+        }
+
+        /// The context menu's Copy Path: relative to the folder the app was started in, where
+        /// it was started from a terminal, as the other viewers copy.
+        #[unsafe(method(copyRelativePath:))]
+        fn copy_relative_path(&self, _sender: Option<&AnyObject>) {
+            let Some((text, label)) = self.with(|viewer| viewer.copied_paths(false)).flatten() else {
+                return;
+            };
+            let message = if put_on_pasteboard(&text) {
+                format!("{label} {text}")
+            } else {
+                "Could not copy to the clipboard".to_string()
+            };
+            self.update(|viewer| viewer.say(message));
         }
 
         #[unsafe(method(selectAll:))]
@@ -452,6 +532,8 @@ impl DiskView {
             scans: Cell::new(0),
             options: Cell::new(options),
             scrolled: Cell::new(0.0),
+            magnified: Cell::new(0.0),
+            outline_behind: Cell::new(false),
             context_menu: RefCell::new(None),
         });
         // SAFETY: the superclass's designated initialiser, on the instance just allocated.
@@ -624,6 +706,7 @@ impl DiskView {
         }
         let mut viewer = Viewer::new(&root, kind, scan_id);
         viewer.sidebar = sidebar;
+        viewer.set_tree_view(true);
         viewer.enable_rescans(Rescanner::new(
             options,
             Arc::clone(&running),
@@ -649,12 +732,15 @@ impl DiskView {
         let current = self.with(|viewer| {
             let current = viewer.scan_id == scan_id;
             if current {
-                viewer.add_summaries(summaries);
+                viewer.absorb_summaries(summaries);
             }
             current
         });
-        if current == Some(true) {
-            self.changed();
+        if current == Some(true) && !self.ivars().outline_behind.replace(true) {
+            on_main(|view| {
+                view.ivars().outline_behind.set(false);
+                view.update(Viewer::catch_up);
+            });
         }
     }
 
@@ -717,6 +803,7 @@ impl DiskView {
         let (preview, image) = match loaded {
             Loaded::Info(info) => (Preview::Info(info), None),
             Loaded::Text(lines) => (Preview::Text(lines), None),
+            Loaded::Binary { info, dump } => (Preview::Hex { info, dump }, None),
             Loaded::Picture { bytes, caption } => {
                 let data = NSData::from_vec(bytes);
                 match NSImage::initWithData(NSImage::alloc(), &data) {
@@ -797,6 +884,22 @@ impl DiskView {
             .iter()
             .map(|entry| entry.name.clone())
             .collect();
+        // The tree's rows, and the one in hand, each as its path from the folder shown.
+        let row_path = |path: &[::std::ffi::OsString]| {
+            path.iter()
+                .map(|name| name.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join("/")
+        };
+        let rows: Vec<String> = viewer
+            .rows()
+            .iter()
+            .map(|row| row_path(&row.path))
+            .collect();
+        let cursor = viewer
+            .cursor_entry()
+            .map(|row| row_path(&row.path))
+            .unwrap_or_default();
         let (status, totals) = viewer.status();
         [
             ("title", title),
@@ -804,6 +907,8 @@ impl DiskView {
             ("path", lossy(&viewer.tree.current_folder_names)),
             ("listing", lossy(&listing)),
             ("selected", lossy(viewer.selected.as_slice())),
+            ("rows", rows.join(" | ")),
+            ("cursor", cursor),
             ("marked", lossy(&viewer.marked)),
             ("focus", format!("{:?}", viewer.focus)),
             ("zoom", viewer.board.zoom_level.to_string()),
@@ -855,12 +960,7 @@ impl DiskView {
                 .collect::<Vec<_>>()
                 .join("\n")
         };
-        let pasteboard = NSPasteboard::generalPasteboard();
-        pasteboard.clearContents();
-        // SAFETY: reading AppKit's pasteboard type constant.
-        let copied = pasteboard.setString_forType(&NSString::from_str(&text), unsafe {
-            NSPasteboardTypeString
-        });
+        let copied = put_on_pasteboard(&text);
         let message = match (copied, paths.len()) {
             (false, _) => "Could not copy to the clipboard".to_string(),
             (true, 1) => format!("Copied {text}"),
@@ -1139,32 +1239,58 @@ fn dropped_folder(sender: &ProtocolObject<dyn NSDraggingInfo>) -> Option<PathBuf
 }
 
 /// The menu a right-click (or Control-click) on an entry opens.
-fn context_menu(mtm: MainThreadMarker) -> Retained<NSMenu> {
+/// What the context menu offers here beyond every viewer's items (`diskonaut_viewer::menu`).
+const PLATFORM: Platform = Platform {
+    reveal: "Show in Finder",
+    quick_look: true,
+    pathname: true,
+    trash: true,
+};
+
+/// The context menu, as `Viewer::context_menu` has it: each item sent along the responder chain
+/// to the command the menu bar sends, enabled as the shared menu says.
+fn context_menu(mtm: MainThreadMarker, entries: &[Entry]) -> Retained<NSMenu> {
     let menu = NSMenu::new(mtm);
-    let items: [(&str, Sel); 9] = [
-        ("Open", sel!(openSelected:)),
-        ("Quick Look", sel!(quickLook:)),
-        ("Show in Finder", sel!(showInFinder:)),
-        ("", sel!(init)),
-        ("Copy Path", sel!(copy:)),
-        ("Copy as Pathname", sel!(copyAsPathname:)),
-        ("Rescan", sel!(rescanFolder:)),
-        ("", sel!(init)),
-        ("Move to Trash", sel!(moveToTrash:)),
-    ];
-    for (title, action) in items {
-        if title.is_empty() {
+    menu.setAutoenablesItems(false);
+    for entry in entries {
+        let Entry::Item {
+            action,
+            label,
+            enabled,
+        } = entry
+        else {
             menu.addItem(&NSMenuItem::separatorItem(mtm));
-        } else {
-            // SAFETY: each action is a method of `DiskView`, found along the responder chain.
-            unsafe {
-                menu.addItemWithTitle_action_keyEquivalent(
-                    &NSString::from_str(title),
-                    Some(action),
-                    &NSString::from_str(""),
-                );
-            }
-        }
+            continue;
+        };
+        let selector = match action {
+            Action::Open => sel!(openSelected:),
+            Action::QuickLook => sel!(quickLook:),
+            Action::Reveal => sel!(showInFinder:),
+            Action::CopyPath => sel!(copyRelativePath:),
+            Action::CopyFullPath => sel!(copy:),
+            Action::CopyPathname => sel!(copyAsPathname:),
+            Action::Rescan => sel!(rescanFolder:),
+            Action::RescanAll => sel!(rescanEverything:),
+            Action::Trash => sel!(moveToTrash:),
+            Action::Delete => sel!(deleteImmediately:),
+        };
+        // SAFETY: each action is a method of `DiskView`, found along the responder chain.
+        let item = unsafe {
+            menu.addItemWithTitle_action_keyEquivalent(
+                &NSString::from_str(label),
+                Some(selector),
+                &NSString::from_str(""),
+            )
+        };
+        item.setEnabled(*enabled);
     }
     menu
+}
+
+/// `text` on the general pasteboard, as a string. Whether it took.
+fn put_on_pasteboard(text: &str) -> bool {
+    let pasteboard = NSPasteboard::generalPasteboard();
+    pasteboard.clearContents();
+    // SAFETY: reading AppKit's pasteboard type constant.
+    pasteboard.setString_forType(&NSString::from_str(text), unsafe { NSPasteboardTypeString })
 }

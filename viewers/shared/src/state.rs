@@ -231,9 +231,13 @@ pub enum Preview {
     /// A line instead of the contents: empty, binary, unreadable.
     Info(String),
     Text(Vec<String>),
-    /// A binary file's first bytes as a hex dump (`libdiskonaut::preview::hex_dump`), for a
-    /// viewer that shows one: sixteen bytes a line, the characters beside them.
-    Hex(Vec<String>),
+    /// A binary file: what can be said about it (`binary file · 1.7M`, then where its blocks
+    /// are) and its first bytes as a hex dump (`libdiskonaut::preview::hex_dump`) — sixteen
+    /// bytes a line, the characters beside them.
+    Hex {
+        info: Vec<String>,
+        dump: Vec<String>,
+    },
     /// A picture; the image itself is the viewer's, which decodes it. This is its caption.
     Picture(String),
 }
@@ -332,9 +336,12 @@ impl Viewer {
             mark_run: None,
             clipboard: None,
             // Resolved like a scan root is, so that `..` counts real directories on both sides.
+            // Not the filesystem's root, which is where a window started from the desktop (the
+            // Finder, the Dock) finds itself: paths relative to it are no use to paste.
             working_dir: ::std::env::current_dir()
                 .and_then(|dir| dir.canonicalize())
-                .ok(),
+                .ok()
+                .filter(|dir| dir.parent().is_some()),
             list_top: 0,
             hover: None,
             tree_view: false,
@@ -879,13 +886,32 @@ impl Viewer {
     /// separated by spaces, ready to paste after a command. Says what was copied. `false` if
     /// there is no clipboard, or nothing to copy.
     pub fn copy_paths(&mut self, absolute: bool) -> bool {
-        let names = self.target_names();
-        let paths: Vec<(_, String)> = names
+        let Some((text, label)) = self.copied_paths(absolute) else {
+            return false;
+        };
+        self.copy_text(&text, &label)
+    }
+
+    /// What [`Viewer::copy_paths`] would copy, and the words to say it with, for a viewer that
+    /// puts it on the clipboard itself: the marked entries' paths, or the row in hand's —
+    /// nested in the tree or not — quoted for the shell, relative to the working directory or
+    /// `absolute`. `None` with nothing to copy.
+    #[must_use]
+    pub fn copied_paths(&self, absolute: bool) -> Option<(String, String)> {
+        let full: Vec<PathBuf> = match self.cursor_entry() {
+            Some(row) if self.marked.is_empty() => vec![self.row_path(&row.path)],
+            _ => self
+                .target_names()
+                .iter()
+                .map(|name| self.path_of(name))
+                .collect(),
+        };
+        let paths: Vec<(_, String)> = full
             .iter()
-            .map(|name| copied_path(&self.path_of(name), self.working_dir.as_deref(), absolute))
+            .map(|path| copied_path(path, self.working_dir.as_deref(), absolute))
             .collect();
         let label = match paths.as_slice() {
-            [] => return false,
+            [] => return None,
             [(kind, _)] if self.marked.is_empty() => format!("Copied {} path:", kind.name()),
             [_] => "Copied 1 path:".to_string(),
             many => format!("Copied {} paths:", DisplayCount(many.len() as u64)),
@@ -895,7 +921,7 @@ impl Viewer {
             .map(|(_, path)| path.as_str())
             .collect::<Vec<_>>()
             .join(" ");
-        self.copy_text(&text, &label)
+        Some((text, label))
     }
 
     /// The marks changed: copy their paths, if there is a clipboard to copy to.

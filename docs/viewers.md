@@ -16,7 +16,10 @@ cargo run -p diskonaut-mac --release -- ~   # or run with no argument, or drop a
 - **Mac conventions:** ⌘⌫ moves to the Trash (⌥⌘⌫ deletes immediately), Space is Quick Look,
   ⌘↑/⌘↓ go up and in, ⌥⌘R shows in Finder, ⌘C copies the path, right-click for a context menu.
 - **Marks:** ⇧-arrows, ⇧-click and ⌘-click mark several entries; Trash, copy and Finder act on all.
-- **Also:** breadcrumbs, zoom (⌘+/⌘-/⌘0), apparent sizes (`a`), rescans (⌘R/⇧⌘R), light and dark mode.
+- **The list is a tree and the treemap nested**, as on Windows: → opens a folder in place, ←
+  closes it, or click its expander; a folder's tile holds its entries' tiles down to the files.
+- **Also:** breadcrumbs, zoom (⌘+/⌘-/⌘0, a pinch or a mouse's wheel over the treemap), apparent
+  sizes (`a`), rescans (⌘R/⇧⌘R), a binary file previewed as a hex dump, light and dark mode.
 
 ## Linux GUI (experimental)
 
@@ -34,13 +37,17 @@ cargo run -p diskonaut-linux --release -- ~   # or run with no argument for the 
 ```
 
 - **The same window as the Mac's:** breadcrumbs, the list beside the treemap with the entry in hand
-  previewed under it (text, PNG and JPEG), live while the scan runs; a status bar.
+  previewed under it (text, PNG and JPEG, a binary file as a hex dump under where its blocks
+  are), live while the scan runs; a status bar. The list is a tree (→ opens a folder in place,
+  ← closes it, or its expander) and the treemap is nested, as on Windows.
 - **Keys:** arrows, Enter/Esc, Tab, Page Up/Down, Home/End; `d` or Delete moves to the Trash
   (freedesktop, through `gio trash` when it is installed), `D` or Shift+Delete deletes at once,
   each after asking; `a` apparent sizes, `+`/`-`/`0` zoom, `r`/`R` rescan, `s` hides the list,
-  Ctrl+C copies the path, Ctrl+A marks everything, `q` quits.
-- **Mouse:** click, double-click to open, Ctrl+click and Shift+click to mark, right-click to copy
-  the path, wheel over the list, breadcrumbs to go up.
+  Ctrl+C copies the path (Ctrl+Shift+C the full path), Ctrl+A marks everything, `q` quits.
+- **Mouse:** click, double-click to open, Ctrl+click and Shift+click to mark, right-click for the
+  context menu (the same as the Mac's and Windows's: open, show in the file manager, copy, rescan,
+  trash or delete), the wheel scrolls the list and zooms the treemap, breadcrumbs or the back button to
+  go up.
 - **Wayland or X11:** Wayland when `WAYLAND_DISPLAY` is set, else X11; `DISKONAUT_BACKEND=x11`
   or `wayland` picks. On Wayland the compositor is asked for a title bar (`xdg-decoration`); where
   it draws none (GNOME) the window draws its own, with move, maximise and close.

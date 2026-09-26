@@ -928,3 +928,115 @@ fn a_tile_inside_a_folders_tile_is_pointed_at_and_reveals_its_row() {
     assert!(viewer.nested().is_empty());
     assert_eq!(viewer.hit(x, y), Hit::Tile(OsString::from("big")));
 }
+
+// ---------------------------------------------------------------- the context menu
+
+const DESKTOP: crate::menu::Platform = crate::menu::Platform {
+    reveal: "Show in File Manager",
+    quick_look: false,
+    pathname: false,
+    trash: true,
+};
+
+fn menu_labels(menu: &[crate::menu::Entry]) -> Vec<String> {
+    use crate::menu::Entry;
+    menu.iter()
+        .map(|entry| match entry {
+            Entry::Item { label, enabled, .. } => {
+                format!("{label}{}", if *enabled { "" } else { " (off)" })
+            }
+            Entry::Separator => "-".to_string(),
+        })
+        .collect()
+}
+
+#[test]
+fn the_context_menu_is_about_the_folder_in_hand() {
+    let viewer = viewer();
+    assert_eq!(selected(&viewer).as_deref(), Some("big"));
+    assert_eq!(
+        menu_labels(&viewer.context_menu(&DESKTOP)),
+        [
+            "Open",
+            "Show in File Manager",
+            "-",
+            "Copy Path",
+            "Copy Full Path",
+            "-",
+            // No rescanner in this viewer.
+            "Rescan Folder (off)",
+            "Rescan Everything (off)",
+            "-",
+            "Move to Trash",
+            "Delete Immediately…",
+        ]
+    );
+}
+
+#[test]
+fn the_context_menu_counts_the_marks_and_opens_none_of_them() {
+    use crate::menu::{Action, Platform};
+    let mut viewer = viewer();
+    viewer.mark_all();
+    let menu = viewer.context_menu(&Platform {
+        trash: false,
+        quick_look: true,
+        pathname: true,
+        ..DESKTOP
+    });
+    assert_eq!(
+        menu_labels(&menu),
+        [
+            "Open (off)",
+            "Quick Look",
+            "Show in File Manager",
+            "-",
+            "Copy 4 Paths",
+            "Copy 4 Full Paths",
+            "Copy as Pathname",
+            "-",
+            "Rescan Folder (off)",
+            "Rescan Everything (off)",
+            "-",
+            "Delete 4 Items…",
+        ]
+    );
+    assert_eq!(menu[0].chosen(), None);
+    assert_eq!(menu[1].chosen(), Some(Action::QuickLook));
+    assert_eq!(menu[3].chosen(), None);
+}
+
+#[test]
+fn the_context_menu_rescans_a_files_folder_and_waits_for_the_scan() {
+    let mut viewer = viewer();
+    viewer.jump(Jump::End, false);
+    let menu = menu_labels(&viewer.context_menu(&DESKTOP));
+    assert!(
+        menu.contains(&"Rescan Enclosing Folder (off)".to_string()),
+        "{menu:?}"
+    );
+    viewer.scanning = true;
+    let menu = menu_labels(&viewer.context_menu(&DESKTOP));
+    assert!(
+        menu.contains(&"Move to Trash (off)".to_string()),
+        "{menu:?}"
+    );
+}
+
+#[test]
+fn copying_a_nested_row_copies_its_own_path() {
+    let (mut viewer, copied) = viewer_on(&on_disk("copy_nested"));
+    viewer.set_tree_view(true);
+    // `big` in hand: → opens it, → again goes to its entry.
+    viewer.arrow(Direction::Right, false);
+    viewer.arrow(Direction::Right, false);
+    assert_eq!(
+        viewer.cursor_entry().map(|row| row.path.clone()),
+        Some(vec![OsString::from("big"), OsString::from("inside")])
+    );
+    assert!(viewer.copy_paths(false));
+    assert_eq!(
+        last_copied(&copied).as_deref(),
+        Some(quoted(&Path::new("big").join("inside").to_string_lossy()).as_str())
+    );
+}

@@ -616,7 +616,7 @@ fn draw_preview(canvas: &Canvas, window: &Window, info: Rect) {
         words.push_str(&format!(" · {}", DisplaySize(entry.size as f64)));
         match &viewer.preview {
             Preview::Picture(description) => words.push_str(&format!(" · {description}")),
-            Preview::Hex(_) => words.push_str(" · binary"),
+            Preview::Hex { .. } => words.push_str(" · binary"),
             _ => {}
         }
         words
@@ -630,7 +630,7 @@ fn draw_preview(canvas: &Canvas, window: &Window, info: Rect) {
         Preview::Loading => vec!["…"],
         Preview::Info(info) => vec![info.as_str()],
         Preview::Text(text) => text.iter().map(String::as_str).collect(),
-        Preview::Hex(dump) => {
+        Preview::Hex { dump, .. } => {
             draw_hex(canvas, fonts, body, dump);
             Vec::new()
         }

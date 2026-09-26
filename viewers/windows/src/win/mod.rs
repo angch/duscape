@@ -23,11 +23,11 @@ use ::std::sync::atomic::{AtomicBool, Ordering};
 
 use clap::Parser;
 use diskonaut_scan::rescan::{Outcome, Rescanner};
+use diskonaut_viewer::menu::{Action, Entry, Platform};
 use diskonaut_viewer::scan;
 use diskonaut_viewer::state::{Direction, Hit, Jump, Mods, Preview, ROW, Rect, Viewer};
 use libdiskonaut::model::SizeKind;
 use libdiskonaut::preview::{Reader, Ready};
-use libdiskonaut::tiles::FileType;
 use libdiskonaut::{DirSummary, FileTree, ScanOptions};
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
@@ -206,7 +206,7 @@ impl Window {
                     Ready::Info(info) => (Preview::Info(info), None),
                     Ready::Text(lines) => (Preview::Text(lines), None),
                     // A binary file is shown as its first bytes, not described.
-                    Ready::Binary { dump, .. } => (Preview::Hex(dump), None),
+                    Ready::Binary { info, dump } => (Preview::Hex { info, dump }, None),
                     Ready::Picture(picture) => {
                         (Preview::Picture(picture.description.clone()), Some(picture))
                     }
@@ -325,61 +325,37 @@ impl Window {
         if self.viewer.context_click(px, py) {
             self.changed(hwnd);
         }
-        let marked = self.viewer.marked.len();
-        // The row in hand — a nested one, after the context click revealed it — is what the
-        // menu's actions act on, so it is what the menu is about.
-        let entry = self
-            .viewer
-            .cursor_entry()
-            .map(|row| row.entry.clone())
-            .or_else(|| self.viewer.selected_entry().cloned());
-        if entry.is_none() && marked == 0 {
+        let entries = self.viewer.context_menu(&PLATFORM);
+        if entries.is_empty() {
             return;
         }
-        const OPEN: usize = 1;
-        const COPY: usize = 2;
-        const COPY_FULL: usize = 3;
-        const RESCAN: usize = 4;
-        const RESCAN_ALL: usize = 5;
-        const DELETE: usize = 6;
-        let is_folder = entry
-            .as_ref()
-            .is_some_and(|e| e.file_type == FileType::Folder);
-        let loaded = !self.viewer.scanning;
-        let (copy, copy_full, delete) = if marked > 1 {
-            (
-                format!("Copy {marked} paths\tCtrl+C"),
-                format!("Copy {marked} full paths\tCtrl+Shift+C"),
-                format!("Delete {marked} entries…\tDel"),
-            )
-        } else {
-            (
-                "Copy path\tCtrl+C".to_string(),
-                "Copy full path\tCtrl+Shift+C".to_string(),
-                "Delete…\tDel".to_string(),
-            )
-        };
-        let enabled = |on: bool| if on { MF_STRING } else { MF_STRING | MF_GRAYED };
         // SAFETY: the menu is created, shown and destroyed here; every string outlives its call.
         let chosen = unsafe {
             let menu = CreatePopupMenu();
-            let item = |flags, id: usize, text: &str| {
-                let text = wide(text);
-                AppendMenuW(menu, flags, id, text.as_ptr());
-            };
-            item(enabled(is_folder && marked <= 1), OPEN, "Open\tEnter");
-            item(MF_STRING, COPY, &copy);
-            item(MF_STRING, COPY_FULL, &copy_full);
-            AppendMenuW(menu, MF_SEPARATOR, 0, null());
-            let rescan = if is_folder {
-                "Rescan folder\tr"
-            } else {
-                "Rescan this folder\tr"
-            };
-            item(enabled(loaded), RESCAN, rescan);
-            item(enabled(loaded), RESCAN_ALL, "Rescan everything\tR");
-            AppendMenuW(menu, MF_SEPARATOR, 0, null());
-            item(enabled(loaded), DELETE, &delete);
+            for (index, entry) in entries.iter().enumerate() {
+                match entry {
+                    Entry::Separator => {
+                        AppendMenuW(menu, MF_SEPARATOR, 0, null());
+                    }
+                    Entry::Item {
+                        action,
+                        label,
+                        enabled,
+                    } => {
+                        let text = match key_hint(*action) {
+                            Some(hint) => wide(&format!("{label}\t{hint}")),
+                            None => wide(label),
+                        };
+                        let flags = if *enabled {
+                            MF_STRING
+                        } else {
+                            MF_STRING | MF_GRAYED
+                        };
+                        // Ids from 1: 0 is what a dismissed menu returns.
+                        AppendMenuW(menu, flags, index + 1, text.as_ptr());
+                    }
+                }
+            }
             let mut point = POINT { x, y };
             ClientToScreen(hwnd, &mut point);
             let chosen = TrackPopupMenu(
@@ -394,24 +370,53 @@ impl Window {
             DestroyMenu(menu);
             usize::try_from(chosen).unwrap_or(0)
         };
-        match chosen {
-            OPEN => {
-                self.viewer.enter_selected();
-            }
-            COPY => {
-                self.viewer.copy_paths(false);
-            }
-            COPY_FULL => {
-                self.viewer.copy_paths(true);
-            }
-            RESCAN => self.viewer.rescan_selected(),
-            RESCAN_ALL => self.viewer.rescan_all(),
-            DELETE => self.delete(hwnd),
+        let action = chosen
+            .checked_sub(1)
+            .and_then(|index| entries.get(index))
+            .and_then(Entry::chosen);
+        match action {
+            Some(action) => self.act(hwnd, action),
             // Dismissed: the entry it moved to is still in hand, and any paint the menu's loop
             // deflected is owed.
-            _ => return invalidate(hwnd),
+            None => return invalidate(hwnd),
         }
         self.changed(hwnd);
+    }
+
+    /// Carry out a context menu's choice.
+    fn act(&mut self, hwnd: HWND, action: Action) {
+        let failed = match action {
+            Action::Open => self
+                .viewer
+                .open_in_hand()
+                .and_then(|path| libdiskonaut::launch::open(&path).err()),
+            Action::Reveal => {
+                let paths = self.viewer.target_paths();
+                let paths: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
+                libdiskonaut::launch::reveal(&paths).err()
+            }
+            Action::CopyPath | Action::CopyFullPath => {
+                self.viewer.copy_paths(action == Action::CopyFullPath);
+                None
+            }
+            Action::Rescan => {
+                self.viewer.rescan_selected();
+                None
+            }
+            Action::RescanAll => {
+                self.viewer.rescan_all();
+                None
+            }
+            Action::Delete | Action::Trash => {
+                self.delete(hwnd);
+                None
+            }
+            // Not offered here (`PLATFORM`).
+            Action::QuickLook | Action::CopyPathname => None,
+        };
+        if let Some(error) = failed {
+            self.viewer.say(error);
+        }
     }
 
     fn on_wheel(&mut self, hwnd: HWND, delta: i16, x: i32, y: i32) {
@@ -490,6 +495,28 @@ impl Window {
             },
         );
     }
+}
+
+/// What the context menu offers here beyond every viewer's items: Explorer, and deleting for
+/// good (there is no Recycle Bin yet).
+const PLATFORM: Platform = Platform {
+    reveal: "Show in Explorer",
+    quick_look: false,
+    pathname: false,
+    trash: false,
+};
+
+/// The key that does what a menu item does, shown beside it.
+fn key_hint(action: Action) -> Option<&'static str> {
+    Some(match action {
+        Action::Open => "Enter",
+        Action::CopyPath => "Ctrl+C",
+        Action::CopyFullPath => "Ctrl+Shift+C",
+        Action::Rescan => "r",
+        Action::RescanAll => "R",
+        Action::Delete => "Del",
+        _ => return None,
+    })
 }
 
 fn key_down(key: u16) -> bool {

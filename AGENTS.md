@@ -116,15 +116,22 @@ Six kinds of thread communicate via `mpsc` channels (bounded, except the preview
 - `preview.rs` — `read` (sniff the first 64 KiB: text lines, info, or a picture), `describe_picture`,
   `decode_picture` (bounded). Scaling and encoding for display are the viewer's. A binary file
   is `Contents::Binary`: `describe_binary` (its size, then `placement::describe`) and `hex_dump`
-  (`HEX_LINES` of sixteen bytes, a dash after the eighth, the characters beside); the terminal,
-  macOS and Linux viewers show the description, Windows the dump (`Preview::Hex`, drawn with
-  the monospace font shrunk until a line fits, `Fonts::fitting`)
+  (`HEX_LINES` of sixteen bytes, a dash after the eighth, the characters beside); the terminal
+  shows the description, the desktop viewers the dump (`Preview::Hex`, drawn with the monospace
+  font shrunk until a line fits — `Fonts::fitting` on Windows, `draw::hex` on macOS and Linux,
+  which put the description above it)
 - `placement.rs` — where a file's blocks are, for the preview of a file with nothing else to
   show (Linux): FIEMAP for its extents, sparseness and shared blocks, then sysfs for the disk —
   through a partition to the disk's model and SSD/HDD and the offset into it; the members of an
   LVM or md volume (the table that says which is root's); a loop device's file. The companion
   tool `whereisthis` follows every layer; this is the few lines that fit under a treemap
 - `clipboard.rs` — native clipboard (`pbcopy`, Win32, `wl-copy`/`xclip`/`xsel`), `base64`
+- `launch.rs` — `open` (the default app) and `reveal` (the file manager, selected): `open`/
+  `open -R` on macOS; `ShellExecuteW` and `explorer.exe /select,"…"` (a raw argument: Explorer
+  takes a comma in a plain one for a switch) on Windows; `xdg-open` and
+  `org.freedesktop.FileManager1` over `dbus-send` elsewhere, the bus call on a thread of its own
+  since a file manager being started to answer can take seconds. Nothing waits on the window's
+  thread, and every child is reaped by a thread that waits for it
 - `format/display_size.rs` — byte → human-readable (B/KB/MB/GB/TB)
 - `os/unix.rs`, `os/windows.rs` — `is_user_admin()`, `size_on_disk_fast()`, `volume_id()`, `link_count()`
 
@@ -220,11 +227,20 @@ shared `Viewer`, not in `win/`:
   the folders above it) or deleted. With it the treemap is nested (`nested`, rebuilt with the
   board): a tile inside a folder's (`Hit::Nested`) is a target like any other — a click opens
   the folders above it and puts its row in hand, Ctrl and Shift mark its top-level folder —
-  and hovering one names it (`hover_nested`, cleared by every relayout since the tiles moved). Off by default (`set_tree_view`): a viewer that
-  does not draw depth sees the flat listing and the flat tiles
+  and hovering one names it (`hover_nested`, cleared by every relayout since the tiles moved). Off by default (`set_tree_view`); all three
+  desktop viewers turn it on for every scan, and a viewer that does not draw depth sees the flat
+  listing and the flat tiles
+- `menu.rs` — the context menu every desktop viewer opens on a right-click: `Viewer::
+  context_menu(&Platform)` gives its `Entry`s (an `Action`, the words, whether it can be chosen)
+  for what is targeted, the counts following the marks; `Platform` says what the viewer adds
+  (the file manager's name, Quick Look, Copy as Pathname, a Trash). A viewer draws the entries
+  (Win32 `TrackPopupMenu`, an `NSMenu`, the Linux viewer's `draw::menu`), adds its own key
+  hints, and carries out the action chosen; an item offered on one window is offered on all.
+  `open_in_hand` is Open: a folder goes in, a file's path comes back to be opened
 - `scan.rs` — the first scan with the live `Outline`, results through callbacks on the scan's
   thread; `preview.rs` — the latest-wins preview reader (pictures are handed over as bytes for
-  the viewer to decode: `NSImage` on macOS, the `image` crate on Linux)
+  the viewer to decode: `NSImage` on macOS, the `image` crate on Linux; a binary file as its
+  description and hex dump, `Loaded::Binary`)
 
 **`diskonaut-linux`** (`viewers/linux/`) — the Wayland and X11 viewer, pure Rust, no C library
 (not libwayland, not Xlib), so it builds static for musl and runs on any compositor or X server:
@@ -254,14 +270,20 @@ shared `Viewer`, not in `win/`:
 - `font.rs` — `Fonts::system` finds the sans, bold and mono faces through `fc-match` (else
   well-known paths, else `DISKONAUT_FONT*`); `Face` caches `fontdue` glyphs by character and
   quarter-pixel size; `Pen` draws into a rect, aligned, vertically centred, cut with "…"
-- `draw.rs` — the frame, by `Layout`: the same panels as `mac/draw.rs`, in a fixed dark theme;
+- `draw.rs` — the frame, by `Layout`: the same panels as `mac/draw.rs`, in a fixed dark theme —
+  the list as the tree (`rows`: each level indented `ROW_INDENT`, a folder's expander where
+  `Viewer::hit` looks for it), the treemap nested (`nested`, after the top-level tiles and
+  before the marks, the corner and the frames), a tile's label its name at the left and its
+  size at the right (`tile_label`; a file's size at the bottom right when there is room);
   `dialog` paints the confirm/notice box and returns its buttons for clicks; `title_bar` the
   app's own title bar (`Viewer::top_inset`, `Layout::with_top`) where the compositor draws none
 - `trash.rs` — freedesktop Trash: `gio trash` if present, else `~/.local/share/Trash` or
   `.Trash-<uid>` at the filesystem's top, with the `.trashinfo`
 - `app.rs` — the loop over one `mpsc` channel (`Msg`: `Input` from the backend, scan batches,
   the finished tree, rescans, decoded previews, ticks, snapshot), draining what has piled up
-  before one redraw; keys and mouse → `Viewer` calls like `mac/view.rs`'s; `Dialog` for asking
+  before one redraw — outline batches are absorbed as they come and laid out once for the lot
+  (`outline_behind`); keys and mouse → `Viewer` calls like `mac/view.rs`'s (a click on an
+  expander toggles before `click`, the wheel over the treemap zooms, the back button goes up); `Dialog` for asking
   before a removal; the title bar's buttons, drag and double-click → the backend.
   `DISKONAUT_SNAPSHOT=out.png` writes the frame after the scan and quits — how the drawing was
   checked here: X11 on an `Xvfb` (which `x11rb` reaches over TCP, `-listen tcp -ac`, since it
@@ -279,7 +301,11 @@ shared `Viewer`, not in `win/`:
 - `mac/script.rs` — `DISKONAUT_MAC_SCRIPT`: synthetic keys, clicks and menu choices posted to the
   app's own event queue, and `state` dumps to assert on. `tests/smoke.sh` runs one on a fixture;
   run it after changing the viewer (macOS, logged-in session, no permissions needed)
-- `mac/draw.rs` — painting, by `Layout`; `mac/mod.rs` — the app, delegate, menus, window
+- `mac/draw.rs` — painting, by `Layout`: the same tree, nesting and labels as the Linux
+  viewer's `draw.rs`; `mac/mod.rs` — the app, delegate, menus, window. In `mac/view.rs` a click
+  on an expander toggles before `click`, a mouse's wheel (not a trackpad's) or a pinch over the
+  treemap zooms, the back button goes up, and outline batches are laid out once per burst
+  (`outline_behind`, a catch-up queued behind the batches waiting on the main queue)
 
 **MS-DOS** (`viewers/dos/`) — FASM, real mode on a 286 (or 186) with no coprocessor, not part of
 the Cargo workspace:
@@ -623,13 +649,13 @@ Regenerated by hand from `wc -l` when this file is touched; `make quality` print
 | `viewers/tui/src/lib.rs` | ~420 lines — terminal setup, thread/channel setup |
 | `viewers/tui/src/app/mod.rs` | ~1300 lines — the TUI's state machine |
 | `viewers/tui/src/preview.rs` | ~1300 lines — preview thread, kitty/sixel/half-block output, detection |
-| `viewers/windows/src/win/mod.rs` | ~910 lines — the Windows window: input → `Viewer`, threads, messages |
+| `viewers/windows/src/win/mod.rs` | ~940 lines — the Windows window: input → `Viewer`, threads, messages |
 | `viewers/windows/src/win/paint.rs` | ~870 lines — GDI drawing by `Viewer::layout` |
-| `viewers/shared/src/state.rs` | ~1630 lines — the desktop viewers' shared state, no toolkit |
-| `viewers/macos/src/mac/view.rs` | ~1200 lines — the macOS viewer's view, events and commands |
+| `viewers/shared/src/state.rs` | ~1670 lines — the desktop viewers' shared state, no toolkit |
+| `viewers/macos/src/mac/view.rs` | ~1300 lines — the macOS viewer's view, events and commands |
 | `viewers/linux/src/wayland.rs` | ~1000 lines — the Wayland backend: shm, xdg-shell, seat, clipboard |
-| `viewers/linux/src/app.rs` | ~810 lines — the Linux viewer's loop, keys, mouse, dialogs, title bar |
-| `viewers/linux/src/draw.rs` | ~640 lines — the Linux viewer's painting |
+| `viewers/linux/src/app.rs` | ~1030 lines — the Linux viewer's loop, keys, mouse, dialogs, context menu, title bar |
+| `viewers/linux/src/draw.rs` | ~890 lines — the Linux viewer's painting: the tree, the nesting, the menu, the dialogs |
 | `viewers/linux/src/x11.rs` | ~520 lines — the X11 backend: window, events, `PutImage`, keymap, clipboard |
 | `viewers/linux/src/xkb.rs` | ~360 lines — the xkb keymap reader |
 | `common/src/tiles/board.rs` | ~230 lines — tile nav/zoom |

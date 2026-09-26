@@ -1,7 +1,8 @@
 //! What every diskonaut viewer shares, with no user interface: the disk-usage model
 //! ([`FileTree`]), the squarified treemap and its selection ([`Board`]), the protocol a scanner
 //! delivers ([`scan`]), deleting from disk ([`delete`]), reading a file for a preview
-//! ([`preview`]), the native clipboard ([`clipboard`]) and formatting.
+//! ([`preview`]), the native clipboard ([`clipboard`]), handing an entry to the desktop
+//! ([`launch`]) and formatting.
 //!
 //! The walkers are in `diskonaut-scan`, which depends on this crate. `docs/features.md` has the
 //! whole map, and which viewer offers what.
@@ -10,6 +11,7 @@ pub mod clipboard;
 pub mod delete;
 pub mod error;
 pub mod format;
+pub mod launch;
 pub mod metafiles;
 pub mod model;
 pub mod os;
