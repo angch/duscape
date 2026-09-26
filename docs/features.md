@@ -1,30 +1,30 @@
 # Features, and where they live
 
-diskonaut is seven packages. Two are libraries every viewer shares, one is what the desktop
+duscape is seven packages. Two are libraries every viewer shares, one is what the desktop
 viewers share, and four are viewers.
 
 ```
-common/            libdiskonaut      what a viewer shows and does, with no user interface
-scanners/          diskonaut-scan    reading the disk: one walker per platform, and what drives them
-viewers/tui/       diskonaut-angch   the terminal viewer (ratatui) — the primary one
-viewers/windows/   diskonaut-windows a native Windows window (Win32 and GDI)
-viewers/macos/     diskonaut-mac     a native macOS window (AppKit, through objc2)
-viewers/linux/     diskonaut-linux   a Wayland or X11 window for Linux and FreeBSD, no toolkit (wayland-client, x11rb, fontdue)
-viewers/shared/    diskonaut-viewer  what the desktop viewers share: the window's state and layout,
+common/            libduscape      what a viewer shows and does, with no user interface
+scanners/          duscape-scan    reading the disk: one walker per platform, and what drives them
+viewers/tui/       duscape   the terminal viewer (ratatui) — the primary one
+viewers/windows/   duscape-windows a native Windows window (Win32 and GDI)
+viewers/macos/     duscape-mac     a native macOS window (AppKit, through objc2)
+viewers/linux/     duscape-linux   a Wayland or X11 window for Linux and FreeBSD, no toolkit (wayland-client, x11rb, fontdue)
+viewers/shared/    duscape-viewer  what the desktop viewers share: the window's state and layout,
                                      the first scan with its live outline, the preview reader
 viewers/dos/       (FASM, not Cargo) the treemap for MS-DOS in 16-bit assembly, ported from the
                                      Rust code rather than built from it
 ```
 
-Dependencies run one way: `diskonaut-scan` depends on `libdiskonaut`, each viewer on both, and the
-desktop viewers (Windows, macOS, Linux) on `diskonaut-viewer` as well, which holds everything about the window
-that is not drawing or input (it depends on `diskonaut-scan` for rescans, so it cannot live in
+Dependencies run one way: `duscape-scan` depends on `libduscape`, each viewer on both, and the
+desktop viewers (Windows, macOS, Linux) on `duscape-viewer` as well, which holds everything about the window
+that is not drawing or input (it depends on `duscape-scan` for rescans, so it cannot live in
 `common`).
 Nothing in `common` or `scanners` knows about a terminal or a window. A feature that is not about
 drawing or input belongs in one of them, so that a second viewer gets it by calling it rather than
 by copying it.
 
-## `libdiskonaut` — the common package
+## `libduscape` — the common package
 
 | Module | What it gives a viewer |
 | --- | --- |
@@ -39,7 +39,7 @@ by copying it.
 | `metafiles` | NTFS's metadata file names (`$MFT`, `$LogFile`, `$Extend`…), for the walker that sizes them and for `delete`, which refuses them. |
 | `os` | The platform's answers: whether the user is an administrator, a volume's used space (so a whole-volume scan can say how much it could not see), link counts and on-disk sizes. |
 
-## `diskonaut-scan` — the scanners
+## `duscape-scan` — the scanners
 
 | Module | What it does |
 | --- | --- |
@@ -56,9 +56,9 @@ by copying it.
 
 ## What each viewer offers
 
-| | terminal (`diskonaut-angch`) | Windows (`diskonaut-windows`) | macOS (`diskonaut-mac`) | Linux (`diskonaut-linux`) |
+| | terminal (`duscape`) | Windows (`duscape-windows`) | macOS (`duscape-mac`) | Linux (`duscape-linux`) |
 | --- | --- | --- | --- | --- |
-| One program with the terminal viewer | — | yes (`diskonaut.exe`: the window from Explorer — with no console from Windows 11 24H2, a console flashing first before it; `--gui`) | yes (`diskonaut`, and `Diskonaut.app` for Finder; `--gui`) | yes (`diskonaut`: the window from a launcher; `--gui`) |
+| One program with the terminal viewer | — | yes (`duscape.exe`: the window from Explorer — with no console from Windows 11 24H2, a console flashing first before it; `--gui`) | yes (`duscape`, and `Duscape.app` for Finder; `--gui`) | yes (`duscape`: the window from a launcher; `--gui`) |
 | Scan with the native walker | yes | yes | yes | yes |
 | Live treemap while scanning | yes (`Outline`) | yes (`Outline`) | yes (`Outline`) | yes (`Outline`) |
 | Treemap | yes, in cells | yes, GDI, nested: a folder's tile holds its entries' tiles, and theirs in turn, down to the files wherever there is room; a file's size sits at its tile's bottom right; clicking a nested tile opens the tree to it, Ctrl+click marks its folder | yes, AppKit, nested as on Windows, the same labels | yes, software-drawn (native Wayland or X11), nested as on Windows, the same labels |
@@ -91,9 +91,9 @@ beside the treemap, and previews of text, PNG and JPEG in half blocks; see its R
 A gap in a GUI column is a missing viewer feature, not a missing library one: everything in it
 apart from drawing and input is already in the two libraries.
 The Windows, macOS and Linux columns agree wherever the shared state decides: the same keys move
-the same entry, and a change to `diskonaut-viewer` reaches all three.
+the same entry, and a change to `duscape-viewer` reaches all three.
 
-The context menu is the same in all three: `diskonaut_viewer::menu` decides its items, their
+The context menu is the same in all three: `duscape_viewer::menu` decides its items, their
 order and words, and which can be chosen — Open (a folder goes in, a file opens with its default
 app; not with several marked), Show in the file manager (Quick Look beside it on macOS), Copy
 Path (relative to the folder the window was started in, when it was started in one) and Copy

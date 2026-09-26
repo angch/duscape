@@ -1,5 +1,5 @@
-//! The Linux window alone; `diskonaut` starts it too (`--gui`, or away from a terminal).
+//! The Linux window alone; `duscape` starts it too (`--gui`, or away from a terminal).
 
 fn main() {
-    diskonaut_linux::run();
+    duscape_linux::run();
 }

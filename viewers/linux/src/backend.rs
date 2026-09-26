@@ -132,7 +132,7 @@ pub fn level_keysym(plain: u32, shifted: u32, shift: bool, lock: bool) -> u32 {
     }
 }
 
-/// Open a window on the windowing system the environment names: `DISKONAUT_BACKEND` (`wayland`
+/// Open a window on the windowing system the environment names: `DUSCAPE_BACKEND` (`wayland`
 /// or `x11`), else Wayland when `WAYLAND_DISPLAY` is set, else X11. If the one chosen by the
 /// environment fails and the other is there, the other is tried.
 pub fn open(
@@ -141,12 +141,12 @@ pub fn open(
     min: (f64, f64),
     deliver: impl Fn(Input) + Send + Sync + Clone + 'static,
 ) -> Result<Box<dyn Backend>, String> {
-    let forced = ::std::env::var("DISKONAUT_BACKEND").ok();
+    let forced = ::std::env::var("DUSCAPE_BACKEND").ok();
     let has = |name: &str| ::std::env::var_os(name).is_some_and(|value| !value.is_empty());
     let order: Vec<&str> = match forced.as_deref() {
         Some("wayland") => vec!["wayland"],
         Some("x11") => vec!["x11"],
-        Some(other) => return Err(format!("DISKONAUT_BACKEND={other}: use wayland or x11")),
+        Some(other) => return Err(format!("DUSCAPE_BACKEND={other}: use wayland or x11")),
         None if has("WAYLAND_DISPLAY") => vec!["wayland", "x11"],
         None => vec!["x11", "wayland"],
     };

@@ -5,8 +5,8 @@ use ::std::path::PathBuf;
 use ::std::sync::Arc;
 use ::std::sync::atomic::{AtomicBool, Ordering};
 
-use diskonaut_scan::parallel;
-use libdiskonaut::{DirSummary, FileTree, Outline, ScanOptions};
+use duscape_scan::parallel;
+use libduscape::{DirSummary, FileTree, Outline, ScanOptions};
 
 /// How many entries go into one batch of outlines sent to the window.
 const BATCH: usize = 4096;

@@ -185,7 +185,7 @@ impl FileTree {
             profile.replay_directories += directories;
         }
     }
-    /// Fold in what the second pass found (the second pass, `diskonaut_scan::refine`): small files counted in full
+    /// Fold in what the second pass found (the second pass, `duscape_scan::refine`): small files counted in full
     /// by the walk whose blocks turn out to be held elsewhere in the tree too. Returns how many
     /// were taken back from some folder — zero when nothing on screen can have changed, as for
     /// the first sighting of any set of blocks, which stays counted where it is.

@@ -5,9 +5,9 @@ use ::ratatui::widgets::Widget;
 use ::unicode_width::UnicodeWidthStr;
 
 use crate::ui::grid::draw_filled_rect;
-use libdiskonaut::FileToDelete;
-use libdiskonaut::format::{DisplayCount, DisplaySize, truncate_middle};
-use libdiskonaut::tiles::FileType;
+use libduscape::FileToDelete;
+use libduscape::format::{DisplayCount, DisplaySize, truncate_middle};
+use libduscape::tiles::FileType;
 
 /// Text as it may be drawn: lossy, since a name need not be UTF-8, and with control characters
 /// replaced, since one would reach the terminal as a command.
@@ -216,8 +216,8 @@ mod tests {
     use ::ratatui::buffer::Buffer;
     use ::ratatui::layout::Rect;
     use ::ratatui::widgets::Widget;
-    use libdiskonaut::FileToDelete;
-    use libdiskonaut::tiles::FileType;
+    use libduscape::FileToDelete;
+    use libduscape::tiles::FileType;
 
     use super::{MessageBox, names_line, question_line};
 
@@ -228,7 +228,7 @@ mod tests {
             file_type: FileType::File,
             num_descendants: None,
             size,
-            sizes: libdiskonaut::model::Sizes::new(size, size),
+            sizes: libduscape::model::Sizes::new(size, size),
         }
     }
 

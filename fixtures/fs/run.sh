@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run diskonaut's tests and totals against real filesystems and mount layouts.
+# Run duscape's tests and totals against real filesystems and mount layouts.
 #
 #   fixtures/fs/run.sh [--build-only|--no-build] [filesystem-or-scenario ...]
 #
@@ -25,9 +25,9 @@ if [ $build = 1 ]; then
   # Static, so the binaries run in the container's minimal rootfs whatever its libc.
   export RUSTFLAGS="-C target-feature=+crt-static"
   export CARGO_TARGET_DIR=$repo/target/static
-  (cd "$repo" && cargo build -q --release --target "$target" --bin diskonaut)
-  cp "$CARGO_TARGET_DIR/$target/release/diskonaut" "$work/bin/diskonaut"
-  for package in libdiskonaut diskonaut-scan diskonaut-angch; do
+  (cd "$repo" && cargo build -q --release --target "$target" --bin duscape)
+  cp "$CARGO_TARGET_DIR/$target/release/duscape" "$work/bin/duscape"
+  for package in libduscape duscape-scan duscape; do
     executable=$(cd "$repo" && cargo test -q -p "$package" --lib --target "$target" --no-run \
       --message-format=json | grep -oE '"executable":"[^"]+"' | cut -d'"' -f4 | tail -1)
     [ -n "$executable" ] || { echo "no test binary for $package" >&2; exit 1; }
@@ -41,7 +41,7 @@ if [ "$(id -u)" = 0 ]; then
   # The tests run as an ordinary user, as the app does: whoever called sudo, or 1000.
   W=$work TEST_UID=${SUDO_UID:-1000} bash "$work/inside.sh" "$@"
 elif id -nG | grep -qw docker; then
-  image=${IMAGE:-diskonaut-fs-fixtures}
+  image=${IMAGE:-duscape-fs-fixtures}
   docker image inspect "$image" >/dev/null 2>&1 || IMAGE=$image "$repo/fixtures/fs/build-image.sh"
   docker run --rm --privileged -v "$work:/work" "$image" bash /work/inside.sh "$@"
 else

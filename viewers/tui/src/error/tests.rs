@@ -11,6 +11,6 @@ fn no_stdout_display() {
     let err = Error::NoStdout;
     assert_eq!(
         err.to_string(),
-        "Failed to get stdout: are you trying to pipe 'diskonaut'?"
+        "Failed to get stdout: are you trying to pipe 'duscape'?"
     );
 }

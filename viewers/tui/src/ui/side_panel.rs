@@ -15,8 +15,8 @@ use ::ratatui::style::{Color, Modifier, Style};
 use ::ratatui::widgets::Widget;
 use ::unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use libdiskonaut::format::{DisplayCount, DisplaySize};
-use libdiskonaut::tiles::{FileMetadata, FileType, Tile};
+use libduscape::format::{DisplayCount, DisplaySize};
+use libduscape::tiles::{FileMetadata, FileType, Tile};
 
 use crate::preview::{BlockImage, Preview};
 
@@ -534,7 +534,7 @@ mod tests {
     use ::ratatui::buffer::Buffer;
     use ::ratatui::layout::Rect;
     use ::ratatui::widgets::Widget;
-    use libdiskonaut::tiles::{FileMetadata, FileType};
+    use libduscape::tiles::{FileMetadata, FileType};
 
     use super::{
         DEFAULT_CELL_PIXELS, FolderDetails, HEADER_ROWS, SIDE_PANEL_MIN_WIDTH, SidePanel, bar,

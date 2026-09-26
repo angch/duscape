@@ -4,8 +4,8 @@ use ::ratatui::style::{Color, Modifier, Style};
 use ::unicode_width::UnicodeWidthStr;
 
 use crate::ui::grid::{boundaries, draw_next_symbol};
-use libdiskonaut::format::{DisplayCount, DisplaySize, DisplaySizeRounded, truncate_middle};
-use libdiskonaut::tiles::{FileType, Tile};
+use libduscape::format::{DisplayCount, DisplaySize, DisplaySizeRounded, truncate_middle};
+use libduscape::tiles::{FileType, Tile};
 
 fn tile_first_line(tile: &Tile) -> String {
     let max_text_length = tile.width.saturating_sub(2);

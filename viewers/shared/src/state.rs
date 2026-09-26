@@ -18,13 +18,11 @@ use ::std::mem::ManuallyDrop;
 use ::std::path::{Path, PathBuf};
 use ::std::time::{Duration, Instant};
 
-use diskonaut_scan::rescan::{Outcome, Rescanner, Rescans};
-use libdiskonaut::format::copied_path;
-use libdiskonaut::model::SizeKind;
-use libdiskonaut::tiles::{
-    Area, Board, Expansion, FileMetadata, FileType, NestedTile, Nesting, Row,
-};
-use libdiskonaut::{
+use duscape_scan::rescan::{Outcome, Rescanner, Rescans};
+use libduscape::format::copied_path;
+use libduscape::model::SizeKind;
+use libduscape::tiles::{Area, Board, Expansion, FileMetadata, FileType, NestedTile, Nesting, Row};
+use libduscape::{
     DirSummary, DisplayCount, DisplaySize, FileOrFolder, FileToDelete, FileTree, Folder,
 };
 
@@ -232,7 +230,7 @@ pub enum Preview {
     Info(String),
     Text(Vec<String>),
     /// A binary file: what can be said about it (`binary file · 1.7M`, then where its blocks
-    /// are) and its first bytes as a hex dump (`libdiskonaut::preview::hex_dump`) — sixteen
+    /// are) and its first bytes as a hex dump (`libduscape::preview::hex_dump`) — sixteen
     /// bytes a line, the characters beside them.
     Hex {
         info: Vec<String>,
@@ -384,7 +382,7 @@ impl Viewer {
         self.rescanner = Some(rescanner);
     }
 
-    /// Copy paths through `clipboard` — [`libdiskonaut::clipboard::copy`], or a record in a
+    /// Copy paths through `clipboard` — [`libduscape::clipboard::copy`], or a record in a
     /// test. Once set, every change to the marks copies their paths, as the terminal viewer
     /// does; a viewer that copies through its toolkit instead leaves this unset and asks for
     /// [`Viewer::target_paths`].
@@ -437,7 +435,7 @@ impl Viewer {
     /// The tiles inside the folder tiles, when the tree view is on; none otherwise.
     fn rebuild_nested(&mut self) {
         self.nested = if self.tree_view {
-            libdiskonaut::tiles::nest(
+            libduscape::tiles::nest(
                 self.tree.get_current_folder(),
                 &self.board.tiles,
                 self.tree.shown,
@@ -1236,7 +1234,7 @@ impl Viewer {
     /// asking, as well as before touching anything.
     #[must_use]
     pub fn refusal(files: &[FileToDelete]) -> Option<String> {
-        libdiskonaut::delete::refused(files).map(|name| {
+        libduscape::delete::refused(files).map(|name| {
             format!("NTFS metadata belongs to the filesystem and cannot be deleted: {name}")
         })
     }
@@ -1251,7 +1249,7 @@ impl Viewer {
         let mut deleted = Vec::new();
         let mut failures = Vec::new();
         for file in files {
-            match libdiskonaut::delete::remove(file) {
+            match libduscape::delete::remove(file) {
                 Ok(()) => deleted.push(file.clone()),
                 Err(error) => failures.push((file, error)),
             }
@@ -1581,7 +1579,7 @@ fn last_name(file: &FileToDelete) -> String {
 }
 
 /// [`describe`] for a tile: the same line, from what a tile carries.
-pub fn describe_tile(tile: &libdiskonaut::tiles::Tile) -> String {
+pub fn describe_tile(tile: &libduscape::tiles::Tile) -> String {
     describe(&FileMetadata {
         name: tile.name.clone(),
         size: tile.size,

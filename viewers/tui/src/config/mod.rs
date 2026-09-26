@@ -14,7 +14,7 @@ pub const CONFIG_VERSION: u32 = 1;
 /// User configuration loaded from TOML.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
-pub struct DiskonautConfig {
+pub struct DuscapeConfig {
     pub version: u32,
     pub base: BaseConfig,
     pub keybinds: KeybindConfig,
@@ -76,7 +76,7 @@ pub enum ConfigError {
     Parse(#[from] toml::de::Error),
 }
 
-impl Default for DiskonautConfig {
+impl Default for DuscapeConfig {
     fn default() -> Self {
         Self {
             version: CONFIG_VERSION,
@@ -86,10 +86,10 @@ impl Default for DiskonautConfig {
     }
 }
 
-impl DiskonautConfig {
-    /// Loads config from `-c` / `--config`, or `~/.config/diskonaut/config.toml` when unset.
+impl DuscapeConfig {
+    /// Loads config from `-c` / `--config`, or `~/.config/duscape/config.toml` when unset.
     ///
-    /// A missing default file yields [`DiskonautConfig::default`]. An explicit path must exist.
+    /// A missing default file yields [`DuscapeConfig::default`]. An explicit path must exist.
     pub fn load(path: Option<&Path>) -> Result<Self, ConfigError> {
         let path = match path {
             Some(p) => p.to_path_buf(),
@@ -103,7 +103,7 @@ impl DiskonautConfig {
 
     fn read_file(path: &Path) -> Result<Self, ConfigError> {
         let contents = fs::read_to_string(path)?;
-        let config: DiskonautConfig = toml::from_str(&contents)?;
+        let config: DuscapeConfig = toml::from_str(&contents)?;
         if config.version != CONFIG_VERSION {
             return Err(ConfigError::UnsupportedVersion(config.version));
         }
@@ -173,14 +173,23 @@ fn parse_keybind(
     }
 }
 
-/// `~/.config/diskonaut/config.toml` (requires `HOME`).
+/// `~/.config/duscape/config.toml` (requires `HOME`); see [`config_path_in`].
 pub fn default_config_path() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(|home| {
-        PathBuf::from(home)
-            .join(".config")
-            .join("diskonaut")
-            .join("config.toml")
-    })
+    std::env::var_os("HOME").map(|home| config_path_in(Path::new(&home)))
+}
+
+/// The config file under `home`: `.config/duscape/config.toml`, or where it was before the
+/// rename, `.config/diskonaut/config.toml`, while only that one exists — so a config made then
+/// goes on working until it is moved.
+pub fn config_path_in(home: &Path) -> PathBuf {
+    let config = home.join(".config");
+    let path = config.join("duscape").join("config.toml");
+    let before = config.join("diskonaut").join("config.toml");
+    if !path.is_file() && before.is_file() {
+        before
+    } else {
+        path
+    }
 }
 
 #[cfg(test)]

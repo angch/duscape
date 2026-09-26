@@ -6,8 +6,8 @@ use ::std::ffi::OsString;
 use ::std::path::PathBuf;
 use ::std::time::Duration;
 
-use libdiskonaut::FileTree;
-use libdiskonaut::tiles::{Area, Board, FileMetadata};
+use libduscape::FileTree;
+use libduscape::tiles::{Area, Board, FileMetadata};
 
 use crate::UiMode;
 use crate::config::Keybinds;

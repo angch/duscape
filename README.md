@@ -1,8 +1,11 @@
-# diskonaut
+# duscape
 
-**diskonaut** is an interactive terminal tool for exploring disk usage. Pick a directory, watch a live treemap fill in as files are scanned, drill into folders, and delete what you no longer need—without leaving the terminal.
+**duscape** is an interactive terminal tool for exploring disk usage. Pick a directory, watch a live treemap fill in as files are scanned, drill into folders, and delete what you no longer need—without leaving the terminal.
 
 ## About this fork
+
+duscape is a fork of [diskonaut](https://github.com/imsnif/diskonaut). It was `diskonaut-angch`
+until 0.2.0, and is renamed so that its command does not clash with upstream's `diskonaut`.
 
 This fork exists to **explore further performance optimizations for everyday disk-usage scanning across Linux, macOS, and Windows**. Upstream diskonaut is Unix-native; here each platform gets a native, parallel directory walker (including Windows, which is new), and the scan and tree-build pipeline is reworked for speed — warm, and since September 2026 cold too, where the first scan after boot is bound by the disk rather than the CPU. `docs/scan-performance.md` records the measurements and the reasoning.
 
@@ -29,14 +32,14 @@ The same walker and model also drive native windows for [macOS](viewers/macos/RE
 [Linux](viewers/linux/README.md) — Wayland or X11, no toolkit — and Windows, and an
 [MS-DOS port](viewers/dos/README.md) in 16-bit assembly (`make dos-run`). All are experimental.
 
-The platform's window is built into `diskonaut` itself: one binary is the terminal viewer in a
+The platform's window is built into `duscape` itself: one binary is the terminal viewer in a
 terminal and the window when started from a desktop — a launcher, Finder (through
-`Diskonaut.app`, `make mac-app`) or Explorer. `--gui` and `--tui` choose, and so does the name:
-a link called `diskonaut-gui` is the window. On Windows the one executable is a console program
+`Duscape.app`, `make mac-app`) or Explorer. `--gui` and `--tui` choose, and so does the name:
+a link called `duscape-gui` is the window. On Windows the one executable is a console program
 that asks, in its manifest, for no console unless it inherits one: from Windows 11 24H2 a
 double-click opens the window alone; older Windows shows a console for a moment first.
-Each window still builds alone as well (`cargo run -p diskonaut-mac --release`, `-p
-diskonaut-linux`, `-p diskonaut-windows`), and `--no-default-features` builds the terminal
+Each window still builds alone as well (`cargo run -p duscape-mac --release`, `-p
+duscape-linux`, `-p duscape-windows`), and `--no-default-features` builds the terminal
 viewer without it. [`docs/viewers.md`](docs/viewers.md)
 describes each, and [`docs/features.md`](docs/features.md) lists what every viewer offers.
 
@@ -48,26 +51,24 @@ describes each, and [`docs/features.md`](docs/features.md) lists what every view
 
 ## Release binaries
 
-Each [release](https://github.com/angch/diskonaut/releases) has one binary per platform that is
+Each [release](https://github.com/angch/duscape/releases) has one binary per platform that is
 both the terminal viewer and the window:
 
-- **Linux**, x86_64 and aarch64: `diskonaut-angch-<version>-<arch>-unknown-linux-musl.tar.gz`,
+- **Linux**, x86_64 and aarch64: `duscape-<version>-<arch>-unknown-linux-musl.tar.gz`,
   fully static. They need no particular glibc, or any glibc, and no system library for the
   window: they run on old distributions, Alpine and busybox alike, on Wayland or X11.
-- **Windows**, x86_64: `diskonaut-angch-<version>-x86_64-pc-windows-gnu.zip`, needing only DLLs
+- **Windows**, x86_64: `duscape-<version>-x86_64-pc-windows-gnu.zip`, needing only DLLs
   that come with Windows 10 and later.
 
-`diskonaut` and `diskonaut-angch` are the same program.
-
 ```bash
-tar -xzf diskonaut-angch-*-x86_64-unknown-linux-musl.tar.gz
-./diskonaut ~        # the terminal viewer
-./diskonaut --gui ~  # the window (the default from a desktop launcher)
+tar -xzf duscape-*-x86_64-unknown-linux-musl.tar.gz
+./duscape ~        # the terminal viewer
+./duscape --gui ~  # the window (the default from a desktop launcher)
 ```
 
 To build them yourself: `make static` (needs `musl-tools`), `make static-aarch64` and `make
-static-windows` (need `cargo-zigbuild`); on a Mac, `make mac-app` builds `diskonaut` for both
-architectures in one file and `Diskonaut.app` around it (macOS links its system libraries
+static-windows` (need `cargo-zigbuild`); on a Mac, `make mac-app` builds `duscape` for both
+architectures in one file and `Duscape.app` around it (macOS links its system libraries
 dynamically, always; nothing else).
 
 ## Sizes, hard links and mount points
@@ -95,8 +96,8 @@ the UI; `docs/probes/bench-diskus.sh` compares it with `diskus`, warm and cold. 
 
 Optional TOML config (see [example/config.toml](example/config.toml)):
 
-- Default path: `~/.config/diskonaut/config.toml`
-- Override path: `diskonaut -c /path/to/config.toml`
+- Default path: `~/.config/duscape/config.toml`
+- Override path: `duscape -c /path/to/config.toml`
 
 ## The list beside the treemap
 

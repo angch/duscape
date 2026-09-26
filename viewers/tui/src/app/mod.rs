@@ -9,10 +9,10 @@ use ::std::time::{Duration, Instant};
 use ::std::sync::Arc;
 use ::std::sync::atomic::{AtomicBool, Ordering};
 
-use libdiskonaut::format::{DisplayCount, copied_path};
-use libdiskonaut::model::SizeKind;
-use libdiskonaut::tiles::Board;
-use libdiskonaut::{DirSummary, FileOrFolder, FileToDelete, FileTree, Folder};
+use libduscape::format::{DisplayCount, copied_path};
+use libduscape::model::SizeKind;
+use libduscape::tiles::Board;
+use libduscape::{DirSummary, FileOrFolder, FileToDelete, FileTree, Folder};
 use ratatui::crossterm::event::MouseButton;
 
 use crate::Event;
@@ -25,8 +25,8 @@ use crate::preview::{
 use crate::state::UiEffects;
 use crate::ui::side_panel::{self, picture_area};
 use crate::ui::{Display, Strip};
-use diskonaut_scan::refine::{Found, SmallFiles};
-use diskonaut_scan::rescan::{Outcome, Refiner, Rescanner, Rescans};
+use duscape_scan::refine::{Found, SmallFiles};
+use duscape_scan::rescan::{Outcome, Refiner, Rescanner, Rescans};
 
 /// Which panel the arrow keys, Enter, Esc and delete act on: the list beside the treemap, or the
 /// treemap itself. It follows the last click, Tab, and Left off the treemap's left edge.
@@ -117,7 +117,7 @@ where
     screen_size: Option<Rect>,
     /// Where copied paths go: the system clipboard, or a recorder in tests.
     clipboard: Box<dyn Clipboard>,
-    /// The directory diskonaut was started from, resolved, which copied relative paths start
+    /// The directory duscape was started from, resolved, which copied relative paths start
     /// from. `None` when it cannot be known (it was deleted); relative copies are absolute then.
     working_dir: Option<PathBuf>,
     /// What starts rescans; without one, `r` and `R` do nothing.
@@ -267,7 +267,7 @@ where
     pub fn rescan_selected(&mut self) {
         let mut relative = self.file_tree.current_folder_names.clone();
         if let Some(entry) = self.selected_entry()
-            && entry.file_type == libdiskonaut::tiles::FileType::Folder
+            && entry.file_type == libduscape::tiles::FileType::Folder
         {
             relative.push(entry.name);
         }
@@ -460,7 +460,7 @@ where
             return None;
         }
         let entry = self.selected_entry()?;
-        if entry.file_type != libdiskonaut::tiles::FileType::File {
+        if entry.file_type != libduscape::tiles::FileType::File {
             return None;
         }
         let mut path = self.file_tree.get_current_path();
@@ -507,19 +507,19 @@ where
             return format!(
                 "{} marked · {}",
                 DisplayCount(self.marked.len() as u64),
-                libdiskonaut::format::DisplaySize(size as f64)
+                libduscape::format::DisplaySize(size as f64)
             );
         }
         let Some(entry) = self.selected_entry() else {
             return String::new();
         };
         let mut caption = entry.name.to_string_lossy().into_owned();
-        if entry.file_type == libdiskonaut::tiles::FileType::Folder {
+        if entry.file_type == libduscape::tiles::FileType::Folder {
             caption.push('/');
         }
         caption.push_str(&format!(
             " · {}",
-            libdiskonaut::format::DisplaySize(entry.size as f64)
+            libduscape::format::DisplaySize(entry.size as f64)
         ));
         if let Some(description) = self.preview.picture_description() {
             caption.push_str(&format!(" · {description}"));
@@ -548,7 +548,7 @@ where
     pub(crate) fn set_clipboard(&mut self, clipboard: Box<dyn Clipboard>) {
         self.clipboard = clipboard;
     }
-    /// Pretend diskonaut was started from `working_dir`, for tests.
+    /// Pretend duscape was started from `working_dir`, for tests.
     #[cfg(test)]
     pub(crate) fn set_working_dir(&mut self, working_dir: Option<PathBuf>) {
         self.working_dir = working_dir;
@@ -997,7 +997,7 @@ where
     ///
     /// - Left: select the tile; a second left click on it within [`DOUBLE_CLICK`] enters it, as
     ///   Enter would.
-    /// - Right: select the tile and copy its path, relative to the directory diskonaut was started
+    /// - Right: select the tile and copy its path, relative to the directory duscape was started
     ///   from, to the clipboard; a second right click on it within [`DOUBLE_CLICK`] copies its
     ///   absolute path instead.
     pub fn click(&mut self, button: MouseButton, column: u16, row: u16) {
@@ -1169,7 +1169,7 @@ where
     }
     /// The entry in hand, whichever panel it is in: the list's highlighted entry — which may
     /// have no tile — or the treemap's selected tile.
-    pub fn selected_entry(&self) -> Option<libdiskonaut::tiles::FileMetadata> {
+    pub fn selected_entry(&self) -> Option<libduscape::tiles::FileMetadata> {
         match self.focus() {
             Focus::List => self
                 .list_position()
@@ -1177,7 +1177,7 @@ where
             Focus::Treemap => {
                 self.board
                     .currently_selected()
-                    .map(|tile| libdiskonaut::tiles::FileMetadata {
+                    .map(|tile| libduscape::tiles::FileMetadata {
                         name: tile.name.clone(),
                         size: tile.size,
                         descendants: tile.descendants,
@@ -1188,7 +1188,7 @@ where
         }
     }
     /// Describe the entry `entry` of the current folder for deletion.
-    fn file_to_delete(&self, entry: libdiskonaut::tiles::FileMetadata) -> FileToDelete {
+    fn file_to_delete(&self, entry: libduscape::tiles::FileMetadata) -> FileToDelete {
         FileToDelete::in_current_folder(&self.file_tree, entry)
     }
     /// What `d` would delete: every marked entry, in the order marked, or else the one in hand.
@@ -1210,7 +1210,7 @@ where
     fn refuse_metafile(&mut self, files: &[FileToDelete]) -> bool {
         // All or nothing: deleting the rest of a selection and quietly skipping one would leave
         // it unclear what happened.
-        let Some(name) = libdiskonaut::delete::refused(files) else {
+        let Some(name) = libduscape::delete::refused(files) else {
             return false;
         };
         self.ui_mode = UiMode::ErrorMessage(format!(
@@ -1241,7 +1241,7 @@ where
         let at = self.list_cursor_index();
         let mut failures = Vec::new();
         for file in files {
-            match libdiskonaut::delete::remove(file) {
+            match libduscape::delete::remove(file) {
                 Ok(()) => self.remove_file_from_ui(file),
                 Err(error) => failures.push((file, error)),
             }

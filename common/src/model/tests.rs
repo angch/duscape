@@ -30,7 +30,7 @@ fn folder_nested_path() {
 
 #[test]
 fn file_tree_delete_path() {
-    let dir = std::env::temp_dir().join("diskonaut_model_test_delete");
+    let dir = std::env::temp_dir().join("duscape_model_test_delete");
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("mkdir");
     // Canonicalized because the app always scans a canonical path: `Opts::resolve_folder`

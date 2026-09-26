@@ -20,7 +20,7 @@ jobs:
     name: Build (${{ matrix.target }})
     runs-on: ubuntu-latest
     # A static musl binary runs on any Linux of its architecture: no glibc version floor, and
-    # Alpine too. jemalloc (the musl build's allocator, see diskonaut/Cargo.toml) is C, so each
+    # Alpine too. jemalloc (the musl build's allocator, see duscape/Cargo.toml) is C, so each
     # target needs a musl C compiler: musl-gcc natively, zig (via cargo-zigbuild) for aarch64.
     strategy:
       fail-fast: false
@@ -31,7 +31,7 @@ jobs:
           - target: aarch64-unknown-linux-musl
             cargo: cargo zigbuild
             lg_page: 16
-          # Against the Universal C Runtime, which Windows 10 and later carry: `diskonaut.exe`
+          # Against the Universal C Runtime, which Windows 10 and later carry: `duscape.exe`
           # needs no DLL that does not come with Windows.
           - target: x86_64-pc-windows-gnu
             cargo: cargo zigbuild
@@ -74,41 +74,40 @@ jobs:
           CC_x86_64_unknown_linux_musl: musl-gcc
         run: |
           if [ -n "${{ matrix.lg_page }}" ]; then export JEMALLOC_SYS_WITH_LG_PAGE=${{ matrix.lg_page }}; fi
-          ${{ matrix.cargo }} -p diskonaut-angch --release --locked --target ${{ matrix.target }}
+          ${{ matrix.cargo }} -p duscape --release --locked --target ${{ matrix.target }}
 
       - name: Check the binary is static
         if: endsWith(matrix.target, '-musl')
         run: |
-          file target/${{ matrix.target }}/release/diskonaut-angch | tee /dev/stderr \
+          file target/${{ matrix.target }}/release/duscape | tee /dev/stderr \
             | grep -qE 'static-pie linked|statically linked'
 
       - name: Check the binary is a console program
         if: matrix.exe == '.exe'
         run: |
-          file target/${{ matrix.target }}/release/diskonaut.exe | tee /dev/stderr | grep -q '(console)'
+          file target/${{ matrix.target }}/release/duscape.exe | tee /dev/stderr | grep -q '(console)'
 
       # Only the native target can run on the runner.
       - name: Smoke test
         if: matrix.target == 'x86_64-unknown-linux-musl'
-        run: target/${{ matrix.target }}/release/diskonaut-angch --benchmark --bench-stage sharded /usr
+        run: target/${{ matrix.target }}/release/duscape --benchmark --bench-stage sharded /usr
 
-      # The release profile already strips; `diskonaut` and `diskonaut-angch` are the same program.
-      # jemalloc is linked into the musl builds, so its BSD-2-Clause notice ships alongside our
+      # The release profile already strips. jemalloc is linked into the musl builds, so its BSD-2-Clause notice ships alongside our
       # own licence; Windows has no jemalloc, and gets a zip.
       - name: Package archive
         run: |
           VERSION="${GITHUB_REF_NAME:-dev}"
           STAGE="$(mktemp -d)"
-          cp target/${{ matrix.target }}/release/{diskonaut-angch,diskonaut}${{ matrix.exe }} LICENSE "$STAGE"/
+          cp target/${{ matrix.target }}/release/duscape${{ matrix.exe }} LICENSE "$STAGE"/
           if [ "${{ matrix.exe }}" = ".exe" ]; then
-            ARCHIVE="diskonaut-angch-${VERSION}-${{ matrix.target }}.zip"
-            (cd "$STAGE" && zip -q "$OLDPWD/$ARCHIVE" diskonaut-angch.exe diskonaut.exe LICENSE)
+            ARCHIVE="duscape-${VERSION}-${{ matrix.target }}.zip"
+            (cd "$STAGE" && zip -q "$OLDPWD/$ARCHIVE" duscape.exe LICENSE)
           else
-            ARCHIVE="diskonaut-angch-${VERSION}-${{ matrix.target }}.tar.gz"
+            ARCHIVE="duscape-${VERSION}-${{ matrix.target }}.tar.gz"
             JEMALLOC_SYS="$(cargo metadata --format-version 1 --filter-platform ${{ matrix.target }} \
               | jq -r '.packages[] | select(.name == "tikv-jemalloc-sys") | .manifest_path')"
             cp "$(dirname "$JEMALLOC_SYS")/jemalloc/COPYING" "$STAGE/LICENSE-jemalloc"
-            tar -czf "$ARCHIVE" -C "$STAGE" diskonaut-angch diskonaut LICENSE LICENSE-jemalloc
+            tar -czf "$ARCHIVE" -C "$STAGE" duscape LICENSE LICENSE-jemalloc
           fi
           echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
 

@@ -1,10 +1,10 @@
-//! What every diskonaut viewer shares, with no user interface: the disk-usage model
+//! What every duscape viewer shares, with no user interface: the disk-usage model
 //! ([`FileTree`]), the squarified treemap and its selection ([`Board`]), the protocol a scanner
 //! delivers ([`scan`]), deleting from disk ([`delete`]), reading a file for a preview
 //! ([`preview`]), the native clipboard ([`clipboard`]), handing an entry to the desktop
 //! ([`launch`]) and formatting.
 //!
-//! The walkers are in `diskonaut-scan`, which depends on this crate. `docs/features.md` has the
+//! The walkers are in `duscape-scan`, which depends on this crate. `docs/features.md` has the
 //! whole map, and which viewer offers what.
 
 pub mod clipboard;
@@ -20,7 +20,7 @@ pub mod preview;
 pub mod scan;
 pub mod tiles;
 
-pub use error::DiskonautError;
+pub use error::DuscapeError;
 pub use format::{DisplayCount, DisplaySize, DisplaySizeRounded, truncate_end, truncate_middle};
 pub use model::{File, FileOrFolder, FileToDelete, FileTree, Folder};
 pub use scan::{

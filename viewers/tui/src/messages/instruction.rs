@@ -8,7 +8,7 @@ use crate::input::{
     handle_keypress_loading_mode, handle_keypress_normal_mode, handle_keypress_screen_too_small,
     handle_keypress_warning_message,
 };
-use libdiskonaut::{DirSummary, FileTree};
+use libduscape::{DirSummary, FileTree};
 
 use crate::{App, UiMode};
 
@@ -21,7 +21,7 @@ pub enum Instruction {
     AddScannedSummaries(Vec<DirSummary>),
     /// The finished tree, which replaces the live view's outline, and the small files left for
     /// the second pass.
-    ScanComplete(Box<FileTree>, diskonaut_scan::refine::SmallFiles),
+    ScanComplete(Box<FileTree>, duscape_scan::refine::SmallFiles),
     StartUi,
     ToggleScanningVisualIndicator,
     RenderAndUpdateBoard,
@@ -31,10 +31,10 @@ pub enum Instruction {
     /// A preview has been read, for the request of this generation.
     PreviewReady(u64, crate::preview::Preview),
     /// The rescan started under this id has finished.
-    Rescanned(u64, diskonaut_scan::rescan::Outcome),
+    Rescanned(u64, duscape_scan::rescan::Outcome),
     /// Second-pass findings for the refine of this generation, and how many files are left to
     /// probe; `None` once it has finished.
-    Refined(u64, Vec<diskonaut_scan::refine::Found>, Option<usize>),
+    Refined(u64, Vec<duscape_scan::refine::Found>, Option<usize>),
     /// Time for the help line to scroll, if nobody is pressing keys.
     Tick,
 }

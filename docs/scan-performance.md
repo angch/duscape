@@ -44,10 +44,10 @@ not the individual seconds.
 
 ```sh
 cargo build --release
-./target/release/diskonaut --benchmark /                       # all stages
-./target/release/diskonaut --benchmark --bench-stage sharded /  # just the app's real path
-./target/release/diskonaut --benchmark --max-depth 4 /          # partial scan, fast iteration
-./target/release/diskonaut --benchmark --threads 6 --bench-repeat 3 /
+./target/release/duscape --benchmark /                       # all stages
+./target/release/duscape --benchmark --bench-stage sharded /  # just the app's real path
+./target/release/duscape --benchmark --max-depth 4 /          # partial scan, fast iteration
+./target/release/duscape --benchmark --threads 6 --bench-repeat 3 /
 ```
 
 The stages nest, so subtracting one from the next attributes cost to a layer:
@@ -56,7 +56,7 @@ The stages nest, so subtracting one from the next attributes cost to a layer:
 | --- | --- |
 | `dua-walk` | the general-purpose `dua-core` walk alone, entries discarded |
 | `dua-tree` | that walk feeding the folder tree |
-| `walk` | the walk diskonaut uses now, alone |
+| `walk` | the walk duscape uses now, alone |
 | `tree` | that walk feeding the folder tree |
 | `tree-only` | the folder tree alone — entries are collected first, untimed, then fed to the model |
 | `pipeline` | scan and one tree builder on separate threads, over a channel |
@@ -249,7 +249,7 @@ work did. Recorded because the same traps are waiting on Linux.
 **Dropping the walk early did not stop it.** `MacosWalk::drop` drained the channel to release
 workers blocked on a full send — but draining guarantees every send *succeeds*, so the workers
 happily walked the entire remaining tree while the consumer waited to join them. Quitting
-diskonaut partway through a scan of `/` took **32.2s**; with a `stop` flag checked in the queue's
+duscape partway through a scan of `/` took **32.2s**; with a `stop` flag checked in the queue's
 `pop()`, it takes **0.1s**. `dua-core` had a stop flag and this walker did not, which is exactly
 the kind of thing you lose when replacing a mature component.
 
@@ -332,7 +332,7 @@ $ du -sk a b .
 4    .
 ```
 
-Which directory gets the 4 KiB depends on the order of the walk. diskonaut's answer does not: the
+Which directory gets the 4 KiB depends on the order of the walk. duscape's answer does not: the
 tests cover both orderings, and `HardLinks::charge` is deliberately order-independent.
 
 ### The gotchas
@@ -343,7 +343,7 @@ above `a` is 1 KiB while the two files inside it each show 1 KiB. Both numbers a
 to different questions — the tile shows how big that file is, the folder shows how much space it
 holds — but they will not reconcile by addition wherever hard links are involved.
 
-**Deleting one link frees nothing.** Space comes back only when the last link goes. diskonaut
+**Deleting one link frees nothing.** Space comes back only when the last link goes. duscape
 subtracts the file's full size from its ancestors on delete, so after removing one of several
 links the "space freed" figure and the folder sizes are optimistic until the last one is gone. The
 subtraction saturates at zero so the tree cannot go negative, and a rescan always restores the
@@ -375,7 +375,7 @@ that does not fill them in gets the old additive behaviour rather than a wrong a
 | Firmlink handling | no, macOS has no counterpart elsewhere |
 | Inode-vs-listed-inode mount detection | the *technique* ports; on Linux `st_dev` is simpler and sufficient |
 
-Non-macOS builds use `fallback::group_by_directory` in `scanners/src/lib.rs` (then `libdiskonaut/src/scan/mod.rs`), which groups
+Non-macOS builds use `fallback::group_by_directory` in `scanners/src/lib.rs` (then `libduscape/src/scan/mod.rs`), which groups
 the `dua-core` walk into per-directory batches so the rest of the pipeline is identical. It is
 compiled on every platform (`#[cfg_attr(target_os = "macos", allow(dead_code))]`) and the tests in
 `scan/tests.rs` call it directly everywhere, so it is exercised on macOS even though it is never
@@ -390,7 +390,7 @@ less than the numbers.**
    run against a real filesystem at scale. Start there.
 2. Establish the baseline and confirm where the time goes:
    ```sh
-   /usr/bin/time -v ./target/release/diskonaut --benchmark --bench-stage all /
+   /usr/bin/time -v ./target/release/duscape --benchmark --bench-stage all /
    ```
    Note the user/system split. If system time dwarfs user time as it does on macOS, the work is in
    the kernel and the data model is not the problem.
@@ -398,7 +398,7 @@ less than the numbers.**
    costs nothing to find:
    ```sh
    for t in 1 2 4 6 8 12 16 24 32; do
-     ./target/release/diskonaut --benchmark --bench-stage pipeline --threads $t / | tail -1 |
+     ./target/release/duscape --benchmark --bench-stage pipeline --threads $t / | tail -1 |
        sed "s/^/threads=$t /"
    done
    ```
@@ -474,7 +474,7 @@ they matter just as much as speed:
 
 ### Where to put the code
 
-`libdiskonaut::scan::scan_directories()` is the seam. It returns `impl Iterator<Item = DirEntries>`
+`libduscape::scan::scan_directories()` is the seam. It returns `impl Iterator<Item = DirEntries>`
 and picks an implementation by `cfg`. A Linux walker slots in beside `macos`, yields the same
 `DirEntries { path, entries, failed }`, and everything downstream — batching, tree building, the
 UI — is unchanged. Add a `linux-*` benchmark stage next to the `dua-*` ones so the old and new
@@ -489,7 +489,7 @@ walkers can be compared on the same tree in one run, which is what made the macO
 > exists at that path.
 
 On Linux (ext4, ~2.24M entries, ~170k hard-linked files on `/data`), `dua-tree` initially outperformed
-diskonaut's tree building because of allocator pressure in the model and hard link accounting.
+duscape's tree building because of allocator pressure in the model and hard link accounting.
 
 ### Results on `/data` (warm cache)
 
@@ -638,7 +638,7 @@ filesystem to catch a rare one).
 mounts it, scans it and asserts a non-zero total. It is `#[ignore]`d because it mounts a disk image:
 
 ```
-cargo test -p libdiskonaut --lib -- --ignored fat32
+cargo test -p libduscape --lib -- --ignored fat32
 ```
 
 Nothing synthetic reproduces this. A hand-built record either carries the attribute or does not,
@@ -766,7 +766,7 @@ filesystem locks" — is simply not true on this machine.
 **So it is the walker.** `docs/probes/mtwalk.c` is a deliberately naive in-process parallel walker:
 one global mutex, a LIFO queue of directory fds, N pthreads, `getdents64` + `fstatat` per entry, no
 work stealing. 90 lines. It reports the same 4,228,423 entries, the same 896.0 GiB and the same 12
-failures as diskonaut.
+failures as duscape.
 
 **Read the table for its shape, not its multiple.** `mtwalk` is doing a strictly smaller job than
 the Rust walker: it never allocates a name (it passes `d_name` straight to `fstatat` and keeps
@@ -780,7 +780,7 @@ will reach.
 | threads | 1 | 4 | 6 | 8 | 12 | 16 | 24 | 32 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | mtwalk | 4.408s | 1.185s | 0.831s | 0.633s | 0.510s | 0.465s | **0.387s** | 0.395s |
-| diskonaut `walk` | — | 2.896s | 2.216s | 2.558s | 6.340s | 6.647s | — | — |
+| duscape `walk` | — | 2.896s | 2.216s | 2.558s | 6.340s | 6.647s | — | — |
 
 What the table does establish is the **scaling shape**, and allocation cannot explain a *collapse*:
 `mtwalk` improves monotonically to 24 threads while `dua-core` peaks at 6 and is 3x worse by 16.
@@ -819,7 +819,7 @@ worth nothing:
   for less does not let it do less.
 - **`AT_STATX_DONT_SYNC` does nothing.** There is nothing to revalidate on a local filesystem.
 - **Trusting `d_type` to skip stats does nothing measurable.** It removes 9% of the calls (385k of
-  4.23M) and the result is inside run-to-run noise. It is also not applicable as stated: diskonaut
+  4.23M) and the result is inside run-to-run noise. It is also not applicable as stated: duscape
   counts a directory's own blocks, so it needs the directory's size too.
 - **`io_uring` batched `statx` is 3.8x *slower*.** This was ranked "probably the best
   portable-in-practice win" and it is the worst option measured. `IORING_OP_STATX` is a blocking
@@ -967,7 +967,7 @@ number wrong.
 It does not show up in the whole-volume total: the scan reports 745.9 GiB against `df`'s 915.3 GiB
 for this device, so it is *under* `df` overall. Eleven unreadable directories (two container
 Postgres/MySQL `pgdata` trees, `drwx------` under other uids) sit inside that gap and more than
-offset the over-count. The user-visible damage is local — point diskonaut at `~/.cache/uv` or a
+offset the over-count. The user-visible damage is local — point duscape at `~/.cache/uv` or a
 virtualenv and the answer is inflated, and "delete this to free 15 GB" is not true.
 
 Unprivileged `GETFSMAP` reported zero `FMR_OF_SHARED` records, which given the redaction in section
@@ -984,10 +984,10 @@ here because by this document's own standard (finding #5) a wrong number outrank
 
 ```sh
 cargo build --release
-./target/release/diskonaut --benchmark --bench-stage all --bench-repeat 2 /data
-./target/release/diskonaut --benchmark --bench-stage tree-only --bench-repeat 3 /data
+./target/release/duscape --benchmark --bench-stage all --bench-repeat 2 /data
+./target/release/duscape --benchmark --bench-stage tree-only --bench-repeat 3 /data
 for t in 1 2 4 6 8 12 16 24 32; do
-  ./target/release/diskonaut --benchmark --bench-stage pipeline --threads $t /data | tail -1 |
+  ./target/release/duscape --benchmark --bench-stage pipeline --threads $t /data | tail -1 |
     sed "s/^/threads=$t /"
 done
 
@@ -1042,7 +1042,7 @@ native walker, not the two lines of one `all` run.**
 
 ### What the walker does
 
-`scanners/src/linux.rs` (then `libdiskonaut/src/scan/linux.rs`). `getdents64` for names, `statx` for sizes, which is the same pair
+`scanners/src/linux.rs` (then `libduscape/src/scan/linux.rs`). `getdents64` for names, `statx` for sizes, which is the same pair
 of syscalls `dua-core` ends up making — section 3 above measured that no portable change to *what*
 is asked per entry is worth anything. The whole difference is the thread model:
 
@@ -1140,7 +1140,7 @@ directly and **skips itself when the filesystem cannot clone** — which `std::e
 usually cannot, since `/tmp` is typically ext4. Point it at a real one to actually run it:
 
 ```sh
-DISKONAUT_TEST_REFLINK_DIR=/data cargo test --workspace reflink -- --nocapture
+DUSCAPE_TEST_REFLINK_DIR=/data cargo test --workspace reflink -- --nocapture
 ```
 
 Without that variable it prints `skipped: /tmp cannot reflink` and passes, which is worth knowing
@@ -1183,7 +1183,7 @@ The check is by `statfs` magic (`filesystem::is_pseudo`), and is deliberately na
 - **Only at mount points.** A directory whose `st_dev` differs from its parent's is a mount; the
   device is already in the `statx` the walk makes anyway, so the `statfs` costs one call per mount
   crossed rather than one per directory.
-- **Never to the scan root.** `diskonaut /proc` still walks `/proc`, because that was asked for.
+- **Never to the scan root.** `duscape /proc` still walks `/proc`, because that was asked for.
   The skip only applies to wandering into one part-way through a scan of something else.
 
 `tmpfs` is deliberately *not* on the list: `/tmp` and `/dev/shm` hold real files that really occupy
@@ -1194,7 +1194,7 @@ Measured:
 
 | | before | after |
 | --- | --- | --- |
-| `diskonaut /proc` | hung, 5 runs of 5 | **0.24s**, 894k entries, ~6,840 unreadable |
+| `duscape /proc` | hung, 5 runs of 5 | **0.24s**, 894k entries, ~6,840 unreadable |
 | `--bench-stage pipeline /` (no `-x`) | did not finish in 600s | **1.98s**, 9.6M entries |
 
 Scanning `/proc` by name is now about four times faster than `dua-core` managed, which is a side
@@ -1256,8 +1256,8 @@ Reported from real use, a few minutes after the work above was declared done:
 panicked at ratatui-core-0.1.2/src/buffer/buffer.rs:251:
 index outside of buffer: the area is Rect { x: 0, y: 0, width: 170, height: 48 }
 but index is (134, 80)
-  4: diskonaut::ui::grid::draw_next_symbol::draw_next_symbol
-  5: diskonaut::ui::grid::draw_rect::draw_rect_on_grid
+  4: duscape::ui::grid::draw_next_symbol::draw_next_symbol
+  5: duscape::ui::grid::draw_rect::draw_rect_on_grid
 ```
 
 Row 80 of a 48-row buffer: not an off-by-one, a tile laid out far outside the board.
@@ -1308,7 +1308,7 @@ cp --reflink=always a/img.bin b/img.bin        # 1 MiB each
 dd if=/dev/urandom of=b/img.bin bs=1k seek=100 count=100 conv=notrunc
 ```
 
-`filefrag` shows `b` with three extents — shared, *not* shared, shared — and diskonaut reported
+`filefrag` shows `b` with three extents — shared, *not* shared, shared — and duscape reported
 **1.0 MiB for 2.0 MiB of files.** The identity is now the whole extent map (up to 64 extents,
 FNV-folded), accepted only when every extent is shared and the `LAST` flag proves the map is
 complete. Anything else is counted in full, which is what the comment always claimed.
@@ -1901,10 +1901,10 @@ Measured as root, cold, 24 workers, the block layer through `/proc/diskstats`:
 | `diskus` (24 threads) | 35.4k | 6.8 KiB | 235 | 0.77s | 4.93s |
 
 The reads fell by the predicted 3x, from one 4 KiB read per directory to one 23 KiB read per run,
-and diskonaut as root is now ahead of `diskus` cold on both trees, 9% and 15%. But the clock
+and duscape as root is now ahead of `diskus` cold on both trees, 9% and 15%. But the clock
 moved less than the reads: 6% on `project`, 20% on `home`. The reason is in the CPU columns.
 A cold scan of `project` burns 4.2–4.7s of *system* time against 1.0s warm, whatever the walker,
-and diskonaut's 24 workers spend it on 8 cores: 6.7 cores busy for the 0.7s. Cold, the kernel's
+and duscape's 24 workers spend it on 8 cores: 6.7 cores busy for the 0.7s. Cold, the kernel's
 work per entry — instantiating 385k inodes and dentries from the buffers, the page cache and
 buffer heads for every block, the completion of every request through virtio — is four times
 the warm walk, and on this box that is the floor once the reads are in flight. Fewer requests
@@ -1913,7 +1913,7 @@ did trim it (the 23k requests saved were 0.4s of system time, about 17 µs each,
 round trip rather than the completion is the cost, has more to gain from the same change.
 
 Warm, as root, the FIEMAP and the advice cost 5% on `project` (233 → 245 ms), 3% on `home`;
-the totals are unchanged, forced onto a regular file (`DISKONAUT_DIRBLOCKS_DEVICE=<file>`) or
+the totals are unchanged, forced onto a regular file (`DUSCAPE_DIRBLOCKS_DEVICE=<file>`) or
 as root; the fixtures, which run as root on loop-mounted ext4 and so take the real path, agree
 with their oracles. `docs/probes/dirblock_prefetch.py` is the same idea single-threaded
 (`--window 0` to switch it off, `--dry` for the runs without root): there, one thread, the
@@ -2678,11 +2678,11 @@ builders stay on Linux, where the build really is the bottleneck.
 ### Reproduce
 
 ```sh
-./target/release/diskonaut --benchmark --bench-stage sharded --bench-shards 1 --threads 6 /
-./target/release/diskonaut --benchmark --bench-stage sharded --bench-shards 4 --threads 8 /
+./target/release/duscape --benchmark --bench-stage sharded --bench-shards 1 --threads 6 /
+./target/release/duscape --benchmark --bench-stage sharded --bench-shards 4 --threads 8 /
 iostat -d -w 5 disk0                                   # alongside: is the "warm" scan reading?
 xcrun xctrace record --template 'Time Profiler' --launch -- \
-  ./target/release/diskonaut --benchmark --bench-stage walk --threads 12 /Users
+  ./target/release/duscape --benchmark --bench-stage walk --threads 12 /Users
 sysctl kern.maxvnodes vfs.vnstats.num_newvnode_calls   # before and after, for vnode churn
 ```
 
@@ -2716,12 +2716,12 @@ trees: `project`, 375k entries in 29.7k directories, and `home`, 2.2M entries wi
 
 ### What was found
 
-Warm, `diskus` and diskonaut were within noise on the small tree and 15% apart on the big one:
+Warm, `diskus` and duscape were within noise on the small tree and 15% apart on the big one:
 that gap is the tree build, which `diskus` does not do. Cold, `diskus` was **1.6x faster on
 both**, 0.74s to 1.22s and 5.0s to 8.1s, and the block layer says why. Every run reads the same
 34k requests and the same 228 MiB — the access pattern was identical — but `diskus` kept 7.5 reads
-in flight and diskonaut 3.3. `diskus` gives rayon three threads a core and stats every entry of a
-directory as its own task; diskonaut gave the walk one worker a core, and one worker stats one
+in flight and duscape 3.3. `diskus` gives rayon three threads a core and stats every entry of a
+directory as its own task; duscape gave the walk one worker a core, and one worker stats one
 directory's entries one after another.
 
 The 34k reads are the floor, not waste: a names-only walk (`statbench` mode 0) already issues
@@ -2774,21 +2774,21 @@ Cold, `project`, 3–4 runs each (the two-phase read is what the walker does now
 ### Where it stands
 
 Against `diskus` 0.9.0 (24 threads), 3 runs each, after the tree build work of the same day
-(next section) as well; diskonaut's `sharded` stage, which builds the whole navigable tree:
+(next section) as well; duscape's `sharded` stage, which builds the whole navigable tree:
 
 | | warm | cold | cold, as root |
 | --- | --- | --- | --- |
 | `project`, 375k entries: `diskus` | 226 ms | 756 ms | |
-| `project`: diskonaut | 223 ms | 763 ms | 685 ms |
+| `project`: duscape | 223 ms | 763 ms | 685 ms |
 | `home`, 2.24M entries, 173k hard-linked: `diskus` | 1.45 s | 4.93 s | |
-| `home`: diskonaut | 1.50 s | 4.97 s | 3.87 s |
+| `home`: duscape | 1.50 s | 4.97 s | 3.87 s |
 
 Level with `diskus` warm and cold, on both trees, while building the tree it does not; as
 root, with the directories' blocks read ahead through the device, 9% and 21% ahead of it. The
 measured regime is one ext4 SSD in a VM; on NVMe the floor is higher and the workers matter
 more, and on a spinning disk the inode order matters more. NVMe was measured the next day
 (`docs/benchmarks/badwolf-20260925-full.md`, bare metal, 16 cores): level with `diskus` warm
-again, but cold it leads diskonaut by 10–25% on every tree (`home`, 673k entries: 651 against
+again, but cold it leads duscape by 10–25% on every tree (`home`, 673k entries: 651 against
 719 ms), so the reads in flight are what to look at there. A spinning disk is still unmeasured.
 
 ## The tree build (2026-09-24)
@@ -2803,7 +2803,7 @@ pnpm), so it is the ledger's worst case, which is what made the replay visible.
 `--benchmark --bench-profile` now prints where the builders' time went, phase by phase, for any
 stage that builds a tree: resolving each directory's folder, the pass over its entries, the
 ledger, placing the entries, and the replay's two halves, with counts (folders stepped through,
-name comparisons, sightings, ancestor steps). `libdiskonaut::model::files::profile` holds it;
+name comparisons, sightings, ancestor steps). `libduscape::model::files::profile` holds it;
 off, it costs one predictable branch per counted event. The numbers below are its output.
 
 `perf` is unavailable on this box (`perf_event_paranoid` is 4) and the release binary is
@@ -3074,17 +3074,17 @@ drop the file cache from a script. Against `diskus` 0.9.0 and WizTree 4.32 in it
 (`/export`, folders only, `/admin=0`), which scans, writes a CSV and exits; unelevated it walks
 the directories like everyone else rather than reading the MFT. Three runs a cell, means:
 
-| tree | entries | diskonaut `refined` | WizTree export | diskus |
+| tree | entries | duscape `refined` | WizTree export | diskus |
 | --- | --- | --- | --- | --- |
 | `C:\Users\angch\project` | 132k | 0.19 s | 0.94 s | 1.99 s |
 | `C:\Users\angch` | 1.60M, 49.6k hard-linked | 2.78 s | 7.64 s | 29.4 s |
 | `C:\` | 2.37M, 90k hard-linked | 5.68 s | 13.5 s | 35.9 s |
 | `D:\` | 415k | 0.15 s | 1.45 s | 5.06 s |
 
-- Unelevated, WizTree is 2.4–10x slower than diskonaut, and `diskus` 6–35x. The `D:\` of the
+- Unelevated, WizTree is 2.4–10x slower than duscape, and `diskus` 6–35x. The `D:\` of the
   2026-09-23 section (609k entries, 34 s with the `dua-core` walk, 1.3 s for WizTree reading the
   MFT elevated) is a different disk; here 415k entries take 0.15 s, so an MFT read would gain
-  little on a volume the walk reads in a tenth of a second. Elevated rows — diskonaut with the
+  little on a volume the walk reads in a tenth of a second. Elevated rows — duscape with the
   metadata files, WizTree with the MFT — need a run from an elevated shell.
 - The walk is the floor, as the Windows section says: the tree build alone (`tree-only`) is
   0.72 s for the 2.37M entries of `C:\`, an eighth of the 5.7 s scan.
@@ -3099,18 +3099,18 @@ the directories like everyone else rather than reading the MFT. Three runs a cel
 ### Elevated
 
 `docs/benchmarks/tiamat-20260925-elevated.md` is the same matrix from an elevated shell, the
-same afternoon: diskonaut with the backup privilege and the volume's metadata files, WizTree
+same afternoon: duscape with the backup privilege and the volume's metadata files, WizTree
 reading the MFT — its own game. Means of three runs, `refined` against the export (the file was
 then rewritten by the cold run below; its warm rows differ from these by noise):
 
-| tree | entries (elevated) | diskonaut | WizTree | diskus |
+| tree | entries (elevated) | duscape | WizTree | diskus |
 | --- | --- | --- | --- | --- |
 | `C:\Users\angch\project` | 132k, 7.2k hard-linked | 0.20 s | 0.86 s | 1.96 s |
 | `C:\Users\angch` | 1.61M, 57k hard-linked | 2.66 s | 6.87 s | 22.5 s |
 | `C:\` | 2.46M, 103k hard-linked | 5.46 s | 6.43 s | 36.0 s |
 | `D:\` | 415k | 0.15 s | 1.71 s | 5.30 s |
 
-- On the whole system volume, where the MFT read should shine, diskonaut's walk is 18% faster
+- On the whole system volume, where the MFT read should shine, duscape's walk is 18% faster
   than WizTree — while reaching 98k entries more than unelevated (2 unreadable folders, not 569)
   in less time than unelevated took (5.46 s against 5.68 s): the backup privilege saves the
   access-denied churn. On `D:\` the MFT read is 11x slower than the walk. WizTree's 6.4 s here
@@ -3119,7 +3119,7 @@ then rewritten by the cold run below; its warm rows differ from these by noise):
   and on `D:\` to 30 MB. The trees they disagree on are the ones with hard links: unelevated,
   only hard-link hot spots are tracked and the project tree showed none, 71.1 GiB, WizTree's
   figure to the byte; elevated, every file is tracked, 7,215 of them turn out to be hard-linked,
-  and the tree is 69.0 GiB. WizTree counts each name of a hard-linked file; diskonaut counts
+  and the tree is 69.0 GiB. WizTree counts each name of a hard-linked file; duscape counts
   the blocks once (`docs/sizes.md`). Same on `C:\Users\angch`: 57k links, 7.4 GiB. Unelevated
   `C:\` was short for the other reason, the 569 folders it could not enter.
 - Elevated, the ledger is the build's biggest phase (0.32 s of the 0.88 s for `C:\`, 1.97M
@@ -3133,7 +3133,7 @@ The same elevated matrix run again with cold rows, the cache emptied before ever
 the API — what RAMMap's "Empty" menu does; about fifteen seconds a drop on this 128 GiB machine,
 outside the timing). `tiamat-20260925-elevated.md` now holds both. Means of three, warm → cold:
 
-| tree | diskonaut `sharded` | WizTree (MFT) | diskus |
+| tree | duscape `sharded` | WizTree (MFT) | diskus |
 | --- | --- | --- | --- |
 | `C:\Users\angch\project` (132k) | 0.19 → 0.34 s | 0.86 → 0.95 s | 1.87 → 2.03 s |
 | `C:\Users\angch` (1.61M) | 2.77 → 3.93 s | 6.68 → 12.1 s | 22.5 → 24.9 s |
@@ -3150,7 +3150,7 @@ outside the timing). `tiamat-20260925-elevated.md` now holds both. Means of thre
   sequentially is cache-independent and, cold, beats the walk by a quarter on a 2.46M-entry
   volume; warm, the walk is still faster (5.6 s against 6.8 s), and on every smaller tree the
   walk wins cold as well, by 2.4–4x, since the MFT read costs the whole volume whatever the
-  tree. An MFT reader for diskonaut would want the same gate as the ext4 one: used for a whole
+  tree. An MFT reader for duscape would want the same gate as the ext4 one: used for a whole
   volume as administrator, and only when it is faster than the walk it replaces.
 - WizTree's home-tree cold figure (12.1 ± 2.8 s, against 6.7 warm) is the one exception to its
   cache-independence, and its variance says why: its export of a folder is filtered from a
@@ -3180,8 +3180,8 @@ them.
 ### Timings
 
 `docs/benchmarks/tiamat-20260925-mft.md` is the matrix with the table walker in, elevated,
-warm and cold: its `diskonaut sharded` row is what the scan does now (the table where the gate
-takes it, the walk elsewhere) and `diskonaut sharded, kernel walk` the walk at the same
+warm and cold: its `duscape sharded` row is what the scan does now (the table where the gate
+takes it, the walk elsewhere) and `duscape sharded, kernel walk` the walk at the same
 privilege. On the whole system volume, means of three:
 
 | `C:\`, 2.46M entries | table | kernel walk | WizTree export |

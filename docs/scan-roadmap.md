@@ -34,7 +34,7 @@ up in `scan-performance.md` as a negative result and not merged.
 Results so far come from two cells, both ext4 on Linux: an 8-core VM on a virtio SSD with the
 host's cache under it (`docs/benchmarks/angch-noble-*.md`), and a 16-core bare-metal laptop on
 NVMe (`badwolf-20260925-full.md`). Bare metal walks about 2.5M entries/s warm against the VM's
-1.5M, and diskonaut and `diskus` finish within a few percent of each other on both, so warm, the
+1.5M, and duscape and `diskus` finish within a few percent of each other on both, so warm, the
 walk is the kernel's cost on either. Cold, the NVMe is 2.5–3x the warm time where the VM was
 3–4x, and `diskus` leads by 10–25% there: the difference in how the two issue reads in flight
 shows once the disk is the floor. Cold on a spinning disk has not been seen at all, and it is
@@ -184,7 +184,7 @@ thin LTO, mimalloc, PGO in the release pipeline.
 ## Running a step on another machine
 
 ```sh
-git clone … && cd diskonaut && cargo build --release -p diskonaut-angch
+git clone … && cd duscape && cargo build --release -p duscape
 cargo install hyperfine diskus              # the comparison
 docs/probes/bench-matrix.sh ~/src ~ ~/.cache   # or whichever three trees
 ```

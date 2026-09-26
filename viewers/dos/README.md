@@ -1,4 +1,4 @@
-# diskonaut for MS-DOS
+# duscape for MS-DOS
 
 The treemap viewer as a 16-bit real-mode DOS program, in FASM, about 29 KB assembled, for a 286
 (or an 80186) with no coprocessor. It is not built from the Rust code; the Rust code is its
@@ -6,7 +6,7 @@ reference, and the layout is checked against it tile for tile.
 
 | File | What it holds |
 | --- | --- |
-| [`DISKONAU.ASM`](DISKONAU.ASM) | start-up, the scan, the tree, the treemap, drawing, keys, delete, rescan |
+| [`DUSCAPE.ASM`](DUSCAPE.ASM) | start-up, the scan, the tree, the treemap, drawing, keys, delete, rescan |
 | [`PANEL.ASM`](PANEL.ASM) | the side panel: the folder's details, its entries, the list's cursor and focus |
 | [`PREVIEW.ASM`](PREVIEW.ASM) | the preview: text, what a file is, pictures in half blocks, the palette |
 | [`PNG.ASM`](PNG.ASM), [`JPEG.ASM`](JPEG.ASM) | the two picture decoders |
@@ -16,8 +16,8 @@ reference, and the layout is checked against it tile for tile.
 | [`tests/`](tests/) | the soft float against the host's doubles, and a lint for 386 instructions |
 
 ```sh
-make dos        # target/dos/DISKONAU.EXE (and diskonaut.exe, the same file)
-make dos-run    # DOSBox-X with this repository as C:, diskonaut scanning it
+make dos        # target/dos/DUSCAPE.EXE
+make dos-run    # DOSBox-X with this repository as C:, duscape scanning it
 ```
 
 `make dos` needs `dosbox-x` (`brew install dosbox-x`, or your distribution's package). It fetches
@@ -26,7 +26,7 @@ hashes in the `Makefile`, and assembles inside DOSBox-X. Inside DOS, `VIEWERS\DO
 the same from the repository root.
 
 ```
-DISKONAU [-a] [-k KEYS] [-s FILE] [FOLDER]
+DUSCAPE [-a] [-k KEYS] [-s FILE] [FOLDER]
   -a       apparent sizes instead of space on disk
   -k KEYS  type these first; E X T P N H Z are Enter Esc Tab PgUp PgDn Home End
            (DOS keeps < and > for redirection)
@@ -137,7 +137,7 @@ is selected.
   several are open at once, so each folder is listed to the end before its subfolders are walked.
 - In a host folder with thousands of names that share a long prefix (`target/debug/deps`),
   DOSBox-X mixes up the short names it makes for them and reports some files with another file's
-  size, and its own `DIR` shows the same. diskonaut shows what DOS reports.
+  size, and its own `DIR` shows the same. duscape shows what DOS reports.
 - DOS knows nothing of hard links, so a Rust `target/` (hard-linked binaries) counts larger than
   `du` says.
 - A long name with a character CP437 lacks (`łódź`, `日本語`) is not listed by DOSBox-X at all, so
@@ -187,7 +187,7 @@ ImageMagick too, averages it into the same block pixels, and compares: the grid'
 caption, every block's colour (within a few levels on average), and that each is drawn in its
 nearest of the 16 colours. The layout check lays out 40 random folders (sizes 0 to
 Pareto-distributed, 1 to 80 entries), beside the panel and without it, and compares every tile and the small-files corner with
-`libdiskonaut::tiles::TreeMap`, through [`tiles/`](tiles/), a tool outside the workspace.
+`libduscape::tiles::TreeMap`, through [`tiles/`](tiles/), a tool outside the workspace.
 
 The mouse is written against the INT 33h driver but not tried: DOSBox-X run headless has no
 pointer to move.

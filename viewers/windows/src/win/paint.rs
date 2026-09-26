@@ -9,13 +9,13 @@ use ::std::cell::Cell;
 use ::std::ffi::OsStr;
 use ::std::ptr::null_mut;
 
-use diskonaut_viewer::state::{
+use duscape_viewer::state::{
     EXPANDER, Focus, LIST_PAD, Layout, Preview, ROW, ROW_INDENT, Rect, describe, tile_color,
 };
-use libdiskonaut::DisplaySize;
-use libdiskonaut::format::without_verbatim_prefix;
-use libdiskonaut::tiles::FileType;
-use libdiskonaut::tiles::{Row, Tile};
+use libduscape::DisplaySize;
+use libduscape::format::without_verbatim_prefix;
+use libduscape::tiles::FileType;
+use libduscape::tiles::{Row, Tile};
 
 use windows_sys::Win32::Foundation::{COLORREF, HWND, RECT, SIZE};
 use windows_sys::Win32::Graphics::Gdi::{
@@ -601,7 +601,7 @@ fn draw_preview(canvas: &Canvas, window: &Window, info: Rect) {
             .sum();
         format!(
             "{} marked · {}",
-            libdiskonaut::DisplayCount(viewer.marked.len() as u64),
+            libduscape::DisplayCount(viewer.marked.len() as u64),
             DisplaySize(size as f64)
         )
     } else if let Some(entry) = viewer

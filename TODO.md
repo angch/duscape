@@ -3,28 +3,28 @@
 Work that needs a machine this repository's CI does not have. Each item says how to check it and
 what should happen; tick it off (or fix what it finds) and say so in the commit.
 
-## Shared viewer (`diskonaut-viewer`): needs a macOS or Linux machine
+## Shared viewer (`duscape-viewer`): needs a macOS or Linux machine
 
 - [ ] **One preview thread.** `viewers/shared/src/preview.rs` (`Previewer`, 60 ms debounce on
       every file, pictures handed over as bytes for the system decoder) and
-      `libdiskonaut::preview::Reader` (latest request only, 100 ms debounce on pictures alone,
+      `libduscape::preview::Reader` (latest request only, 100 ms debounce on pictures alone,
       the picture prepared by a closure — the terminal and Windows viewers) do the same job twice.
       Port `Previewer` onto `Reader` with a `picture` closure that reads the bytes, keeping the
       by-extension formats (`OTHER_PICTURES`) the system decodes, then delete its loop. Check on a
       real window that HEIC and GIF still preview and that holding ↓ through a folder of photos
       decodes none until the key is released.
 
-## macOS viewer (`diskonaut-mac`): untried by hand
+## macOS viewer (`duscape-mac`): untried by hand
 
 `viewers/macos/` was written and checked without screen or input access. The platform-independent
 state (`src/state.rs`) has unit tests, and the drawing was checked with
-`DISKONAUT_MAC_SNAPSHOT=out.png` (see `viewers/macos/README.md`), which renders the view after a
+`DUSCAPE_MAC_SNAPSHOT=out.png` (see `viewers/macos/README.md`), which renders the view after a
 scan. **Nothing below has been done with a real mouse and keyboard.** Run
-`cargo run -p diskonaut-mac -- <folder>` from a terminal and go through it. The code for each is in
+`cargo run -p duscape-mac -- <folder>` from a terminal and go through it. The code for each is in
 `src/mac/view.rs` unless said otherwise.
 
 **Automated since:** `viewers/macos/tests/smoke.sh` drives the real app with synthetic keys and
-clicks (`DISKONAUT_MAC_SCRIPT`, `src/mac/script.rs`) and checks its state after each. It needs a
+clicks (`DUSCAPE_MAC_SCRIPT`, `src/mac/script.rs`) and checks its state after each. It needs a
 logged-in session but no permissions. Items marked *(smoke)* pass there. Synthetic events are the
 app's own, so a hand check is still worth doing once, mainly for what the keyboard really sends.
 To automate another item, add steps and `expect` lines to `smoke.sh`.
@@ -110,7 +110,7 @@ To automate another item, add steps and `expect` lines to `smoke.sh`.
 - [ ] **Shortcuts:** ⌘↑ / ⌘↓ (`U+F700`/`U+F701`), ⌘⌫ / ⌥⌘⌫ (`U+007F`; see above), and whether ⌘+ fires on a
       US keyboard without Shift (the key equivalent is `+`; if only ⇧⌘= works, add `=`). Also
       ⇧⌘R (key equivalent `R`), ⌃⌘S, ⌃⌘F full screen, ⌘M, ⌘H, ⌘Q.
-- [ ] **About diskonaut** shows the standard panel.
+- [ ] **About duscape** shows the standard panel.
 
 ### Acting on entries
 
@@ -188,7 +188,7 @@ To automate another item, add steps and `expect` lines to `smoke.sh`.
       permissions of its own. Check that a bundled launch ignores Launch Services' `-psn_`
       argument (handled in `mac/mod.rs`, `options`).
 
-## Windows viewer (`diskonaut-windows`): tiles are probably the wrong shape
+## Windows viewer (`duscape-windows`): tiles are probably the wrong shape
 
 The treemap (`common/src/tiles/treemap.rs`, `HEIGHT_WIDTH_RATIO = 2.5`) lays tiles out in cells it
 takes to be 2.5 times **taller** than wide, like a terminal cell. `viewers/windows/src/main.rs` uses
@@ -201,7 +201,7 @@ mistake first and drew every folder as a long flat band; swapping the constants
       which says the opposite), check the tiles look square, and that the minimum tile (8×3 cells,
       now 32×30 px) still fits a label or reads as a tile.
 
-## Linux viewer (`diskonaut-linux`): tried under Xvfb and a headless weston, not on a desktop
+## Linux viewer (`duscape-linux`): tried under Xvfb and a headless weston, not on a desktop
 
 `viewers/linux/` was checked on an `Xvfb` with `xdotool` (see `viewers/linux/README.md`): the
 scan, the list and treemap, arrows, Enter/Esc, Tab, Shift ranges, the Trash and delete dialogs,
@@ -224,12 +224,12 @@ viewer's own title bar where the shell draws none. What neither can show:
 - [ ] **Wayland clipboard:** right-click, then paste elsewhere; the offer carries the last input
       serial (`Shared::serial`), which a compositor may refuse if the click was long ago.
 - [ ] **Backend choice:** under a Wayland session `WAYLAND_DISPLAY` picks Wayland; with
-      `DISKONAUT_BACKEND=x11` it runs through XWayland instead; a session with neither says so.
+      `DUSCAPE_BACKEND=x11` it runs through XWayland instead; a session with neither says so.
 
 - [ ] **Under a window manager:** the window opens at 1180×760, the minimum size (520×340) holds,
       the title bar shows the folder and its size, closing the window quits (`WM_DELETE_WINDOW`).
 - [ ] **On Wayland (XWayland):** GNOME, KDE and sway start it; the scale follows the desktop
-      (`Xft.dpi`, else set `DISKONAUT_SCALE=2`) and the text is not blurred.
+      (`Xft.dpi`, else set `DUSCAPE_SCALE=2`) and the text is not blurred.
 - [ ] **HiDPI:** with `Xft.dpi: 192`, everything is twice the size and the mouse still lands on
       the right row and tile (`app.rs` divides by `Display::scale`).
 - [ ] **Focus:** the highlighted row dims when another window takes focus and comes back after.

@@ -1,19 +1,19 @@
 [package]
-name = "diskonaut-scan"
+name = "duscape-scan"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Native directory walkers for diskonaut-angch (Linux statx, macOS getattrlistbulk, Windows bulk directory info), the parallel tree build, and the second pass."
+description = "Native directory walkers for duscape (Linux statx, macOS getattrlistbulk, Windows bulk directory info), the parallel tree build, and the second pass."
 readme = "../README.md"
 
 [lints]
 workspace = true
 
 [dependencies]
-libdiskonaut = { workspace = true }
+libduscape = { workspace = true }
 dua-core = { workspace = true }
 libc = { workspace = true }
 rustix = { workspace = true }

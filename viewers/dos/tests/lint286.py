@@ -10,7 +10,7 @@ being asked. Conditional jumps are J286.INC's macros, so they cannot be near one
 import os, re, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SOURCES = ["DISKONAU.ASM", "PANEL.ASM", "PREVIEW.ASM", "PNG.ASM", "JPEG.ASM", "SOFTFP.ASM",
+SOURCES = ["DUSCAPE.ASM", "PANEL.ASM", "PREVIEW.ASM", "PNG.ASM", "JPEG.ASM", "SOFTFP.ASM",
            "PVDATA.ASM", "FPDATA.ASM"]
 BAD = [
     (r"\be(ax|bx|cx|dx|si|di|bp|sp)\b", "a 32-bit register"),

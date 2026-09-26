@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The standard measurement for docs/scan-roadmap.md: the machine, the filesystem and the disk,
-# then warm, cold and root timings of diskonaut against diskus on the trees given, and the build
+# then warm, cold and root timings of duscape against diskus on the trees given, and the build
 # profile. Writes docs/benchmarks/<host>-<date>.md; commit it.
 #
 #   docs/probes/bench-matrix.sh [--runs N] [--tag WORD] TREE...
@@ -9,7 +9,7 @@
 # step, say) beside the baseline.
 #
 # Cold runs need root to drop caches (a sudoers line for `/usr/bin/tee /proc/sys/vm/drop_caches`
-# does), root runs need `sudo -n <this checkout>/target/release/diskonaut` to work; what cannot be
+# does), root runs need `sudo -n <this checkout>/target/release/duscape` to work; what cannot be
 # done is said in the file rather than silently skipped. `diskus` and `hyperfine` come from
 # `cargo install`.
 set -euo pipefail
@@ -29,10 +29,10 @@ done
 [ ${#trees[@]} -gt 0 ] || { echo "usage: $0 [--runs N] TREE..." >&2; exit 2; }
 
 here=$(cd "$(dirname "$0")/../.." && pwd)
-bin=${DISKONAUT:-$here/target/release/diskonaut}
+bin=${DUSCAPE:-$here/target/release/duscape}
 diskus=$(command -v diskus || echo "$HOME/.cargo/bin/diskus")
 command -v hyperfine >/dev/null || { echo "missing: hyperfine (cargo install hyperfine)" >&2; exit 1; }
-[ -x "$bin" ] || { echo "missing: $bin (cargo build --release -p diskonaut-angch)" >&2; exit 1; }
+[ -x "$bin" ] || { echo "missing: $bin (cargo build --release -p duscape)" >&2; exit 1; }
 host=$(hostname -s)
 out=$here/docs/benchmarks/$host-$(date +%Y%m%d)$tag.md
 drop='sync; echo 3 | sudo -n /usr/bin/tee /proc/sys/vm/drop_caches >/dev/null'
@@ -54,7 +54,7 @@ distro=$(. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME" || uname -s)
     echo "| --- | --- |"
     echo "| machine | $cpu, $cores cores, $mem, virtualisation: $virt |"
     echo "| system | $distro, kernel $(uname -r) |"
-    echo "| diskonaut | $(git -C "$here" rev-parse --short HEAD) ($(git -C "$here" status --porcelain -uno | grep -q . && echo "with local changes" || echo clean)), release profile |"
+    echo "| duscape | $(git -C "$here" rev-parse --short HEAD) ($(git -C "$here" status --porcelain -uno | grep -q . && echo "with local changes" || echo clean)), release profile |"
     echo "| diskus | $([ -n "$has_diskus" ] && "$diskus" --version || echo "not installed") |"
     echo "| cold runs | $([ -n "$can_drop" ] && echo "yes (caches dropped before each)" || echo "no: cannot drop caches without root") |"
     echo "| root runs | $([ -n "$can_root" ] && echo "yes" || echo "no: sudo -n $bin not allowed") |"
@@ -85,13 +85,13 @@ bench() { # title dir hyperfine-args...
     local md; md=$(mktemp)
     local cmds=()
     [ -n "$has_diskus" ] && cmds+=(-n "diskus" "'$diskus' --directories excluded '$dir' >/dev/null 2>&1")
-    cmds+=(-n "diskonaut sharded" "'$bin' --benchmark --bench-stage sharded '$dir' >/dev/null")
-    cmds+=(-n "diskonaut refined" "'$bin' --benchmark --bench-stage refined '$dir' >/dev/null")
+    cmds+=(-n "duscape sharded" "'$bin' --benchmark --bench-stage sharded '$dir' >/dev/null")
+    cmds+=(-n "duscape refined" "'$bin' --benchmark --bench-stage refined '$dir' >/dev/null")
     if [ -n "$can_root" ] && [ "$(id -u)" -ne 0 ]; then
         # As root the Linux scan reads ext4 from the device; the kernel walk as root is the
         # same privilege without that, so the two rows separate the device read from the rest.
-        cmds+=(-n "diskonaut sharded, as root" "sudo -n '$bin' --benchmark --bench-stage sharded '$dir' >/dev/null")
-        cmds+=(-n "diskonaut sharded, as root, kernel walk" "sudo -n '$bin' --benchmark --bench-stage sharded --no-device-read '$dir' >/dev/null")
+        cmds+=(-n "duscape sharded, as root" "sudo -n '$bin' --benchmark --bench-stage sharded '$dir' >/dev/null")
+        cmds+=(-n "duscape sharded, as root, kernel walk" "sudo -n '$bin' --benchmark --bench-stage sharded --no-device-read '$dir' >/dev/null")
     fi
     hyperfine --runs "$runs" "$@" --export-markdown "$md" "${cmds[@]}" >/dev/null 2>&1 || true
     { echo "### $title: $dir"; echo; cat "$md"; echo; } >> "$out"

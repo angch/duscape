@@ -786,7 +786,7 @@ pub fn walk_windows(root: &Path, threads: usize, options: ScanOptions) -> Window
     // Elevated, this lets the walk into every folder, as WizTree's does; unelevated it is a no-op.
     // Once per process: the privilege stays on once enabled.
     static BACKUP_PRIVILEGE: ::std::sync::OnceLock<bool> = ::std::sync::OnceLock::new();
-    let elevated = *BACKUP_PRIVILEGE.get_or_init(libdiskonaut::os::enable_backup_privilege);
+    let elevated = *BACKUP_PRIVILEGE.get_or_init(libduscape::os::enable_backup_privilege);
 
     // Elevated, the walk reaches folders the hot spots were never chosen for — other users'
     // profiles, `WindowsApps`, `System Volume Information` — and on one `C:\` those held 10,041
@@ -799,7 +799,7 @@ pub fn walk_windows(root: &Path, threads: usize, options: ScanOptions) -> Window
 
     // Only a whole-volume scan: the files belong to the volume, not to any folder. They are
     // blocks, not lengths, so they are given no apparent size.
-    let volume_root = libdiskonaut::os::volume_used(&root).is_some();
+    let volume_root = libduscape::os::volume_used(&root).is_some();
     let metafiles = volume_root
         .then(|| metafiles::collect(&root, options.max_depth.is_none_or(|max| max > 1)))
         .flatten();

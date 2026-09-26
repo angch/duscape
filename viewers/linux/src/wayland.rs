@@ -694,7 +694,7 @@ impl Pool {
         let one = Self::one(width, height);
         let len = one * 2;
         // SAFETY: memfd_create with a static name; the result is checked.
-        let raw = unsafe { libc::memfd_create(c"diskonaut-frame".as_ptr(), libc::MFD_CLOEXEC) };
+        let raw = unsafe { libc::memfd_create(c"duscape-frame".as_ptr(), libc::MFD_CLOEXEC) };
         if raw < 0 {
             return Err("memfd_create failed".to_string());
         }
@@ -889,7 +889,7 @@ impl Wayland {
         let xdg_surface = wm_base.get_xdg_surface(&surface, &qh, ());
         let toplevel = xdg_surface.get_toplevel(&qh, ());
         toplevel.set_title(title.to_string());
-        toplevel.set_app_id("diskonaut-linux".to_string());
+        toplevel.set_app_id("duscape-linux".to_string());
         toplevel.set_min_size(min.0 as i32, min.1 as i32);
         if let Some(manager) = &state.decoration_manager {
             let decoration = manager.get_toplevel_decoration(&toplevel, &qh, ());

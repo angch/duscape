@@ -1,9 +1,9 @@
 # Filesystem fixtures
 
-What diskonaut reports depends on the filesystem under it: hard links, copy-on-write clones,
+What duscape reports depends on the filesystem under it: hard links, copy-on-write clones,
 snapshots, compression, sparse files and mount layouts all change what "size" means, and a temp
 directory on ext4 exercises none of it. These fixtures make each filesystem on a loopback image,
-fill it with those quirks, and check diskonaut against what the volume really holds.
+fill it with those quirks, and check duscape against what the volume really holds.
 
 ```bash
 make test-fs                        # everything
@@ -12,7 +12,7 @@ fixtures/fs/run.sh --no-build xfs   # reuse the last build
 ```
 
 Making filesystems needs root. As a member of the `docker` group, `run.sh` runs the root half in a
-`--privileged` container of a local image, `diskonaut-fs-fixtures`, which `build-image.sh` makes
+`--privileged` container of a local image, `duscape-fs-fixtures`, which `build-image.sh` makes
 from this machine's own tools (plus `xfsprogs`, `f2fs-tools`, `nfs-kernel-server`, `nfs-common`
 and `rclone`, fetched with `apt-get download` if the host lacks them) — no registry, and only the
 work directory (`target/fs-fixtures`) is shared with it. As root (CI, under `sudo`) it runs directly on the host. Either way the scans and tests
@@ -25,11 +25,11 @@ For each of **ext4, XFS, btrfs, f2fs, tmpfs, FAT32, exFAT, NTFS** (`ntfs3`):
 - a generic tree: sizes either side of a block, 1500 tiny files, ten levels of nesting, a 64 MiB
   sparse file with 1 MiB written, a file with three hard links across two folders, a symlink, and
   names with spaces, non-ASCII and a newline — whatever the filesystem accepts
-- diskonaut's total against an **inode oracle**: blocks (or, with `-a`, lengths) of every
-  non-directory, counted once per `(device, inode)` by `find` — independent of diskonaut's code
-- on the POSIX ones, the whole `libdiskonaut` and `diskonaut-angch` test suites with `TMPDIR` on
-  that filesystem, so every test that makes a temp tree makes it there; `DISKONAUT_TEST_REFLINK_DIR`
-  is set on XFS and btrfs and `DISKONAUT_TEST_BTRFS_DIR` on btrfs, which enables their tests
+- duscape's total against an **inode oracle**: blocks (or, with `-a`, lengths) of every
+  non-directory, counted once per `(device, inode)` by `find` — independent of duscape's code
+- on the POSIX ones, the whole `libduscape` and `duscape` test suites with `TMPDIR` on
+  that filesystem, so every test that makes a temp tree makes it there; `DUSCAPE_TEST_REFLINK_DIR`
+  is set on XFS and btrfs and `DUSCAPE_TEST_BTRFS_DIR` on btrfs, which enables their tests
 - on XFS and btrfs, **copy-on-write**: whole reflink clones held once, a clone rewritten in part
   counted in full (by design), and a clone below the probe threshold
 
@@ -63,15 +63,15 @@ Each check is one line:
 | `KNOWN` | a documented limitation or an open bug, with its size, so a change in it still shows |
 | `SKIP` | this machine cannot make that filesystem or do that thing |
 
-Scans run as the test user unless a check says "as root", which runs diskonaut as root the way
-`sudo diskonaut` would. Totals are read from `--benchmark --bench-stage refined`: the scan and then the second pass over
+Scans run as the test user unless a check says "as root", which runs duscape as root the way
+`sudo duscape` would. Totals are read from `--benchmark --bench-stage refined`: the scan and then the second pass over
 small files, which is what the app shows once its title stops saying "refining".
 
 The one KNOWN line as of 2026-09-23:
 
 - **btrfs compression, as a user**: `stat` reports the uncompressed blocks, and only
   `BTRFS_IOC_TREE_SEARCH_V2`, which needs `CAP_SYS_ADMIN`, says what the extents occupy. As root
-  diskonaut reads them, and those checks pass exactly.
+  duscape reads them, and those checks pass exactly.
 
 Fixed since the fixtures found them, and now ordinary checks: btrfs snapshots counted once per
 snapshot (the device was part of the extent identity), small files and clones under 64 KiB never
@@ -82,5 +82,5 @@ checked for sharing (now the second pass), and bind mounts counted twice.
 A scan or accounting change should come with a fixture here if its behaviour depends on the
 filesystem or the mount table. Add the quirk to `make_dataset` if every filesystem should have it,
 or a scenario function to `inside.sh` if it needs a layout, and give it an oracle that does not
-share code with diskonaut: `find`, the filesystem's own tools, or sizes the scenario constructed.
+share code with duscape: `find`, the filesystem's own tools, or sizes the scenario constructed.
 A new limitation goes in as `KNOWN` with its reason, not as a looser tolerance.

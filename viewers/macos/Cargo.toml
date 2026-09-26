@@ -1,24 +1,24 @@
 [package]
-name = "diskonaut-mac"
+name = "duscape-mac"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "macOS GUI viewer for diskonaut-angch: the shared model and native walker, drawn with AppKit."
+description = "macOS GUI viewer for duscape: the shared model and native walker, drawn with AppKit."
 
 [lints]
 workspace = true
 
 [[bin]]
-name = "diskonaut-mac"
+name = "duscape-mac"
 path = "src/main.rs"
 
 [dependencies]
-libdiskonaut = { workspace = true }
-diskonaut-scan = { workspace = true }
-diskonaut-viewer = { path = "../shared", version = "0.2.0" }
+libduscape = { workspace = true }
+duscape-scan = { workspace = true }
+duscape-viewer = { path = "../shared", version = "0.2.0" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

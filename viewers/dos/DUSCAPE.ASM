@@ -1,4 +1,4 @@
-; diskonaut for MS-DOS: the treemap viewer as a 16-bit real-mode program.
+; duscape for MS-DOS: the treemap viewer as a 16-bit real-mode program.
 ;
 ; Assembled by FASM (the DOS build of flat assembler 1.73) into an MZ executable, see BUILD.BAT
 ; and `make dos`. It runs on a 286 with no coprocessor: 16-bit registers only, no FS or GS, no
@@ -4504,14 +4504,14 @@ s_anykey        db 'Press any key',0
 s_pseudo1       db 'This stands for files there was no memory to list.',0
 s_pseudo2       db 'Scan a folder further down to see them.',0
 
-msg_usage       db 'diskonaut for DOS: a treemap of what fills your disk.',13,10,13,10
-                db 'usage: DISKONAU [-a] [-k KEYS] [-s FILE] [FOLDER]',13,10
+msg_usage       db 'duscape for DOS: a treemap of what fills your disk.',13,10,13,10
+                db 'usage: DUSCAPE [-a] [-k KEYS] [-s FILE] [FOLDER]',13,10
                 db '  -a       show apparent sizes instead of space on disk',13,10
                 db '  -k KEYS  type these first; E X T P N H Z are Enter Esc Tab PgUp PgDn Home End',13,10
                 db '  -s FILE  then write the screen to FILE and quit',13,10,'$'
-msg_notdir      db 'diskonaut: not a folder',13,10,'$'
-msg_nomem       db 'diskonaut: not enough memory',13,10,'$'
-msg_cpu         db 'diskonaut: needs an 80186, a 286 or later',13,10,'$'
+msg_notdir      db 'duscape: not a folder',13,10,'$'
+msg_nomem       db 'duscape: not enough memory',13,10,'$'
+msg_cpu         db 'duscape: needs an 80186, a 286 or later',13,10,'$'
 
 ; the treemap's working values
 em_x            rb F_SIZE

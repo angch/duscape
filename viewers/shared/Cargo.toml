@@ -1,16 +1,16 @@
 [package]
-name = "diskonaut-viewer"
+name = "duscape-viewer"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "What the diskonaut-angch desktop viewers share: the window's state and layout, the first scan with its live outline, and the preview reader — with no toolkit in it."
+description = "What the duscape desktop viewers share: the window's state and layout, the first scan with its live outline, and the preview reader — with no toolkit in it."
 
 [lints]
 workspace = true
 
 [dependencies]
-libdiskonaut = { workspace = true }
-diskonaut-scan = { workspace = true }
+libduscape = { workspace = true }
+duscape-scan = { workspace = true }

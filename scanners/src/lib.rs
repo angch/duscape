@@ -14,15 +14,15 @@
 //! the second pass over the small files the walk left for later, and [`rescan`] runs a rescan or
 //! a second pass on a thread of its own, for a viewer to show when it is done. The types a walk
 //! produces — [`ScanOptions`], [`EntryMeta`], [`DirEntries`], [`Outline`] — are
-//! `libdiskonaut`'s, re-exported here, since the model consumes them.
+//! `libduscape`'s, re-exported here, since the model consumes them.
 
 use ::std::num::NonZero;
 use ::std::path::Path;
 
 use ::dua_core::{Options, Order, walk};
 
-use libdiskonaut::model::{FileTree, Folder};
-pub use libdiskonaut::scan::*;
+use libduscape::model::{FileTree, Folder};
+pub use libduscape::scan::*;
 
 #[cfg(target_os = "macos")]
 pub mod macos;
@@ -61,7 +61,7 @@ pub mod parallel {
     use ::std::time::{Duration, Instant};
 
     use super::{DirEntries, ScanOptions, scan_directories};
-    use libdiskonaut::model::{FileTree, Folder};
+    use libduscape::model::{FileTree, Folder};
 
     /// Builders to run.
     ///
@@ -582,7 +582,7 @@ fn descend_predicate(
     let max_depth = options.max_depth;
     let root_device = options
         .one_file_system
-        .then(|| libdiskonaut::os::volume_id(root).unwrap_or_default());
+        .then(|| libduscape::os::volume_id(root).unwrap_or_default());
     move |entry| {
         if !max_depth.is_none_or(|max| entry.depth < max) {
             return false;
@@ -644,7 +644,7 @@ fn entry_identity(
     let links = if is_dir {
         1
     } else if let Some(path) = path {
-        libdiskonaut::os::link_count(path)
+        libduscape::os::link_count(path)
     } else {
         1
     };
@@ -674,7 +674,7 @@ fn entry_size(metadata: &::dua_core::Metadata, apparent: bool) -> u64 {
     if apparent {
         metadata.len()
     } else {
-        libdiskonaut::os::size_on_disk_fast(metadata)
+        libduscape::os::size_on_disk_fast(metadata)
     }
 }
 
@@ -709,7 +709,7 @@ fn comparable_volume_used(root: &Path, options: ScanOptions) -> Option<u128> {
     if !stays {
         return None;
     }
-    libdiskonaut::os::volume_used(root).map(u128::from)
+    libduscape::os::volume_used(root).map(u128::from)
 }
 
 #[cfg(test)]

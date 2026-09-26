@@ -1,5 +1,5 @@
 //! What a scanner hands the model: the options a walk runs under, and each directory's entries
-//! as it is read. The walkers themselves are in `diskonaut-scan`; this is the protocol between
+//! as it is read. The walkers themselves are in `duscape-scan`; this is the protocol between
 //! them and [`crate::FileTree`], which is why it lives here and not with them.
 
 use ::std::ffi::{OsStr, OsString};
@@ -184,7 +184,7 @@ pub struct DirEntries {
     names: Vec<u8>,
     entries: Vec<NamedEntry>,
     pub failed: u64,
-    /// Entries left for the second pass (`diskonaut_scan::refine`): small files that may share extents but were
+    /// Entries left for the second pass (`duscape_scan::refine`): small files that may share extents but were
     /// not worth probing during the walk. Indices into `entries`.
     /// Filled in by the walker that decided to leave them; nothing else writes it.
     pub later: Vec<u32>,

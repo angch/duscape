@@ -23,7 +23,7 @@ for i in range(n):
         for f in frames:
             f = f.split(" in ", 1)[-1].split(" (")[0].split(" at ")[0].strip()
             names.append(f)
-        if any("libdiskonaut" in f or "bench" in f or "add_dir_entries" in f for f in names):
+        if any("libduscape" in f or "bench" in f or "add_dir_entries" in f for f in names):
             key = " <- ".join(names[:12])
             stacks[key] += 1
             for f in names[:6]:

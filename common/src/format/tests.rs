@@ -193,7 +193,7 @@ mod relative_to {
     #[test]
     fn walks_up_and_down_between_directories() {
         let cases = [
-            // cwd /home/user/foo, `diskonaut ../bar/`, `baz` selected.
+            // cwd /home/user/foo, `duscape ../bar/`, `baz` selected.
             ("/home/user/foo", "/home/user/bar/baz", "../bar/baz"),
             ("/home/user", "/home/user/bar/baz", "bar/baz"),
             ("/home/user/bar/baz/deep", "/home/user/bar/baz", ".."),

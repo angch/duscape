@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Benchmark diskonaut's scan against diskus with hyperfine, warm and cold.
+# Benchmark duscape's scan against diskus with hyperfine, warm and cold.
 #
 #   docs/probes/bench-diskus.sh [--warm|--cold|--both] [--runs N] DIR...
 #
@@ -9,10 +9,10 @@
 # a password in sudoers, or `sudo -v` first so the cached credential carries
 # the prepare steps. Without it the cold set is skipped and said so.
 #
-# diskonaut runs `--benchmark`, headless, at two stages: `sharded` is the walk
+# duscape runs `--benchmark`, headless, at two stages: `sharded` is the walk
 # and tree build exactly as the app runs them, `refined` adds the second pass
 # over small files that may share extents. diskus is run with
-# `--directories excluded` so that its total matches diskonaut's, which never
+# `--directories excluded` so that its total matches duscape's, which never
 # counts a directory's own blocks; the walk it does is the same either way.
 #
 # Results go to $OUT (default: bench-diskus-<host>-<date>.md) as a Markdown
@@ -36,9 +36,9 @@ done
 [ ${#dirs[@]} -gt 0 ] || { echo "usage: $0 [--warm|--cold|--both] [--runs N] DIR..." >&2; exit 2; }
 
 here=$(cd "$(dirname "$0")/../.." && pwd)
-diskonaut=${DISKONAUT:-$here/target/release/diskonaut}
+duscape=${DUSCAPE:-$here/target/release/duscape}
 diskus=${DISKUS:-$(command -v diskus || echo "$HOME/.cargo/bin/diskus")}
-for bin in hyperfine "$diskonaut" "$diskus"; do
+for bin in hyperfine "$duscape" "$diskus"; do
     command -v "$bin" >/dev/null || { echo "missing: $bin" >&2; exit 1; }
 done
 out=${OUT:-bench-diskus-$(hostname -s)-$(date +%Y%m%d-%H%M).md}
@@ -54,10 +54,10 @@ else
 fi
 
 {
-    echo "# diskonaut vs diskus"
+    echo "# duscape vs diskus"
     echo
     echo "- host: $(hostname -s), $(nproc) cpus, kernel $(uname -r)"
-    echo "- diskonaut: $(git -C "$here" rev-parse --short HEAD 2>/dev/null || echo ?) ($diskonaut)"
+    echo "- duscape: $(git -C "$here" rev-parse --short HEAD 2>/dev/null || echo ?) ($duscape)"
     echo "- diskus: $("$diskus" --version)"
     echo "- hyperfine: $(hyperfine --version)"
     echo "- runs: $runs per command"
@@ -73,8 +73,8 @@ bench() { # set dir hyperfine-args...
     hyperfine --runs "$runs" "$@" \
         --export-json "$json" --export-markdown "$md" \
         -n "diskus" "'$diskus' --directories excluded '$dir' >/dev/null 2>&1" \
-        -n "diskonaut sharded" "'$diskonaut' --benchmark --bench-stage sharded '$dir' >/dev/null" \
-        -n "diskonaut refined" "'$diskonaut' --benchmark --bench-stage refined '$dir' >/dev/null"
+        -n "duscape sharded" "'$duscape' --benchmark --bench-stage sharded '$dir' >/dev/null" \
+        -n "duscape refined" "'$duscape' --benchmark --bench-stage refined '$dir' >/dev/null"
     {
         echo "## $set: $dir ($fs)"
         echo

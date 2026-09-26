@@ -1,5 +1,5 @@
 //! Windows, with the window built in: embed `windows.manifest` in the binaries, so Explorer
-//! starts `diskonaut.exe` with no console (`consoleAllocationPolicy`, see the manifest).
+//! starts `duscape.exe` with no console (`consoleAllocationPolicy`, see the manifest).
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");

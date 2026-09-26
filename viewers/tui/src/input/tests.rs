@@ -16,7 +16,7 @@ fn key_char(c: char) -> Event {
 }
 
 fn test_app(width: u16, height: u16) -> App<TestBackend> {
-    let dir = std::env::temp_dir().join("diskonaut_input_test");
+    let dir = std::env::temp_dir().join("duscape_input_test");
     let _ = std::fs::create_dir_all(&dir);
     let (tx, _rx) = mpsc::sync_channel(1);
     App::new(
@@ -68,13 +68,13 @@ fn exiting_mode_y_quits() {
 #[test]
 fn delete_mode_n_returns_to_normal() {
     let mut app = test_app(80, 24);
-    let file = libdiskonaut::FileToDelete {
+    let file = libduscape::FileToDelete {
         path_in_filesystem: PathBuf::from("/tmp"),
         path_to_file: vec!["file".into()],
-        file_type: libdiskonaut::tiles::FileType::File,
+        file_type: libduscape::tiles::FileType::File,
         num_descendants: None,
         size: 1,
-        sizes: libdiskonaut::model::Sizes::new(1, 1),
+        sizes: libduscape::model::Sizes::new(1, 1),
     };
     app.ui_mode = UiMode::DeleteFiles(vec![file.clone()]);
     handle_keypress_delete_file_mode(key_char('n'), &mut app, vec![file]);

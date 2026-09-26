@@ -1,4 +1,4 @@
-# Windows with the MSVC toolchain: the C runtime linked in, so `diskonaut.exe` needs no
+# Windows with the MSVC toolchain: the C runtime linked in, so `duscape.exe` needs no
 # vcruntime140.dll beside it — only DLLs that come with Windows, as the windows-gnu build
 # (cargo zigbuild, against the Universal C Runtime) already does.
 [target.x86_64-pc-windows-msvc]

@@ -35,14 +35,14 @@ use objc2_quick_look_ui::{
 };
 
 use super::draw::{Frame, draw};
-use diskonaut_scan::rescan::{Outcome, Rescanner};
-use diskonaut_viewer::menu::{Action, Entry, Platform};
-use diskonaut_viewer::preview::{Loaded, Previewer};
-use diskonaut_viewer::scan;
-use diskonaut_viewer::state::{Direction, Hit, Jump, Mods, Preview, ROW, Rect, Viewer, drop_later};
-use libdiskonaut::format::quote_path_for_shell;
-use libdiskonaut::model::SizeKind;
-use libdiskonaut::{DirSummary, DisplayCount, DisplaySize, FileToDelete, FileTree, ScanOptions};
+use duscape_scan::rescan::{Outcome, Rescanner};
+use duscape_viewer::menu::{Action, Entry, Platform};
+use duscape_viewer::preview::{Loaded, Previewer};
+use duscape_viewer::scan;
+use duscape_viewer::state::{Direction, Hit, Jump, Mods, Preview, ROW, Rect, Viewer, drop_later};
+use libduscape::format::quote_path_for_shell;
+use libduscape::model::SizeKind;
+use libduscape::{DirSummary, DisplayCount, DisplaySize, FileToDelete, FileTree, ScanOptions};
 
 pub struct Ivars {
     /// Boxed: the tree holds 128-bit sizes, and an Objective-C object's fields cannot be aligned
@@ -74,7 +74,7 @@ define_class!(
     // SAFETY: NSView may be subclassed; `DiskView` has no `Drop` impl.
     #[unsafe(super(NSView, NSResponder, objc2_foundation::NSObject))]
     #[thread_kind = MainThreadOnly]
-    #[name = "DiskonautView"]
+    #[name = "DuscapeView"]
     #[ivars = Ivars]
     pub struct DiskView;
 
@@ -757,7 +757,7 @@ impl DiskView {
         if super::script::run_from_environment() {
             return;
         }
-        if let Some(path) = ::std::env::var_os("DISKONAUT_MAC_SNAPSHOT") {
+        if let Some(path) = ::std::env::var_os("DUSCAPE_MAC_SNAPSHOT") {
             // Long enough for the preview of what is in hand to arrive.
             ::std::thread::spawn(move || {
                 ::std::thread::sleep(::std::time::Duration::from_millis(500));
@@ -770,7 +770,7 @@ impl DiskView {
     }
 
     /// Draw the window's contents into a PNG at `path`: a way to look at the drawing without
-    /// screen access, for development (`DISKONAUT_MAC_SNAPSHOT=out.png diskonaut-mac FOLDER`).
+    /// screen access, for development (`DUSCAPE_MAC_SNAPSHOT=out.png duscape-mac FOLDER`).
     pub fn snapshot(&self, path: &Path) {
         let bounds = self.bounds();
         let Some(bitmap) = self.bitmapImageRepForCachingDisplayInRect(bounds) else {
@@ -982,7 +982,7 @@ impl DiskView {
             }
             return;
         }
-        if let Some(name) = libdiskonaut::delete::refused(&files) {
+        if let Some(name) = libduscape::delete::refused(&files) {
             self.alert(
                 NSAlertStyle::Warning,
                 "This cannot be deleted",
@@ -1006,7 +1006,7 @@ impl DiskView {
         let mut failures = Vec::new();
         for file in files {
             let result = if permanently {
-                libdiskonaut::delete::remove(&file).map_err(|error| error.to_string())
+                libduscape::delete::remove(&file).map_err(|error| error.to_string())
             } else {
                 trash(&file.full_path())
             };
@@ -1148,7 +1148,7 @@ impl DiskView {
 }
 
 /// Pictures with more pixels than this are described rather than drawn: 1 GiB decoded, at four
-/// bytes a pixel — the limit `libdiskonaut::preview::decode_picture` sets for the terminal viewer.
+/// bytes a pixel — the limit `libduscape::preview::decode_picture` sets for the terminal viewer.
 const MAX_PICTURE_PIXELS: isize = (1 << 30) / 4;
 
 /// A picture's size in pixels, from its header: the largest of its representations.
@@ -1184,7 +1184,7 @@ fn describe_files(files: &[FileToDelete], permanently: bool) -> String {
     let mut words = match files {
         [one] => {
             let contents = match one.num_descendants {
-                Some(count) if one.file_type == libdiskonaut::FileType::Folder => {
+                Some(count) if one.file_type == libduscape::FileType::Folder => {
                     format!(", a folder of {} items", DisplayCount(count))
                 }
                 _ => String::new(),
@@ -1239,7 +1239,7 @@ fn dropped_folder(sender: &ProtocolObject<dyn NSDraggingInfo>) -> Option<PathBuf
 }
 
 /// The menu a right-click (or Control-click) on an entry opens.
-/// What the context menu offers here beyond every viewer's items (`diskonaut_viewer::menu`).
+/// What the context menu offers here beyond every viewer's items (`duscape_viewer::menu`).
 const PLATFORM: Platform = Platform {
     reveal: "Show in Finder",
     quick_look: true,

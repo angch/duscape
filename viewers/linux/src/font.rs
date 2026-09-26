@@ -1,4 +1,4 @@
-//! Text: the system's fonts, found through `fc-match` (or well-known paths, or `DISKONAUT_FONT`),
+//! Text: the system's fonts, found through `fc-match` (or well-known paths, or `DUSCAPE_FONT`),
 //! rasterised by `fontdue` a glyph at a time and cached. Text is drawn into a rectangle in
 //! points, centred vertically, aligned and truncated with "…" like the AppKit viewer's pens.
 
@@ -10,7 +10,7 @@ use ::std::process::Command;
 use fontdue::{Font, FontSettings, Metrics};
 
 use crate::canvas::{Canvas, Color, pack};
-use diskonaut_viewer::state::Rect;
+use duscape_viewer::state::Rect;
 
 /// Where a text that does not fit is cut.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -132,11 +132,11 @@ pub struct Fonts {
 
 impl Fonts {
     /// The system's sans-serif, its bold, and its monospace, by fontconfig; without fontconfig,
-    /// the usual files. `DISKONAUT_FONT`, `DISKONAUT_FONT_BOLD` and `DISKONAUT_FONT_MONO` name
+    /// the usual files. `DUSCAPE_FONT`, `DUSCAPE_FONT_BOLD` and `DUSCAPE_FONT_MONO` name
     /// files to use instead.
     pub fn system() -> Result<Fonts, String> {
         let sans_path = find_font(
-            "DISKONAUT_FONT",
+            "DUSCAPE_FONT",
             "sans-serif",
             &[
                 "dejavu/DejaVuSans.ttf",
@@ -148,11 +148,11 @@ impl Fonts {
             ],
         )
         .ok_or_else(|| {
-            "no font found: install fontconfig or DejaVu, or set DISKONAUT_FONT=/path/to/font.ttf"
+            "no font found: install fontconfig or DejaVu, or set DUSCAPE_FONT=/path/to/font.ttf"
                 .to_string()
         })?;
         let bold_path = find_font(
-            "DISKONAUT_FONT_BOLD",
+            "DUSCAPE_FONT_BOLD",
             "sans-serif:bold",
             &[
                 "dejavu/DejaVuSans-Bold.ttf",
@@ -165,7 +165,7 @@ impl Fonts {
         )
         .unwrap_or_else(|| sans_path.clone());
         let mono_path = find_font(
-            "DISKONAUT_FONT_MONO",
+            "DUSCAPE_FONT_MONO",
             "monospace",
             &[
                 "dejavu/DejaVuSansMono.ttf",
@@ -354,7 +354,7 @@ mod tests {
     use super::*;
 
     fn face() -> Option<Face> {
-        let path = find_font("DISKONAUT_FONT", "sans-serif", &["dejavu/DejaVuSans.ttf"])?;
+        let path = find_font("DUSCAPE_FONT", "sans-serif", &["dejavu/DejaVuSans.ttf"])?;
         Face::load(::std::fs::read(path).ok()?).ok()
     }
 

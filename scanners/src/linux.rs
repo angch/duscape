@@ -481,7 +481,7 @@ pub(crate) use reflink::shared_identity;
 /// the siblings' blocks are then in core. Where it cannot be opened, nothing changes: the walk
 /// is exactly what an unprivileged one is.
 ///
-/// `DISKONAUT_DIRBLOCKS_DEVICE=<path>` names the file to advise instead of the device, for
+/// `DUSCAPE_DIRBLOCKS_DEVICE=<path>` names the file to advise instead of the device, for
 /// exercising this path without the device: on a regular file the advice is harmless.
 mod dirblocks {
     use ::std::os::fd::{AsRawFd, OwnedFd};
@@ -501,7 +501,7 @@ mod dirblocks {
     impl Device {
         /// The device `st_dev` names, if it can be opened for reading.
         pub fn open(device: u64) -> Option<Self> {
-            if let Ok(path) = ::std::env::var("DISKONAUT_DIRBLOCKS_DEVICE") {
+            if let Ok(path) = ::std::env::var("DUSCAPE_DIRBLOCKS_DEVICE") {
                 let fd = open(path, OFlags::RDONLY | OFlags::CLOEXEC, Mode::empty()).ok()?;
                 return Some(Self { fd });
             }

@@ -180,7 +180,7 @@ mod tests {
     #[test]
     fn trashing_by_hand_moves_the_file_and_writes_its_info() {
         let root =
-            ::std::env::temp_dir().join(format!("diskonaut-linux-trash-{}", ::std::process::id()));
+            ::std::env::temp_dir().join(format!("duscape-linux-trash-{}", ::std::process::id()));
         let _ = ::std::fs::remove_dir_all(&root);
         ::std::fs::create_dir_all(&root).unwrap();
         let file = root.join("gone.txt");

@@ -1,4 +1,4 @@
-; JPEG.ASM, included by DISKONAU.ASM: a JPEG decoded into the preview's half blocks
+; JPEG.ASM, included by DUSCAPE.ASM: a JPEG decoded into the preview's half blocks
 ; (PREVIEW.ASM).
 ;
 ; A block pixel of the preview covers many 8x8 blocks of the image, and the mean of a block is

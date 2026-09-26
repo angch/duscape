@@ -4,13 +4,13 @@ use clap::Parser;
 
 use crate::error::Error;
 
-/// Command-line options for `diskonaut`.
+/// Command-line options for `duscape`.
 ///
-/// `name` fixes the identity shown by `--version` to the fork's, regardless of whether the program
-/// was invoked as `diskonaut-angch` or the `diskonaut` alias; `about` is what `--help` opens with.
+/// `name` fixes the identity shown by `--version`, whatever name the program was started by (a
+/// link, `duscape-gui`); `about` is what `--help` opens with.
 #[derive(Parser, Debug, PartialEq, Eq)]
 #[command(
-    name = "diskonaut-angch",
+    name = "duscape",
     version,
     about = "Where the disk space went: a treemap of FOLDER (else this one) in the terminal, or \
              in a window (--gui, and the default when started from a desktop)",
@@ -32,7 +32,7 @@ pub struct Opt {
     /// Show file sizes rather than their block usage on disk
     #[arg(short, long)]
     pub apparent_size: bool,
-    /// Path to config file (default: `~/.config/diskonaut/config.toml`)
+    /// Path to config file (default: `~/.config/duscape/config.toml`)
     #[arg(short = 'c', long, value_name = "FILE")]
     pub config: Option<PathBuf>,
     /// Do not cross filesystem boundaries (like `du -x`)
@@ -57,11 +57,11 @@ pub struct Opt {
     #[arg(long)]
     pub bench_profile: bool,
     /// Tree-building threads for the `sharded` benchmark stage (default: what the app uses)
-    #[arg(long, value_name = "N", default_value_t = diskonaut_scan::parallel::SHARDS)]
+    #[arg(long, value_name = "N", default_value_t = duscape_scan::parallel::SHARDS)]
     pub bench_shards: usize,
     /// Shard directories by their first N path components, 0 for the whole path (default: what
     /// the app uses)
-    #[arg(long, value_name = "N", default_value_t = diskonaut_scan::parallel::SHARD_DEPTH)]
+    #[arg(long, value_name = "N", default_value_t = duscape_scan::parallel::SHARD_DEPTH)]
     pub bench_shard_depth: usize,
     /// Stop descending below this depth (partial scans; the root is depth 0)
     #[arg(long, value_name = "N")]
@@ -82,8 +82,8 @@ pub struct Opt {
 
 impl Opt {
     /// How to scan, as the flags say; `apparent` from the config file as well.
-    pub fn scan_options(&self, apparent: bool) -> libdiskonaut::ScanOptions {
-        libdiskonaut::ScanOptions {
+    pub fn scan_options(&self, apparent: bool) -> libduscape::ScanOptions {
+        libduscape::ScanOptions {
             parallel: !self.single_thread,
             threads: self.threads,
             show_apparent_size: self.apparent_size || apparent,

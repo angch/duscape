@@ -1,11 +1,11 @@
 //! Preparing a picture for GDI: decoded and scaled to the pixels it will take, as 32-bit BGRA
 //! rows blended over the panel's colour, the way `SetDIBitsToDevice` takes them. No Win32 in it,
 //! so it is tested on every platform. Reading the file, and only ever the latest request, is
-//! `libdiskonaut::preview::Reader`'s.
+//! `libduscape::preview::Reader`'s.
 
 use ::std::path::{Path, PathBuf};
 
-use libdiskonaut::preview::{Kind, MAX_IMAGE_BYTES, Ready, Wanted};
+use libduscape::preview::{Kind, MAX_IMAGE_BYTES, Ready, Wanted};
 
 /// The panel background, which a picture's transparent pixels are blended over.
 pub const PREVIEW_BACKGROUND: [u8; 3] = [32, 32, 32];
@@ -41,14 +41,14 @@ impl Wanted for PreviewRequest {
 /// Decode a picture and scale it to fit `request` — never up — for the preview thread.
 pub fn prepare_picture(request: &PreviewRequest, kind: Kind, size: u64) -> Ready<Picture> {
     if size > MAX_IMAGE_BYTES {
-        return Ready::Info(libdiskonaut::preview::describe_picture(&request.path, kind));
+        return Ready::Info(libduscape::preview::describe_picture(&request.path, kind));
     }
-    let decoded = match libdiskonaut::preview::decode_picture(&request.path, kind) {
+    let decoded = match libduscape::preview::decode_picture(&request.path, kind) {
         Ok(decoded) => decoded,
         Err(error) => return Ready::Info(error),
     };
     let (width, height) = (request.max_pixels.0.max(1), request.max_pixels.1.max(1));
-    let scaled = libdiskonaut::preview::fit(decoded.image, width, height).to_rgba8();
+    let scaled = libduscape::preview::fit(decoded.image, width, height).to_rgba8();
     let [back_r, back_g, back_b] = PREVIEW_BACKGROUND.map(u32::from);
     let mut bgra = Vec::with_capacity(scaled.as_raw().len());
     for pixel in scaled.pixels() {
@@ -68,17 +68,15 @@ pub fn prepare_picture(request: &PreviewRequest, kind: Kind, size: u64) -> Ready
 mod tests {
     use ::std::fs;
 
-    use libdiskonaut::preview::{Kind, Ready};
+    use libduscape::preview::{Kind, Ready};
 
     use super::{PREVIEW_BACKGROUND, PreviewRequest, prepare_picture};
 
     /// A picture is scaled to fit, never up, and its transparent pixels take the panel's colour.
     #[test]
     fn a_picture_is_scaled_and_blended_over_the_panel() {
-        let dir = ::std::env::temp_dir().join(format!(
-            "diskonaut_windows_preview_{}",
-            ::std::process::id()
-        ));
+        let dir = ::std::env::temp_dir()
+            .join(format!("duscape_windows_preview_{}", ::std::process::id()));
         fs::create_dir_all(&dir).expect("create");
         let path = dir.join("half.png");
         let mut picture = image::RgbaImage::from_pixel(400, 100, image::Rgba([255, 0, 0, 255]));

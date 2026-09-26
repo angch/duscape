@@ -8,9 +8,9 @@ use ::std::time::Duration;
 use crate::ui::FolderInfo;
 use crate::ui::title::{CellSizeOpt, TitleTelescope};
 use ::unicode_width::UnicodeWidthStr;
-use libdiskonaut::format::{DisplayCount, DisplaySize, truncate_middle};
+use libduscape::format::{DisplayCount, DisplaySize, truncate_middle};
 
-use libdiskonaut::os::is_user_admin;
+use libduscape::os::is_user_admin;
 
 /// Render a scan duration compactly: milliseconds below a second, then seconds to one decimal.
 fn format_scan_time(elapsed: Duration) -> String {

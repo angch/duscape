@@ -10,12 +10,12 @@ use ::std::path::{MAIN_SEPARATOR, Path};
 
 use crate::canvas::{Canvas, Color, Rgba};
 use crate::font::{Align, Cut, Face, Fonts, Pen};
-use diskonaut_viewer::menu::Entry;
-use diskonaut_viewer::state::{
+use duscape_viewer::menu::Entry;
+use duscape_viewer::state::{
     EXPANDER, Focus, LIST_PAD, Preview, ROW, ROW_INDENT, Rect, Viewer, tile_color,
 };
-use libdiskonaut::tiles::{FileType, Row, Tile};
-use libdiskonaut::{DisplayCount, DisplaySize};
+use libduscape::tiles::{FileType, Row, Tile};
+use libduscape::{DisplayCount, DisplaySize};
 
 pub const WINDOW: Color = (0.13, 0.13, 0.14);
 const SEPARATOR: Color = (0.30, 0.30, 0.32);
@@ -29,7 +29,7 @@ const SMALL_FILES: Color = (0.30, 0.30, 0.32);
 const MARK: Color = (1.0, 0.84, 0.04);
 const WHITE: Color = (1.0, 1.0, 1.0);
 const BLACK: Color = (0.0, 0.0, 0.0);
-/// A tile's label line: the band `libdiskonaut::tiles::nest` leaves at the top of a folder's
+/// A tile's label line: the band `libduscape::tiles::nest` leaves at the top of a folder's
 /// tile, three cells of `state::CELL_H`.
 const TILE_LINE: f64 = 18.0;
 /// The monospace size a hex dump starts from, and the least it is shrunk to so a line fits.

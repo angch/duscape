@@ -748,11 +748,11 @@ mod volume {
             .entries_per_directory(&runs)
             .ok_or_else(|| "the table could not be sampled".to_string())?;
         // Printed under `--benchmark --bench-profile`, with the build profile.
-        if libdiskonaut::model::files::profile::enabled() {
+        if libduscape::model::files::profile::enabled() {
             eprintln!(
                 "  mft: {:.1} entries a directory in the sample, {} of table{}",
                 ratio,
-                libdiskonaut::DisplaySize(volume.valid_bytes as f64),
+                libduscape::DisplaySize(volume.valid_bytes as f64),
                 if ratio > TABLE_UP_TO {
                     ": walking instead"
                 } else {
@@ -933,16 +933,16 @@ mod volume {
         let records = match read_table(&volume, runs, threads) {
             Ok(records) => records,
             Err(error) => {
-                eprintln!("diskonaut: reading the volume's table failed, walking instead: {error}");
+                eprintln!("duscape: reading the volume's table failed, walking instead: {error}");
                 return None;
             }
         };
         let read_took = started.elapsed();
         let catalog = Catalog::assemble(records, serial, volume.cluster_bytes);
-        if libdiskonaut::model::files::profile::enabled() {
+        if libduscape::model::files::profile::enabled() {
             eprintln!(
                 "  mft: {} of table{} read and parsed in {:.3}s, {} directories assembled by {:.3}s; {:.1} entries a directory in the sample",
-                libdiskonaut::DisplaySize(volume.valid_bytes as f64),
+                libduscape::DisplaySize(volume.valid_bytes as f64),
                 if volume.flushed {
                     " (flushed)"
                 } else {

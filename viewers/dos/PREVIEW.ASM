@@ -1,4 +1,4 @@
-; PREVIEW.ASM, included by DISKONAU.ASM: what the preview under the list shows for the file in
+; PREVIEW.ASM, included by DUSCAPE.ASM: what the preview under the list shows for the file in
 ; hand. The reference is common/src/preview.rs (sniff, text_lines) and viewers/tui/src/preview.rs
 ; (block_image): the first lines of a text file; a PNG or JPEG drawn in half blocks, two pixels to
 ; a cell; else a line saying what the file is.

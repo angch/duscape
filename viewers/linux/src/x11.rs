@@ -197,7 +197,7 @@ impl X11 {
             window,
             AtomEnum::WM_CLASS,
             AtomEnum::STRING,
-            b"diskonaut-linux\0diskonaut-linux\0",
+            b"duscape-linux\0duscape-linux\0",
         )
         .map_err(|error| error.to_string())?;
         let gc = conn.generate_id().map_err(|error| error.to_string())?;
@@ -330,7 +330,7 @@ impl X11 {
                                 keymap = fresh;
                             }
                         }
-                        Event::Error(error) => eprintln!("diskonaut-linux: X error: {error:?}"),
+                        Event::Error(error) => eprintln!("duscape-linux: X error: {error:?}"),
                         _ => {}
                     }
                 }
@@ -475,14 +475,14 @@ fn selection_request(shared: &Shared, request: &SelectionRequestEvent) {
     let _ = conn.flush();
 }
 
-/// Pixels per point: `DISKONAUT_SCALE`, else `GDK_SCALE`, else `Xft.dpi` over 96, to a quarter.
+/// Pixels per point: `DUSCAPE_SCALE`, else `GDK_SCALE`, else `Xft.dpi` over 96, to a quarter.
 fn scale_factor(conn: &RustConnection) -> f64 {
     let from_env = |name: &str| {
         ::std::env::var(name)
             .ok()
             .and_then(|value| value.trim().parse::<f64>().ok())
     };
-    let scale = from_env("DISKONAUT_SCALE")
+    let scale = from_env("DUSCAPE_SCALE")
         .or_else(|| from_env("GDK_SCALE"))
         .or_else(|| {
             x11rb::resource_manager::new_from_default(conn)

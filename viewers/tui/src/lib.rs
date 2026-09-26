@@ -27,9 +27,9 @@ use ::std::thread::park_timeout;
 use ::std::{thread, time};
 use clap::Parser;
 use cli::Opt;
-use diskonaut_scan::parallel;
+use duscape_scan::parallel;
 use error::Error;
-use libdiskonaut::{Outline, ScanOptions};
+use libduscape::{Outline, ScanOptions};
 
 use ::ratatui::backend::Backend;
 use ratatui::backend::CrosstermBackend;
@@ -40,7 +40,7 @@ use ratatui::crossterm::terminal::{
 use ratatui::crossterm::{cursor::Show, execute};
 
 use app::{App, UiMode};
-use config::DiskonautConfig;
+use config::DuscapeConfig;
 use input::{TerminalEvents, needs_quit_delay};
 use messages::{Event, Instruction, handle_events};
 
@@ -62,7 +62,7 @@ const WINDOW_BUILT: bool = cfg!(all(
     )
 ));
 
-/// The program entry point, shared by both binaries (`diskonaut-angch` and its `diskonaut`
+/// The program entry point, shared by both binaries (`duscape` and its `duscape`
 /// alias): the terminal viewer, or the window (`front::choose`).
 pub fn run() {
     let args: Vec<::std::ffi::OsString> = ::std::env::args_os().collect();
@@ -76,7 +76,7 @@ pub fn run() {
         }
         front::Front::Terminal => {
             if !WINDOW_BUILT && args.iter().any(|arg| arg == front::GUI) {
-                eprintln!("Error: this diskonaut was built without the window (the `gui` feature)");
+                eprintln!("Error: this duscape was built without the window (the `gui` feature)");
                 process::exit(2);
             }
             front::ensure_console();
@@ -91,11 +91,11 @@ fn run_window(opts: &Opt) {
     let folder = opts.folder.clone();
     let options = opts.scan_options(false);
     #[cfg(all(feature = "gui", any(target_os = "linux", target_os = "freebsd")))]
-    diskonaut_linux::run_with(folder, options);
+    duscape_linux::run_with(folder, options);
     #[cfg(all(feature = "gui", windows))]
-    diskonaut_windows::run_with(folder, options, opts.no_elevate);
+    duscape_windows::run_with(folder, options, opts.no_elevate);
     #[cfg(all(feature = "gui", target_os = "macos"))]
-    diskonaut_mac::run_with(folder, options);
+    duscape_mac::run_with(folder, options);
     #[cfg(not(all(
         feature = "gui",
         any(
@@ -158,18 +158,16 @@ fn try_main() -> Result<(), Error> {
         .clone()
         .or_else(config::default_config_path)
         .unwrap_or_else(|| PathBuf::from("config"));
-    let diskonaut_config =
-        DiskonautConfig::load(opts.config.as_deref()).map_err(|source| Error::Config {
+    let duscape_config =
+        DuscapeConfig::load(opts.config.as_deref()).map_err(|source| Error::Config {
             path: config_path.clone(),
             source,
         })?;
-    let keybinds = diskonaut_config
-        .keybinds()
-        .map_err(|source| Error::Config {
-            path: config_path,
-            source,
-        })?;
-    let scan_options = opts.scan_options(diskonaut_config.base.apparent_size);
+    let keybinds = duscape_config.keybinds().map_err(|source| Error::Config {
+        path: config_path,
+        source,
+    })?;
+    let scan_options = opts.scan_options(duscape_config.base.apparent_size);
 
     if opts.benchmark {
         let folder = opts.resolve_folder()?;
@@ -325,7 +323,7 @@ fn enable_background_work<B>(
     }
     {
         let instruction_sender = instruction_sender.clone();
-        app.enable_rescans(diskonaut_scan::rescan::Rescanner::new(
+        app.enable_rescans(duscape_scan::rescan::Rescanner::new(
             scan_options,
             running.clone(),
             move |id, outcome| {
@@ -335,8 +333,8 @@ fn enable_background_work<B>(
     }
     {
         let instruction_sender = instruction_sender.clone();
-        app.enable_refining(diskonaut_scan::rescan::Refiner::new(
-            diskonaut_scan::thread_count(scan_options),
+        app.enable_refining(duscape_scan::rescan::Refiner::new(
+            duscape_scan::thread_count(scan_options),
             running.clone(),
             move |generation, found, left| {
                 let _ = instruction_sender.send(Instruction::Refined(generation, found, left));

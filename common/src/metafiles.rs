@@ -1,7 +1,7 @@
 //! NTFS's metadata files, by name: what an elevated Windows scan shows at a volume's root, and what
 //! no viewer may offer to delete.
 //!
-//! The names are here rather than with the NTFS record parser in `diskonaut-scan` because two
+//! The names are here rather than with the NTFS record parser in `duscape-scan` because two
 //! things need them: the Windows walker, which sizes these files, and [`crate::delete`], which
 //! refuses them — and a viewer that deletes should not need a scanner to know what it must not.
 

@@ -1,5 +1,5 @@
 [package]
-name = "diskonaut-angch"
+name = "duscape"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,31 +11,25 @@ description.workspace = true
 [lints]
 workspace = true
 
-# The program lives in the library; the two binaries are thin shims that call `run()`. The fork's
-# own binary carries its name, and `diskonaut` stays as an alias so the old command, the docs, and
-# the benchmark recipes keep working. Both run the same program.
+# The program lives in the library; the binary is a thin shim that calls `run()`.
 [lib]
-name = "diskonaut_angch"
+name = "duscape"
 path = "src/lib.rs"
 
 [[bin]]
-name = "diskonaut-angch"
+name = "duscape"
 path = "src/main.rs"
 
-[[bin]]
-name = "diskonaut"
-path = "src/bin/diskonaut.rs"
-
 [features]
-# The platform's window in the same binary: `diskonaut` is the terminal viewer in a terminal and
+# The platform's window in the same binary: `duscape` is the terminal viewer in a terminal and
 # the window from a desktop (`front`). `--no-default-features` builds the terminal viewer alone.
 default = ["gui"]
-gui = ["dep:diskonaut-linux", "dep:diskonaut-windows", "dep:diskonaut-mac"]
+gui = ["dep:duscape-linux", "dep:duscape-windows", "dep:duscape-mac"]
 
 [dependencies]
 clap = { workspace = true }
-libdiskonaut = { workspace = true }
-diskonaut-scan = { workspace = true }
+libduscape = { workspace = true }
+duscape-scan = { workspace = true }
 dua-core = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
@@ -46,13 +40,13 @@ unicode-width = { workspace = true }
 image = { workspace = true }
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
-diskonaut-linux = { path = "../linux", version = "0.2.0", optional = true }
+duscape-linux = { path = "../linux", version = "0.2.0", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-diskonaut-mac = { path = "../macos", version = "0.2.0", optional = true }
+duscape-mac = { path = "../macos", version = "0.2.0", optional = true }
 
 [target.'cfg(windows)'.dependencies]
-diskonaut-windows = { path = "../windows", version = "0.2.0", optional = true }
+duscape-windows = { path = "../windows", version = "0.2.0", optional = true }
 # Whether Explorer started the program, with a console of its own (`front`).
 windows-sys = { workspace = true, features = ["Win32_System_Console"] }
 
@@ -66,6 +60,6 @@ libc = { workspace = true }
 [target.'cfg(all(target_env = "musl", target_pointer_width = "64"))'.dependencies]
 tikv-jemallocator = { version = "0.6", default-features = false }
 
-# Windows: the manifest that keeps Explorer from giving `diskonaut.exe` a console (`build.rs`).
+# Windows: the manifest that keeps Explorer from giving `duscape.exe` a console (`build.rs`).
 [build-dependencies]
 embed-manifest = "1.5.1"

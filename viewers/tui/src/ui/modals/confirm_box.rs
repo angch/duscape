@@ -4,7 +4,7 @@ use ::ratatui::style::{Color, Modifier, Style};
 use ::ratatui::widgets::Widget;
 
 use crate::ui::grid::draw_filled_rect;
-use libdiskonaut::format::truncate_middle;
+use libduscape::format::truncate_middle;
 
 fn render_confirm_prompt(buf: &mut Buffer, confirm_rect: &Rect) {
     let text_style = Style::default()

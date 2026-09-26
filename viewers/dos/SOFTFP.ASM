@@ -1,4 +1,4 @@
-; SOFTFP.ASM, included by DISKONAU.ASM: IEEE 754 double precision in 16-bit code, for a 286
+; SOFTFP.ASM, included by DUSCAPE.ASM: IEEE 754 double precision in 16-bit code, for a 286
 ; with no coprocessor. The treemap must lay out exactly as the Rust one does, and Rust computes
 ; it in f64, so every result here is the double Rust would get: rounded to 53 bits, to nearest,
 ; ties to even, after each operation.

@@ -1,8 +1,8 @@
-//! A Windows viewer for diskonaut-angch: the terminal viewer's features in a native window.
+//! A Windows viewer for duscape: the terminal viewer's features in a native window.
 //!
-//! The scan comes from `diskonaut-scan` and the tree, the treemap, deletion, previews and the
-//! clipboard from `libdiskonaut` — the code the terminal viewer runs. What the window shows and
-//! how it answers input is `diskonaut_viewer::state::Viewer`, shared with the macOS and Linux
+//! The scan comes from `duscape-scan` and the tree, the treemap, deletion, previews and the
+//! clipboard from `libduscape` — the code the terminal viewer runs. What the window shows and
+//! how it answers input is `duscape_viewer::state::Viewer`, shared with the macOS and Linux
 //! viewers and tested on every platform; [`preview`] prepares a picture for GDI; `win` is the
 //! window, drawing with GDI and turning input into `Viewer` calls. It is built on `windows-sys`
 //! rather than a GUI framework, to keep the executable small. `docs/features.md` compares the
@@ -22,7 +22,7 @@ mod win;
 /// arguments is told in a message box: a window's process may have no console to print to.
 #[cfg(not(windows))]
 pub fn run() {
-    eprintln!("diskonaut-windows is a Windows-only GUI. Use `diskonaut` on this platform.");
+    eprintln!("duscape-windows is a Windows-only GUI. Use `duscape` on this platform.");
     std::process::exit(1);
 }
 
@@ -34,12 +34,12 @@ pub fn run() {
 }
 
 /// The window on `folder` (else one picked in a dialog), scanning with `options`: the entry
-/// point for `diskonaut`, which has read its own command line. `no_elevate` never asks to run
+/// point for `duscape`, which has read its own command line. `no_elevate` never asks to run
 /// as administrator.
 #[cfg(windows)]
 pub fn run_with(
     folder: Option<::std::path::PathBuf>,
-    options: libdiskonaut::ScanOptions,
+    options: libduscape::ScanOptions,
     no_elevate: bool,
 ) {
     win::run_with(folder, options, no_elevate);

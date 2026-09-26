@@ -17,11 +17,11 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{NSAttributedStringKey, NSDictionary, NSPoint, NSRect, NSSize, NSString};
 
-use diskonaut_viewer::state::{
+use duscape_viewer::state::{
     EXPANDER, Focus, LIST_PAD, Preview, ROW, ROW_INDENT, Rect, Viewer, tile_color,
 };
-use libdiskonaut::tiles::{FileType, Row, Tile};
-use libdiskonaut::{DisplayCount, DisplaySize};
+use libduscape::tiles::{FileType, Row, Tile};
+use libduscape::{DisplayCount, DisplaySize};
 
 pub fn ns_rect(rect: Rect) -> NSRect {
     NSRect::new(NSPoint::new(rect.x, rect.y), NSSize::new(rect.w, rect.h))
@@ -41,7 +41,7 @@ fn darker((r, g, b): (f64, f64, f64), shade: f64) -> (f64, f64, f64) {
 }
 
 const MARK: (f64, f64, f64) = (1.0, 0.84, 0.04);
-/// A tile's label line: the band `libdiskonaut::tiles::nest` leaves at the top of a folder's
+/// A tile's label line: the band `libduscape::tiles::nest` leaves at the top of a folder's
 /// tile, three cells of `state::CELL_H`.
 const TILE_LINE: f64 = 18.0;
 /// The monospace size a hex dump starts from, and the least it is shrunk to so a line fits.

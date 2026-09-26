@@ -370,89 +370,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "diskonaut-angch"
-version = "0.2.0"
-dependencies = [
- "clap",
- "diskonaut-linux",
- "diskonaut-mac",
- "diskonaut-scan",
- "diskonaut-windows",
- "dua-core",
- "embed-manifest",
- "image",
- "libc",
- "libdiskonaut",
- "ratatui",
- "serde",
- "thiserror",
- "tikv-jemallocator",
- "toml",
- "unicode-width",
- "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "diskonaut-linux"
-version = "0.2.0"
-dependencies = [
- "diskonaut-scan",
- "diskonaut-viewer",
- "fontdue",
- "image",
- "libc",
- "libdiskonaut",
- "wayland-client",
- "wayland-cursor",
- "wayland-protocols",
- "x11rb",
-]
-
-[[package]]
-name = "diskonaut-mac"
-version = "0.2.0"
-dependencies = [
- "diskonaut-scan",
- "diskonaut-viewer",
- "dispatch2",
- "libdiskonaut",
- "objc2",
- "objc2-app-kit",
- "objc2-foundation",
- "objc2-quick-look-ui",
-]
-
-[[package]]
-name = "diskonaut-scan"
-version = "0.2.0"
-dependencies = [
- "dua-core",
- "libc",
- "libdiskonaut",
- "rustix",
-]
-
-[[package]]
-name = "diskonaut-viewer"
-version = "0.2.0"
-dependencies = [
- "diskonaut-scan",
- "libdiskonaut",
-]
-
-[[package]]
-name = "diskonaut-windows"
-version = "0.2.0"
-dependencies = [
- "clap",
- "diskonaut-scan",
- "diskonaut-viewer",
- "image",
- "libdiskonaut",
- "windows-sys 0.59.0",
-]
-
-[[package]]
 name = "dispatch2"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -488,6 +405,89 @@ dependencies = [
  "crossbeam",
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "duscape"
+version = "0.2.0"
+dependencies = [
+ "clap",
+ "dua-core",
+ "duscape-linux",
+ "duscape-mac",
+ "duscape-scan",
+ "duscape-windows",
+ "embed-manifest",
+ "image",
+ "libc",
+ "libduscape",
+ "ratatui",
+ "serde",
+ "thiserror",
+ "tikv-jemallocator",
+ "toml",
+ "unicode-width",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "duscape-linux"
+version = "0.2.0"
+dependencies = [
+ "duscape-scan",
+ "duscape-viewer",
+ "fontdue",
+ "image",
+ "libc",
+ "libduscape",
+ "wayland-client",
+ "wayland-cursor",
+ "wayland-protocols",
+ "x11rb",
+]
+
+[[package]]
+name = "duscape-mac"
+version = "0.2.0"
+dependencies = [
+ "dispatch2",
+ "duscape-scan",
+ "duscape-viewer",
+ "libduscape",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "objc2-quick-look-ui",
+]
+
+[[package]]
+name = "duscape-scan"
+version = "0.2.0"
+dependencies = [
+ "dua-core",
+ "libc",
+ "libduscape",
+ "rustix",
+]
+
+[[package]]
+name = "duscape-viewer"
+version = "0.2.0"
+dependencies = [
+ "duscape-scan",
+ "libduscape",
+]
+
+[[package]]
+name = "duscape-windows"
+version = "0.2.0"
+dependencies = [
+ "clap",
+ "duscape-scan",
+ "duscape-viewer",
+ "image",
+ "libduscape",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -707,7 +707,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
-name = "libdiskonaut"
+name = "libduscape"
 version = "0.2.0"
 dependencies = [
  "image",

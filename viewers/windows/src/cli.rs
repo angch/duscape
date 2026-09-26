@@ -3,11 +3,11 @@
 use ::std::path::PathBuf;
 
 use clap::Parser;
-use libdiskonaut::ScanOptions;
+use libduscape::ScanOptions;
 
 /// A disk-usage treemap. With no folder, asks for one.
 #[derive(Parser, Debug, PartialEq, Eq)]
-#[command(name = "diskonaut-windows", version)]
+#[command(name = "duscape-windows", version)]
 pub struct Opt {
     /// The folder to scan
     pub folder: Option<PathBuf>,
@@ -30,7 +30,7 @@ pub struct Opt {
     /// opens)
     #[arg(long)]
     pub no_elevate: bool,
-    /// The window rather than the terminal viewer, which `diskonaut` has already chosen
+    /// The window rather than the terminal viewer, which `duscape` has already chosen
     #[arg(long, hide = true)]
     pub gui: bool,
 }
@@ -55,7 +55,7 @@ mod tests {
 
     #[test]
     fn the_scan_options_come_from_the_flags() {
-        let opt = Opt::try_parse_from(["diskonaut-windows", "-a", "--max-depth", "3", r"C:\data"])
+        let opt = Opt::try_parse_from(["duscape-windows", "-a", "--max-depth", "3", r"C:\data"])
             .expect("parses");
         assert_eq!(
             opt.folder.as_deref(),
@@ -68,10 +68,10 @@ mod tests {
             options.parallel,
             "the walk is parallel as in the terminal viewer"
         );
-        assert!(Opt::try_parse_from(["diskonaut-windows", "--bogus"]).is_err());
+        assert!(Opt::try_parse_from(["duscape-windows", "--bogus"]).is_err());
         assert!(!opt.no_elevate);
         assert!(
-            Opt::try_parse_from(["diskonaut-windows", crate::elevate::NO_ELEVATE])
+            Opt::try_parse_from(["duscape-windows", crate::elevate::NO_ELEVATE])
                 .expect("parses")
                 .no_elevate
         );

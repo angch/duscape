@@ -1,8 +1,8 @@
-//! Which viewer `diskonaut` is: the terminal viewer, or the platform's window (`diskonaut-linux`,
-//! `diskonaut-windows`, `diskonaut-mac`, linked into the same binary by the `gui` feature).
+//! Which viewer `duscape` is: the terminal viewer, or the platform's window (`duscape-linux`,
+//! `duscape-windows`, `duscape-mac`, linked into the same binary by the `gui` feature).
 //!
 //! In order: `--tui` or `--gui` says; `--benchmark`, `--help` and `--version` are the terminal's;
-//! a program named for the window (`diskonaut-gui`, or a viewer's own name, as a link) is the
+//! a program named for the window (`duscape-gui`, or a viewer's own name, as a link) is the
 //! window; then the platform's guess. On Linux and macOS a terminal on stdin or stdout means the
 //! terminal viewer — a pipe or a file on one of them is still a terminal session, so a
 //! benchmark's output can be redirected — and neither means a launcher started it: the window,
@@ -69,7 +69,7 @@ pub fn choose(args: &[OsString], started: Started, window_built: bool) -> Front 
     }
 }
 
-/// `diskonaut-gui`, `diskonaut-linux`, `diskonaut-windows.exe`, `/usr/bin/diskonaut-mac`: a link
+/// `duscape-gui`, `duscape-linux`, `duscape-windows.exe`, `/usr/bin/duscape-mac`: a link
 /// by one of those names, or a copy, is the window.
 fn named_for_the_window(program: &OsStr) -> bool {
     let Some(stem) = Path::new(program).file_stem().and_then(OsStr::to_str) else {
@@ -183,7 +183,7 @@ mod tests {
     #[test]
     fn in_a_terminal_it_is_the_terminal_viewer() {
         assert_eq!(
-            choose(&args(&["diskonaut", "/"]), TERMINAL, true),
+            choose(&args(&["duscape", "/"]), TERMINAL, true),
             Front::Terminal
         );
         // With no display either (a console, an ssh session without X).
@@ -191,18 +191,18 @@ mod tests {
             display: false,
             ..LAUNCHER
         };
-        assert_eq!(choose(&args(&["diskonaut"]), bare, true), Front::Terminal);
+        assert_eq!(choose(&args(&["duscape"]), bare, true), Front::Terminal);
     }
 
     #[test]
     fn from_a_launcher_or_explorer_it_is_the_window() {
-        assert_eq!(choose(&args(&["diskonaut"]), LAUNCHER, true), Front::Window);
+        assert_eq!(choose(&args(&["duscape"]), LAUNCHER, true), Front::Window);
         let explorer = Started {
             own_console: true,
             ..TERMINAL
         };
         assert_eq!(
-            choose(&args(&["diskonaut.exe"]), explorer, true),
+            choose(&args(&["duscape.exe"]), explorer, true),
             Front::Window
         );
     }
@@ -210,25 +210,25 @@ mod tests {
     #[test]
     fn the_flags_decide_and_a_benchmark_is_the_terminals() {
         assert_eq!(
-            choose(&args(&["diskonaut", "--gui", "/"]), TERMINAL, true),
+            choose(&args(&["duscape", "--gui", "/"]), TERMINAL, true),
             Front::Window
         );
         assert_eq!(
-            choose(&args(&["diskonaut", "--tui"]), LAUNCHER, true),
+            choose(&args(&["duscape", "--tui"]), LAUNCHER, true),
             Front::Terminal
         );
         // Redirected, as the benchmark scripts run it.
         assert_eq!(
-            choose(&args(&["diskonaut", "--benchmark", "/"]), LAUNCHER, true),
+            choose(&args(&["duscape", "--benchmark", "/"]), LAUNCHER, true),
             Front::Terminal
         );
         assert_eq!(
-            choose(&args(&["diskonaut", "--help"]), LAUNCHER, true),
+            choose(&args(&["duscape", "--help"]), LAUNCHER, true),
             Front::Terminal
         );
         // After `--`, a folder's name.
         assert_eq!(
-            choose(&args(&["diskonaut", "--", "--gui"]), TERMINAL, true),
+            choose(&args(&["duscape", "--", "--gui"]), TERMINAL, true),
             Front::Terminal
         );
     }
@@ -236,10 +236,10 @@ mod tests {
     #[test]
     fn named_for_the_window_it_is_the_window() {
         for name in [
-            "diskonaut-gui",
-            "/usr/local/bin/diskonaut-linux",
-            r"C:\tools\diskonaut-windows.exe",
-            "Diskonaut-Mac",
+            "duscape-gui",
+            "/usr/local/bin/duscape-linux",
+            r"C:\tools\duscape-windows.exe",
+            "Duscape-Mac",
         ] {
             assert_eq!(
                 choose(&args(&[name]), TERMINAL, true),
@@ -247,15 +247,12 @@ mod tests {
                 "{name}"
             );
         }
-        assert_eq!(
-            choose(&args(&["diskonaut-angch"]), TERMINAL, true),
-            Front::Terminal
-        );
+        assert_eq!(choose(&args(&["duscape"]), TERMINAL, true), Front::Terminal);
     }
 
     #[test]
     fn on_windows_a_shared_console_is_a_terminal_redirected_or_not() {
-        // What `started` reports on Windows for `diskonaut < nul > out.txt` from cmd: the
+        // What `started` reports on Windows for `duscape < nul > out.txt` from cmd: the
         // console is the shell's, so it is a terminal session whatever the handles are.
         let redirected_in_a_shell = Started {
             terminal: true,
@@ -263,7 +260,7 @@ mod tests {
             own_console: false,
         };
         assert_eq!(
-            choose(&args(&["diskonaut.exe"]), redirected_in_a_shell, true),
+            choose(&args(&["duscape.exe"]), redirected_in_a_shell, true),
             Front::Terminal
         );
     }
@@ -271,15 +268,15 @@ mod tests {
     #[test]
     fn launch_services_serial_numbers_are_dropped() {
         assert_eq!(
-            without_launch_services(args(&["diskonaut", "-psn_0_1234", "-a"])),
-            args(&["diskonaut", "-a"])
+            without_launch_services(args(&["duscape", "-psn_0_1234", "-a"])),
+            args(&["duscape", "-a"])
         );
     }
 
     #[test]
     fn built_without_the_window_it_is_always_the_terminal_viewer() {
         assert_eq!(
-            choose(&args(&["diskonaut", "--gui"]), LAUNCHER, false),
+            choose(&args(&["duscape", "--gui"]), LAUNCHER, false),
             Front::Terminal
         );
     }

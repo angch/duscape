@@ -1,18 +1,18 @@
-# diskonaut-mac
+# duscape-mac
 
-A native macOS window on diskonaut-angch: the same walker (`diskonaut-scan`) and model, treemap,
-delete and preview reading (`libdiskonaut`) as the terminal viewer, drawn with AppKit through
+A native macOS window on duscape: the same walker (`duscape-scan`) and model, treemap,
+delete and preview reading (`libduscape`) as the terminal viewer, drawn with AppKit through
 [`objc2`](https://github.com/madsmtm/objc2). `docs/features.md` compares it with the other viewers.
 
 ```sh
-cargo run -p diskonaut-mac --release -- ~/Downloads
-cargo run -p diskonaut-mac --release -- -a ~       # apparent sizes to begin with
-cargo run -p diskonaut-mac --release               # asks for a folder; or drop one on the window
-make mac-app                                       # diskonaut for both architectures, and Diskonaut.app
+cargo run -p duscape-mac --release -- ~/Downloads
+cargo run -p duscape-mac --release -- -a ~       # apparent sizes to begin with
+cargo run -p duscape-mac --release               # asks for a folder; or drop one on the window
+make mac-app                                       # duscape for both architectures, and Duscape.app
 ```
 
-`diskonaut` holds this window beside the terminal viewer: in a terminal it is the terminal viewer
-(`--gui` for the window), and inside `Diskonaut.app`, opened from Finder, it is the window. A
+`duscape` holds this window beside the terminal viewer: in a terminal it is the terminal viewer
+(`--gui` for the window), and inside `Duscape.app`, opened from Finder, it is the window. A
 bare binary opened from Finder runs in Terminal, so the bundle is the way to the window there.
 
 The binary is unbundled: run from a terminal, it takes the terminal's permissions (Full Disk
@@ -71,7 +71,7 @@ marked, the entry in hand is.
 
 | File | |
 | --- | --- |
-| `../shared/src/state.rs` | `Viewer` (`diskonaut-viewer`): what the window shows and how it answers input, with no AppKit — shared with the Linux viewer. Layout in points, the entry in hand kept by name, marks, navigation, zoom, deletes, rescans. Its tests run on every platform |
+| `../shared/src/state.rs` | `Viewer` (`duscape-viewer`): what the window shows and how it answers input, with no AppKit — shared with the Linux viewer. Layout in points, the entry in hand kept by name, marks, navigation, zoom, deletes, rescans. Its tests run on every platform |
 | `../shared/src/scan.rs` | The first scan on its own thread, with the live outline |
 | `../shared/src/preview.rs` | The preview reader: the latest request wins |
 | `src/mac/view.rs` | The one `NSView`: events, menu commands, dialogs, the Trash, the pasteboard, Finder, Quick Look, drag and drop |
@@ -94,7 +94,7 @@ runs.
 viewers/macos/tests/smoke.sh
 ```
 
-The script language is in `src/mac/script.rs`: `DISKONAUT_MAC_SCRIPT=steps.txt diskonaut-mac
+The script language is in `src/mac/script.rs`: `DUSCAPE_MAC_SCRIPT=steps.txt duscape-mac
 FOLDER` runs `steps.txt` once the scan is done. Its events are made by the app and posted to its
 own queue, so they take a real key's or click's path — menu key equivalents, the first responder,
 hit testing, the event loops of alerts and menus — without the Accessibility permission that
@@ -104,7 +104,7 @@ posting to the system (`CGEventPost`, AppleScript's System Events, XCUITest) wou
 To look at the drawing without screen access:
 
 ```sh
-DISKONAUT_MAC_SNAPSHOT=out.png cargo run -p diskonaut-mac -- FOLDER
+DUSCAPE_MAC_SNAPSHOT=out.png cargo run -p duscape-mac -- FOLDER
 ```
 
 writes the window to `out.png` half a second after the scan finishes, and quits.

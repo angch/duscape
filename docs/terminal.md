@@ -51,7 +51,7 @@ Terminal, iTerm2, Konsole, tmux built with them — found from the terminal's de
 gets the picture as sixels, in up to 256 colours. Elsewhere it is drawn in the text itself as
 half blocks (`▀`), two pixels to a cell: in 24-bit colour where `COLORTERM` says the terminal has
 it, and in the 256-colour palette otherwise (ssh does not pass `COLORTERM` on).
-`DISKONAUT_GRAPHICS=kitty`, `sixel`, `blocks` or `none` overrides the guess; `none` describes a picture instead of drawing it:
+`DUSCAPE_GRAPHICS=kitty`, `sixel`, `blocks` or `none` overrides the guess; `none` describes a picture instead of drawing it:
 `PNG image · 1920×1080`. Only regular files are read, and on
 macOS files that are only in iCloud are not, since reading one would download it.
 
@@ -80,8 +80,8 @@ slides to the next in under 100 ms. A legend wider than the terminal is shown a 
 
 A double click is two clicks on the same tile within half a second.
 
-Copied relative paths start from the directory you ran diskonaut in, so they paste straight into
-the same shell: in `/home/user/foo`, `diskonaut ../bar/` with `baz` selected copies `../bar/baz`.
+Copied relative paths start from the directory you ran duscape in, so they paste straight into
+the same shell: in `/home/user/foo`, `duscape ../bar/` with `baz` selected copies `../bar/baz`.
 Both ends are resolved first, so a symlinked directory cannot send `..` somewhere else; where no
 relative path exists (the directory was deleted, or on Windows the scan is on another drive) the
 absolute path is copied, and the title says so. Paths are quoted so they paste into a
@@ -94,6 +94,6 @@ so a command cannot take it for an option. The title shows what was copied for t
 The copy goes to the system clipboard: `pbcopy` on macOS, the Windows clipboard, and `wl-copy`,
 `xclip` or `xsel` on a Linux desktop. Where none is available, as over SSH, it is sent to the
 terminal instead (OSC 52), which iTerm2, kitty, WezTerm, Windows Terminal, foot and Alacritty put
-on the clipboard of the machine you are sitting at; in tmux that needs `set -g set-clipboard on`. While diskonaut runs it
+on the clipboard of the machine you are sitting at; in tmux that needs `set -g set-clipboard on`. While duscape runs it
 captures the mouse, so the terminal's own click-and-drag text selection needs a modifier: `Shift`
 in most terminals, `Option` (`⌥`) in iTerm2 and Terminal.app. Quitting releases the mouse.

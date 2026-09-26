@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<!-- Embedded in diskonaut.exe by build.rs (the `gui` feature). `diskonaut.exe` is a console
+<!-- Embedded in duscape.exe by build.rs (the `gui` feature). `duscape.exe` is a console
      program, so that it can be the terminal viewer; `detached` means it gets a console only by
      inheriting one — from a shell — and none when Explorer starts it, which opens the window with
      no console flashing first (`src/front.rs`). Windows 11 24H2 and Server 2025 on; older Windows

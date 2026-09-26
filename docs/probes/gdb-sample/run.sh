@@ -2,7 +2,7 @@
 # A poor man's sampling profiler, for where `perf` is not allowed (`perf_event_paranoid` 4).
 #
 #   WAIT_S=1.3 SAMPLES=200 INTERVAL=0.004 docs/probes/gdb-sample/run.sh out.txt -- \
-#       target/profiling/diskonaut --benchmark --bench-stage tree-only /data
+#       target/profiling/duscape --benchmark --bench-stage tree-only /data
 #
 # Runs the command with PR_SET_PTRACER set to anyone, so that gdb may attach to it from outside
 # despite Yama's ptrace_scope 1; waits WAIT_S (to skip a warm-up phase, such as tree-only's

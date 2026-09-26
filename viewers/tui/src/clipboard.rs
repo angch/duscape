@@ -1,6 +1,6 @@
 //! Putting text on the system clipboard from a terminal program.
 //!
-//! The native clipboard is tried first ([`libdiskonaut::clipboard::copy`]: `pbcopy` on macOS, the
+//! The native clipboard is tried first ([`libduscape::clipboard::copy`]: `pbcopy` on macOS, the
 //! Win32 clipboard on Windows, and `wl-copy`, `xclip` or `xsel` on a Linux or BSD desktop). Where
 //! there is none — typically a
 //! session over SSH, where the clipboard that matters is on the machine the terminal runs on — the
@@ -10,7 +10,7 @@
 
 use ::std::io::{self, Write};
 
-pub use libdiskonaut::clipboard::base64;
+pub use libduscape::clipboard::base64;
 
 /// Somewhere to put copied text. The app holds one; tests give it a recorder.
 pub trait Clipboard: Send {
@@ -22,7 +22,7 @@ pub struct SystemClipboard;
 
 impl Clipboard for SystemClipboard {
     fn copy(&mut self, text: &str) {
-        if !libdiskonaut::clipboard::copy(text) {
+        if !libduscape::clipboard::copy(text) {
             let _ = copy_osc52(&mut io::stdout(), text);
         }
     }

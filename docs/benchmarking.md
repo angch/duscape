@@ -4,17 +4,17 @@
 can be compared on a real tree:
 
 ```sh
-diskonaut --benchmark /                    # every stage, whole disk
-diskonaut --benchmark --bench-stage sharded ~/src
-diskonaut --benchmark --max-depth 4 /      # partial scan, for a quick iteration loop
-diskonaut --benchmark --threads 6 --bench-repeat 3 /
+duscape --benchmark /                    # every stage, whole disk
+duscape --benchmark --bench-stage sharded ~/src
+duscape --benchmark --max-depth 4 /      # partial scan, for a quick iteration loop
+duscape --benchmark --threads 6 --bench-repeat 3 /
 ```
 
 | Stage       | What it measures                                                                  |
 | ----------- | --------------------------------------------------------------------------------- |
 | `dua-walk`  | the general-purpose `dua-core` walk alone                                         |
 | `dua-tree`  | that walk feeding the folder tree                                                 |
-| `walk`      | the walk diskonaut uses now, alone                                                |
+| `walk`      | the walk duscape uses now, alone                                                |
 | `tree`      | that walk feeding the folder tree                                                 |
 | `tree-only` | the folder tree alone, from entries collected first                               |
 | `pipeline`  | scan and tree build on separate threads, the single-threaded build `sharded` replaced |
@@ -63,7 +63,7 @@ Every number in `scan-performance.md` before September 2026 was taken with the f
 metadata already in memory. A first scan after boot is not like that, and behaves differently: the
 walk is bound by how many reads it keeps in flight, not by the CPU. `probes/bench-diskus.sh` runs
 [`hyperfine`](https://github.com/sharkdp/hyperfine) over [`diskus`](https://github.com/sharkdp/diskus)
-and diskonaut's `sharded` and `refined` stages, warm and then cold, dropping the kernel's caches
+and duscape's `sharded` and `refined` stages, warm and then cold, dropping the kernel's caches
 before every cold run:
 
 ```sh
@@ -73,7 +73,7 @@ docs/probes/bench-diskus.sh --both --runs 5 ~/src /data
 
 The cache drop needs root: run it as root, or allow `/usr/bin/tee /proc/sys/vm/drop_caches`
 without a password in sudoers, or `sudo -v` first. Without it the cold set is skipped and said so.
-As root, diskonaut also reads directories' blocks ahead through the block device (ext4), which is
+As root, duscape also reads directories' blocks ahead through the block device (ext4), which is
 worth measuring separately: `sudo docs/probes/bench-diskus.sh --cold DIR`. The results, and what
 they led to, are under "Cold cache" in `scan-performance.md`.
 
@@ -89,7 +89,7 @@ volume and the physical disk behind each tree, and the warm rows against `diskus
 [WizTree](https://wiztreefree.com) — timed in its export mode (`/export`, folders only,
 `/admin=0`), which scans, writes a CSV and exits, and whose figures for each tree are listed for
 the sizes cross-check. From an elevated shell it also runs the cold rows, and every row is
-elevated (diskonaut reading the volume's metadata files, WizTree reading the MFT); unelevated
+elevated (duscape reading the volume's metadata files, WizTree reading the MFT); unelevated
 there are neither, and the file says so. The cache is emptied by `probes/drop-cache.ps1`, the
 `drop_caches` of Windows: every volume's write cache flushed, the system file cache's working
 set trimmed (`SetSystemFileCacheSize`) and the modified and standby page lists purged

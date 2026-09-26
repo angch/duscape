@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build `diskonaut-fs-fixtures`, a minimal local docker image for run.sh: this machine's own
+# Build `duscape-fs-fixtures`, a minimal local docker image for run.sh: this machine's own
 # util-linux, coreutils and mkfs tools, with the libraries they load, plus the tools of any
 # package in PACKAGES that the host lacks, fetched with `apt-get download` (no root needed).
 #
@@ -7,7 +7,7 @@
 # is mounted into the container: only these copies.
 set -euo pipefail
 
-image=${IMAGE:-diskonaut-fs-fixtures}
+image=${IMAGE:-duscape-fs-fixtures}
 tools=(bash sh find mount umount losetup findmnt setpriv truncate cp mkdir stat du dd sync head tail
        cat chown chmod ls rm seq tee sed grep awk xargs cut sort tr wc touch mv ln sleep id env
        date basename dirname yes timeout pkill ps fallocate)

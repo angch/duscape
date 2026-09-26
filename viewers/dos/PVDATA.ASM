@@ -1,4 +1,4 @@
-; PVDATA.ASM, included in DISKONAU.ASM's data segment: what PREVIEW.ASM, PNG.ASM and JPEG.ASM
+; PVDATA.ASM, included in DUSCAPE.ASM's data segment: what PREVIEW.ASM, PNG.ASM and JPEG.ASM
 ; keep. Words only: a dword variable would get 32-bit instructions from FASM.
 
 pv_node         dw 0                    ; the file previewed, or 0
@@ -63,7 +63,7 @@ s_png_noidat    db 'no image data',0
 s_png_bad       db 'corrupt',0
 s_too_wide      db 'too wide for DOS',0
 s_jpeg          db 'JPEG ',0
-s_jpeg_kind     db 'not a kind DOS diskonaut decodes',0
+s_jpeg_kind     db 'not a kind DOS duscape decodes',0
 s_jpeg_cmyk     db 'CMYK',0
 s_jpeg_noscan   db 'no image data',0
 s_jpeg_bad      db 'corrupt',0

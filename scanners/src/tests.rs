@@ -5,7 +5,7 @@ use ::std::path::PathBuf;
 use super::{EntryMeta, ScanItem, ScanOptions, scan_directories, scan_folder, scan_into_tree};
 
 fn temp_scan_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("diskonaut_scan_test_{name}"));
+    let dir = std::env::temp_dir().join(format!("duscape_scan_test_{name}"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create temp dir");
     // Canonicalized because the app always scans a canonical path: `Opts::resolve_folder`
@@ -252,7 +252,7 @@ fn both_walkers_agree_on_the_same_tree() {
 #[test]
 fn entries_outside_the_scan_root_are_ignored() {
     let dir = temp_scan_dir("outside_root");
-    let mut tree = libdiskonaut::FileTree::new(libdiskonaut::Folder::new(&dir), dir.clone());
+    let mut tree = libduscape::FileTree::new(libduscape::Folder::new(&dir), dir.clone());
     let mut outside = crate::DirEntries::new(std::sync::Arc::from(std::path::Path::new(
         "/somewhere/else",
     )));
@@ -313,8 +313,8 @@ fn hard_links_count_once_per_folder() {
         .path(vec![std::ffi::OsString::from(name)])
         .unwrap_or_else(|| panic!("{name} should exist"))
     {
-        libdiskonaut::FileOrFolder::Folder(folder) => folder.sizes.get(tree.shown),
-        libdiskonaut::FileOrFolder::File(_) => panic!("{name} should be a folder"),
+        libduscape::FileOrFolder::Folder(folder) => folder.sizes.get(tree.shown),
+        libduscape::FileOrFolder::File(_) => panic!("{name} should be a folder"),
     };
 
     assert_eq!(
@@ -369,8 +369,8 @@ fn hard_links_count_once_per_folder_when_nested() {
             .path(names)
             .unwrap_or_else(|| panic!("{path:?} should exist"))
         {
-            libdiskonaut::FileOrFolder::Folder(folder) => folder.sizes.get(tree.shown),
-            libdiskonaut::FileOrFolder::File(file) => file.sizes().get(tree.shown),
+            libduscape::FileOrFolder::Folder(folder) => folder.sizes.get(tree.shown),
+            libduscape::FileOrFolder::File(file) => file.sizes().get(tree.shown),
         }
     };
 
@@ -419,13 +419,13 @@ fn deleting_every_link_in_a_folder_does_not_underflow() {
     assert_eq!(tree.get_total_size(), 512, "two names, one file");
 
     for name in ["one", "two"] {
-        tree.delete_file(&libdiskonaut::FileToDelete {
+        tree.delete_file(&libduscape::FileToDelete {
             path_in_filesystem: dir.clone(),
             path_to_file: vec![std::ffi::OsString::from(name)],
-            file_type: libdiskonaut::tiles::FileType::File,
+            file_type: libduscape::tiles::FileType::File,
             num_descendants: None,
             size: 512,
-            sizes: libdiskonaut::model::Sizes::ZERO,
+            sizes: libduscape::model::Sizes::ZERO,
         });
     }
     assert_eq!(tree.get_total_size(), 0);
@@ -442,7 +442,7 @@ fn scan_into_tree_follows_symlinked_root_directory() {
         .expect("create file")
         .write_all(b"symlink root test")
         .expect("write file");
-    let link = std::env::temp_dir().join("diskonaut_scan_test_symlink_root_link");
+    let link = std::env::temp_dir().join("duscape_scan_test_symlink_root_link");
     let _ = std::fs::remove_file(&link);
     let _ = std::fs::remove_dir(&link);
     let res = {
@@ -643,10 +643,10 @@ mod linux_walker {
         assert!(!classify(Path::new("/proc")).reflinks);
         // As in the `reflink` tests below: only a machine that names an XFS or btrfs directory can
         // check the positive case.
-        if let Some(dir) = std::env::var_os("DISKONAUT_TEST_REFLINK_DIR") {
+        if let Some(dir) = std::env::var_os("DUSCAPE_TEST_REFLINK_DIR") {
             assert!(
                 classify(Path::new(&dir)).reflinks,
-                "DISKONAUT_TEST_REFLINK_DIR is on a filesystem that shares extents"
+                "DUSCAPE_TEST_REFLINK_DIR is on a filesystem that shares extents"
             );
         }
     }
@@ -690,10 +690,10 @@ mod linux_walker {
         for path in ["/", "/proc", "/tmp"] {
             assert!(!classify(Path::new(path)).network, "{path}");
         }
-        if let Some(dir) = std::env::var_os("DISKONAUT_TEST_NETWORK_DIR") {
+        if let Some(dir) = std::env::var_os("DUSCAPE_TEST_NETWORK_DIR") {
             assert!(
                 classify(Path::new(&dir)).network,
-                "DISKONAUT_TEST_NETWORK_DIR is on a network filesystem"
+                "DUSCAPE_TEST_NETWORK_DIR is on a network filesystem"
             );
         }
     }
@@ -866,7 +866,7 @@ mod linux_walker {
 /// End-to-end reflink accounting, on a filesystem that can actually share extents.
 ///
 /// `std::env::temp_dir()` is usually ext4, which cannot, so this skips itself there rather than
-/// passing vacuously. Point `DISKONAUT_TEST_REFLINK_DIR` at a directory on XFS or btrfs to run it
+/// passing vacuously. Point `DUSCAPE_TEST_REFLINK_DIR` at a directory on XFS or btrfs to run it
 /// for real — which is the only way this is tested at all.
 #[cfg(target_os = "linux")]
 mod reflink {
@@ -889,9 +889,9 @@ mod reflink {
     /// two would report half the space actually held.
     /// A scratch tree with `a/` and `b/`, wherever the caller pointed us.
     fn fixture(name: &str) -> Option<PathBuf> {
-        let base = ::std::env::var_os("DISKONAUT_TEST_REFLINK_DIR")
+        let base = ::std::env::var_os("DUSCAPE_TEST_REFLINK_DIR")
             .map_or_else(::std::env::temp_dir, PathBuf::from);
-        let root = base.join(format!("diskonaut_scan_test_{name}"));
+        let root = base.join(format!("duscape_scan_test_{name}"));
         let _ = ::std::fs::remove_dir_all(&root);
         ::std::fs::create_dir_all(root.join("a")).ok()?;
         ::std::fs::create_dir_all(root.join("b")).ok()?;
@@ -954,9 +954,9 @@ mod reflink {
 
     #[test]
     fn a_reflinked_copy_is_counted_once() {
-        let base = ::std::env::var_os("DISKONAUT_TEST_REFLINK_DIR")
+        let base = ::std::env::var_os("DUSCAPE_TEST_REFLINK_DIR")
             .map_or_else(::std::env::temp_dir, PathBuf::from);
-        let root = base.join("diskonaut_scan_test_reflink");
+        let root = base.join("duscape_scan_test_reflink");
         let _ = ::std::fs::remove_dir_all(&root);
         ::std::fs::create_dir_all(root.join("a")).expect("mkdir a");
         ::std::fs::create_dir_all(root.join("b")).expect("mkdir b");
@@ -1002,7 +1002,7 @@ mod reflink {
 /// Every subvolume and snapshot has its own `st_dev`, so anything keyed on the device sees a
 /// snapshot's files as unrelated to the live ones they share every extent with — which is how a
 /// scan of a volume with snapshots used to count the same data once per snapshot. Point
-/// `DISKONAUT_TEST_BTRFS_DIR` at a directory on btrfs where this user can make subvolumes, with
+/// `DUSCAPE_TEST_BTRFS_DIR` at a directory on btrfs where this user can make subvolumes, with
 /// `btrfs` on the `PATH`; `docs/probes/btrfs/run.sh` sets one up in a container.
 #[cfg(target_os = "linux")]
 mod btrfs {
@@ -1021,13 +1021,13 @@ mod btrfs {
 
     /// A fresh `root` holding a subvolume `live`, or `None` when this cannot be done here.
     fn fixture(name: &str) -> Option<PathBuf> {
-        let base = PathBuf::from(::std::env::var_os("DISKONAUT_TEST_BTRFS_DIR")?);
-        let root = base.join(format!("diskonaut_btrfs_test_{name}"));
+        let base = PathBuf::from(::std::env::var_os("DUSCAPE_TEST_BTRFS_DIR")?);
+        let root = base.join(format!("duscape_btrfs_test_{name}"));
         remove(&root);
         ::std::fs::create_dir_all(&root).ok()?;
         assert!(
             btrfs(&["-q", "subvolume", "create"], &root.join("live")),
-            "DISKONAUT_TEST_BTRFS_DIR is set, so making a subvolume there has to work"
+            "DUSCAPE_TEST_BTRFS_DIR is set, so making a subvolume there has to work"
         );
         Some(root)
     }
@@ -1196,7 +1196,7 @@ fn scan_with_one_hard_link(
     root: &std::path::Path,
     dir: &std::path::Path,
     bytes: usize,
-) -> libdiskonaut::FileTree {
+) -> libduscape::FileTree {
     std::fs::create_dir_all(dir).expect("mkdir");
     File::create(dir.join("one"))
         .expect("create file")
@@ -1418,7 +1418,7 @@ fn windows_sparse_file_is_sized_by_its_allocation() {
         .truncate(true)
         .open(&path)
         .expect("create file");
-    assert!(libdiskonaut::os::set_sparse(&file));
+    assert!(libduscape::os::set_sparse(&file));
     file.set_len(16 * 1024 * 1024).expect("grow to a hole");
     file.seek(SeekFrom::End(-4)).expect("seek to tail");
     file.write_all(&[1, 2, 3, 4]).expect("write the tail");
@@ -1451,15 +1451,15 @@ fn outside_scan_is_recorded_for_volume_roots_and_holds_across_deletes() {
     let total = tree.get_total_size();
     tree.volume_used = Some(total + 500);
     assert_eq!(tree.outside_scan(), Some(500));
-    tree.delete_file(&libdiskonaut::FileToDelete {
+    tree.delete_file(&libduscape::FileToDelete {
         path_in_filesystem: dir.clone(),
         path_to_file: vec![std::ffi::OsString::from("file")],
-        file_type: libdiskonaut::tiles::FileType::File,
+        file_type: libduscape::tiles::FileType::File,
         num_descendants: None,
         size: total,
-        sizes: libdiskonaut::model::Sizes::ZERO,
+        sizes: libduscape::model::Sizes::ZERO,
     });
-    tree.note_freed(libdiskonaut::model::Sizes::new(total, total));
+    tree.note_freed(libduscape::model::Sizes::new(total, total));
     assert_eq!(
         tree.outside_scan(),
         Some(500),
@@ -1471,19 +1471,19 @@ fn outside_scan_is_recorded_for_volume_roots_and_holds_across_deletes() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Moved from the model's tests when the walkers left `libdiskonaut`: it needs a real scan.
+/// Moved from the model's tests when the walkers left `libduscape`: it needs a real scan.
 #[test]
 fn a_scanned_tree_shows_either_size_without_scanning_again() {
     use crate::{ScanOptions, scan_into_tree};
     use ::std::fs;
-    use libdiskonaut::model::SizeKind;
-    let dir = std::env::temp_dir().join("diskonaut_model_test_both_sizes");
+    use libduscape::model::SizeKind;
+    let dir = std::env::temp_dir().join("duscape_model_test_both_sizes");
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     let dir = dir.canonicalize().unwrap();
     // Sparse where the filesystem allows it: long, with a little written.
     let sparse = fs::File::create(dir.join("sparse")).unwrap();
-    libdiskonaut::os::set_sparse(&sparse);
+    libduscape::os::set_sparse(&sparse);
     sparse.set_len(8 << 20).unwrap();
     drop(sparse);
     fs::write(dir.join("small"), [1u8; 100]).unwrap();

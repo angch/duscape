@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Renamed to duscape**, so that its command no longer clashes with upstream's `diskonaut`: the
+  binary is `duscape` (`duscape.exe`, `Duscape.app`, `DUSCAPE.EXE` for DOS), the `diskonaut` and
+  `diskonaut-angch` names are gone, and the crates are `duscape`, `libduscape`, `duscape-scan`,
+  `duscape-viewer`, `duscape-linux`, `duscape-windows` and `duscape-mac`. Releases are
+  `duscape-<version>-<target>` archives; the repository is `angch/duscape` (GitHub redirects the
+  old address). The config file is `~/.config/duscape/config.toml`; one at
+  `~/.config/diskonaut/config.toml` is still read while there is none at the new place. The
+  environment variables are `DUSCAPE_*` (`DUSCAPE_GRAPHICS`, `DUSCAPE_BACKEND`, `DUSCAPE_SCALE`,
+  `DUSCAPE_FONT`…); the `DISKONAUT_*` names are no longer read. A link named `duscape-gui` is
+  the window. Entries below this one keep the names of their time.
+
 ### Added
 
 - One program per platform: `diskonaut` is the terminal viewer in a terminal and the

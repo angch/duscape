@@ -417,7 +417,7 @@ fn read_dir_stat(path: &Path, inode: u64, device: u64) -> io::Result<DirRead> {
             failed += 1;
             continue;
         };
-        let size = libdiskonaut::os::size_on_disk_fast(&metadata);
+        let size = libduscape::os::size_on_disk_fast(&metadata);
         entries.push(MacosEntry {
             name: entry.file_name(),
             meta: EntryMeta {
@@ -760,11 +760,11 @@ mod tests {
     /// driver lies this way.
     ///
     /// Ignored by default because it creates and mounts a disk image, which CI does not do:
-    /// `cargo test -p libdiskonaut --lib -- --ignored fat32`.
+    /// `cargo test -p libduscape --lib -- --ignored fat32`.
     #[test]
     #[ignore = "creates and mounts a FAT32 disk image with hdiutil"]
     fn a_fat32_volume_does_not_scan_as_empty() {
-        let image = ::std::env::temp_dir().join("diskonaut_fat32_test.dmg");
+        let image = ::std::env::temp_dir().join("duscape_fat32_test.dmg");
         let _ = ::std::fs::remove_file(&image);
 
         let created = Command::new("hdiutil")

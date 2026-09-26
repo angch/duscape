@@ -1,3 +1,3 @@
 fn main() {
-    diskonaut_angch::run();
+    duscape::run();
 }

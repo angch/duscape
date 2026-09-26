@@ -5,8 +5,8 @@ use ::ratatui::widgets::Widget;
 use ::std::path::{Path, PathBuf};
 use ::std::time::{Duration, Instant};
 
-use libdiskonaut::format::{DisplayCount, DisplaySize, truncate_middle};
-use libdiskonaut::tiles::{FileMetadata, FileType};
+use libduscape::format::{DisplayCount, DisplaySize, truncate_middle};
+use libduscape::tiles::{FileMetadata, FileType};
 
 use crate::config::Keybinds;
 use crate::state::UiEffects;
@@ -104,7 +104,7 @@ fn controls_legend(kb: &Keybinds, scanning: bool, switch_panel: bool) -> String 
 fn tips(kb: &Keybinds, scanning: bool, switch_panel: bool) -> Vec<String> {
     let mut tips = vec![
         "Tip: Ctrl+click entries in the list or the treemap to mark several at once".to_string(),
-        "Tip: right-click an entry to copy its path, relative to where diskonaut was started"
+        "Tip: right-click an entry to copy its path, relative to where duscape was started"
             .to_string(),
         "Tip: double right-click copies the absolute path instead".to_string(),
         "Tip: double-click a folder to go into it".to_string(),
@@ -135,7 +135,7 @@ fn tips(kb: &Keybinds, scanning: bool, switch_panel: bool) -> Vec<String> {
          without scanning again",
         kb.toggle_size
     ));
-    tips.push("Tip: every key can be rebound in ~/.config/diskonaut/config.toml".to_string());
+    tips.push("Tip: every key can be rebound in ~/.config/duscape/config.toml".to_string());
     tips
 }
 

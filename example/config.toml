@@ -1,6 +1,6 @@
-# Example diskonaut config. Copy to:
-#   ~/.config/diskonaut/config.toml
-# or pass: diskonaut -c /path/to/config.toml
+# Example duscape config. Copy to:
+#   ~/.config/duscape/config.toml
+# or pass: duscape -c /path/to/config.toml
 
 version = 1
 

@@ -4,7 +4,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Widget;
 
 use crate::ui::grid::draw_filled_rect;
-use libdiskonaut::format::truncate_end;
+use libduscape::format::truncate_end;
 
 pub struct WarningBox {}
 

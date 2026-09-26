@@ -9,7 +9,7 @@ use ::std::time::{Duration, Instant};
 
 use crate::parallel;
 use crate::refine::{Found, SmallFiles, refine};
-use libdiskonaut::{DisplayCount, FileToDelete, FileTree, Folder, ScanOptions};
+use libduscape::{DisplayCount, FileToDelete, FileTree, Folder, ScanOptions};
 
 /// What a rescan found.
 pub enum Outcome {

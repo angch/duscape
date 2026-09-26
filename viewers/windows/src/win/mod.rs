@@ -1,6 +1,6 @@
 //! The window: Win32 input turned into [`Viewer`] calls, and GDI drawing of what it says
 //! ([`paint`]). Nothing here decides anything a test would want to check; that is the viewer's,
-//! in `diskonaut-viewer`, shared with the macOS and Linux windows.
+//! in `duscape-viewer`, shared with the macOS and Linux windows.
 //!
 //! The viewer works in points; the window multiplies by the screen's DPI scale to draw and
 //! divides to hit-test, so every size here is the other viewers' too.
@@ -22,13 +22,13 @@ use ::std::sync::Arc;
 use ::std::sync::atomic::{AtomicBool, Ordering};
 
 use clap::Parser;
-use diskonaut_scan::rescan::{Outcome, Rescanner};
-use diskonaut_viewer::menu::{Action, Entry, Platform};
-use diskonaut_viewer::scan;
-use diskonaut_viewer::state::{Direction, Hit, Jump, Mods, Preview, ROW, Rect, Viewer};
-use libdiskonaut::model::SizeKind;
-use libdiskonaut::preview::{Reader, Ready};
-use libdiskonaut::{DirSummary, FileTree, ScanOptions};
+use duscape_scan::rescan::{Outcome, Rescanner};
+use duscape_viewer::menu::{Action, Entry, Platform};
+use duscape_viewer::scan;
+use duscape_viewer::state::{Direction, Hit, Jump, Mods, Preview, ROW, Rect, Viewer};
+use libduscape::model::SizeKind;
+use libduscape::preview::{Reader, Ready};
+use libduscape::{DirSummary, FileTree, ScanOptions};
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
@@ -171,7 +171,7 @@ impl Window {
         set_title(
             hwnd,
             &format!(
-                "{} — {} — diskonaut",
+                "{} — {} — duscape",
                 self.viewer.title(),
                 self.viewer.subtitle()
             ),
@@ -389,11 +389,11 @@ impl Window {
             Action::Open => self
                 .viewer
                 .open_in_hand()
-                .and_then(|path| libdiskonaut::launch::open(&path).err()),
+                .and_then(|path| libduscape::launch::open(&path).err()),
             Action::Reveal => {
                 let paths = self.viewer.target_paths();
                 let paths: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
-                libdiskonaut::launch::reveal(&paths).err()
+                libduscape::launch::reveal(&paths).err()
             }
             Action::CopyPath | Action::CopyFullPath => {
                 self.viewer.copy_paths(action == Action::CopyFullPath);
@@ -482,7 +482,7 @@ impl Window {
             Arc::clone(&self.running),
             move |id, outcome| post(window, AppMsg::Rescanned(id, outcome)),
         ));
-        self.viewer.set_clipboard(libdiskonaut::clipboard::copy);
+        self.viewer.set_clipboard(libduscape::clipboard::copy);
         scan::spawn(
             root,
             self.options,
@@ -555,7 +555,7 @@ fn set_title(hwnd: HWND, text: &str) {
 /// A message box over `hwnd`; returns which button closed it.
 fn message(hwnd: HWND, text: &str, style: u32) -> i32 {
     let text = wide(text);
-    let caption = wide("diskonaut");
+    let caption = wide("duscape");
     // SAFETY: both strings are NUL-terminated and outlive the call.
     unsafe { MessageBoxW(hwnd, text.as_ptr(), caption.as_ptr(), style) }
 }
@@ -757,7 +757,7 @@ fn dispatch(window: &mut Window, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
 /// takes over (true); declined, or elevated already, the scan goes on as it is. If the shell
 /// would not start it, the scan goes on too, with a notice for the status bar.
 fn handed_to_elevated(given: bool, no_elevate: bool, root: &Path) -> (bool, Option<String>) {
-    if !elevate::wanted(root, no_elevate, libdiskonaut::os::is_user_admin())
+    if !elevate::wanted(root, no_elevate, libduscape::os::is_user_admin())
         || !elevate::is_local_disk(root)
     {
         return (false, None);
@@ -898,7 +898,7 @@ pub fn run_with(folder: Option<PathBuf>, options: ScanOptions, no_elevate: bool)
     // owned by the window from WM_CREATE and reclaimed at WM_DESTROY, or here if creation fails.
     unsafe {
         let instance = GetModuleHandleW(null());
-        let class_name = wide("DiskonautWindowsWindow");
+        let class_name = wide("DuscapeWindowsWindow");
         let class = WNDCLASSW {
             style: CS_DBLCLKS,
             lpfnWndProc: Some(wndproc),
@@ -912,7 +912,7 @@ pub fn run_with(folder: Option<PathBuf>, options: ScanOptions, no_elevate: bool)
             lpszClassName: class_name.as_ptr(),
         };
         RegisterClassW(&class);
-        let title = wide("diskonaut");
+        let title = wide("duscape");
         let px = |value: f64| (value * scale).round() as i32;
         let hwnd = CreateWindowExW(
             0,

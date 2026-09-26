@@ -1,5 +1,5 @@
 # The standard measurement of docs/probes/bench-matrix.sh, for Windows: the machine, the
-# filesystem and the disk, then warm timings of diskonaut against diskus and WizTree on the trees
+# filesystem and the disk, then warm timings of duscape against diskus and WizTree on the trees
 # given, and the build profile. Writes docs/benchmarks/<host>-<date>.md in the same format;
 # commit it.
 #
@@ -9,8 +9,8 @@
 # baseline. `diskus` and `hyperfine` come from `cargo install`; WizTree from wiztreefree.com. It
 # is timed in its export mode (`/export`, folders only, `/admin=0`), which scans, writes a CSV and
 # exits — unelevated it walks the directories as everyone else does; from an elevated shell it
-# reads the MFT, and so does diskonaut read the volume's metadata files, which is what the
-# "elevated runs" line records; elevated, diskonaut reads the master file table, and a row with
+# reads the MFT, and so does duscape read the volume's metadata files, which is what the
+# "elevated runs" line records; elevated, duscape reads the master file table, and a row with
 # `--no-device-read` beside it walks the directories at the same privilege. Cold rows need the
 # file cache emptied before each run
 # (`drop-cache.ps1`, beside this script), which an elevated shell can do; unelevated there are
@@ -26,8 +26,8 @@ $ErrorActionPreference = "Stop"
 if (-not $Trees) { Write-Error "usage: bench-matrix.ps1 [-Runs N] [-Tag WORD] TREE..."; exit 2 }
 
 $here = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
-$bin = if ($env:DISKONAUT) { $env:DISKONAUT } else { Join-Path $here "target\release\diskonaut.exe" }
-if (-not (Test-Path $bin)) { Write-Error "missing: $bin (cargo build --release -p diskonaut-angch)"; exit 1 }
+$bin = if ($env:DUSCAPE) { $env:DUSCAPE } else { Join-Path $here "target\release\duscape.exe" }
+if (-not (Test-Path $bin)) { Write-Error "missing: $bin (cargo build --release -p duscape)"; exit 1 }
 function Find-Tool([string]$name) {
     $found = Get-Command $name -ErrorAction SilentlyContinue
     if ($found) { return $found.Source }
@@ -52,7 +52,7 @@ $wizcsv = Join-Path $env:TEMP "bench-matrix-wiztree.csv"
 # Created now, so a path that cannot be written fails before the measurements, not after them.
 [IO.File]::WriteAllText($out, "", (New-Object Text.UTF8Encoding($false)))
 
-# diskonaut's `--benchmark` output, stdout and stderr together as lines. Windows PowerShell 5.1
+# duscape's `--benchmark` output, stdout and stderr together as lines. Windows PowerShell 5.1
 # makes a native command's stderr a terminating error under `Stop`, so that is relaxed here.
 function Benchmark-Lines([string[]]$arguments) {
     $was = $ErrorActionPreference
@@ -97,7 +97,7 @@ $lines.Add("| | |")
 $lines.Add("| --- | --- |")
 $lines.Add("| machine | $($cpu.Name.Trim()), $($cpu.NumberOfLogicalProcessors) cores, $memGiB GiB, virtualisation: $virt |")
 $lines.Add("| system | $($os.Caption.Trim()) $($os.Version) |")
-$lines.Add("| diskonaut | $commit ($dirty), release profile |")
+$lines.Add("| duscape | $commit ($dirty), release profile |")
 $lines.Add("| diskus | $diskusVersion |")
 $lines.Add("| WizTree | $wiztreeVersion, timed in export mode (folders only) |")
 $lines.Add("| cold runs | $(if ($canDrop) { 'yes (the file cache emptied before each: drop-cache.ps1)' } else { 'no: emptying the file cache (drop-cache.ps1) needs an elevated shell' }) |")
@@ -157,12 +157,12 @@ function Bench([string]$title, [string]$dir, [string[]]$hyperfineArgs) {
     $md = Join-Path $env:TEMP "bench-matrix-hyperfine.md"
     $cmds = @()
     if ($diskus) { $cmds += @("-n", "diskus", "$(Program $diskus) --directories excluded $(Arg $dir) >NUL 2>&1") }
-    $cmds += @("-n", "diskonaut sharded", "$(Program $bin) --benchmark --bench-stage sharded $(Arg $dir) >NUL")
-    $cmds += @("-n", "diskonaut refined", "$(Program $bin) --benchmark --bench-stage refined $(Arg $dir) >NUL")
+    $cmds += @("-n", "duscape sharded", "$(Program $bin) --benchmark --bench-stage sharded $(Arg $dir) >NUL")
+    $cmds += @("-n", "duscape refined", "$(Program $bin) --benchmark --bench-stage refined $(Arg $dir) >NUL")
     if ($elevated) {
         # Elevated, the scan reads the volume's master file table; the walk through the
         # filesystem at the same privilege separates the table read from the rest.
-        $cmds += @("-n", "diskonaut sharded, kernel walk", "$(Program $bin) --benchmark --bench-stage sharded --no-device-read $(Arg $dir) >NUL")
+        $cmds += @("-n", "duscape sharded, kernel walk", "$(Program $bin) --benchmark --bench-stage sharded --no-device-read $(Arg $dir) >NUL")
     }
     if ($wiztree) { $cmds += @("-n", "WizTree export", "$(Program $wiztree) $(Arg $dir) /export=`"$wizcsv`" /admin=0 /exportfolders=0 /exportfiles=0") }
     # hyperfine's warnings (outliers, say) go to stderr, which under `Stop` would end the run;

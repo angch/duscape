@@ -14,13 +14,13 @@ use crate::canvas::{Canvas, Rgba};
 use crate::draw::{self, TitleButton};
 use crate::font::Fonts;
 use crate::trash;
-use diskonaut_scan::rescan::{Outcome, Rescanner};
-use diskonaut_viewer::menu::{Action, Entry, Platform};
-use diskonaut_viewer::preview::{Loaded, Previewer};
-use diskonaut_viewer::scan;
-use diskonaut_viewer::state::{Direction, Hit, Jump, Preview, Rect, Viewer, drop_later};
-use libdiskonaut::model::SizeKind;
-use libdiskonaut::{DirSummary, DisplayCount, DisplaySize, FileToDelete, FileTree, ScanOptions};
+use duscape_scan::rescan::{Outcome, Rescanner};
+use duscape_viewer::menu::{Action, Entry, Platform};
+use duscape_viewer::preview::{Loaded, Previewer};
+use duscape_viewer::scan;
+use duscape_viewer::state::{Direction, Hit, Jump, Preview, Rect, Viewer, drop_later};
+use libduscape::model::SizeKind;
+use libduscape::{DirSummary, DisplayCount, DisplaySize, FileToDelete, FileTree, ScanOptions};
 
 /// The window's starting size and its minimum, in points.
 const WINDOW_SIZE: (f64, f64) = (1180.0, 760.0);
@@ -44,7 +44,7 @@ pub enum Msg {
     Preview(u64, Preview, Option<Rgba>),
     /// Time to draw again: a status message has run its course.
     Tick,
-    /// Write the window to `DISKONAUT_SNAPSHOT` and quit.
+    /// Write the window to `DUSCAPE_SNAPSHOT` and quit.
     Snapshot,
 }
 
@@ -133,7 +133,7 @@ impl App {
         let fonts = Fonts::system()?;
         let (tx, rx) = channel();
         let events = tx.clone();
-        let backend = backend::open("diskonaut", WINDOW_SIZE, MIN_SIZE, move |input| {
+        let backend = backend::open("duscape", WINDOW_SIZE, MIN_SIZE, move |input| {
             let _ = events.send(Msg::Input(input));
         })?;
         let (width, height, scale) = backend.size();
@@ -182,7 +182,7 @@ impl App {
             quit: false,
             title: String::new(),
             tick_due: None,
-            snapshot: ::std::env::var_os("DISKONAUT_SNAPSHOT").map(PathBuf::from),
+            snapshot: ::std::env::var_os("DUSCAPE_SNAPSHOT").map(PathBuf::from),
         };
         app.start_scan(root.to_path_buf());
         Ok(app)
@@ -277,7 +277,7 @@ impl App {
             ),
         };
         let title = format!(
-            "{} — {} — diskonaut",
+            "{} — {} — duscape",
             self.viewer.title(),
             self.viewer.subtitle()
         );
@@ -352,7 +352,7 @@ impl App {
             Msg::Snapshot => {
                 if let Some(path) = self.snapshot.take() {
                     if let Err(error) = self.render().and_then(|()| self.write_snapshot(&path)) {
-                        eprintln!("diskonaut-linux: snapshot: {error}");
+                        eprintln!("duscape-linux: snapshot: {error}");
                     }
                     self.quit = true;
                 }
@@ -537,7 +537,7 @@ impl App {
             }
             return self.changed();
         }
-        let mods = diskonaut_viewer::state::Mods {
+        let mods = duscape_viewer::state::Mods {
             toggle: mods.control,
             range: mods.shift,
         };
@@ -545,7 +545,7 @@ impl App {
             self.last_click = None;
             if self
                 .viewer
-                .click(x, y, diskonaut_viewer::state::Mods::default())
+                .click(x, y, duscape_viewer::state::Mods::default())
                 .is_some()
             {
                 self.viewer.enter_selected();
@@ -694,7 +694,7 @@ impl App {
         let Some((text, label)) = self.viewer.copied_paths(absolute) else {
             return;
         };
-        let copied = libdiskonaut::clipboard::copy(&text) || self.backend.copy(&text);
+        let copied = libduscape::clipboard::copy(&text) || self.backend.copy(&text);
         self.viewer.say(if copied {
             format!("{label} {text}")
         } else {
@@ -714,7 +714,7 @@ impl App {
             }
             return;
         }
-        if let Some(name) = libdiskonaut::delete::refused(&files) {
+        if let Some(name) = libduscape::delete::refused(&files) {
             self.dialog = Dialog::Notice {
                 title: "This cannot be deleted".to_string(),
                 detail: format!("NTFS metadata belongs to the filesystem: {name}"),
@@ -749,7 +749,7 @@ impl App {
         let mut failures = Vec::new();
         for file in files {
             let result = if permanently {
-                libdiskonaut::delete::remove(&file).map_err(|error| error.to_string())
+                libduscape::delete::remove(&file).map_err(|error| error.to_string())
             } else {
                 trash::trash(&file.full_path())
             };
@@ -894,11 +894,11 @@ impl App {
             Action::Open => self
                 .viewer
                 .open_in_hand()
-                .and_then(|path| libdiskonaut::launch::open(&path).err()),
+                .and_then(|path| libduscape::launch::open(&path).err()),
             Action::Reveal => {
                 let paths = self.viewer.target_paths();
                 let paths: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
-                libdiskonaut::launch::reveal(&paths).err()
+                libduscape::launch::reveal(&paths).err()
             }
             Action::CopyPath | Action::CopyFullPath => {
                 return self.copy_paths(action == Action::CopyFullPath);
@@ -992,7 +992,7 @@ fn confirmation(files: &[FileToDelete], permanently: bool) -> (String, String) {
     let mut detail = match files {
         [one] => {
             let contents = match one.num_descendants {
-                Some(count) if one.file_type == libdiskonaut::FileType::Folder => {
+                Some(count) if one.file_type == libduscape::FileType::Folder => {
                     format!(", a folder of {} items", DisplayCount(count))
                 }
                 _ => String::new(),

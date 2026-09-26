@@ -19,7 +19,7 @@ use objc2_foundation::{
     MainThreadMarker, NSNotification, NSObject, NSPoint, NSRect, NSSize, NSString,
 };
 
-use libdiskonaut::ScanOptions;
+use libduscape::ScanOptions;
 use view::DiskView;
 
 /// What the command line asked for.
@@ -36,11 +36,11 @@ fn options() -> Options {
     for arg in ::std::env::args_os().skip(1) {
         match arg.to_str() {
             Some("-a" | "--apparent-size") => options.apparent = true,
-            // Which viewer: `diskonaut` has already chosen this one.
+            // Which viewer: `duscape` has already chosen this one.
             Some("--gui") => {}
             Some("-h" | "--help") => {
                 println!(
-                    "diskonaut-mac [-a|--apparent-size] [FOLDER]\n\n\
+                    "duscape-mac [-a|--apparent-size] [FOLDER]\n\n\
                      A macOS window on where the disk space went. Without a folder, asks for one."
                 );
                 ::std::process::exit(0);
@@ -48,7 +48,7 @@ fn options() -> Options {
             // Launch Services once passed a process serial number to apps opened from Finder.
             Some(flag) if flag.starts_with("-psn_") => {}
             Some(flag) if flag.starts_with('-') => {
-                eprintln!("diskonaut-mac: unknown option {flag} (see --help)");
+                eprintln!("duscape-mac: unknown option {flag} (see --help)");
                 ::std::process::exit(2);
             }
             _ => options.folder = Some(PathBuf::from(arg)),
@@ -67,7 +67,7 @@ define_class!(
     // SAFETY: NSObject may be subclassed; `Delegate` has no `Drop` impl.
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
-    #[name = "DiskonautAppDelegate"]
+    #[name = "DuscapeAppDelegate"]
     #[ivars = DelegateIvars]
     struct Delegate;
 
@@ -150,10 +150,10 @@ pub fn run_with(folder: Option<PathBuf>, scan_options: ScanOptions) {
         window.setReleasedWhenClosed(false);
         window
     };
-    window.setTitle(&NSString::from_str("diskonaut"));
+    window.setTitle(&NSString::from_str("duscape"));
     window.setContentMinSize(NSSize::new(520.0, 340.0));
     window.center();
-    window.setFrameAutosaveName(&NSString::from_str("diskonaut main window"));
+    window.setFrameAutosaveName(&NSString::from_str("duscape main window"));
     window.setAcceptsMouseMovedEvents(true);
 
     let view = DiskView::new(mtm, frame, scan_options);
@@ -183,11 +183,11 @@ fn menu_bar(mtm: MainThreadMarker, app: &NSApplication) -> Retained<NSMenu> {
     let (up, down, backspace) = ("\u{f700}", "\u{f701}", "\u{7f}");
 
     let bar = NSMenu::new(mtm);
-    let app_menu = submenu(mtm, &bar, "diskonaut");
+    let app_menu = submenu(mtm, &bar, "duscape");
     add(
         mtm,
         &app_menu,
-        "About diskonaut",
+        "About duscape",
         sel!(orderFrontStandardAboutPanel:),
         "",
         command,
@@ -196,7 +196,7 @@ fn menu_bar(mtm: MainThreadMarker, app: &NSApplication) -> Retained<NSMenu> {
     let services = submenu(mtm, &app_menu, "Services");
     app.setServicesMenu(Some(&services));
     separator(mtm, &app_menu);
-    add(mtm, &app_menu, "Hide diskonaut", sel!(hide:), "h", command);
+    add(mtm, &app_menu, "Hide duscape", sel!(hide:), "h", command);
     add(
         mtm,
         &app_menu,
@@ -217,7 +217,7 @@ fn menu_bar(mtm: MainThreadMarker, app: &NSApplication) -> Retained<NSMenu> {
     add(
         mtm,
         &app_menu,
-        "Quit diskonaut",
+        "Quit duscape",
         sel!(terminate:),
         "q",
         command,

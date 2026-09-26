@@ -18,8 +18,8 @@ use ::std::sync::mpsc::{self, Receiver, SyncSender};
 use ::std::thread;
 use ::std::time::{Duration, Instant};
 
-use diskonaut_scan::{parallel, scan_directories, scan_folder, thread_count};
-use libdiskonaut::{DirEntries, FileTree, Folder, ScanItem, ScanOptions};
+use duscape_scan::{parallel, scan_directories, scan_folder, thread_count};
+use libduscape::{DirEntries, FileTree, Folder, ScanItem, ScanOptions};
 
 /// Which part of the scan pipeline to measure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
@@ -310,7 +310,7 @@ fn bench_sharded(
     let files = small.len();
     let second = Instant::now();
     let mut charged = 0;
-    diskonaut_scan::refine::refine(
+    duscape_scan::refine::refine(
         small,
         thread_count(options),
         &::std::sync::Mutex::new(None),
@@ -332,7 +332,7 @@ fn bench_sharded(
 #[cfg(target_os = "linux")]
 fn bench_ext4_raw(path: &Path) -> StageResult {
     let start = Instant::now();
-    match diskonaut_scan::ext4::survey_for(path) {
+    match duscape_scan::ext4::survey_for(path) {
         Ok(survey) => {
             eprintln!(
                 "  ext4-raw: {} — {} of {} groups read, {} read in {:.3}s ({:.0} MiB/s); {} files, {} directories; apparent {} ({} B); block {} B, inode {} B",
@@ -392,7 +392,7 @@ fn bench_ext4_raw(_path: &Path) -> StageResult {
 fn device_read_words(path: &Path, options: ScanOptions) -> String {
     if !options.read_device {
         "off (--no-device-read)".to_string()
-    } else if diskonaut_scan::ext4::would_read_device(path) {
+    } else if duscape_scan::ext4::would_read_device(path) {
         "yes (ext4, as root)".to_string()
     } else {
         "no (not ext4, or not root)".to_string()
@@ -403,7 +403,7 @@ fn device_read_words(path: &Path, options: ScanOptions) -> String {
     if !options.read_device {
         return "off (--no-device-read)".to_string();
     }
-    match diskonaut_scan::mft::would_read_device(path) {
+    match duscape_scan::mft::would_read_device(path) {
         Ok(()) => "yes (NTFS master file table, elevated)".to_string(),
         Err(why) => format!("no ({why})"),
     }
@@ -424,10 +424,10 @@ pub fn run(
     profile: bool,
 ) {
     if profile {
-        libdiskonaut::model::files::profile::enable();
+        libduscape::model::files::profile::enable();
     }
     println!("benchmarking {}", path.display());
-    if let Some(used) = libdiskonaut::os::volume_used(path) {
+    if let Some(used) = libduscape::os::volume_used(path) {
         // What the stages' totals fall short of is what the walk could not see: unreadable
         // folders, filesystem metadata, snapshots.
         println!("  volume used: {} ({used} B)", human_size(u128::from(used)));

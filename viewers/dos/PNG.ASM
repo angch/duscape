@@ -1,4 +1,4 @@
-; PNG.ASM, included by DISKONAU.ASM: a PNG decoded into the preview's half blocks (PREVIEW.ASM).
+; PNG.ASM, included by DUSCAPE.ASM: a PNG decoded into the preview's half blocks (PREVIEW.ASM).
 ;
 ; Every colour type and bit depth, Adam7 too, palette transparency (tRNS). Inflate follows Mark
 ; Adler's puff: canonical Huffman codes decoded a bit at a time, a 32 KiB window in winseg. Each

@@ -12,7 +12,7 @@
 //! blocks already and should give them back. The ledger's answers do not depend on order, so the
 //! files can be probed in whatever order is most useful — the folder the user is looking at first.
 //!
-//! [`FileTree::apply_found`]: libdiskonaut::FileTree::apply_found
+//! [`FileTree::apply_found`]: libduscape::FileTree::apply_found
 
 use ::std::collections::BTreeMap;
 use ::std::ffi::OsStr;
@@ -21,7 +21,7 @@ use ::std::path::{Path, PathBuf};
 use ::std::sync::{Arc, Mutex};
 
 use crate::DirEntries;
-pub use libdiskonaut::scan::{Found, FoundFile};
+pub use libduscape::scan::{Found, FoundFile};
 
 /// Files smaller than this are left out of the second pass too: a file this small is usually
 /// stored inline in the filesystem's metadata (btrfs), where FIEMAP reports no shared extent to
@@ -45,12 +45,12 @@ struct Pending {
     extent_space: u64,
     names: Vec<u8>,
     ends: Vec<u32>,
-    sizes: Vec<libdiskonaut::model::Sizes>,
+    sizes: Vec<libduscape::model::Sizes>,
 }
 
 impl Pending {
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    fn iter(&self) -> impl Iterator<Item = (&OsStr, libdiskonaut::model::Sizes)> {
+    fn iter(&self) -> impl Iterator<Item = (&OsStr, libduscape::model::Sizes)> {
         let mut start = 0usize;
         self.ends.iter().zip(&self.sizes).map(move |(&end, &size)| {
             let end = end as usize;
@@ -80,7 +80,7 @@ impl SmallFiles {
             pending
                 .ends
                 .push(u32::try_from(pending.names.len()).unwrap_or(u32::MAX));
-            pending.sizes.push(libdiskonaut::model::Sizes::of(
+            pending.sizes.push(libduscape::model::Sizes::of(
                 entry.meta.size,
                 entry.meta.apparent,
             ));

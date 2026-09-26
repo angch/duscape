@@ -5,7 +5,7 @@
 //! Coordinates are the layout's points (`state::Layout`); `scale` turns them into pixels, so a
 //! HiDPI screen gets the same layout drawn larger.
 
-use diskonaut_viewer::state::Rect;
+use duscape_viewer::state::Rect;
 
 /// A colour as sRGB components in 0..=1, like `state::tile_color` gives.
 pub type Color = (f64, f64, f64);

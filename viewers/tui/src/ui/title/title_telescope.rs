@@ -4,7 +4,7 @@ use ::ratatui::style::{Color, Modifier, Style};
 
 use ::std::cmp::max;
 
-use libdiskonaut::format::truncate_middle;
+use libduscape::format::truncate_middle;
 
 fn get_index_or_last(vec: &[CellSizeOpt], index: usize) -> &CellSizeOpt {
     match vec.get(index) {

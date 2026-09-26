@@ -1,12 +1,12 @@
 [package]
-name = "libdiskonaut"
+name = "libduscape"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "What every diskonaut-angch viewer shares: the disk-usage model with hard-link and reflink accounting, the squarified treemap, the scan protocol, deletion, file previews and the native clipboard."
+description = "What every duscape viewer shares: the disk-usage model with hard-link and reflink accounting, the squarified treemap, the scan protocol, deletion, file previews and the native clipboard."
 readme = "../README.md"
 
 [lints]

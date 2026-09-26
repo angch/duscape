@@ -1,19 +1,19 @@
 //! Reading the file in hand for the preview, on a thread of its own. What a file is comes from
-//! `libdiskonaut::preview`; a picture's bytes are handed over whole, for the window to decode
+//! `libduscape::preview`; a picture's bytes are handed over whole, for the window to decode
 //! with the system's own image support.
 
 use ::std::path::{Path, PathBuf};
 use ::std::sync::mpsc::{Sender, channel};
 use ::std::time::Duration;
 
-use libdiskonaut::preview::{Contents, describe_picture, read};
+use libduscape::preview::{Contents, describe_picture, read};
 
 /// A request waits this long before it is read, so that holding an arrow key down through a
 /// folder reads only the file it stops on.
 const DEBOUNCE: Duration = Duration::from_millis(60);
 /// Pictures larger than this are described, not shown.
 const MAX_PICTURE: u64 = 64 * 1024 * 1024;
-/// Picture formats the system decodes that `libdiskonaut::preview` does not recognise; it calls
+/// Picture formats the system decodes that `libduscape::preview` does not recognise; it calls
 /// them binary files, and they are handed over as pictures by their extension instead.
 const OTHER_PICTURES: [&str; 8] = ["heic", "heif", "gif", "tif", "tiff", "bmp", "webp", "avif"];
 
@@ -22,7 +22,7 @@ pub enum Loaded {
     Info(String),
     Text(Vec<String>),
     /// A binary file: its description (`binary file · 1.7M`, then where its blocks are) and its
-    /// first bytes as a hex dump (`libdiskonaut::preview::hex_dump`).
+    /// first bytes as a hex dump (`libduscape::preview::hex_dump`).
     Binary {
         info: Vec<String>,
         dump: Vec<String>,
@@ -98,8 +98,8 @@ mod tests {
 
     #[test]
     fn text_is_read_as_lines() {
-        let dir = ::std::env::temp_dir()
-            .join(format!("diskonaut-viewer-preview-{}", ::std::process::id()));
+        let dir =
+            ::std::env::temp_dir().join(format!("duscape-viewer-preview-{}", ::std::process::id()));
         ::std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("notes.txt");
         ::std::fs::write(&file, "one\ntwo\n").unwrap();
@@ -113,8 +113,8 @@ mod tests {
 
     #[test]
     fn a_binary_file_is_described_and_dumped() {
-        let dir = ::std::env::temp_dir()
-            .join(format!("diskonaut-viewer-binary-{}", ::std::process::id()));
+        let dir =
+            ::std::env::temp_dir().join(format!("duscape-viewer-binary-{}", ::std::process::id()));
         ::std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("blob.bin");
         ::std::fs::write(&file, [0u8, 1, 2, 0xff, 0, 0x41]).unwrap();

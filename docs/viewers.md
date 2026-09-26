@@ -3,11 +3,11 @@
 The terminal viewer is the primary one. The same walker and model also drive three native
 windows and an MS-DOS port. `features.md` lists what each offers.
 
-Each window is linked into `diskonaut` too, so a platform has one program: the terminal viewer
+Each window is linked into `duscape` too, so a platform has one program: the terminal viewer
 in a terminal, the window from a desktop. `viewers/tui/src/front.rs` decides, in order: `--tui`
 or `--gui`; `--benchmark`, `--help` and `--version` are the terminal's; a name ending `-gui`,
 `-linux`, `-windows` or `-mac` (a link) is the window; then on Linux and macOS a terminal on
-stdin or stdout means the terminal viewer, neither (a launcher, `Diskonaut.app` from Finder)
+stdin or stdout means the terminal viewer, neither (a launcher, `Duscape.app` from Finder)
 the window where there is a display; on Windows no console, or one of the program's own, means
 Explorer started it. The executable's manifest (`consoleAllocationPolicy`: `detached`) keeps
 Explorer from making a console at all from Windows 11 24H2 on; older Windows makes one, which
@@ -17,12 +17,12 @@ window reads the same command line: the folder and the scan flags (`-a`, `-x`, `
 
 ## macOS GUI (experimental)
 
-`diskonaut-mac` is a native macOS window on the same walker and model, drawn with AppKit (through
+`duscape-mac` is a native macOS window on the same walker and model, drawn with AppKit (through
 `objc2`). A list of the folder's entries sits beside the treemap, with the entry in hand previewed
 under it; the treemap fills in live while the scan runs.
 
 ```sh
-cargo run -p diskonaut-mac --release -- ~   # or run with no argument, or drop a folder on the window
+cargo run -p duscape-mac --release -- ~   # or run with no argument, or drop a folder on the window
 ```
 
 - **Mac conventions:** ⌘⌫ moves to the Trash (⌥⌘⌫ deletes immediately), Space is Quick Look,
@@ -35,7 +35,7 @@ cargo run -p diskonaut-mac --release -- ~   # or run with no argument, or drop a
 
 ## Linux GUI (experimental)
 
-`diskonaut-linux` is a window on the same walker and model for Linux and FreeBSD, drawn with no
+`duscape-linux` is a window on the same walker and model for Linux and FreeBSD, drawn with no
 toolkit at all: the frame is painted in software and put on the screen by one of two backends,
 native Wayland (`wayland-client`, `xdg-shell`, a `wl_shm` buffer) or X11 (`x11rb`), both pure
 Rust, with text from the system's fonts (`fontconfig`'s sans-serif, rasterised by `fontdue`).
@@ -45,7 +45,7 @@ It shares its state — the layout, what is in hand, marks, navigation, rescans 
 viewer (`viewers/shared/`).
 
 ```sh
-cargo run -p diskonaut-linux --release -- ~   # or run with no argument for the current folder
+cargo run -p duscape-linux --release -- ~   # or run with no argument for the current folder
 ```
 
 - **The same window as the Mac's:** breadcrumbs, the list beside the treemap with the entry in hand
@@ -60,11 +60,11 @@ cargo run -p diskonaut-linux --release -- ~   # or run with no argument for the 
   context menu (the same as the Mac's and Windows's: open, show in the file manager, copy, rescan,
   trash or delete), the wheel scrolls the list and zooms the treemap, breadcrumbs or the back button to
   go up.
-- **Wayland or X11:** Wayland when `WAYLAND_DISPLAY` is set, else X11; `DISKONAUT_BACKEND=x11`
+- **Wayland or X11:** Wayland when `WAYLAND_DISPLAY` is set, else X11; `DUSCAPE_BACKEND=x11`
   or `wayland` picks. On Wayland the compositor is asked for a title bar (`xdg-decoration`); where
   it draws none (GNOME) the window draws its own, with move, maximise and close.
 - **HiDPI:** on Wayland the compositor's scale; on X11 `Xft.dpi` (or `GDK_SCALE`, or
-  `DISKONAUT_SCALE`).
+  `DUSCAPE_SCALE`).
 
 Why not GTK or Qt: both need their development packages to build and their libraries to run, which
 rules out the static binaries this fork ships, and their Rust bindings bring hundreds of crates for
@@ -72,16 +72,16 @@ a window that draws one picture. See [`viewers/linux/README.md`](../viewers/linu
 
 ## Windows GUI (experimental)
 
-`diskonaut-windows` is the terminal viewer in a native window: the same walker (`diskonaut-scan`), and
-the same tree, treemap, deletion, previews and rescans (`libdiskonaut`), with the list and the
+`duscape-windows` is the terminal viewer in a native window: the same walker (`duscape-scan`), and
+the same tree, treemap, deletion, previews and rescans (`libduscape`), with the list and the
 treemap side by side — the list as a tree whose folders open in place, and the treemap nested,
-each folder's tile holding its entries' tiles. What the window shows and does is `diskonaut-viewer`, the state the macOS
+each folder's tile holding its entries' tiles. What the window shows and does is `duscape-viewer`, the state the macOS
 and Linux windows share, so the three behave alike. It is built on `windows-sys` and GDI rather than a GUI framework, so the
 release binary is about **840 KB**, most of it the PNG and JPEG decoders for the preview.
 [`features.md`](features.md) compares the viewers feature by feature.
 
 ```sh
-cargo run -p diskonaut-windows --release -- C:\   # or run with no argument for a folder picker
+cargo run -p duscape-windows --release -- C:\   # or run with no argument for a folder picker
 ```
 
 It takes the terminal viewer's scan flags: `-a`, `--max-depth`, `--threads`,
@@ -119,7 +119,7 @@ its master file table and every folder opens.
 **29 KB**, that runs in DOSBox-X or on a 286 with no coprocessor (the treemap's doubles are
 computed in software, bit for bit as Rust's f64). It is not built from the Rust code but
 ported from it — the squarify layout, navigation, zoom, tile text, the side panel and size formats
-— and its tiles match `libdiskonaut`'s on every folder it was compared on. It scans with long file
+— and its tiles match `libduscape`'s on every folder it was compared on. It scans with long file
 names where DOS has them, draws the treemap live during the scan, deletes and rescans, and
 previews text, PNG and JPEG files beside the treemap, pictures in half blocks with six of text
 mode's 16 colours set to the picture's own.

@@ -7,6 +7,6 @@ edition = "2024"
 publish = false
 
 [dependencies]
-libdiskonaut = { path = "../../../common" }
+libduscape = { path = "../../../common" }
 
 [workspace]

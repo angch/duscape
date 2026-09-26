@@ -8,8 +8,8 @@
 
 use ::std::path::PathBuf;
 
-use libdiskonaut::DisplayCount;
-use libdiskonaut::tiles::FileType;
+use libduscape::DisplayCount;
+use libduscape::tiles::FileType;
 
 use crate::state::Viewer;
 

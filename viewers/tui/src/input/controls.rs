@@ -8,7 +8,7 @@ use ratatui::crossterm::event::{
 use crate::App;
 use crate::app::ListJump;
 use crate::config::Keybinds;
-use libdiskonaut::FileToDelete;
+use libduscape::FileToDelete;
 
 #[derive(Clone)]
 pub struct TerminalEvents;

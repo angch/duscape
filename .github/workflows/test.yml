@@ -26,7 +26,7 @@ jobs:
       - name: Run tests (musl)
         env:
           CC_x86_64_unknown_linux_musl: musl-gcc
-        run: cargo test -p libdiskonaut -p diskonaut-scan -p diskonaut-angch -p diskonaut-viewer -p diskonaut-linux --target x86_64-unknown-linux-musl
+        run: cargo test -p libduscape -p duscape-scan -p duscape -p duscape-viewer -p duscape-linux --target x86_64-unknown-linux-musl
 
   test-coverage:
     runs-on: ubuntu-latest
@@ -49,41 +49,41 @@ jobs:
         run: cargo test --workspace --all-features --verbose
       - name: Run tests (--no-default-features)
         run: cargo test --workspace --no-default-features --verbose
-      - name: Generate coverage report (libdiskonaut)
+      - name: Generate coverage report (libduscape)
         run: |
-          cargo llvm-cov --all-features -p libdiskonaut --lcov --output-path lcov-libdiskonaut.info
-      - name: Generate coverage report (diskonaut-scan)
+          cargo llvm-cov --all-features -p libduscape --lcov --output-path lcov-libduscape.info
+      - name: Generate coverage report (duscape-scan)
         run: |
-          cargo llvm-cov --all-features -p diskonaut-scan --lcov --output-path lcov-diskonaut-scan.info
-      - name: Generate coverage report (diskonaut)
+          cargo llvm-cov --all-features -p duscape-scan --lcov --output-path lcov-duscape-scan.info
+      - name: Generate coverage report (duscape)
         run: |
-          cargo llvm-cov --all-features -p diskonaut-angch --lcov --output-path lcov-diskonaut.info
-      - name: Upload libdiskonaut coverage to Codecov
+          cargo llvm-cov --all-features -p duscape --lcov --output-path lcov-duscape.info
+      - name: Upload libduscape coverage to Codecov
         uses: codecov/codecov-action@v7
         with:
-          files: ./lcov-libdiskonaut.info
-          flags: libdiskonaut
-          name: libdiskonaut
+          files: ./lcov-libduscape.info
+          flags: libduscape
+          name: libduscape
           fail_ci_if_error: false
           verbose: true
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
-      - name: Upload diskonaut-scan coverage to Codecov
+      - name: Upload duscape-scan coverage to Codecov
         uses: codecov/codecov-action@v7
         with:
-          files: ./lcov-diskonaut-scan.info
-          flags: diskonaut-scan
-          name: diskonaut-scan
+          files: ./lcov-duscape-scan.info
+          flags: duscape-scan
+          name: duscape-scan
           fail_ci_if_error: false
           verbose: true
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
-      - name: Upload diskonaut coverage to Codecov
+      - name: Upload duscape coverage to Codecov
         uses: codecov/codecov-action@v7
         with:
-          files: ./lcov-diskonaut.info
-          flags: diskonaut
-          name: diskonaut
+          files: ./lcov-duscape.info
+          flags: duscape
+          name: duscape
           fail_ci_if_error: false
           verbose: true
         env:

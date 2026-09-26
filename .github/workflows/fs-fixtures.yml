@@ -2,7 +2,7 @@ name: Filesystem fixtures
 
 # The scan's correctness depends on the filesystem under it: hard links, reflinks, snapshots,
 # compression, sparse files and mount layouts behave differently on each. This makes each one on a
-# loopback image and checks diskonaut against it. See fixtures/fs/README.md.
+# loopback image and checks duscape against it. See fixtures/fs/README.md.
 
 on:
   push:

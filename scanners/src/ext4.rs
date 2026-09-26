@@ -29,7 +29,7 @@ use ::std::sync::Arc;
 use ::std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use ::std::thread::JoinHandle;
 use ::std::time::{Duration, Instant};
-use libdiskonaut::model::files::hash::FastMap;
+use libduscape::model::files::hash::FastMap;
 
 use super::{DirEntries, EntryMeta, ScanOptions};
 
@@ -702,7 +702,7 @@ pub fn walk_ext4(root: &Path, options: ScanOptions) -> Option<Ext4Walk> {
                 && error != CONSUMER_GONE
             {
                 // Nothing to fall back to once directories have been handed on; say so.
-                eprintln!("diskonaut: reading the device stopped: {error}");
+                eprintln!("duscape: reading the device stopped: {error}");
             }
         })
         .ok()?;
@@ -733,7 +733,7 @@ fn read_tree(
     let threads = super::thread_count(options).clamp(1, 16);
     let block_size = u64::from(fs.block_size);
     // Printed under `--benchmark --bench-profile`, with the build profile.
-    let trace = libdiskonaut::model::files::profile::enabled();
+    let trace = libduscape::model::files::profile::enabled();
     let mut generation = 0u32;
 
     let mut frontier = vec![Pending {
@@ -1038,7 +1038,7 @@ mod tests {
     /// entry. Elsewhere this passes without looking.
     #[test]
     fn device_walk_agrees_with_kernel_walk() {
-        let dir = std::env::temp_dir().join("diskonaut_ext4_device_walk");
+        let dir = std::env::temp_dir().join("duscape_ext4_device_walk");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("a/b/c")).expect("mkdir");
         std::fs::write(dir.join("a/one"), vec![1u8; 10_000]).expect("write");

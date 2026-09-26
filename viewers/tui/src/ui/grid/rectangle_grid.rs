@@ -5,7 +5,7 @@ use ::ratatui::widgets::Widget;
 use ::std::ffi::OsString;
 
 use crate::ui::grid::{draw_rect_on_grid, draw_tile_text_on_grid};
-use libdiskonaut::tiles::Tile;
+use libduscape::tiles::Tile;
 
 fn draw_small_files_rect_on_grid(buf: &mut Buffer, rect: Rect) {
     for x in rect.x + 1..(rect.x + rect.width) {

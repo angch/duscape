@@ -89,7 +89,7 @@ mod tests {
 
     #[test]
     fn a_file_and_a_folder_are_removed() {
-        let dir = ::std::env::temp_dir().join("diskonaut_delete_test");
+        let dir = ::std::env::temp_dir().join("duscape_delete_test");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("folder").join("inner")).expect("create folders");
         fs::write(dir.join("folder").join("inner").join("file"), b"x").expect("write");
@@ -107,7 +107,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn a_junction_is_removed_not_its_target() {
-        let dir = ::std::env::temp_dir().join("diskonaut_delete_junction_test");
+        let dir = ::std::env::temp_dir().join("duscape_delete_junction_test");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("target")).expect("create target");
         fs::write(dir.join("target").join("kept"), b"x").expect("write");

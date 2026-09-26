@@ -7,7 +7,7 @@ use crate::error::Error;
 
 #[test]
 fn parses_defaults() {
-    let opt = Opt::parse_from(["diskonaut"]);
+    let opt = Opt::parse_from(["duscape"]);
     assert_eq!(opt.folder, None);
     assert!(!opt.apparent_size);
     assert_eq!(opt.config, None);
@@ -18,7 +18,7 @@ fn parses_defaults() {
 
 #[test]
 fn parses_apparent_size_and_folder() {
-    let opt = Opt::parse_from(["diskonaut", "-a", "/tmp"]);
+    let opt = Opt::parse_from(["duscape", "-a", "/tmp"]);
     assert_eq!(opt.folder, Some(PathBuf::from("/tmp")));
     assert!(opt.apparent_size);
     assert_eq!(opt.config, None);
@@ -26,14 +26,14 @@ fn parses_apparent_size_and_folder() {
 
 #[test]
 fn parses_long_flags() {
-    let opt = Opt::parse_from(["diskonaut", "--apparent-size", "/var"]);
+    let opt = Opt::parse_from(["duscape", "--apparent-size", "/var"]);
     assert!(opt.apparent_size);
     assert_eq!(opt.folder, Some(PathBuf::from("/var")));
 }
 
 #[test]
 fn resolve_folder_errors_for_missing_path() {
-    let opt = Opt::parse_from(["diskonaut", "/nonexistent_diskonaut_test_path_9f3c2a"]);
+    let opt = Opt::parse_from(["duscape", "/nonexistent_duscape_test_path_9f3c2a"]);
     let err = opt.resolve_folder().unwrap_err();
     assert!(matches!(err, Error::FolderNotFound(_)));
 }
@@ -45,10 +45,10 @@ fn cli_definition_is_valid() {
 
 #[test]
 fn resolve_folder_resolves_symlinks() {
-    let dir = std::env::temp_dir().join("diskonaut_cli_symlink_target");
+    let dir = std::env::temp_dir().join("duscape_cli_symlink_target");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create temp dir");
-    let link = std::env::temp_dir().join("diskonaut_cli_symlink_link");
+    let link = std::env::temp_dir().join("duscape_cli_symlink_link");
     let _ = std::fs::remove_file(&link);
     let _ = std::fs::remove_dir(&link);
     let res = {
@@ -71,7 +71,7 @@ fn resolve_folder_resolves_symlinks() {
         panic!("create symlink: {e}");
     }
 
-    let opt = Opt::parse_from(["diskonaut", link.to_str().unwrap()]);
+    let opt = Opt::parse_from(["duscape", link.to_str().unwrap()]);
     let resolved = opt.resolve_folder().expect("resolve folder");
     let expected = dir.canonicalize().unwrap();
     let _ = std::fs::remove_file(&link);

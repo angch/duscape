@@ -1,8 +1,8 @@
-//! `dos-tiles X Y W H size...`: the tiles `libdiskonaut::tiles::TreeMap` lays out in that area
+//! `dos-tiles X Y W H size...`: the tiles `libduscape::tiles::TreeMap` lays out in that area
 //! for entries of those sizes (largest first, as the caller gives them), one per line as
 //! `index x y w h`, then `small x y` or `small none`.
 
-use libdiskonaut::tiles::{Area, FileMetadata, FileType, TreeMap};
+use libduscape::tiles::{Area, FileMetadata, FileType, TreeMap};
 use std::ffi::OsString;
 
 fn main() {

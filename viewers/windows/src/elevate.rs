@@ -12,7 +12,7 @@ use ::std::path::{Component, Path, Prefix};
 
 /// The flag that stops the asking, which the elevated process is started with.
 pub const NO_ELEVATE: &str = "--no-elevate";
-/// The flag that makes `diskonaut` the window rather than the terminal viewer.
+/// The flag that makes `duscape` the window rather than the terminal viewer.
 pub const GUI: &str = "--gui";
 
 /// Whether to ask: `root` is a volume root, the process is not elevated, and nobody opted out.
@@ -64,7 +64,7 @@ pub fn is_local_disk(root: &Path) -> bool {
 /// The arguments the elevated process is started with: [`NO_ELEVATE`] and [`GUI`], then this
 /// process's (`args`, without the program's name), then the folder if it was chosen in the
 /// dialog rather than given (`picked`), so the new process does not ask for it again. [`GUI`]
-/// because `diskonaut`, which is the terminal viewer as well, may be the program started: the
+/// because `duscape`, which is the terminal viewer as well, may be the program started: the
 /// elevated process is the window whatever it would have guessed.
 #[must_use]
 pub fn relaunch_args(args: impl Iterator<Item = OsString>, picked: Option<&Path>) -> Vec<OsString> {
@@ -248,7 +248,7 @@ mod tests {
 
     #[test]
     fn the_elevated_process_gets_the_same_arguments_and_never_asks_again() {
-        let mine = args(&["diskonaut-windows.exe", "-a", "--max-depth", "3"]);
+        let mine = args(&["duscape-windows.exe", "-a", "--max-depth", "3"]);
         assert_eq!(
             relaunch_args(mine.clone().into_iter(), None),
             args(&[NO_ELEVATE, GUI, "-a", "--max-depth", "3"])
@@ -258,9 +258,9 @@ mod tests {
             relaunch_args(mine.into_iter(), Some(Path::new(r"C:\"))),
             args(&[NO_ELEVATE, GUI, "-a", "--max-depth", "3", r"C:\"])
         );
-        // `diskonaut --gui`: the window's flag once, not twice.
+        // `duscape --gui`: the window's flag once, not twice.
         assert_eq!(
-            relaunch_args(args(&["diskonaut.exe", GUI, "-a"]).into_iter(), None),
+            relaunch_args(args(&["duscape.exe", GUI, "-a"]).into_iter(), None),
             args(&[NO_ELEVATE, GUI, "-a"])
         );
     }

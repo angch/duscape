@@ -9,7 +9,7 @@
 //! Only the parsing lives here, and it is plain byte handling, so it compiles and is tested on
 //! every platform.
 
-pub use libdiskonaut::metafiles::{EXTEND, ROOT_METAFILES, is_metafile_path, is_root_metafile};
+pub use libduscape::metafiles::{EXTEND, ROOT_METAFILES, is_metafile_path, is_root_metafile};
 
 /// One 64-bit identity for a file from its 128-bit id (`low` is the NTFS file reference; `high`
 /// is zero on NTFS and meaningful on ReFS) and the volume's serial, so that ids from two

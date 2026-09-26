@@ -5,7 +5,7 @@
 //!
 //! Files are read on a thread of their own, so a slow disk never holds up the interface, and a
 //! picture is decoded only once the selection has rested on it for
-//! [`libdiskonaut::preview::IMAGE_DEBOUNCE`]: holding
+//! [`libduscape::preview::IMAGE_DEBOUNCE`]: holding
 //! an arrow key down through a folder of photos decodes none of them.
 
 use ::std::io::{self, Write};
@@ -17,7 +17,7 @@ use ::std::time::Duration;
 use ::ratatui::layout::Rect;
 use ::ratatui::style::Color;
 
-use libdiskonaut::preview::{
+use libduscape::preview::{
     Kind, MAX_IMAGE_BYTES, Reader, Ready, Wanted, decode_picture, describe_picture,
 };
 
@@ -131,7 +131,7 @@ fn prepare_image(request: &Request, kind: Kind, size: u64) -> Preview {
         _ => rows * cell_height,
     };
     // Never scaled up: a small picture is shown at its own size.
-    let scaled = libdiskonaut::preview::fit(picture, columns * cell_width, height);
+    let scaled = libduscape::preview::fit(picture, columns * cell_width, height);
     if let Pictures::Blocks { true_color } = request.pictures {
         return Preview::Blocks(Arc::new(block_image(
             &scaled,
@@ -364,7 +364,7 @@ fn median_cut(pixels: &[(u32, [u8; 3])], colours: usize) -> (Vec<[u8; 3]>, Vec<u
     (palette, indices)
 }
 
-/// The preview thread, as the terminal uses it: [`libdiskonaut::preview::Reader`] with pictures
+/// The preview thread, as the terminal uses it: [`libduscape::preview::Reader`] with pictures
 /// prepared for the terminal by [`prepare_image`].
 pub struct Previewer {
     reader: Reader<Request>,
@@ -403,11 +403,11 @@ impl Previewer {
     }
 }
 
-/// How pictures are shown. `DISKONAUT_GRAPHICS` picks: `kitty`, `sixel`, `blocks` or `none`;
+/// How pictures are shown. `DUSCAPE_GRAPHICS` picks: `kitty`, `sixel`, `blocks` or `none`;
 /// otherwise kitty graphics where the terminal has them, sixels where it has those instead, and
 /// half blocks everywhere else.
 pub fn pictures() -> Pictures {
-    match ::std::env::var("DISKONAUT_GRAPHICS").as_deref() {
+    match ::std::env::var("DUSCAPE_GRAPHICS").as_deref() {
         Ok("none") => Pictures::Described,
         _ => match graphics_protocol() {
             Some(Protocol::Kitty) => Pictures::Kitty,
@@ -477,7 +477,7 @@ static TERMINAL_GRAPHICS: OnceLock<TerminalGraphics> = OnceLock::new();
 /// kitty's sequences would need a passthrough tmux does not reliably give, so only sixels are
 /// asked about there — tmux answers for itself, and draws them when it was built to. Where the
 /// terminal cannot be asked (Windows), Windows Terminal, foot, mlterm and iTerm2 are taken at
-/// their word. `DISKONAUT_GRAPHICS` set to `kitty` or `sixel` says which without asking, and
+/// their word. `DUSCAPE_GRAPHICS` set to `kitty` or `sixel` says which without asking, and
 /// `blocks` or `none` neither.
 fn detect() -> TerminalGraphics {
     let var = |name| ::std::env::var(name).unwrap_or_default();
@@ -485,7 +485,7 @@ fn detect() -> TerminalGraphics {
         protocol,
         cell_pixels: None,
     };
-    match var("DISKONAUT_GRAPHICS").as_str() {
+    match var("DUSCAPE_GRAPHICS").as_str() {
         "kitty" => return protocol(Some(Protocol::Kitty)),
         "sixel" => return protocol(Some(Protocol::Sixel)),
         "blocks" | "none" => return protocol(None),
@@ -843,7 +843,7 @@ mod tests {
     use ::std::sync::mpsc::channel;
     use ::std::sync::{Arc, Mutex};
     use ::std::time::{Duration, Instant};
-    use libdiskonaut::preview::IMAGE_DEBOUNCE;
+    use libduscape::preview::IMAGE_DEBOUNCE;
 
     use ::ratatui::layout::Rect;
 
@@ -854,7 +854,7 @@ mod tests {
     };
 
     fn temp_dir(name: &str) -> PathBuf {
-        let dir = ::std::env::temp_dir().join(format!("diskonaut_preview_test_{name}"));
+        let dir = ::std::env::temp_dir().join(format!("duscape_preview_test_{name}"));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("create temp dir");
         dir

@@ -1,24 +1,25 @@
-# AGENTS.md — Diskonaut Agentic Development Guide
+# AGENTS.md — Duscape Agentic Development Guide
 
 ## Project Overview
 
-**Diskonaut** is an interactive terminal disk space navigator (TUI) written in Rust. It visualizes
+**Duscape** is an interactive terminal disk space navigator (TUI) written in Rust. It visualizes
 disk usage via a squarify treemap, supports live scanning, and allows deleting large files in-place.
 
-**Workspace layout** (Rust 2024 edition, version 0.2.0; the `diskonaut-angch` fork — see README):
+**Workspace layout** (Rust 2024 edition, version 0.2.0; duscape, a fork of diskonaut renamed after
+0.2.0 so as not to clash with upstream's command — see README):
 ```
-diskonaut/
-├── common/            # libdiskonaut: what every viewer shares — model, treemap, scan protocol,
+duscape/
+├── common/            # libduscape: what every viewer shares — model, treemap, scan protocol,
 │                      #   delete, preview reading, native clipboard, formatting, os
-├── scanners/          # diskonaut-scan: the walkers (Linux, macOS, Windows, fallback), NTFS,
+├── scanners/          # duscape-scan: the walkers (Linux, macOS, Windows, fallback), NTFS,
 │                      #   the parallel build, the second pass, rescan/refine threads
 ├── viewers/
-│   ├── tui/           # diskonaut-angch: the ratatui viewer (primary) — CLI, UI, input, config;
-│   │                  #   its `diskonaut` binary holds the platform's window too (`front.rs`)
-│   ├── windows/       # diskonaut-windows: the Win32/GDI viewer
-│   ├── macos/         # diskonaut-mac: the AppKit viewer (objc2)
-│   ├── linux/         # diskonaut-linux: the Wayland/X11 viewer, no toolkit (wayland-client, x11rb, fontdue)
-│   ├── shared/        # diskonaut-viewer: what the desktop viewers share — the window's
+│   ├── tui/           # duscape: the ratatui viewer (primary) — CLI, UI, input, config;
+│   │                  #   its `duscape` binary holds the platform's window too (`front.rs`)
+│   ├── windows/       # duscape-windows: the Win32/GDI viewer
+│   ├── macos/         # duscape-mac: the AppKit viewer (objc2)
+│   ├── linux/         # duscape-linux: the Wayland/X11 viewer, no toolkit (wayland-client, x11rb, fontdue)
+│   ├── shared/        # duscape-viewer: what the desktop viewers share — the window's
 │   │                  #   state and layout (`Viewer`), the first scan with its outline, the previewer
 │   └── dos/           # not a crate: the MS-DOS treemap in 16-bit FASM assembly, `make dos`
 ├── docs/              # features.md (every feature, per viewer), sizes.md (how sizes are counted),
@@ -27,16 +28,16 @@ diskonaut/
 ├── example/config.toml
 └── Cargo.toml         # Workspace root
 ```
-Dependencies run one way: `diskonaut-scan` → `libdiskonaut`, each viewer → both, and the desktop
-viewers (Windows, macOS, Linux) → `diskonaut-viewer` too. The terminal viewer → the platform's
+Dependencies run one way: `duscape-scan` → `libduscape`, each viewer → both, and the desktop
+viewers (Windows, macOS, Linux) → `duscape-viewer` too. The terminal viewer → the platform's
 window crate, by its `gui` feature (default): the window crates are libraries (`run`, and
 `run_with` for a command line read elsewhere) with a thin binary of their own each, and
-`diskonaut` is one program per platform. A feature that is not drawing or input goes in `common`
+`duscape` is one program per platform. A feature that is not drawing or input goes in `common`
 (or `scanners`, if it reads the disk), so the other viewers get it by calling it; what is about the
 *window* but not about a toolkit (which entry is in hand, marks, the layout in points, what a
 delete changes) goes in `viewers/shared`, so the three desktop viewers behave alike. The scan protocol types (`ScanOptions`, `EntryMeta`, `DirEntries`,
-`Outline`, `Found`) are in `common` because the model consumes them; `diskonaut-scan` re-exports
-them, so `diskonaut_scan::X` works for either kind.
+`Outline`, `Found`) are in `common` because the model consumes them; `duscape-scan` re-exports
+them, so `duscape_scan::X` works for either kind.
 
 ---
 
@@ -63,8 +64,8 @@ make static-aarch64   # aarch64-unknown-linux-musl, needs zig + cargo-zigbuild
 
 **Run the binary:**
 ```bash
-cargo run --bin diskonaut -- [FOLDER]
-cargo run --bin diskonaut -- -a  # apparent size mode
+cargo run --bin duscape -- [FOLDER]
+cargo run --bin duscape -- -a  # apparent size mode
 ```
 
 ---
@@ -84,8 +85,8 @@ Six kinds of thread communicate via `mpsc` channels (bounded, except the preview
 | `event_executer` | Converts `Event` → `Instruction` (visual feedback). A clipboard flash gets a short-lived `clipboard_flash` thread that asks for a redraw when it expires; the flash carries its own deadline, so a lost redraw cannot leave it on screen |
 | `loading_loop` | Toggles loading indicator while scanning |
 | `ticker` | Sends `Instruction::Tick` with `try_send` (late ticks are dropped): every `ui::FRAME` (16 ms) while `App::ticker_pace` says the help line is sliding, else every `ui::IDLE_TICK` (250 ms), looking again one frame after each resting tick since a slide begins on one — twice per resting interval, not at frame rate. `App::tick` moves the help line (`ui::Ticker`/`Strip`) |
-| `refine_N` | The second pass (`diskonaut_scan::rescan::Refiner` → `refine::refine`, a few `refine_*` workers): FIEMAP on the small files the walk noted (`SmallFiles`, 4–64 KiB, `nlink == 1`, XFS/btrfs), directories under `App::refine_focus` (the folder shown) first → `Instruction::Refined(generation, Found, left)`; `FileTree::apply_found` charges them to the ledger. A new whole tree cancels it; folders rescanned meanwhile are skipped (`refine_skip`), since a folder rescan refines its own tree before grafting |
-| `rescan_N` | One per `r`/`R` (`diskonaut_scan::rescan::Rescanner`). A folder the whole scan would not enter (`walk_would_enter`: pseudo, network, `-x`, bind duplicate) or past `--max-depth` (counted from the scan root) is not rescanned (`Outcome::NotWalked`); a delete inside a folder being rescanned restarts that rescan. `parallel::build_tree` on the folder → `Instruction::Rescanned(id, Outcome)`. `App::rescan_done` grafts it (`FileTree::graft`, ancestors corrected by the difference) and leaks the old folder like `finish_scan` does. A rescan that another under way covers is not started; one the new rescan covers is cancelled and its result dropped |
+| `refine_N` | The second pass (`duscape_scan::rescan::Refiner` → `refine::refine`, a few `refine_*` workers): FIEMAP on the small files the walk noted (`SmallFiles`, 4–64 KiB, `nlink == 1`, XFS/btrfs), directories under `App::refine_focus` (the folder shown) first → `Instruction::Refined(generation, Found, left)`; `FileTree::apply_found` charges them to the ledger. A new whole tree cancels it; folders rescanned meanwhile are skipped (`refine_skip`), since a folder rescan refines its own tree before grafting |
+| `rescan_N` | One per `r`/`R` (`duscape_scan::rescan::Rescanner`). A folder the whole scan would not enter (`walk_would_enter`: pseudo, network, `-x`, bind duplicate) or past `--max-depth` (counted from the scan root) is not rescanned (`Outcome::NotWalked`); a delete inside a folder being rescanned restarts that rescan. `parallel::build_tree` on the folder → `Instruction::Rescanned(id, Outcome)`. `App::rescan_done` grafts it (`FileTree::graft`, ancestors corrected by the difference) and leaks the old folder like `finish_scan` does. A rescan that another under way covers is not started; one the new rescan covers is cancelled and its result dropped |
 | `previewer` | Reads the file in hand for the preview: first 64 KB as text, or a PNG/JPEG decoded and scaled after a 100 ms debounce (a newer request supersedes it) → `Instruction::PreviewReady(generation, _)`; answers to an older generation are dropped |
 | **main** | App state mutations + ratatui rendering. During the scan it renders from the *outline*; on `ScanComplete` it swaps in the finished tree, keeping the current folder |
 
@@ -93,7 +94,7 @@ Six kinds of thread communicate via `mpsc` channels (bounded, except the preview
 
 ### Crate Responsibilities
 
-**`libdiskonaut`** (`common/`) — what every viewer shares, no user interface:
+**`libduscape`** (`common/`) — what every viewer shares, no user interface:
 - `model/files/file_tree.rs` — `FileTree`: hierarchical navigation, deletion tracking;
   `deferring_shared_blocks` / `merge_from` / `replay_deferred` for the parallel build;
   `add_summary` for the outline; `graft`, `apply_found`
@@ -139,7 +140,7 @@ Six kinds of thread communicate via `mpsc` channels (bounded, except the preview
 - `format/display_size.rs` — byte → human-readable (B/KB/MB/GB/TB)
 - `os/unix.rs`, `os/windows.rs` — `is_user_admin()`, `size_on_disk_fast()`, `volume_id()`, `link_count()`
 
-**`diskonaut-scan`** (`scanners/`) — reading the disk:
+**`duscape-scan`** (`scanners/`) — reading the disk:
 - `lib.rs` — `scan_directories()`: per-directory batches, the seam every walker plugs into;
   `parallel::build_tree()`: the app's tree build — shard by path prefix, merge, replay;
   `walk_would_enter`, `thread_count`, `scan_into_tree`, the `dua-core` `fallback`
@@ -179,11 +180,11 @@ Six kinds of thread communicate via `mpsc` channels (bounded, except the preview
 - `rescan.rs` — `Rescanner` and `Refiner`: rescans and the second pass on threads of their own,
   results through a callback, for any viewer
 
-**`diskonaut-windows`** (`viewers/windows/`) — the Win32/GDI viewer, over `diskonaut-viewer`, at
+**`duscape-windows`** (`viewers/windows/`) — the Win32/GDI viewer, over `duscape-viewer`, at
 feature parity with the TUI bar configurable keys (`docs/features.md`). Behaviour goes in the
 shared `Viewer`, not in `win/`:
 - `preview.rs` — `prepare_picture`: a picture decoded and scaled to the pixels it will take, as
-  BGRA rows blended over the panel, for `libdiskonaut::preview::Reader`; no Win32, tested everywhere
+  BGRA rows blended over the panel, for `libduscape::preview::Reader`; no Win32, tested everywhere
 - `cli.rs` — the TUI's scan flags, and `--no-elevate`
 - `elevate.rs` — a whole volume unelevated asks to run as administrator: `wanted` decides,
   `relaunch_args` and `command_line` (Win32 quoting, tested) make the new process's arguments
@@ -210,11 +211,11 @@ shared `Viewer`, not in `win/`:
   treemap is drawn nested (`draw_nested`, after the top-level tiles and before the corner and
   the frames): each level a shade darker, a label where there is room, the hovered tile framed
 
-**`diskonaut-viewer`** (`viewers/shared/`) — what the desktop viewers share, with no toolkit:
+**`duscape-viewer`** (`viewers/shared/`) — what the desktop viewers share, with no toolkit:
 - `state.rs` — `Viewer`: everything the window shows and how it answers input — `Layout` (points;
   tiles in 2.4×6 pt cells, the treemap's 2.5 ratio), the entry in hand kept by *name* so a
   relayout cannot move it, marks, navigation, zoom, delete (`delete`, `delete_prompt`, and
-  `removed` for a Trash), rescans (through `diskonaut_scan::rescan::Rescans`), the status bar's
+  `removed` for a Trash), rescans (through `duscape_scan::rescan::Rescans`), the status bar's
   words; `absorb_summaries` takes outline batches in without a relayout and `catch_up` lays the
   view out for them (`add_summaries` is both). It keeps the TUI's rules from "Key Patterns": `chosen` says whether the entry in hand was
   picked or placed, and only a picked one seeds a Ctrl+click selection; a Shift run adds its range
@@ -222,7 +223,7 @@ shared `Viewer`, not in `win/`:
   copies their paths once the viewer has called `set_clipboard` (Windows does; macOS and Linux
   copy through their toolkits and read `target_paths`). Its tests run on every platform; a
   behaviour the windows should share goes here first. The list can be a *tree* (WizTree's
-  view, `tree_view`): `libdiskonaut::tiles::tree_rows` keeps which folders are open in place
+  view, `tree_view`): `libduscape::tiles::tree_rows` keeps which folders are open in place
   and makes the rows (each open folder's entries indented under it, largest first, `Row::path`
   from the listed folder); the cursor is a row's path, its first name being `selected`, so the
   treemap and the marks follow the row's top-level entry. → opens the folder in hand and then
@@ -246,12 +247,12 @@ shared `Viewer`, not in `win/`:
   the viewer to decode: `NSImage` on macOS, the `image` crate on Linux; a binary file as its
   description and hex dump, `Loaded::Binary`)
 
-**`diskonaut-linux`** (`viewers/linux/`) — the Wayland and X11 viewer, pure Rust, no C library
+**`duscape-linux`** (`viewers/linux/`) — the Wayland and X11 viewer, pure Rust, no C library
 (not libwayland, not Xlib), so it builds static for musl and runs on any compositor or X server:
 - `backend.rs` — the `Backend` trait (present a canvas, set the title, own the clipboard, move/
   maximise/minimise for the app's own title bar) and `Input`, what either windowing system
   reports, in points; `keys` has the non-character keysyms both speak; `level_keysym` picks the
-  shifted level (Caps Lock only on letters); `open` chooses: `DISKONAUT_BACKEND`, else Wayland when
+  shifted level (Caps Lock only on letters); `open` chooses: `DUSCAPE_BACKEND`, else Wayland when
   `WAYLAND_DISPLAY` is set, else X11, trying the other if the first fails
 - `wayland.rs` — `wayland-client`'s pure-Rust protocol: `wl_shm` double buffers in a memfd,
   `xdg_shell` (configure → `Input::Resized`, close), `xdg-decoration` asking for a server title bar
@@ -268,11 +269,11 @@ shared `Viewer`, not in `win/`:
   thread of their own into `Input`), the frame put up whole with `PutImage` (re-encoded only for
   an unusual visual), the core keyboard mapping, and the clipboard: when no `wl-copy`/`xclip`/
   `xsel` is installed the window owns `CLIPBOARD` itself and answers `SelectionRequest`. The
-  scale (pixels per point) is `DISKONAUT_SCALE`, else `GDK_SCALE`, else `Xft.dpi`/96
+  scale (pixels per point) is `DUSCAPE_SCALE`, else `GDK_SCALE`, else `Xft.dpi`/96
 - `canvas.rs` — the software framebuffer in points: fills with alpha, gradients, strokes,
   anti-aliased rounded rectangles, and `blit` (a picture fitted by box-filtering)
 - `font.rs` — `Fonts::system` finds the sans, bold and mono faces through `fc-match` (else
-  well-known paths, else `DISKONAUT_FONT*`); `Face` caches `fontdue` glyphs by character and
+  well-known paths, else `DUSCAPE_FONT*`); `Face` caches `fontdue` glyphs by character and
   quarter-pixel size; `Pen` draws into a rect, aligned, vertically centred, cut with "…"
 - `draw.rs` — the frame, by `Layout`: the same panels as `mac/draw.rs`, in a fixed dark theme —
   the list as the tree (`rows`: each level indented `ROW_INDENT`, a folder's expander where
@@ -289,20 +290,20 @@ shared `Viewer`, not in `win/`:
   (`outline_behind`); keys and mouse → `Viewer` calls like `mac/view.rs`'s (a click on an
   expander toggles before `click`, the wheel over the treemap zooms, the back button goes up); `Dialog` for asking
   before a removal; the title bar's buttons, drag and double-click → the backend.
-  `DISKONAUT_SNAPSHOT=out.png` writes the frame after the scan and quits — how the drawing was
+  `DUSCAPE_SNAPSHOT=out.png` writes the frame after the scan and quits — how the drawing was
   checked here: X11 on an `Xvfb` (which `x11rb` reaches over TCP, `-listen tcp -ac`, since it
   does not do abstract sockets) with `xdotool` for keys and clicks; Wayland on a headless
   `weston --backend=headless-backend.so --shell=kiosk-shell.so`, unpacked from its .deb, with
   `weston-screenshooter` (it has no input to inject, so keys are covered by `xkb`'s tests)
 
-**`diskonaut-mac`** (`viewers/macos/`) — the AppKit viewer, on `objc2`/`objc2-app-kit`, over
-`diskonaut-viewer`:
+**`duscape-mac`** (`viewers/macos/`) — the AppKit viewer, on `objc2`/`objc2-app-kit`, over
+`duscape-viewer`:
 - `mac/view.rs` — the one `NSView`: events, menu commands, dialogs, Trash, pasteboard, Finder,
   Quick Look, drag and drop. Other threads come back through `on_main` (the main dispatch queue).
   The `Viewer` is in a `RefCell`; never hold a borrow across a modal (`NSAlert::runModal`, the
-  open panel), which runs the event loop inside the call. `DISKONAUT_MAC_SNAPSHOT=out.png` writes
+  open panel), which runs the event loop inside the call. `DUSCAPE_MAC_SNAPSHOT=out.png` writes
   the view to a PNG after the scan and quits — how to look at the drawing without screen access
-- `mac/script.rs` — `DISKONAUT_MAC_SCRIPT`: synthetic keys, clicks and menu choices posted to the
+- `mac/script.rs` — `DUSCAPE_MAC_SCRIPT`: synthetic keys, clicks and menu choices posted to the
   app's own event queue, and `state` dumps to assert on. `tests/smoke.sh` runs one on a fixture;
   run it after changing the viewer (macOS, logged-in session, no permissions needed)
 - `mac/draw.rs` — painting, by `Layout`: the same tree, nesting and labels as the Linux
@@ -313,7 +314,7 @@ shared `Viewer`, not in `win/`:
 
 **MS-DOS** (`viewers/dos/`) — FASM, real mode on a 286 (or 186) with no coprocessor, not part of
 the Cargo workspace:
-`DISKONAU.ASM` (the program), `PANEL.ASM` (side panel), `PREVIEW.ASM` (text and half-block
+`DUSCAPE.ASM` (the program), `PANEL.ASM` (side panel), `PREVIEW.ASM` (text and half-block
 pictures, the six adaptive DAC colours), `PNG.ASM` and `JPEG.ASM` (decoders; a JPEG block's mean
 is its DC coefficient, so no IDCT), `PVDATA.ASM` (their data), `SOFTFP.ASM`/`FPDATA.ASM` (IEEE doubles in software, unpacked,
 rounded after each operation), `J286.INC` (conditional jumps as short-or-inverted macros). No
@@ -334,8 +335,8 @@ same way; keep it that way. Do not set attributes on host files needlessly: DOSB
 window: a `rep stos`/`movs` into DS there must set ES first, and a table in the code segment is
 read through `cs:`.
 
-**`diskonaut-angch`** (`viewers/tui/`) — the ratatui viewer:
-- `front.rs` — which viewer this `diskonaut` is: `choose` (pure, tested) on the arguments and
+**`duscape`** (`viewers/tui/`) — the ratatui viewer:
+- `front.rs` — which viewer this `duscape` is: `choose` (pure, tested) on the arguments and
   `Started` — `--tui`/`--gui`; `--benchmark`, `--help`, `--version` the terminal's; a name ending
   `-gui`/`-linux`/`-windows`/`-mac` the window; then a terminal on stdin *or* stdout is the
   terminal viewer (so a redirected benchmark stays one), neither with a display the window, and on
@@ -346,7 +347,7 @@ read through `cs:`.
   which is let go. The terminal viewer with no console (`--tui` from a shortcut) gets one
   (`ensure_console`, `AllocConsole`). `lib.rs`'s `run` dispatches: the window gets the same `Opt`, parsed once
   (`Opt::scan_options`, the folder, `--no-elevate`), not the config file. The executable is
-  console subsystem, or the terminal viewer would have no stdin; `diskonaut-windows.exe` alone
+  console subsystem, or the terminal viewer would have no stdin; `duscape-windows.exe` alone
   keeps `windows_subsystem = "windows"`. The window's elevated relaunch passes `--gui`
   (`elevate::relaunch_args`), since the program relaunched may be this one
 - `main.rs` — entry point, thread spawning, channel setup
@@ -357,8 +358,8 @@ read through `cs:`.
 - `ui/side_panel.rs` — the list left of the treemap; `screen_areas` splits the screen (a third to
   the panel when ≥ 80 columns) and `entry_at` maps a cell to a row — used by both the renderer and
   the mouse, so they cannot disagree
-- `config/mod.rs` — TOML config (`~/.config/diskonaut/config.toml`)
-- `preview.rs` — the preview thread (debounce, then `libdiskonaut::preview`), and kitty/sixel graphics output (`Graphics`:
+- `config/mod.rs` — TOML config (`~/.config/duscape/config.toml`)
+- `preview.rs` — the preview thread (debounce, then `libduscape::preview`), and kitty/sixel graphics output (`Graphics`:
   `KittyGraphics` writes after each frame, only on change; `q=2` so the terminal never answers
   on stdin, `z=-1` so dialogs cover it). `SixelGraphics` has nothing to delete a picture by and
   the frame never redraws cells it thinks blank, so `prepare` (before the frame) erases the old
@@ -375,8 +376,8 @@ read through `cs:`.
   before any thread reads stdin (`try_main`). `pictures()` picks `Pictures::Kitty`, `Sixel`,
   `Blocks` (the fallback: `▀` cells the previewer colours as `Preview::Blocks` and `side_panel`
   draws into the frame) or `Described`
-- `clipboard.rs` — `libdiskonaut::clipboard::copy`, else the terminal's OSC 52;
-  paths are quoted by `libdiskonaut::format::quote_path_for_shell` before they get there
+- `clipboard.rs` — `libduscape::clipboard::copy`, else the terminal's OSC 52;
+  paths are quoted by `libduscape::format::quote_path_for_shell` before they get there
 - `cli/mod.rs` — clap CLI args
 
 ### UI State Machine (`UiMode`)
@@ -549,7 +550,7 @@ Exiting { app_loaded: bool }
 NTFS on loopback images, fills them with hard links, sparse files, reflinks, snapshots and
 compression, builds mount layouts (nested, `proc`, `tmpfs`, bind mounts, loopback NFS,
 `fuse.rclone`), runs both test suites on
-each with `TMPDIR` there, and checks totals against oracles that share no code with diskonaut.
+each with `TMPDIR` there, and checks totals against oracles that share no code with duscape.
 See `fixtures/fs/README.md`. Any change to the walkers, `EntryMeta`, the hard-link/reflink ledger
 or mount handling must pass it, and a behaviour that depends on the filesystem or the mount table
 gets a fixture there. CI runs it (`fs-fixtures.yml`). Remember: every btrfs subvolume and snapshot
@@ -560,7 +561,7 @@ Test against FAT as well as APFS — it is the filesystem that misreports. `docs
 has the FAT section, and the volume test is:
 
 ```bash
-cargo test -p libdiskonaut --lib -- --ignored fat32
+cargo test -p libduscape --lib -- --ignored fat32
 ```
 
 ### Changing the scan
@@ -576,7 +577,7 @@ path; `pipeline` is the single-threaded build it replaced. Those are warm number
 dropped) the walk is bound by reads in flight, one directory's inode and blocks per blocked
 worker, which is why Linux runs three workers a core, stats a directory in inode order, walks children
 smallest inode first, and as root reads the directories' blocks ahead through the device
-(`linux::dirblocks`, ext4 only — `DISKONAUT_DIRBLOCKS_DEVICE=<file>` forces the path for testing).
+(`linux::dirblocks`, ext4 only — `DUSCAPE_DIRBLOCKS_DEVICE=<file>` forces the path for testing).
 As root on ext4 the whole walk reads the device instead (`ext4.rs`, roadmap step 2: cold 1.7x
 the kernel walk); `--no-device-read` compares;
 `docs/probes/bench-diskus.sh` measures warm and cold against `diskus` — see "Cold cache" in the doc. Anything you change must keep `sharded`'s totals identical
@@ -595,14 +596,14 @@ measured and none helped — read the 2026-09-24 section before trying them agai
   when the hidden entries round to zero cells
 
 ### Releases
-A `v*` tag runs `deploy.yml`. It builds `diskonaut-angch-<tag>-<target>.tar.gz` for
+A `v*` tag runs `deploy.yml`. It builds `duscape-<tag>-<target>.tar.gz` for
 `x86_64-unknown-linux-musl` (`musl-gcc`) and `aarch64-unknown-linux-musl` (`cargo zigbuild`,
-zig 0.13.0), and `diskonaut-angch-<tag>-x86_64-pc-windows-gnu.zip` (`cargo zigbuild`, against the
-Universal C Runtime: only DLLs Windows 10 carries), each `diskonaut` being the terminal viewer and
+zig 0.13.0), and `duscape-<tag>-x86_64-pc-windows-gnu.zip` (`cargo zigbuild`, against the
+Universal C Runtime: only DLLs Windows 10 carries), each `duscape` being the terminal viewer and
 the window. The Linux binaries are fully static, so they have no glibc floor and run on Alpine
-and busybox; the job checks it, and that `diskonaut.exe` is console subsystem. macOS is not in
+and busybox; the job checks it, and that `duscape.exe` is console subsystem. macOS is not in
 it: linking AppKit needs a Mac, where `make mac-app` makes the universal binary and
-`Diskonaut.app` (`viewers/macos/Info.plist`) — a bare binary opened from Finder runs in Terminal,
+`Duscape.app` (`viewers/macos/Info.plist`) — a bare binary opened from Finder runs in Terminal,
 so Finder's way to the window is the bundle. One job then publishes every archive: matrix jobs
 that each create the release race. The repository's Actions permission must allow actions from
 outside it (`actions/checkout`…): set to local actions only, every run fails to start.
@@ -657,7 +658,7 @@ prints the live figures; `make coverage` the test coverage.
 ## CI Checks (must pass)
 
 - `cargo test --workspace`
-- `cargo test -p libdiskonaut -p diskonaut-angch --target x86_64-unknown-linux-musl`
+- `cargo test -p libduscape -p duscape --target x86_64-unknown-linux-musl`
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - `cargo fmt --all -- --check`
 - `cargo deny check`
@@ -692,7 +693,7 @@ Regenerated by hand from `wc -l` when this file is touched; `make quality` print
 | `scanners/src/macos.rs` | ~830 lines — macOS `getattrlistbulk` walker |
 | `scanners/src/windows.rs` | ~920 lines — Windows bulk-listing walker |
 | `viewers/tui/src/bench/mod.rs` | ~470 lines — `--benchmark` harness |
-| `viewers/dos/DISKONAU.ASM` | ~4700 lines — the MS-DOS viewer, one instruction a line |
+| `viewers/dos/DUSCAPE.ASM` | ~4700 lines — the MS-DOS viewer, one instruction a line |
 | `viewers/dos/SOFTFP.ASM` | ~810 lines — IEEE doubles on a 286 |
 | `viewers/dos/PREVIEW.ASM` | ~1300 lines — its previews: text, blocks, the palette |
 | `scanners/src/mft.rs` | ~980 lines — NTFS read from its master file table: the parser, the tree, and the volume read |

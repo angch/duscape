@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Drive diskonaut-mac through a script of real keys and clicks, and check what it holds after
+# Drive duscape-mac through a script of real keys and clicks, and check what it holds after
 # each (see src/mac/script.rs). Needs a logged-in macOS session, and no permissions: the events
 # are the app's own. The window comes to the front while it runs; leave the machine alone.
 #
@@ -7,10 +7,10 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/../../.."
-cargo build -q -p diskonaut-mac
-app="$PWD/target/debug/diskonaut-mac"
+cargo build -q -p duscape-mac
+app="$PWD/target/debug/duscape-mac"
 
-work="$(mktemp -d "${TMPDIR:-/tmp}/diskonaut-mac-smoke.XXXXXX")"
+work="$(mktemp -d "${TMPDIR:-/tmp}/duscape-mac-smoke.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 fx="$work/fx" out="$work/out"
 mkdir -p "$fx/alpha/inner" "$fx/beta" "$out"
@@ -74,7 +74,7 @@ quit
 SCRIPT
 
 # A watchdog, as macOS has no timeout(1): an alert that never closes would otherwise hang here.
-DISKONAUT_MAC_SCRIPT="$work/script" "$app" "$fx" &
+DUSCAPE_MAC_SCRIPT="$work/script" "$app" "$fx" &
 pid=$!
 (sleep 120 && kill "$pid" 2>/dev/null && echo "FAIL timed out after 120s") &
 watchdog=$!
@@ -83,7 +83,7 @@ wait "$pid" || status=$?
 kill "$watchdog" 2>/dev/null || true
 wait "$watchdog" 2>/dev/null || true
 if [ "$status" -ne 0 ]; then
-    echo "FAIL diskonaut-mac exited with status $status"
+    echo "FAIL duscape-mac exited with status $status"
     exit 1
 fi
 

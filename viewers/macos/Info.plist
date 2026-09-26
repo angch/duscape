@@ -1,17 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- Diskonaut.app (`make mac-app`): the same `diskonaut` binary as the command line's. Opened
+<!-- Duscape.app (`make mac-app`): the same `duscape` binary as the command line's. Opened
      from Finder it has no terminal, so it is the window (`viewers/tui/src/front.rs`). -->
 <plist version="1.0">
 <dict>
     <key>CFBundleExecutable</key>
-    <string>diskonaut</string>
+    <string>duscape</string>
     <key>CFBundleIdentifier</key>
-    <string>io.github.angch.diskonaut</string>
+    <string>io.github.angch.duscape</string>
     <key>CFBundleName</key>
-    <string>Diskonaut</string>
+    <string>Duscape</string>
     <key>CFBundleDisplayName</key>
-    <string>Diskonaut</string>
+    <string>Duscape</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>

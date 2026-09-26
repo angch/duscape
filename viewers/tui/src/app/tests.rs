@@ -3,10 +3,10 @@ use ::std::fs::{self, File};
 use ::std::io::Write;
 use ::std::path::{Path, PathBuf};
 use ::std::sync::mpsc;
-use libdiskonaut::format::quote_path_for_shell;
+use libduscape::format::quote_path_for_shell;
 
-use diskonaut_scan::scan_into_tree;
-use libdiskonaut::{DirEntries, FileTree, Folder, ScanOptions};
+use duscape_scan::scan_into_tree;
+use libduscape::{DirEntries, FileTree, Folder, ScanOptions};
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::MouseButton;
 
@@ -14,7 +14,7 @@ use super::{App, UiMode};
 use crate::config::Keybinds;
 
 fn temp_app_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("diskonaut_app_test_{name}"));
+    let dir = std::env::temp_dir().join(format!("duscape_app_test_{name}"));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("create temp dir");
     // Canonicalized because the app always scans a canonical path: `Opts::resolve_folder`
@@ -83,7 +83,7 @@ fn enter_selected_enters_subfolder() {
         .currently_selected()
         .expect("a folder tile should be selected");
     assert_eq!(selected.name, OsStr::new("sub"));
-    assert_eq!(selected.file_type, libdiskonaut::tiles::FileType::Folder);
+    assert_eq!(selected.file_type, libduscape::tiles::FileType::Folder);
     app.handle_enter();
 
     assert_eq!(app.file_tree.get_current_path(), sub);
@@ -112,11 +112,11 @@ fn prompt_file_deletion_shows_confirmation() {
     let mut scanned = DirEntries::new(std::sync::Arc::from(dir.as_path()));
     scanned.push(
         OsStr::new("remove_me.txt"),
-        libdiskonaut::EntryMeta {
+        libduscape::EntryMeta {
             size: meta.len(),
             links: 1,
             is_dir: false,
-            ..libdiskonaut::EntryMeta::default()
+            ..libduscape::EntryMeta::default()
         },
     );
     let mut tree = FileTree::new(Folder::new(&dir), dir.clone());
@@ -367,7 +367,7 @@ impl Recorder {
     }
 }
 
-/// Record copies, as if diskonaut had been started from `working_dir`.
+/// Record copies, as if duscape had been started from `working_dir`.
 fn recording(app: &mut App<TestBackend>, working_dir: &Path) -> Recorder {
     let recorder = Recorder::default();
     app.set_clipboard(Box::new(recorder.clone()));
@@ -408,7 +408,7 @@ fn a_double_right_click_copies_the_absolute_path() {
         start + ::std::time::Duration::from_millis(150),
     );
 
-    let absolute = libdiskonaut::format::quote_path_for_shell(&dir.join("small"));
+    let absolute = libduscape::format::quote_path_for_shell(&dir.join("small"));
     assert_eq!(recorder.copied(), vec!["small".to_string(), absolute]);
     assert!(app.file_tree.current_folder_names.is_empty());
     let _ = fs::remove_dir_all(&dir);
@@ -506,7 +506,7 @@ fn a_copy_flashes_in_the_title_and_then_expires() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// The case that defines "relative": in `/home/user/foo`, `diskonaut ../bar/` with `baz` selected
+/// The case that defines "relative": in `/home/user/foo`, `duscape ../bar/` with `baz` selected
 /// copies `../bar/baz` — relative to where the command was run, not to the folder it was given.
 #[test]
 fn relative_paths_start_from_the_working_directory() {
@@ -557,7 +557,7 @@ fn an_unknown_working_directory_copies_the_absolute_path() {
     let now = ::std::time::Instant::now();
     right_click(&mut app, "small", now);
 
-    let absolute = libdiskonaut::format::quote_path_for_shell(&dir.join("small"));
+    let absolute = libduscape::format::quote_path_for_shell(&dir.join("small"));
     assert_eq!(recorder.copied(), vec![absolute.clone()]);
     assert_eq!(
         app.ui_effects.clipboard_flash_at(now),
@@ -1464,7 +1464,7 @@ mod rescans {
     use ::std::sync::Arc;
     use ::std::sync::atomic::AtomicBool;
     use ::std::time::{Duration, Instant};
-    use diskonaut_scan::rescan::{Outcome, Rescanner};
+    use duscape_scan::rescan::{Outcome, Rescanner};
 
     fn write(path: &Path, bytes: usize) {
         File::create(path)
@@ -1690,14 +1690,14 @@ mod rescans {
 mod refining {
     use super::*;
     use ::std::sync::Arc;
-    use diskonaut_scan::refine::Found;
+    use duscape_scan::refine::Found;
 
     fn found(dir: &Path, name: &str, size: u64) -> Found {
         Found {
             dir: Arc::from(dir),
-            files: vec![diskonaut_scan::refine::FoundFile {
+            files: vec![duscape_scan::refine::FoundFile {
                 name: OsString::from(name),
-                sizes: libdiskonaut::model::Sizes::new(u128::from(size), u128::from(size)),
+                sizes: libduscape::model::Sizes::new(u128::from(size), u128::from(size)),
                 identity: 7,
             }],
         }
@@ -1733,7 +1733,7 @@ mod refining {
 fn a_toggles_between_apparent_and_on_disk_sizes_without_a_scan() {
     let dir = temp_app_dir("toggle_size");
     let sparse = File::create(dir.join("sparse")).unwrap();
-    libdiskonaut::os::set_sparse(&sparse);
+    libduscape::os::set_sparse(&sparse);
     sparse.set_len(4 << 20).unwrap();
     drop(sparse);
     fs::write(dir.join("small"), vec![1u8; 10_000]).unwrap();
@@ -1743,7 +1743,7 @@ fn a_toggles_between_apparent_and_on_disk_sizes_without_a_scan() {
     assert_eq!(app.board.listing()[0].name, "sparse");
 
     app.toggle_size();
-    assert_eq!(app.file_tree.shown, libdiskonaut::model::SizeKind::Disk);
+    assert_eq!(app.file_tree.shown, libduscape::model::SizeKind::Disk);
     assert!(app.file_tree.get_total_size() < 4 << 20);
     // On disk the hole takes nothing, so the small file is the larger.
     assert_eq!(app.board.listing()[0].name, "small");

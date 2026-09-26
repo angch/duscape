@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The root half of fixtures/fs/run.sh: make each filesystem on a loopback image, exercise its
-# quirks, and check diskonaut against what the volume really holds. Runs as root, in the
+# quirks, and check duscape against what the volume really holds. Runs as root, in the
 # container or under sudo; the scans and tests themselves run as TEST_UID, as the app would.
 #
 #   inside.sh [name ...]   filesystems: ext4 xfs btrfs f2fs tmpfs vfat exfat ntfs3
@@ -65,29 +65,29 @@ make_fs() {
 unmount() { umount -R "$1" 2>/dev/null || umount -l "$1" 2>/dev/null; }
 
 # ---------------------------------------------------------------------------------------------
-# What diskonaut says, and what is really there
+# What duscape says, and what is really there
 
-# diskonaut's total for $1, in bytes, with any extra flags (-a, -x) after it: as the app shows it
+# duscape's total for $1, in bytes, with any extra flags (-a, -x) after it: as the app shows it
 # once the second pass over small files has finished. Scanned as the test user.
-diskonaut_total() {
+duscape_total() {
   local dir=$1
   shift
-  as_user "$W/bin/diskonaut" "$@" --benchmark --bench-stage refined "$dir" 2>/dev/null |
+  as_user "$W/bin/duscape" "$@" --benchmark --bench-stage refined "$dir" 2>/dev/null |
     grep '^refined' | grep -oE '\([0-9]+ B\)' | tr -dc 0-9
 }
 
-# The same, scanned as root: what `sudo diskonaut` shows, which on btrfs can read compressed
+# The same, scanned as root: what `sudo duscape` shows, which on btrfs can read compressed
 # extent sizes.
-diskonaut_total_as_root() {
+duscape_total_as_root() {
   local dir=$1
   shift
-  "$W/bin/diskonaut" "$@" --benchmark --bench-stage refined "$dir" 2>/dev/null |
+  "$W/bin/duscape" "$@" --benchmark --bench-stage refined "$dir" 2>/dev/null |
     grep '^refined' | grep -oE '\([0-9]+ B\)' | tr -dc 0-9
 }
 
 # The independent answer for a tree without shared extents: every non-directory counted once
 # per (device, inode), by blocks allocated or, with -a, by length. $2... are `find` pruning
-# arguments. Directories are not counted, because diskonaut does not count them either.
+# arguments. Directories are not counted, because duscape does not count them either.
 inode_oracle() {
   local mode=$1 dir=$2 field='%b'
   shift 2
@@ -113,7 +113,7 @@ check() {
   local diff=$((actual - expected))
   local abs=${diff#-}
   local detail
-  detail="expected $expected, diskonaut $actual ($( [ $diff -ge 0 ] && printf '+')$diff)"
+  detail="expected $expected, duscape $actual ($( [ $diff -ge 0 ] && printf '+')$diff)"
   if [ "$abs" -le "$tolerance" ]; then
     say PASS "$name" "$detail"
   elif [ -n "$known" ]; then
@@ -161,9 +161,9 @@ make_dataset() {
 run_suites() { # fs, dir for TMPDIR
   local fs=$1 tmp=$2/tmp extra=()
   mkdir -p "$tmp" && chown "$U:$U" "$tmp"
-  case $fs in xfs | btrfs) extra+=(DISKONAUT_TEST_REFLINK_DIR="$tmp") ;; esac
-  [ "$fs" = btrfs ] && extra+=(DISKONAUT_TEST_BTRFS_DIR="$tmp")
-  for suite in libdiskonaut diskonaut-scan diskonaut-angch; do
+  case $fs in xfs | btrfs) extra+=(DUSCAPE_TEST_REFLINK_DIR="$tmp") ;; esac
+  [ "$fs" = btrfs ] && extra+=(DUSCAPE_TEST_BTRFS_DIR="$tmp")
+  for suite in libduscape duscape-scan duscape; do
     local out
     out=$(as_user env TMPDIR="$tmp" "${extra[@]}" "$W/bin/tests-$suite" --test-threads=4 2>&1)
     local summary
@@ -185,8 +185,8 @@ filesystem() {
   local quirks
   quirks=$(as_user bash -c "$(declare -f random_file make_dataset); make_dataset '$at/data'")
   say INFO "$fs: dataset" "has:${quirks:- none of hardlinks, sparse, symlinks}"
-  check "$fs: disk usage" "$(inode_oracle disk "$at/data")" "$(diskonaut_total "$at/data")"
-  check "$fs: apparent size" "$(inode_oracle apparent "$at/data")" "$(diskonaut_total "$at/data" -a)"
+  check "$fs: disk usage" "$(inode_oracle disk "$at/data")" "$(duscape_total "$at/data")"
+  check "$fs: apparent size" "$(inode_oracle apparent "$at/data")" "$(duscape_total "$at/data" -a)"
   case $fs in vfat | exfat | ntfs3) ;; *) run_suites "$fs" "$at" ;; esac
   case $fs in xfs | btrfs) copy_on_write "$fs" "$at" ;; esac
   unmount "$at"
@@ -211,7 +211,7 @@ copy_on_write() {
   # Whole clones once, the small clone once (found by the second pass), the rewritten clone in
   # full, by design.
   check "$fs: reflink clones held once, small ones too" "$((all - clones - small))" \
-    "$(diskonaut_total "$c")"
+    "$(duscape_total "$c")"
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -238,19 +238,19 @@ snapshot_case() {
   for n in 1 2 3; do btrfs -q subvolume snapshot -r "$at/live" "$at/snap$n"; done
   as_user bash -c "$(declare -f random_file); random_file '$at/live/f1' $high"
   sync
-  check "snapshots: $name, 3 snapshots" "$(btrfs_data_used "$at")" "$(diskonaut_total "$at")" 65536 "$known"
-  check "snapshots: $name, -x sees the top level only" 0 "$(diskonaut_total "$at" -x)" 0
+  check "snapshots: $name, 3 snapshots" "$(btrfs_data_used "$at")" "$(duscape_total "$at")" 65536 "$known"
+  check "snapshots: $name, -x sees the top level only" 0 "$(duscape_total "$at" -x)" 0
   unmount "$at"
 }
 
 # ---------------------------------------------------------------------------------------------
-# Compression: does the block count diskonaut reads reflect it?
+# Compression: does the block count duscape reads reflect it?
 
 compression() {
   local at=$mnt/compression
   if make_fs btrfs "$at" compress-force=zstd; then
     as_user bash -c "$(declare -f random_file)
-      text() { yes 'diskonaut compresses well, line after line after line' | head -c \$1; }
+      text() { yes 'duscape compresses well, line after line after line' | head -c \$1; }
       text 67108864 >'$at/text'
       random_file '$at/random' 8388608
       { head -c 8388608 /dev/urandom; text 8388608; } >'$at/mixed'
@@ -260,11 +260,11 @@ compression() {
     local used
     used=$(btrfs_data_used "$at")
     # As a user, stx_blocks is the uncompressed size and there is nothing better to be had.
-    check "btrfs zstd: as a user" "$used" "$(diskonaut_total "$at")" 65536 \
+    check "btrfs zstd: as a user" "$used" "$(duscape_total "$at")" 65536 \
       "btrfs reports uncompressed blocks to stat; the compressed size needs root"
-    check "btrfs zstd: as root, from the extent items" "$used" "$(diskonaut_total_as_root "$at")" 65536
+    check "btrfs zstd: as root, from the extent items" "$used" "$(duscape_total_as_root "$at")" 65536
     check "btrfs zstd: apparent size is the length" \
-      "$(inode_oracle apparent "$at")" "$(diskonaut_total_as_root "$at" -a)"
+      "$(inode_oracle apparent "$at")" "$(duscape_total_as_root "$at" -a)"
     unmount "$at"
   else
     say SKIP "btrfs compression" "no btrfs"
@@ -273,21 +273,21 @@ compression() {
   # is asked about, and that must still come out right.
   if make_fs btrfs "$at" && command -v chattr >/dev/null; then
     as_user bash -c "
-      text() { yes 'diskonaut compresses well, line after line after line' | head -c \$1; }
+      text() { yes 'duscape compresses well, line after line after line' | head -c \$1; }
       mkdir '$at/marked' && chattr +c '$at/marked' && text 33554432 >'$at/marked/text'
       text 8388608 >'$at/plain'"
     sync
-    check "btrfs chattr +c: as root" "$(btrfs_data_used "$at")" "$(diskonaut_total_as_root "$at")" 65536
+    check "btrfs chattr +c: as root" "$(btrfs_data_used "$at")" "$(duscape_total_as_root "$at")" 65536
     unmount "$at"
   else
     say SKIP "btrfs chattr +c" "no btrfs or chattr"
   fi
   if make_fs f2fs "$at" compress_algorithm=lz4,compress_extension=txt; then
-    as_user bash -c "yes 'diskonaut compresses well, line after line after line' | head -c 67108864 >'$at/text.txt'"
+    as_user bash -c "yes 'duscape compresses well, line after line after line' | head -c 67108864 >'$at/text.txt'"
     sync
     # f2fs reserves a compressed file's blocks until they are released, so st_blocks is the
     # uncompressed size and that is what the volume has set aside: both agree with the oracle.
-    check "f2fs lz4: 64 MiB of text" "$(inode_oracle disk "$at")" "$(diskonaut_total "$at")"
+    check "f2fs lz4: 64 MiB of text" "$(inode_oracle disk "$at")" "$(duscape_total "$at")"
     unmount "$at"
   else
     say SKIP "f2fs compression" "cannot make f2fs with compression"
@@ -301,7 +301,7 @@ compressed_snapshots() {
   make_fs btrfs "$at" compress-force=zstd || { say SKIP "compressed snapshots" "no btrfs"; return; }
   btrfs -q subvolume create "$at/live" && chown "$U:$U" "$at/live"
   as_user bash -c "
-    text() { yes \"diskonaut compresses \$2, line after line\" | head -c \$1; }
+    text() { yes \"duscape compresses \$2, line after line\" | head -c \$1; }
     for i in 1 2 3 4; do text 16777216 \$i >'$at/live/t'\$i; done
     for i in \$(seq 50); do text \$((4096 * (2 + i % 13))) small\$i >'$at/live/s'\$i; done"
   sync
@@ -310,13 +310,13 @@ compressed_snapshots() {
     yes 'rewritten after the snapshots' | head -c 16777216 >'$at/live/t1'"
   sync
   check "compressed snapshots: as root" "$(btrfs_data_used "$at")" \
-    "$(diskonaut_total_as_root "$at")" 65536
+    "$(duscape_total_as_root "$at")" 65536
   # As a user the sizes are uncompressed, but every distinct file must still count once: the live
   # files, less the reflink copy, plus the old t1 the snapshots keep. The files have 128 extents
   # each, more than one FIEMAP page.
   local blocks=$(( $(inode_oracle disk "$at/live") - $(stat -c %b "$at/live/t2.copy") * 512 \
     + $(stat -c %b "$at/snap1/t1") * 512 ))
-  check "compressed snapshots: as a user, each file once" "$blocks" "$(diskonaut_total "$at")"
+  check "compressed snapshots: as a user, each file once" "$blocks" "$(duscape_total "$at")"
   unmount "$at"
 }
 
@@ -338,22 +338,22 @@ mounts() {
 
   local prune=(-path "$m/proc" -prune -o)
   check "mounts: $nested_fs + tmpfs nested, proc skipped" \
-    "$(inode_oracle disk "$m" "${prune[@]}")" "$(diskonaut_total "$m")"
+    "$(inode_oracle disk "$m" "${prune[@]}")" "$(duscape_total "$m")"
   check "mounts: -x stays on the root's filesystem" \
-    "$(inode_oracle disk "$m" -xdev)" "$(diskonaut_total "$m" -x)"
+    "$(inode_oracle disk "$m" -xdev)" "$(duscape_total "$m" -x)"
   check "mounts: apparent size" \
-    "$(inode_oracle apparent "$m" "${prune[@]}")" "$(diskonaut_total "$m" -a)"
+    "$(inode_oracle apparent "$m" "${prune[@]}")" "$(duscape_total "$m" -a)"
 
   # The same directory a second time, on the same device: nothing in `st_dev` says the walk
-  # crossed into a mount. `du` counts it once; so should diskonaut.
+  # crossed into a mount. `du` counts it once; so should duscape.
   mount --bind "$m/data" "$m/bind"
   check "mounts: a bind mount of data/ inside the scan" \
-    "$(inode_oracle disk "$m" "${prune[@]}")" "$(diskonaut_total "$m")"
+    "$(inode_oracle disk "$m" "${prune[@]}")" "$(duscape_total "$m")"
   check "mounts: the same, with -x" \
-    "$(inode_oracle disk "$m" -xdev)" "$(diskonaut_total "$m" -x)"
+    "$(inode_oracle disk "$m" -xdev)" "$(duscape_total "$m" -x)"
   # Scanning the bind mount alone, its source is outside the scan: it is all there is.
   check "mounts: a bind mount scanned on its own" \
-    "$(inode_oracle disk "$m/bind")" "$(diskonaut_total "$m/bind")"
+    "$(inode_oracle disk "$m/bind")" "$(duscape_total "$m/bind")"
   unmount "$m"
 }
 
@@ -406,13 +406,13 @@ network() {
 
   local prune=(-path "$m/nfs" -prune -o -path "$m/cloud" -prune -o)
   check "network: ${mounted[*]} inside the scan are not walked" \
-    "$(inode_oracle disk "$m" "${prune[@]}")" "$(diskonaut_total "$m")"
+    "$(inode_oracle disk "$m" "${prune[@]}")" "$(duscape_total "$m")"
   check "network: nor in apparent size" \
-    "$(inode_oracle apparent "$m" "${prune[@]}")" "$(diskonaut_total "$m" -a)"
+    "$(inode_oracle apparent "$m" "${prune[@]}")" "$(duscape_total "$m" -a)"
   if [[ " ${mounted[*]} " == *" nfs "* ]]; then
-    check "network: an nfs mount named as the root is scanned" 5000000 "$(diskonaut_total "$m/nfs" -a)"
+    check "network: an nfs mount named as the root is scanned" 5000000 "$(duscape_total "$m/nfs" -a)"
     local out
-    out=$(as_user env DISKONAUT_TEST_NETWORK_DIR="$m/nfs" "$W/bin/tests-diskonaut-scan" \
+    out=$(as_user env DUSCAPE_TEST_NETWORK_DIR="$m/nfs" "$W/bin/tests-duscape-scan" \
       network_mounts 2>&1)
     if grep -q 'test result: ok. [1-9]' <<<"$out"; then
       say PASS "network: nfs is classified as network" "unit test on the mount"

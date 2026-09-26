@@ -1,4 +1,4 @@
-; PANEL.ASM, included by DISKONAU.ASM: the side panel left of the treemap, as
+; PANEL.ASM, included by DUSCAPE.ASM: the side panel left of the treemap, as
 ; viewers/tui/src/ui/side_panel.rs draws it on an 80-column screen: a third of the width, the
 ; folder's details, its entries largest first, and under them the preview of the entry in hand.
 ;

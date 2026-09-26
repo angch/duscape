@@ -4,7 +4,7 @@ build:
 	cargo build --workspace
 
 run:
-	cargo run --bin diskonaut
+	cargo run --bin duscape
 
 install:
 	cargo install --path viewers/tui
@@ -48,69 +48,69 @@ test-fs:
 	fixtures/fs/run.sh $(FS)
 
 # Fully static x86_64 binary for any Linux (the release artifact): the terminal viewer and the
-# window in one (`diskonaut --gui`, and the default from a desktop). Needs musl-gcc
+# window in one (`duscape --gui`, and the default from a desktop). Needs musl-gcc
 # (`musl-tools`) for jemalloc; see .github/workflows/deploy.yml.
 static:
-	CC_x86_64_unknown_linux_musl=musl-gcc cargo build -p diskonaut-angch --release --target x86_64-unknown-linux-musl
+	CC_x86_64_unknown_linux_musl=musl-gcc cargo build -p duscape --release --target x86_64-unknown-linux-musl
 
 # The same for aarch64, cross-built with cargo-zigbuild (needs zig). jemalloc's page size is fixed
 # at build time; 64K pages (2^16) also run on 4K and 16K kernels.
 static-aarch64:
-	JEMALLOC_SYS_WITH_LG_PAGE=16 cargo zigbuild -p diskonaut-angch --release --target aarch64-unknown-linux-musl
+	JEMALLOC_SYS_WITH_LG_PAGE=16 cargo zigbuild -p duscape --release --target aarch64-unknown-linux-musl
 
 # A profile-guided build of the terminal viewer: instrument, scan PGO_TRAIN (this directory by
 # default; a big real tree trains it better) through every benchmark stage, then rebuild with the
 # profile. Needs `rustup component add llvm-tools-preview`. Worth 2–3% of the wall clock and 6–8%
 # of the CPU on top of the release profile, measured in docs/scan-performance.md — not enough to
 # put in the release pipeline, which would have to train on every build; here for whoever wants
-# it locally. The result is target/pgo/release/diskonaut.
+# it locally. The result is target/pgo/release/duscape.
 PGO_TRAIN ?= .
 PGO_DIR := $(CURDIR)/target/pgo
 PROFDATA := $(shell find $(HOME)/.rustup/toolchains -name llvm-profdata -type f 2>/dev/null | head -1)
 pgo:
 	@test -n "$(PROFDATA)" || { echo "llvm-profdata not found: rustup component add llvm-tools-preview" >&2; exit 1; }
 	rm -rf $(PGO_DIR)/data
-	RUSTFLAGS="-Cprofile-generate=$(PGO_DIR)/data" cargo build -p diskonaut-angch --release --target-dir $(PGO_DIR)/gen
-	$(PGO_DIR)/gen/release/diskonaut --benchmark --bench-stage all $(PGO_TRAIN) >/dev/null
-	$(PGO_DIR)/gen/release/diskonaut --benchmark --bench-stage sharded --bench-repeat 2 $(PGO_TRAIN) >/dev/null
+	RUSTFLAGS="-Cprofile-generate=$(PGO_DIR)/data" cargo build -p duscape --release --target-dir $(PGO_DIR)/gen
+	$(PGO_DIR)/gen/release/duscape --benchmark --bench-stage all $(PGO_TRAIN) >/dev/null
+	$(PGO_DIR)/gen/release/duscape --benchmark --bench-stage sharded --bench-repeat 2 $(PGO_TRAIN) >/dev/null
 	$(PROFDATA) merge -o $(PGO_DIR)/merged.profdata $(PGO_DIR)/data
-	RUSTFLAGS="-Cprofile-use=$(PGO_DIR)/merged.profdata" cargo build -p diskonaut-angch --release --target-dir $(PGO_DIR)
-	@echo "built $(PGO_DIR)/release/diskonaut"
+	RUSTFLAGS="-Cprofile-use=$(PGO_DIR)/merged.profdata" cargo build -p duscape --release --target-dir $(PGO_DIR)
+	@echo "built $(PGO_DIR)/release/duscape"
 
-# Windows, cross-built with cargo-zigbuild against the Universal C Runtime: `diskonaut.exe`, the
+# Windows, cross-built with cargo-zigbuild against the Universal C Runtime: `duscape.exe`, the
 # terminal viewer and the window in one, needing only DLLs that come with Windows 10 and later.
 # (Built on Windows with MSVC, `.cargo/config.toml` links the C runtime in the same way.)
 static-windows:
-	cargo zigbuild -p diskonaut-angch --release --target x86_64-pc-windows-gnu
+	cargo zigbuild -p duscape --release --target x86_64-pc-windows-gnu
 
-# macOS, on a Mac: `diskonaut` for both architectures in one file (`target/universal/diskonaut`),
-# then Diskonaut.app around it, for Finder — a bare binary opened from Finder runs in Terminal.
+# macOS, on a Mac: `duscape` for both architectures in one file (`target/universal/duscape`),
+# then Duscape.app around it, for Finder — a bare binary opened from Finder runs in Terminal.
 # Nothing on macOS links fully static (libSystem is always shared); this links only the system's
 # own libraries and frameworks. Signed ad hoc, as the linker signs each architecture.
 VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-MAC_APP := target/universal/Diskonaut.app
+MAC_APP := target/universal/Duscape.app
 mac-universal:
-	cargo build -p diskonaut-angch --release --target aarch64-apple-darwin
-	cargo build -p diskonaut-angch --release --target x86_64-apple-darwin
+	cargo build -p duscape --release --target aarch64-apple-darwin
+	cargo build -p duscape --release --target x86_64-apple-darwin
 	mkdir -p target/universal
-	lipo -create -output target/universal/diskonaut target/aarch64-apple-darwin/release/diskonaut target/x86_64-apple-darwin/release/diskonaut
+	lipo -create -output target/universal/duscape target/aarch64-apple-darwin/release/duscape target/x86_64-apple-darwin/release/duscape
 
 mac-app: mac-universal
 	mkdir -p $(MAC_APP)/Contents/MacOS
-	cp target/universal/diskonaut $(MAC_APP)/Contents/MacOS/diskonaut
+	cp target/universal/duscape $(MAC_APP)/Contents/MacOS/duscape
 	sed 's/@VERSION@/$(VERSION)/g' viewers/macos/Info.plist > $(MAC_APP)/Contents/Info.plist
 	codesign --force --sign - $(MAC_APP)
 
 # The Linux GUI viewer alone, fully static: pure Rust down to the X11 protocol, so it needs no musl-gcc
 # and no system library, and runs under XWayland as well as on any X server.
 static-linux-gui:
-	cargo build -p diskonaut-linux --release --target x86_64-unknown-linux-musl
+	cargo build -p duscape-linux --release --target x86_64-unknown-linux-musl
 
 # The same for aarch64, cross-built with cargo-zigbuild; with no C in it, no page size to fix.
 static-linux-gui-aarch64:
-	cargo zigbuild -p diskonaut-linux --release --target aarch64-unknown-linux-musl
+	cargo zigbuild -p duscape-linux --release --target aarch64-unknown-linux-musl
 
-# diskonaut for MS-DOS (viewers/dos), in 16-bit assembly. FASM assembles it inside DOSBox-X, under
+# duscape for MS-DOS (viewers/dos), in 16-bit assembly. FASM assembles it inside DOSBox-X, under
 # the CWSDPMI DPMI host; both are fetched once into target/dos and checked against these hashes.
 DOS := target/dos
 DOSBOX := dosbox-x -silent -fastlaunch -nogui -nomenu -defaultconf -time-limit 120 \
@@ -134,16 +134,15 @@ $(DOS)/CWSDPMI.EXE:
 	echo "$(CWSDPMI_SHA256)  $(DOS)/csdpmi.zip" | shasum -a 256 -c -
 	unzip -ojq $(DOS)/csdpmi.zip bin/CWSDPMI.EXE -d $(DOS)
 
-# target/dos/DISKONAU.EXE, the 8.3 name FASM writes, and diskonaut.exe for DOSes with long names
+# target/dos/DUSCAPE.EXE: the name fits 8.3, so DOS with or without long names runs it by it
 dos: dos-tools
-	rm -f $(DOS)/DISKONAU.EXE $(DOS)/FASM.TXT
+	rm -f $(DOS)/DUSCAPE.EXE $(DOS)/FASM.TXT
 	$(DOSBOX) -c "TARGET\DOS\CWSDPMI -p" \
-		-c "TARGET\DOS\FASM VIEWERS\DOS\DISKONAU.ASM TARGET\DOS\DISKONAU.EXE > TARGET\DOS\FASM.TXT" \
+		-c "TARGET\DOS\FASM VIEWERS\DOS\DUSCAPE.ASM TARGET\DOS\DUSCAPE.EXE > TARGET\DOS\FASM.TXT" \
 		-c exit > /dev/null 2>&1
 	@cat $(DOS)/FASM.TXT
-	test -f $(DOS)/DISKONAU.EXE
-	cp $(DOS)/DISKONAU.EXE $(DOS)/diskonaut.exe
+	test -f $(DOS)/DUSCAPE.EXE
 
-# DOSBox-X with this repository as C:, diskonaut scanning it
+# DOSBox-X with this repository as C:, duscape scanning it
 dos-run: dos
 	dosbox-x -conf viewers/dos/dosbox-x.conf

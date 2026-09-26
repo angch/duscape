@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run DISKONAU.EXE in DOSBox-X on fixtures and check what it shows.
+"""Run DUSCAPE.EXE in DOSBox-X on fixtures and check what it shows.
 
     python3 viewers/dos/test.py          # everything (runs `make dos` first)
     python3 viewers/dos/test.py -v       # and print every screen
@@ -8,7 +8,7 @@
 Each check runs the program with `-k KEYS -s FILE`: the keys are typed, then the screen (80x25
 character and attribute pairs) and the tiles are written and it quits. All the runs of a pass go
 in one batch file, so DOSBox-X starts once. The layout checks lay out random folders and compare
-the tiles with libdiskonaut's TreeMap, through the dos-tiles tool beside this file.
+the tiles with libduscape's TreeMap, through the dos-tiles tool beside this file.
 
 Needs dosbox-x, cargo, and ImageMagick (`magick`) for the picture previews.
 """
@@ -86,7 +86,7 @@ def screens(runs, **options):
         if os.path.exists(path):
             os.remove(path)
         script = f" -k {keys}" if keys else ""
-        commands.append(f"TARGET\\DOS\\DISKONAU.EXE {args}{script} -s {out}")
+        commands.append(f"TARGET\\DOS\\DUSCAPE.EXE {args}{script} -s {out}")
     dosbox(commands, **options)
     result = []
     for index in range(len(runs)):
@@ -357,7 +357,7 @@ def an_8086_is_refused():
         log = os.path.join(WORK, "OUT.TXT")
         if os.path.exists(log):
             os.remove(log)
-        dosbox([f"TARGET\\DOS\\DISKONAU.EXE > {DOS_WORK}\\OUT.TXT"],
+        dosbox([f"TARGET\\DOS\\DUSCAPE.EXE > {DOS_WORK}\\OUT.TXT"],
                extra=(setting, "cpu core=normal"), limit=60)
         text = open(log, encoding="cp437").read() if os.path.exists(log) else ""
         expect(message in text, f"{setting}: {text!r}")

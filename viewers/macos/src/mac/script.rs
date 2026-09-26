@@ -1,6 +1,6 @@
 //! Driving the window from a script, for testing it without a person or any permission.
 //!
-//! `DISKONAUT_MAC_SCRIPT=steps.txt diskonaut-mac FOLDER` runs the steps in `steps.txt` once the
+//! `DUSCAPE_MAC_SCRIPT=steps.txt duscape-mac FOLDER` runs the steps in `steps.txt` once the
 //! scan has finished, one line each (`#` starts a comment):
 //!
 //! ```text
@@ -161,9 +161,9 @@ fn key(name: &str) -> Option<(u16, String)> {
     Some((code, characters.to_string()))
 }
 
-/// Run the script at the path `DISKONAUT_MAC_SCRIPT` names, if it does, and quit when it ends.
+/// Run the script at the path `DUSCAPE_MAC_SCRIPT` names, if it does, and quit when it ends.
 pub fn run_from_environment() -> bool {
-    let Some(path) = ::std::env::var_os("DISKONAUT_MAC_SCRIPT") else {
+    let Some(path) = ::std::env::var_os("DUSCAPE_MAC_SCRIPT") else {
         return false;
     };
     // Once: a script that scans another folder must not start itself again when that finishes.
@@ -177,7 +177,7 @@ pub fn run_from_environment() -> bool {
     {
         Ok(steps) => steps,
         Err(error) => {
-            eprintln!("diskonaut-mac: script: {error}");
+            eprintln!("duscape-mac: script: {error}");
             ::std::process::exit(2);
         }
     };

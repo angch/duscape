@@ -41,20 +41,20 @@ reparse points that stand for real files are scanned as usual.
 
 A file with several names (a hard link) is counted once per folder, however many of its names that
 folder holds. Linux and macOS report each file's link count for free; Windows directory listings do
-not, and asking costs a file open per file. So on Windows diskonaut tracks files by their NTFS/ReFS
+not, and asking costs a file open per file. So on Windows duscape tracks files by their NTFS/ReFS
 file id instead, which costs memory rather than time — about 100 bytes a file.
 
 By default only the places hard links are normally made are tracked: the Windows directory, Edge,
 Docker and Git installs, and package stores (`node_modules`, pnpm, uv, `.venv`, `site-packages`).
 A link made by hand elsewhere is counted once per name, which overstates rather than understates.
-Run as administrator, diskonaut tracks every file: it then reaches other users' profiles and
+Run as administrator, duscape tracks every file: it then reaches other users' profiles and
 system folders the list was not drawn from, and on one `C:\` those held 3.1 GiB of links the list
 missed. To track everywhere unelevated, pass `--hard-link-threshold BYTES` — every file at least that large is
 tracked, wherever it is:
 
 ```sh
-diskonaut --hard-link-threshold 1 C:\       # exact: every non-empty file
-diskonaut --hard-link-threshold 1048576 D:\ # only files of 1 MiB and more
+duscape --hard-link-threshold 1 C:\       # exact: every non-empty file
+duscape --hard-link-threshold 1048576 D:\ # only files of 1 MiB and more
 ```
 
 On one 2M-entry `C:\`, the default found all but 240 MB of 17 GB of double-counted links, for 90 MB
@@ -75,7 +75,7 @@ It appears for a drive root on Windows, and on Unix for a mount point scanned wi
 it, the scan may cross into other filesystems and the two stop being comparable). It is not shown
 with `--apparent-size`, since file lengths cannot be set against blocks in use.
 
-On Windows, run diskonaut as administrator to see nearly everything. Elevated, it turns on the
+On Windows, run duscape as administrator to see nearly everything. Elevated, it turns on the
 backup privilege, as WizTree does, which lets it read `System Volume Information`, other users'
 profiles and `WindowsApps` whatever their permissions say. It grants reading only: deleting still
 needs ordinary permission. On one `C:\`, unelevated, 192 folders were unreadable and 108.6 GiB of

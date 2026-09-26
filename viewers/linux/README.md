@@ -1,20 +1,20 @@
-# diskonaut-linux
+# duscape-linux
 
-A window on diskonaut-angch for Linux and FreeBSD: the same walker (`diskonaut-scan`) and model,
-treemap, delete and preview reading (`libdiskonaut`) as the terminal viewer, and the same window
-state as the macOS viewer (`diskonaut-viewer`, in `viewers/shared/`), drawn with **no toolkit**,
+A window on duscape for Linux and FreeBSD: the same walker (`duscape-scan`) and model,
+treemap, delete and preview reading (`libduscape`) as the terminal viewer, and the same window
+state as the macOS viewer (`duscape-viewer`, in `viewers/shared/`), drawn with **no toolkit**,
 natively on **Wayland** or on **X11**. `docs/features.md` compares it with the other viewers.
 
 ```sh
-cargo run -p diskonaut-linux --release -- ~/Downloads
-cargo run -p diskonaut-linux --release -- -a ~       # apparent sizes to begin with
-cargo run -p diskonaut-linux --release               # the current folder
-DISKONAUT_BACKEND=x11 cargo run -p diskonaut-linux    # X11 even under Wayland (else the reverse)
+cargo run -p duscape-linux --release -- ~/Downloads
+cargo run -p duscape-linux --release -- -a ~       # apparent sizes to begin with
+cargo run -p duscape-linux --release               # the current folder
+DUSCAPE_BACKEND=x11 cargo run -p duscape-linux    # X11 even under Wayland (else the reverse)
 make static-linux-gui                                # a static binary, ~1.7 MB, for any Linux
-diskonaut --gui ~                                    # the same window, from the one binary
+duscape --gui ~                                    # the same window, from the one binary
 ```
 
-`diskonaut` (`make static`, the release) holds this window beside the terminal viewer, 2.9 MB in
+`duscape` (`make static`, the release) holds this window beside the terminal viewer, 2.9 MB in
 all, and opens it when started from a desktop launcher or with `--gui`.
 
 ## Why no toolkit
@@ -82,17 +82,17 @@ A dialog answers to its buttons, Enter/`y` and Esc/`n`.
   rules), else `~/.local/share/Trash` for files on the home filesystem and `.Trash-<uid>` at the
   top of any other, each with its `.trashinfo`. The Trash frees nothing until it is emptied, so it
   does not add to "freed".
-- **Wayland or X11** is decided by `DISKONAUT_BACKEND` (`wayland`/`x11`), else by whether
+- **Wayland or X11** is decided by `DUSCAPE_BACKEND` (`wayland`/`x11`), else by whether
   `WAYLAND_DISPLAY` is set; if the first choice cannot connect, the other is tried.
 - **The clipboard** goes through `wl-copy`, `xclip` or `xsel` if one is installed. Otherwise the
   window holds the selection itself — offered to the compositor with the last click or key's
   serial on Wayland, owned as `CLIPBOARD` on X11 — for as long as the window is open.
 - **HiDPI:** everything is laid out in points. On Wayland the scale is the compositor's
   (`preferred_buffer_scale`, else the output's), and the buffer is drawn at it. On X11 it is
-  `Xft.dpi` over 96 (or `GDK_SCALE`, or `DISKONAUT_SCALE=2`), to a quarter.
+  `Xft.dpi` over 96 (or `GDK_SCALE`, or `DUSCAPE_SCALE=2`), to a quarter.
 - **Fonts** come from `fc-match sans-serif` (and `:bold`, `monospace`); without fontconfig, the
-  usual DejaVu/Liberation/Noto files. `DISKONAUT_FONT`, `DISKONAUT_FONT_BOLD` and
-  `DISKONAUT_FONT_MONO` name files to use instead.
+  usual DejaVu/Liberation/Noto files. `DUSCAPE_FONT`, `DUSCAPE_FONT_BOLD` and
+  `DUSCAPE_FONT_MONO` name files to use instead.
 - **Pictures** are decoded on the previewer's thread and shrunk to 1024 pixels a side once, so
   drawing them costs little; the limits are 40,000 pixels a side and 512 MiB decoded.
 
@@ -100,7 +100,7 @@ A dialog answers to its buttons, Enter/`y` and Esc/`n`.
 
 | File | |
 | --- | --- |
-| `../shared/src/state.rs` | `Viewer` (`diskonaut-viewer`): what the window shows and how it answers input, shared with the macOS viewer and tested on every platform |
+| `../shared/src/state.rs` | `Viewer` (`duscape-viewer`): what the window shows and how it answers input, shared with the macOS viewer and tested on every platform |
 | `src/app.rs` | The loop over one channel — X events, scan batches, the finished tree, rescans, previews, ticks — each a call on the `Viewer`, then one frame; keys, mouse, the confirm dialog, copy, Trash and delete |
 | `src/backend.rs` | The `Backend` trait and `Input`: what either windowing system gives and takes, in points; which one to open |
 | `src/wayland.rs` | Native Wayland on `wayland-client`: `wl_shm` buffers, `xdg-shell`, decorations, seat (keyboard with repeat, pointer with cursor and wheel), outputs and scale, the clipboard; events dispatched on a thread |
@@ -114,7 +114,7 @@ A dialog answers to its buttons, Enter/`y` and Esc/`n`.
 To look at the drawing without a screen:
 
 ```sh
-DISKONAUT_SNAPSHOT=out.png cargo run -p diskonaut-linux --release -- FOLDER
+DUSCAPE_SNAPSHOT=out.png cargo run -p duscape-linux --release -- FOLDER
 ```
 
 writes the window to `out.png` half a second after the scan finishes, and quits. Without a desktop:
@@ -124,7 +124,7 @@ writes the window to `out.png` half a second after the scan finishes, and quits.
   clicks, and `import -window root` grabs the screen.
 - **Wayland:** a headless weston — `weston --backend=headless-backend.so --renderer=pixman
   --shell=kiosk-shell.so --socket=test --debug` (it runs from an unpacked .deb with
-  `WESTON_MODULE_MAP` naming the modules) — then `WAYLAND_DISPLAY=test diskonaut-linux` and
+  `WESTON_MODULE_MAP` naming the modules) — then `WAYLAND_DISPLAY=test duscape-linux` and
   `weston-screenshooter` for the screen. It has no input devices to drive; the keymap reading is
   covered by `xkb`'s tests against a real `xkbcomp` dump.
 

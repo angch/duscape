@@ -8,7 +8,7 @@ fn is_user_admin_returns_bool() {
 
 #[test]
 fn size_on_disk_fast_is_at_least_file_length() {
-    let dir = std::env::temp_dir().join("diskonaut_os_block_size_test");
+    let dir = std::env::temp_dir().join("duscape_os_block_size_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create temp dir");
 
@@ -33,7 +33,7 @@ fn size_on_disk_fast_is_at_least_file_length() {
 /// desktops that mount `/tmp` as tmpfs, the temp directory *is* a volume root.
 #[test]
 fn volume_used_is_reported_for_a_volume_root_only() {
-    let dir = std::env::temp_dir().join("diskonaut_os_volume_used_test");
+    let dir = std::env::temp_dir().join("duscape_os_volume_used_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create temp dir");
     let dir = dir.canonicalize().expect("canonicalize temp dir");

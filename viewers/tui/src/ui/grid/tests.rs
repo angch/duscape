@@ -1,6 +1,6 @@
 use ::std::ffi::OsString;
 
-use libdiskonaut::tiles::{FileType, Tile};
+use libduscape::tiles::{FileType, Tile};
 use ratatui::style::Color;
 
 use super::tile_style;

@@ -3,11 +3,11 @@ use ::std::sync::atomic::AtomicBool;
 use ::std::sync::{Arc, Mutex, mpsc};
 
 use super::*;
-use diskonaut_scan::scan_into_tree;
-use libdiskonaut::format::quote_path_for_shell;
-use libdiskonaut::{EntryMeta, ScanOptions};
+use duscape_scan::scan_into_tree;
+use libduscape::format::quote_path_for_shell;
+use libduscape::{EntryMeta, ScanOptions};
 
-const ROOT: &str = "/diskonaut-mac-test-root";
+const ROOT: &str = "/duscape-mac-test-root";
 
 /// Apparent sizes and one thread, so the figures are the files' lengths on any filesystem.
 fn options() -> ScanOptions {
@@ -21,7 +21,7 @@ fn options() -> ScanOptions {
 /// A folder on disk: `big/inside` (3000 bytes), `medium.txt` (2000), `small/inside` (100),
 /// `tiny.txt` (50).
 fn on_disk(name: &str) -> PathBuf {
-    let dir = ::std::env::temp_dir().join(format!("diskonaut_viewer_state_{name}"));
+    let dir = ::std::env::temp_dir().join(format!("duscape_viewer_state_{name}"));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(dir.join("big")).expect("create big");
     fs::create_dir_all(dir.join("small")).expect("create small");
@@ -570,7 +570,7 @@ fn nothing_is_deleted_while_the_outline_is_on_screen() {
     let root = Path::new(ROOT);
     let mut viewer = Viewer::new(root, SizeKind::Disk, 1);
     viewer.resize(1200.0, 800.0);
-    let mut directory = libdiskonaut::DirEntries::new(Arc::from(root));
+    let mut directory = libduscape::DirEntries::new(Arc::from(root));
     directory.push(OsStr::new("folder"), meta(0, true));
     // Absorbed, a batch is in the tree but not yet on screen; catching up lays it out.
     viewer.absorb_summaries(vec![DirSummary::of(&directory)]);
@@ -578,7 +578,7 @@ fn nothing_is_deleted_while_the_outline_is_on_screen() {
     assert_eq!(viewer.entries_scanned, 1);
     viewer.catch_up();
     assert_eq!(names(&viewer), ["folder"]);
-    let mut more = libdiskonaut::DirEntries::new(Arc::from(root));
+    let mut more = libduscape::DirEntries::new(Arc::from(root));
     more.push(OsStr::new("other"), meta(0, true));
     viewer.add_summaries(vec![DirSummary::of(&more)]);
     assert_eq!(names(&viewer).len(), 2, "add_summaries lays out at once");
