@@ -258,9 +258,10 @@ impl Canvas {
 }
 
 /// The colour the shared viewers give a tile, as GDI takes it.
-fn tile_colorref(name: &OsStr, file_type: FileType, index: usize) -> COLORREF {
+/// A tile's colour, `shade` (1.0 as given, less for darker) of what every desktop viewer gives it.
+fn tile_colorref(name: &OsStr, file_type: FileType, index: usize, shade: f64) -> COLORREF {
     let (r, g, b) = tile_color(name, file_type, index);
-    let byte = |value: f64| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let byte = |value: f64| ((value * shade).clamp(0.0, 1.0) * 255.0).round() as u8;
     rgb(byte(r), byte(g), byte(b))
 }
 
@@ -322,16 +323,18 @@ fn draw_treemap(canvas: &Canvas, window: &Window, layout: &Layout) {
             if marked {
                 MARK
             } else {
-                tile_colorref(&tile.name, tile.file_type, index + board.zoom_level)
+                tile_colorref(&tile.name, tile.file_type, index + board.zoom_level, 1.0)
             },
         );
         canvas.frame(rect, BORDER, 1);
         if rect.w > 40.0 && rect.h > LINE {
             let ink = if marked { INK } else { rgb(240, 240, 240) };
-            let line = Rect::new(rect.x + pad, rect.y + pad / 2.0, rect.w - 2.0 * pad, LINE);
-            draw_tile_label(canvas, fonts, line, tile, ink, fonts.bold);
+            draw_tile_label(canvas, fonts, rect, pad, pad / 2.0, tile, ink, fonts.bold);
         }
-        if hover == Some(tile.name.as_os_str()) && board.get_selected_index() != Some(index) {
+        if hover == Some(tile.name.as_os_str())
+            && viewer.hover_nested.is_none()
+            && board.get_selected_index() != Some(index)
+        {
             canvas.frame(rect, rgb(170, 170, 170), 1);
         }
     }
@@ -465,15 +468,21 @@ fn draw_nested(canvas: &Canvas, window: &Window, layout: &Layout) {
     for (index, nested) in viewer.nested().iter().enumerate() {
         let t = &nested.tile;
         let rect = layout.cells_to_rect(t.x, t.y, t.width, t.height);
-        let (r, g, b) = tile_color(&t.name, t.file_type, index);
         // Each level in, the colour is a step darker: the nesting reads as depth.
         let shade = 1.0 - 0.12 * nested.depth.min(4) as f64;
-        let byte = |value: f64| ((value * shade).clamp(0.0, 1.0) * 255.0).round() as u8;
-        canvas.fill(rect, rgb(byte(r), byte(g), byte(b)));
+        canvas.fill(rect, tile_colorref(&t.name, t.file_type, index, shade));
         canvas.frame(rect, BORDER, 1);
         if rect.w > 30.0 && rect.h > LINE {
-            let line = Rect::new(rect.x + pad, rect.y + 1.0, rect.w - 2.0 * pad, LINE);
-            draw_tile_label(canvas, fonts, line, t, rgb(235, 235, 235), fonts.ui);
+            draw_tile_label(
+                canvas,
+                fonts,
+                rect,
+                pad,
+                1.0,
+                t,
+                rgb(235, 235, 235),
+                fonts.ui,
+            );
         }
         if viewer.hover_nested == Some(index) {
             canvas.frame(rect, rgb(200, 200, 200), 1);
@@ -481,27 +490,41 @@ fn draw_nested(canvas: &Canvas, window: &Window, layout: &Layout) {
     }
 }
 
-/// A tile's label on one line: the name at the left (a folder's with its `\`), the size at the
-/// right, in `ink`; the size only when the name keeps room enough to read.
+/// A tile's label, in `ink`, `pad` in from the sides and `top` down from the top. A folder's is
+/// one line, its name (with its `\`) at the left and its size at the right, since its entries
+/// take the rest of the tile; a file's name has the whole top line, and its size goes at the
+/// bottom right when the tile has a second line, since the name is the longer and the one to
+/// read. Beside a name, a size is left out where the name would keep too little room.
+#[allow(clippy::too_many_arguments)]
 fn draw_tile_label(
     canvas: &Canvas,
     fonts: &Fonts,
-    line: Rect,
+    rect: Rect,
+    pad: f64,
+    top: f64,
     tile: &Tile,
     ink: COLORREF,
     font: HFONT,
 ) {
     /// The least the name may keep beside the size, in points.
     const NAME_ROOM: f64 = 24.0;
+    let is_dir = tile.file_type == FileType::Folder;
     let name = tile.name.to_string_lossy();
-    let label = if tile.file_type == FileType::Folder {
+    let label = if is_dir {
         format!("{name}\\")
     } else {
         name.into_owned()
     };
+    let line = Rect::new(rect.x + pad, rect.y + top, rect.w - 2.0 * pad, LINE);
     let size = DisplaySize(tile.size as f64).to_string();
     let size_width = canvas.width(&size, fonts.ui);
-    if line.w - size_width - LIST_PAD >= NAME_ROOM {
+    let beside = line.w - size_width - LIST_PAD >= NAME_ROOM;
+    let below = !is_dir && rect.h >= top + 2.0 * LINE + pad;
+    if below {
+        canvas.text(line, &label, ink, font, false);
+        let size_line = Rect::new(line.x, rect.bottom() - pad - LINE, line.w, LINE);
+        canvas.text(size_line, &size, ink, fonts.ui, true);
+    } else if beside {
         let name_rect = Rect::new(line.x, line.y, line.w - size_width - LIST_PAD, line.h);
         canvas.text(name_rect, &label, ink, font, false);
         let size_rect = Rect::new(line.right() - size_width, line.y, size_width, line.h);
@@ -583,7 +606,11 @@ fn draw_preview(canvas: &Canvas, window: &Window, info: Rect) {
             libdiskonaut::DisplayCount(viewer.marked.len() as u64),
             DisplaySize(size as f64)
         )
-    } else if let Some(entry) = viewer.selected_entry() {
+    } else if let Some(entry) = viewer
+        .cursor_entry()
+        .map(|row| &row.entry)
+        .or_else(|| viewer.selected_entry())
+    {
         let mut words = entry.name.to_string_lossy().into_owned();
         if entry.file_type == FileType::Folder {
             words.push('\\');

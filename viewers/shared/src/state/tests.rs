@@ -850,6 +850,10 @@ fn a_tile_inside_a_folders_tile_is_pointed_at_and_reveals_its_row() {
     let (left, _) = viewer.status();
     assert!(left.starts_with("a — 600"), "{left}");
 
+    assert_eq!(
+        viewer.hover, None,
+        "the nested tile is hovered, not the folder's around it"
+    );
     viewer.click(x, y, Mods::default());
     assert_eq!(
         rows_of(&viewer)[..3],
@@ -859,6 +863,41 @@ fn a_tile_inside_a_folders_tile_is_pointed_at_and_reveals_its_row() {
     assert_eq!(cursor_of(&viewer).as_deref(), Some("a"));
     assert_eq!(selected(&viewer).as_deref(), Some("big"));
     assert_eq!(viewer.cursor_nested(), Some(index));
+    // A relayout moves the tiles: nothing is hovered until the pointer moves again.
+    viewer.resize(1200.0, 800.0);
+    assert_eq!(viewer.hover_nested, None);
+    // The modifiers apply to a nested tile as to any target: Ctrl+click marks its folder and
+    // keeps the marks there were.
+    let toggle = Mods {
+        toggle: true,
+        range: false,
+    };
+    // (`big` is open, so the row is found among the rows, not the flat listing.)
+    let list = viewer.layout.list.expect("a list");
+    let tiny = rows_of(&viewer)
+        .iter()
+        .position(|row| row == "tiny.bin")
+        .expect("a row");
+    viewer.click(list.x + 10.0, list.y + ROW * (tiny as f64 + 0.5), toggle);
+    assert_eq!(
+        viewer.marked,
+        ["big", "tiny.bin"],
+        "a's row was picked, so its folder joins first"
+    );
+    let a = viewer.nested().iter().find(|t| t.tile.name == "a").unwrap();
+    let rect = viewer
+        .layout
+        .cells_to_rect(a.tile.x, a.tile.y, a.tile.width, a.tile.height);
+    let (ax, ay) = (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
+    viewer.click(ax, ay, toggle);
+    assert_eq!(
+        viewer.marked,
+        ["tiny.bin"],
+        "big toggled off, tiny.bin kept"
+    );
+    assert_eq!(cursor_of(&viewer).as_deref(), Some("a"));
+    viewer.click(ax, ay, toggle);
+    assert_eq!(viewer.marked, ["tiny.bin", "big"], "and on again");
     // Off, nothing is nested and the tile is the folder's again.
     viewer.set_tree_view(false);
     assert!(viewer.nested().is_empty());

@@ -8,21 +8,55 @@
 //! the shell.
 
 use ::std::ffi::OsString;
-use ::std::path::{Component, Path};
+use ::std::path::{Component, Path, Prefix};
 
 /// The flag that stops the asking, which the elevated process is started with.
 pub const NO_ELEVATE: &str = "--no-elevate";
 
 /// Whether to ask: `root` is a volume root, the process is not elevated, and nobody opted out.
+/// Whether the volume is a local disk is [`is_local_disk`]'s to say.
 #[must_use]
 pub fn wanted(root: &Path, opted_out: bool, is_admin: bool) -> bool {
-    // A prefix and a root and nothing else: `C:\`, `\\?\D:\`, `/`. A relative path — `.`, or
+    // A drive and a root and nothing else: `C:\`, `\\?\D:\`, `/`. A relative path — `.`, or
     // one with a `..` in it — is not one, whatever it resolves to; the caller resolves it first.
+    // Nor is a share (`\\server\share\`): elevation reads a local volume's table, and gains
+    // nothing on another machine's files.
     let mut components = root.components().peekable();
     let is_volume_root = components.peek().is_some()
-        && components
-            .all(|component| matches!(component, Component::Prefix(_) | Component::RootDir));
+        && components.all(|component| match component {
+            Component::Prefix(prefix) => {
+                matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))
+            }
+            Component::RootDir => true,
+            _ => false,
+        });
     is_volume_root && !opted_out && !is_admin
+}
+
+/// Whether `root` is on a local disk — fixed or removable — rather than a share, a CD or a
+/// RAM disk: where reading the volume's table elevated can pay. Anywhere but Windows, yes.
+#[must_use]
+pub fn is_local_disk(root: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        use ::std::os::windows::ffi::OsStrExt;
+
+        use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
+
+        // `GetDriveTypeW`'s answers for a local disk (`winbase.h`).
+        const DRIVE_REMOVABLE: u32 = 2;
+        const DRIVE_FIXED: u32 = 3;
+
+        let wide: Vec<u16> = root.as_os_str().encode_wide().chain(Some(0)).collect();
+        // SAFETY: the path is NUL-terminated and alive for the call.
+        let kind = unsafe { GetDriveTypeW(wide.as_ptr()) };
+        kind == DRIVE_FIXED || kind == DRIVE_REMOVABLE
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = root;
+        true
+    }
 }
 
 /// The arguments the elevated process is started with: [`NO_ELEVATE`], then this process's
@@ -168,6 +202,9 @@ mod tests {
             ".",
             "..",
             "",
+            // A share is not a volume of this machine.
+            r"\\server\share\",
+            r"\\?\UNC\server\share\",
         ] {
             assert!(
                 !wanted(Path::new(root), false, false),

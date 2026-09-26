@@ -1,5 +1,7 @@
 use ::std::ffi::OsString;
 
+use ::std::ffi::OsStr;
+
 use crate::model::{FileOrFolder, Folder, SizeKind};
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -25,6 +27,49 @@ fn calculate_percentage(size: u128, total_size: u128, total_files_in_parent: usi
     } else {
         size as f64 / total_size as f64
     }
+}
+
+/// The `limit` largest entries of `folder` by the size of `kind`, largest first, with each one's
+/// share of the whole folder — what [`files_in_folder`] gives for them, without building and
+/// sorting the rest: for a layout with room for `limit` tiles at most, in a folder of tens of
+/// thousands of entries, relaid out on every batch of a scan.
+#[must_use]
+pub fn largest_in_folder(folder: &Folder, kind: SizeKind, limit: usize) -> Vec<FileMetadata> {
+    let entries_total: u128 = folder.contents.values().map(|entry| entry.size(kind)).sum();
+    let total_size = folder.sizes.get(kind).max(entries_total);
+    let mut ranked: Vec<(u128, &OsStr, &FileOrFolder)> = folder
+        .contents
+        .iter()
+        .map(|(name, entry)| (entry.size(kind), name, entry))
+        .collect();
+    // Largest first, ties by name: the order `files_in_folder` sorts into.
+    let by_rank = |a: &(u128, &OsStr, &FileOrFolder), b: &(u128, &OsStr, &FileOrFolder)| {
+        b.0.cmp(&a.0).then_with(|| a.1.cmp(b.1))
+    };
+    if limit < ranked.len() {
+        if limit == 0 {
+            return Vec::new();
+        }
+        ranked.select_nth_unstable_by(limit - 1, by_rank);
+        ranked.truncate(limit);
+    }
+    ranked.sort_unstable_by(by_rank);
+    ranked
+        .into_iter()
+        .map(|(size, name, entry)| {
+            let (descendants, file_type) = match entry {
+                FileOrFolder::Folder(folder) => (Some(folder.num_descendants), FileType::Folder),
+                FileOrFolder::File(_) => (None, FileType::File),
+            };
+            FileMetadata {
+                size,
+                name: name.to_os_string(),
+                descendants,
+                percentage: calculate_percentage(size, total_size, folder.contents.len()),
+                file_type,
+            }
+        })
+        .collect()
 }
 
 /// The entries of `folder`, largest first by the size of `kind`, less the `offset` largest (the

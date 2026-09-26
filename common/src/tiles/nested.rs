@@ -6,7 +6,7 @@
 
 use ::std::ffi::OsString;
 
-use super::{Area, FileType, Tile, TreeMap, files_in_folder};
+use super::{Area, FileType, Tile, TreeMap, largest_in_folder};
 use crate::model::{FileOrFolder, Folder, SizeKind};
 
 /// A tile inside a folder's tile.
@@ -20,7 +20,11 @@ pub struct NestedTile {
     pub tile: Tile,
 }
 
-/// How far in the nesting goes.
+/// How far in the nesting goes. What stops it is room: a folder's entries are laid out inside
+/// its tile only while the inside is big enough for two of the squarify's minimum tiles either
+/// way, so the nesting reaches the files wherever there is room to show them, and the tiles
+/// there number at most what the treemap's area holds at the minimum size. The two caps
+/// are guards well beyond that, not the working limit.
 #[derive(Debug, Clone, Copy)]
 pub struct Nesting {
     /// Levels inside a top-level tile, at most.
@@ -29,25 +33,29 @@ pub struct Nesting {
     pub label_rows: u16,
     /// Cells left at a folder's tile's sides and bottom, so its border shows around its entries.
     pub margin: u16,
-    /// Tiles in all, at most: a wide tree stops nesting rather than laying out thousands.
+    /// Tiles in all, at most.
     pub max_tiles: usize,
 }
 
 impl Default for Nesting {
     fn default() -> Self {
         Nesting {
-            max_depth: 6,
+            max_depth: 64,
             label_rows: 3,
             margin: 1,
-            max_tiles: 3000,
+            max_tiles: 100_000,
         }
     }
 }
 
 /// The least a folder's inside must measure, in cells, for its entries to be laid out in it:
-/// two of the squarify's minimum tiles side by side, and two on top of each other.
-const NEST_MIN_WIDTH: u16 = 16;
-const NEST_MIN_HEIGHT: u16 = 6;
+/// two of the squarify's minimum tiles side by side, and two on top of each other. This is
+/// what ends the nesting.
+const NEST_MIN_WIDTH: u16 = 2 * MIN_TILE_WIDTH;
+const NEST_MIN_HEIGHT: u16 = 2 * MIN_TILE_HEIGHT;
+/// The squarify's minimum tile (`treemap::MINIMUM_WIDTH`/`HEIGHT`), in cells.
+const MIN_TILE_WIDTH: u16 = 8;
+const MIN_TILE_HEIGHT: u16 = 3;
 
 /// The tiles inside `tiles` — the board's, for `folder` — down to `nesting`'s limits, parents
 /// before their children.
@@ -98,7 +106,13 @@ fn nest_into(
         width,
         height,
     };
-    let files = files_in_folder(folder, 0, kind);
+    // Only as many entries as the inside has room for at the minimum tile size, plus one so
+    // the squarify still sees what follows: a folder of fifty thousand entries is not listed
+    // and sorted whole for the dozen that get a tile.
+    let room = (usize::from(width) / usize::from(MIN_TILE_WIDTH) + 1)
+        * (usize::from(height) / usize::from(MIN_TILE_HEIGHT) + 1)
+        + 1;
+    let files = largest_in_folder(folder, kind, room);
     let mut map = TreeMap::new(&inside);
     map.populate_tiles(files.iter().collect());
     let first = out.len();
@@ -223,6 +237,18 @@ mod tests {
         let sub_at = nested.iter().position(|t| t.tile.name == "sub").unwrap();
         let c_at = nested.iter().position(|t| t.tile.name == "c").unwrap();
         assert!(sub_at < c_at);
+    }
+
+    #[test]
+    fn the_largest_entries_are_the_head_of_the_whole_listing() {
+        use crate::tiles::{files_in_folder, largest_in_folder};
+        let tree = tree();
+        let folder = tree.get_current_folder();
+        let whole = files_in_folder(folder, 0, SizeKind::Disk);
+        for limit in [0, 1, 2, 5] {
+            let top = largest_in_folder(folder, SizeKind::Disk, limit);
+            assert_eq!(top, whole[..limit.min(whole.len())], "limit {limit}");
+        }
     }
 
     #[test]

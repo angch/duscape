@@ -42,11 +42,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   read from its master file table, every hard link is counted, NTFS's own files are sized and
   every folder opens. Declined, it scans as it is; `--no-elevate` never asks.
 - The Windows viewer's treemap is nested: a folder's tile holds its entries' tiles, laid out
-  under its label, and theirs in turn, as deep as there is room (each level a shade darker,
-  labelled where it fits — the name at the left, the size at the right, as every tile is
-  now). Hovering a nested tile names it in the status bar; clicking it
-  opens the folders above it in the list and puts its row in hand, so the two panels show the
-  same thing. The layout is `libdiskonaut::tiles::nest`, the hit-testing the shared viewer's.
+  under its label, and theirs in turn, down to the files wherever there is room for a tile
+  (each level a shade darker). A folder's label is its name at the left and its size at the
+  right; a file's name has the whole top line and its size sits at the bottom right, so the
+  name — the longer, and the one to read — gets the room. Hovering a nested tile names it in
+  the status bar; clicking it opens the folders above it in the list and puts its row in
+  hand, so the two panels show the same thing, and Ctrl+click and Shift+click mark its
+  top-level folder as they would the folder's own tile. The layout is
+  `libdiskonaut::tiles::nest`, the hit-testing the shared viewer's; each folder is listed by
+  `largest_in_folder`, only as many entries as its tile has room for.
 - `make` on Windows without make: `.\make <target>` (`make.cmd`, `make.ps1`) reads the
   Makefile and runs its recipes in Git's bash — targets, prerequisites, variables, `$(shell)`,
   continuations, `VAR=value` — so `make quality`, `make test` and the rest are one recipe
@@ -140,6 +144,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Windows viewer's preview caption and context menu are about the row in hand — a nested
+  file's, after its tile was clicked — not its top-level folder, so a nested file's hex dump is
+  captioned with its own name and the menu offers what a file can do.
+- Hovering a tile inside a folder's tile frames that tile alone, not the folder's around it as
+  well, and a relayout while the pointer rests (a scan's batch, a resize, a zoom) no longer
+  names whatever tile lands at the old index.
+- The Windows viewer asks to run as administrator only for a local disk — not a share, a CD or a
+  RAM disk, where elevation gains nothing — and if the elevated process cannot be started (other
+  than by declining the prompt) the status bar says so instead of silently scanning as is.
 - The Windows viewer's contents follow a resize. Dragging an edge, the caption's maximise
   button and the system menu run inside `DefWindowProcW`, which was called behind the window's
   re-entrancy guard, so the `WM_SIZE` they send arrived while the guard was up and was dropped:

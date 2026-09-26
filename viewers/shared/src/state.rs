@@ -439,9 +439,8 @@ impl Viewer {
         } else {
             Vec::new()
         };
-        if self.hover_nested.is_some_and(|i| i >= self.nested.len()) {
-            self.hover_nested = None;
-        }
+        // The tiles moved: what was under the pointer is not known until it moves again.
+        self.hover_nested = None;
     }
 
     /// The tree view's treemap: the tiles inside the board's folder tiles, parents first.
@@ -472,11 +471,19 @@ impl Viewer {
 
     /// Open the folders above `path` in the tree, so its row is there, and put it in hand.
     fn reveal(&mut self, path: Vec<OsString>, chosen: bool) {
+        self.open_above(&path);
+        self.select_row(path, chosen);
+    }
+
+    /// Open the folders above `path` in the tree; a top-level path opens nothing.
+    fn open_above(&mut self, path: &[OsString]) {
+        if path.len() < 2 {
+            return;
+        }
         for depth in 1..path.len() {
             self.expansion.open(&path[..depth]);
         }
         self.rebuild_rows();
-        self.select_row(path, chosen);
     }
 
     fn rebuild_rows(&mut self) {
@@ -954,15 +961,9 @@ impl Viewer {
         let (focus, path) = match self.hit(x, y) {
             Hit::Row(index) | Hit::Expander(index) => (Focus::List, self.rows[index].path.clone()),
             Hit::Tile(name) => (Focus::Treemap, vec![name]),
-            // A tile inside a folder's: the folders above it open in the tree, and it is the
-            // row in hand.
-            Hit::Nested(index) => {
-                let path = self.nested[index].path.clone();
-                self.focus = Focus::Treemap;
-                self.clear_marks();
-                self.reveal(path.clone(), true);
-                return path.first().cloned();
-            }
+            // A tile inside a folder's: a target like the others — the marks are its top-level
+            // folder's — and the folders above it open in the tree so its row is in hand.
+            Hit::Nested(index) => (Focus::Treemap, self.nested[index].path.clone()),
             Hit::SmallFiles | Hit::Nothing => return None,
         };
         let name = path[0].clone();
@@ -974,6 +975,7 @@ impl Viewer {
             self.selected = Some(name.clone());
             self.chosen = true;
             self.anchor = anchor;
+            self.open_above(&path);
             self.cursor = Some(path);
             self.sync_board();
         } else if mods.toggle {
@@ -993,11 +995,11 @@ impl Viewer {
                 None => self.marked.push(name.clone()),
             }
             // Placed, not picked: a click that marks does not choose what a later one adds.
-            self.select_row(path, false);
+            self.reveal(path, false);
             self.copy_marked();
         } else {
             self.clear_marks();
-            self.select_row(path, true);
+            self.reveal(path, true);
         }
         Some(name)
     }
@@ -1025,7 +1027,7 @@ impl Viewer {
                 (Some(self.rows[index].path[0].clone()), Some(index), None)
             }
             Hit::Tile(name) => (Some(name), None, None),
-            Hit::Nested(index) => (Some(self.nested[index].path[0].clone()), None, Some(index)),
+            Hit::Nested(index) => (None, None, Some(index)),
             Hit::SmallFiles | Hit::Nothing => (None, None, None),
         };
         let changed =

@@ -326,7 +326,13 @@ impl Window {
             self.changed(hwnd);
         }
         let marked = self.viewer.marked.len();
-        let entry = self.viewer.selected_entry().cloned();
+        // The row in hand — a nested one, after the context click revealed it — is what the
+        // menu's actions act on, so it is what the menu is about.
+        let entry = self
+            .viewer
+            .cursor_entry()
+            .map(|row| row.entry.clone())
+            .or_else(|| self.viewer.selected_entry().cloned());
         if entry.is_none() && marked == 0 {
             return;
         }
@@ -622,22 +628,25 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     run_handler(state, |window| dispatch(window, hwnd, msg, wparam, lparam))
 }
 
-/// Whether [`dispatch`] does anything with `msg`; the rest is the system's.
+/// The messages [`dispatch`] has an arm for; every other message is the system's and goes to it
+/// outside the guard. An arm added to `dispatch` goes here too, or it never runs.
+const HANDLED: [u32; 11] = [
+    WM_SIZE,
+    WM_PAINT,
+    WM_LBUTTONDOWN,
+    WM_LBUTTONDBLCLK,
+    WM_RBUTTONUP,
+    WM_XBUTTONUP,
+    WM_MOUSEWHEEL,
+    WM_MOUSEMOVE,
+    WM_KEYDOWN,
+    WM_CHAR,
+    WM_TIMER,
+];
+
+/// Whether [`dispatch`] does anything with `msg`.
 fn handles(msg: u32) -> bool {
-    matches!(
-        msg,
-        WM_SIZE
-            | WM_PAINT
-            | WM_LBUTTONDOWN
-            | WM_LBUTTONDBLCLK
-            | WM_RBUTTONUP
-            | WM_XBUTTONUP
-            | WM_MOUSEWHEEL
-            | WM_MOUSEMOVE
-            | WM_KEYDOWN
-            | WM_CHAR
-            | WM_TIMER
-    )
+    HANDLED.contains(&msg)
 }
 
 /// Run `handler` with an exclusive `&mut Window`, behind the re-entrancy guard, then the reports
@@ -717,17 +726,26 @@ fn dispatch(window: &mut Window, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
     0
 }
 
-/// A whole volume: ask to run as administrator, and if the elevated process starts, it takes
-/// over (true); declined, or elevated already, the scan goes on as it is.
-fn handed_to_elevated(opt: &Opt, root: &Path) -> bool {
-    if !elevate::wanted(root, opt.no_elevate, libdiskonaut::os::is_user_admin()) {
-        return false;
+/// A whole local volume: ask to run as administrator, and if the elevated process starts, it
+/// takes over (true); declined, or elevated already, the scan goes on as it is. If the shell
+/// would not start it, the scan goes on too, with a notice for the status bar.
+fn handed_to_elevated(opt: &Opt, root: &Path) -> (bool, Option<String>) {
+    if !elevate::wanted(root, opt.no_elevate, libdiskonaut::os::is_user_admin())
+        || !elevate::is_local_disk(root)
+    {
+        return (false, None);
     }
     let picked = opt.folder.is_none().then_some(root);
     let args = elevate::relaunch_args(::std::env::args_os(), picked);
     match elevate::relaunch(&args) {
-        Ok(()) => true,
-        Err(elevate::Refused::Declined | elevate::Refused::Failed(_)) => false,
+        Ok(()) => (true, None),
+        Err(elevate::Refused::Declined) => (false, None),
+        Err(elevate::Refused::Failed(code)) => (
+            false,
+            Some(format!(
+                "Could not start as administrator (error {code}); scanning as is"
+            )),
+        ),
     }
 }
 
@@ -768,9 +786,9 @@ fn dpi_scale() -> f64 {
     }
 }
 
-pub fn run() {
-    // SAFETY: called before any window exists.
-    unsafe { SetProcessDPIAware() };
+/// The command line and the folder to scan, resolved: `None` when there is nothing to do —
+/// `--help` shown, the chooser cancelled, no such folder.
+fn choose() -> Option<(Opt, PathBuf)> {
     let opt = match Opt::try_parse() {
         Ok(opt) => opt,
         Err(error) => {
@@ -781,23 +799,31 @@ pub fn run() {
                 MB_OK | MB_ICONINFORMATION
             };
             message(null_mut(), &error.to_string(), style);
-            return;
+            return None;
         }
     };
-    let Some(root) = opt.folder.clone().or_else(pick_folder) else {
-        return;
-    };
+    let root = opt.folder.clone().or_else(pick_folder)?;
     if !root.is_dir() {
         message(
             null_mut(),
             &format!("Not a folder: {}", root.display()),
             MB_OK | MB_ICONERROR,
         );
-        return;
+        return None;
     }
     let root = root.canonicalize().unwrap_or(root);
-    // Resolved first, so `.` in a volume root is the volume.
-    if handed_to_elevated(&opt, &root) {
+    Some((opt, root))
+}
+
+pub fn run() {
+    // SAFETY: called before any window exists.
+    unsafe { SetProcessDPIAware() };
+    let Some((opt, root)) = choose() else {
+        return;
+    };
+    // The root is resolved, so `.` in a volume root is the volume.
+    let (handed, notice) = handed_to_elevated(&opt, &root);
+    if handed {
         return;
     }
     let options = opt.scan_options();
@@ -808,6 +834,9 @@ pub fn run() {
     };
     let scale = dpi_scale();
     let mut viewer = Viewer::new(&root, shown, 0);
+    if let Some(notice) = notice {
+        viewer.say(notice);
+    }
     // The tree view: the list as a tree, folders open in place, drawn with their depth and an
     // expander (`paint::draw_list`); the treemap nested, tiles inside the folder tiles
     // (`paint::draw_nested`).

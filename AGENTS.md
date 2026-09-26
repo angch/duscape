@@ -104,7 +104,11 @@ Six kinds of thread communicate via `mpsc` channels (bounded, except the preview
 - `tiles/board.rs` — `Board`: tile selection, zoom stack, navigation
 - `tiles/nested.rs` — `nest`: the treemap nested — the same squarify run inside each folder
   tile (under its label rows, within a margin) on the folder's entries, and theirs in turn,
-  to `Nesting`'s depth and tile cap; parents before children, so a painter draws in order
+  down to the files wherever there is room: what ends it is an inside too small for two
+  minimum tiles either way (`Nesting`'s depth and tile caps are guards well beyond that).
+  Each folder is listed by `largest_in_folder`, only as many entries as its inside has room
+  for, so a folder of fifty thousand entries is not sorted whole on every relayout; parents
+  before children, so a painter draws in order
 - `delete.rs` — `remove` (from disk, a link itself never its target) and `refused` (NTFS metadata)
 - `metafiles.rs` — NTFS metadata names, for the Windows walker and for `delete`
 - `preview.rs` — `read` (sniff the first 64 KiB: text lines, info, or a picture), `describe_picture`,
@@ -172,11 +176,13 @@ shared `Viewer`, not in `win/`:
   `relaunch_args` and `command_line` (Win32 quoting, tested) make the new process's arguments
   — this process's plus `--no-elevate`, so it never asks in turn, plus the folder if it was
   picked in the dialog — and `relaunch` starts it through the shell's `runas`; declined
-  (`Refused::Declined`) or failed, the scan goes on unelevated
+  (`Refused::Declined`) the scan goes on unelevated; failed, so does it, and the status bar says
+  why. Only a local disk (`is_local_disk`: fixed or removable, by `GetDriveTypeW`) asks — a
+  share, a CD or a RAM disk gains nothing from it
 - `win/mod.rs` — the window: input → `Viewer` calls (points are pixels over the DPI scale), then
   `changed()` (a preview request at the drawn size — `wanted_preview_sized` — title, redraw).
   Messages the window does nothing with go to `DefWindowProcW` *outside* the re-entrancy guard
-  (`handles`): the frame's own loops (an edge dragged, maximise, the system menu) run inside
+  (`HANDLED` is the list; an arm added to `dispatch` goes there too, or it never runs): the frame's own loops (an edge dragged, maximise, the system menu) run inside
   that call and send `WM_SIZE` and `WM_PAINT` re-entrantly, which the guard would drop.
   Threads post one boxed `AppMsg`; one arriving during a modal loop (message box, context menu)
   is queued FIFO in `PENDING` and handled when the handler returns — order matters, the outline's
@@ -210,8 +216,9 @@ shared `Viewer`, not in `win/`:
   goes down into it, ← goes up to the folder and then closes it, a click on the expander
   (`Hit::Expander`) toggles; a nested row is what is previewed, copied, entered (down through
   the folders above it) or deleted. With it the treemap is nested (`nested`, rebuilt with the
-  board): a click on a tile inside a folder's (`Hit::Nested`) opens the folders above it and
-  puts its row in hand, hovering one names it. Off by default (`set_tree_view`): a viewer that
+  board): a tile inside a folder's (`Hit::Nested`) is a target like any other — a click opens
+  the folders above it and puts its row in hand, Ctrl and Shift mark its top-level folder —
+  and hovering one names it (`hover_nested`, cleared by every relayout since the tiles moved). Off by default (`set_tree_view`): a viewer that
   does not draw depth sees the flat listing and the flat tiles
 - `scan.rs` — the first scan with the live `Outline`, results through callbacks on the scan's
   thread; `preview.rs` — the latest-wins preview reader (pictures are handed over as bytes for
