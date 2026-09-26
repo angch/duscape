@@ -77,6 +77,9 @@ struct Shared {
     /// The mount table, read the first time the walk meets a mount root, which most walks of a
     /// home directory never do.
     mounts: ::std::sync::OnceLock<Vec<mounts::Mount>>,
+    /// What the scan root's extents index: on btrfs its filesystem's UUID, shared by every
+    /// subvolume of it; the root's device elsewhere. For `-x`: see [`same_filesystem`].
+    root_space: u64,
     /// Each mount point in the table and the id of what shows there, built from it the first
     /// time a kernel that cannot say (before 5.8) leaves the walk to ask; see [`Shared::mounted_at`].
     points: ::std::sync::OnceLock<::std::collections::HashMap<PathBuf, u64>>,
@@ -173,6 +176,8 @@ struct Inspected {
     meta: EntryMeta,
     child: Option<Job>,
     later: bool,
+    /// A directory not walked because it is one of its own ancestors again: which one.
+    loops_to: Option<PathBuf>,
 }
 
 /// One entry of a listing: `statx` and everything decided from it.
@@ -240,6 +245,7 @@ fn inspect(
         && stat.stx_nlink == 1;
 
     let mut child = None;
+    let mut loops_to = None;
     if is_dir && descend {
         let path = job.path.join(OsStr::from_bytes(name.to_bytes()));
         // A mount root showing a directory the walk reaches anyway — a bind mount of a folder
@@ -268,8 +274,8 @@ fn inspect(
         // judged, so the `statfs` costs one call per mount rather than one per directory.
         let crossing = device != job.device;
         let (allowed, reflinks, extent_space, compressed_sizes, dirblocks, btrfs) = if crossing {
-            let same_filesystem = device == scan_device;
             let kind = filesystem::classify_with(&path, shared.mount_table());
+            let same_filesystem = same_filesystem(device, &kind, scan_device, shared.root_space);
             (
                 (!options.one_file_system || same_filesystem) && !kind.pseudo && !kind.network,
                 kind.reflinks,
@@ -288,6 +294,12 @@ fn inspect(
                 false,
             )
         };
+        // A mount of a directory inside itself, or of one above the scan: walked, it would hold
+        // itself again, and again. Only a mount can do this — Linux has no directory hard links —
+        // so the ancestors are asked only at a mount root or a crossing, which is rare.
+        loops_to = (mount_root || crossing)
+            .then(|| loops_back(&path, device, stat.stx_ino))
+            .flatten();
         // A read-only btrfs snapshot: the whole of what it copied, again. Every subvolume has a
         // device of its own, so one is always a crossing, onto btrfs, at a root numbered 256; only
         // there is the directory opened to ask, which is rare — and never off btrfs, where
@@ -296,7 +308,7 @@ fn inspect(
             && btrfs
             && stat.stx_ino == btrfs_subvolume::ROOT_INODE
             && btrfs_subvolume::is_read_only(dir, name);
-        if allowed && !duplicate && !snapshot {
+        if allowed && !duplicate && !snapshot && loops_to.is_none() {
             child = Some(Job {
                 path: Arc::from(path.as_path()),
                 depth: job.depth + 1,
@@ -320,6 +332,26 @@ fn inspect(
         },
         child,
         later,
+        loops_to,
+    })
+}
+
+/// The ancestor of `path` that is the very directory `(device, inode)` names, if one is: `path`
+/// is then a mount of that directory inside itself, and walked it holds itself again. Every
+/// ancestor up to `/` is asked, not only those in the scan: a mount of a folder above the scan
+/// loops as surely, and the duplicate check (`mounts::reached_elsewhere`) looks only inside it.
+/// A folder mounted onto itself, as Synology mounts `/volume1/@docker`, is not one: it is the
+/// same place, not an ancestor.
+fn loops_back(path: &Path, device: u64, inode: u64) -> Option<PathBuf> {
+    path.ancestors().skip(1).find_map(|ancestor| {
+        let stat = statx(
+            rustix::fs::CWD,
+            ancestor.as_os_str(),
+            AtFlags::NO_AUTOMOUNT,
+            StatxFlags::INO,
+        )
+        .ok()?;
+        (device_of(&stat) == device && stat.stx_ino == inode).then(|| ancestor.to_path_buf())
     })
 }
 
@@ -448,6 +480,17 @@ fn read_directory(
             };
             if let Some(child) = found.child {
                 children.push(child);
+            }
+            if let Some(ancestor) = &found.loops_to {
+                let name = OsStr::from_bytes(name_of(l).to_bytes());
+                directory.note(
+                    "loop",
+                    Some(name),
+                    format!(
+                        "a mount of {} inside itself; not walked again",
+                        ancestor.display()
+                    ),
+                );
             }
             if found.later {
                 directory
@@ -1236,6 +1279,10 @@ pub fn walk_would_enter(scan_root: &Path, folder: &Path, options: ScanOptions) -
     let kind = filesystem::classify_with(folder, table);
     // A read-only snapshot is left empty by the walk, so a rescan leaves it too. A subvolume is
     // always a crossing, so this is reached for one.
+    // A mount of one of its own ancestors is not walked, so not rescanned either.
+    if folder != scan_root && loops_back(folder, device, stat.stx_ino).is_some() {
+        return false;
+    }
     // (The scan's own root is scanned whatever it is: a snapshot named is a snapshot wanted.)
     if !options.snapshots
         && folder != scan_root
@@ -1245,8 +1292,16 @@ pub fn walk_would_enter(scan_root: &Path, folder: &Path, options: ScanOptions) -
     {
         return false;
     }
-    let crossing_allowed =
-        (!options.one_file_system || device == device_of(&root)) && !kind.pseudo && !kind.network;
+    let root_device = device_of(&root);
+    let root_space = || {
+        filesystem::classify_with(scan_root, table)
+            .extent_space
+            .unwrap_or(root_device)
+    };
+    let crossing_allowed = (!options.one_file_system
+        || same_filesystem(device, &kind, root_device, root_space()))
+        && !kind.pseudo
+        && !kind.network;
     let duplicate = mount_root
         && mounts::reached_elsewhere(table, mount_id, folder, scan_root, |path| {
             stat_of(path)
@@ -1521,6 +1576,21 @@ pub fn environment(root: &Path) -> Vec<(&'static str, String)> {
     ]
 }
 
+/// Whether a crossing onto `device`, of `kind`, stays on the scan root's filesystem, as `-x` asks:
+/// the same device, or on btrfs the same filesystem — every subvolume has a device of its own,
+/// and a Synology share is one, so by device alone `-x` would leave out every share of the
+/// volume it was asked to scan. `root_space` is the root's [`filesystem::Kind::extent_space`],
+/// which on btrfs is the filesystem's UUID (and a device number elsewhere, which no UUID hash
+/// will match).
+fn same_filesystem(
+    device: u64,
+    kind: &filesystem::Kind,
+    scan_device: u64,
+    root_space: u64,
+) -> bool {
+    device == scan_device || (kind.btrfs && kind.extent_space == Some(root_space))
+}
+
 /// Whether a directory is a mount root, and the id of the mount shown there: `statx`'s own
 /// answer from Linux 5.8, else the mount table's (`mounted_at`), since before 5.8 the kernel has
 /// neither `STATX_ATTR_MOUNT_ROOT` nor `stx_mnt_id`, and a bind mount of a folder inside the scan
@@ -1673,6 +1743,7 @@ pub fn walk_linux(root: &Path, threads: usize, options: ScanOptions) -> LinuxWal
         root: Arc::clone(&root),
         threads,
         mounts: ::std::sync::OnceLock::new(),
+        root_space: root_kind.extent_space.unwrap_or(scan_device),
         points: ::std::sync::OnceLock::new(),
         devices: Mutex::new(::std::collections::HashMap::new()),
     });

@@ -5,6 +5,7 @@
 #
 #   inside.sh [name ...]   filesystems: ext4 xfs btrfs f2fs tmpfs vfat exfat ntfs3
 #                          scenarios:   mounts network snapshots compression compressed-snapshots
+#                                       synology
 #
 # Every check prints one line: PASS, FAIL, KNOWN (a documented limitation, with the size of the
 # error so a regression in it still shows) or SKIP (the filesystem or its tools cannot do it).
@@ -13,7 +14,7 @@ set -uo pipefail
 
 W=${W:-/work}
 U=${TEST_UID:-1000}
-all="ext4 xfs btrfs f2fs tmpfs vfat exfat ntfs3 mounts network snapshots compression compressed-snapshots"
+all="ext4 xfs btrfs f2fs tmpfs vfat exfat ntfs3 mounts network snapshots compression compressed-snapshots synology"
 names=${*:-$all}
 mnt=$W/mnt
 failures=0
@@ -279,7 +280,10 @@ snapshot_case() {
   # By default a read-only snapshot is left empty, as `-x` leaves a mount: the live copy is all.
   check "snapshots: $name, left out by default" "$(inode_oracle disk "$at/live")" \
     "$(duscape_total "$at")"
-  check "snapshots: $name, -x sees the top level only" 0 "$(duscape_total "$at" -x)" 0
+  # `-x` keeps to the btrfs filesystem, its subvolumes included (`du -x` would stop at each);
+  # its snapshots are still left out.
+  check "snapshots: $name, -x keeps the subvolumes, not the snapshots" \
+    "$(inode_oracle disk "$at/live")" "$(duscape_total "$at" -x)"
   unmount "$at"
 }
 
@@ -403,7 +407,91 @@ mounts() {
     "$(inode_oracle disk "$m" -xdev)" "$(DUSCAPE_NO_STATX=1 duscape_total "$m" -x)"
   check "mounts: the bind mount on its own, without statx" \
     "$(inode_oracle disk "$m/bind")" "$(DUSCAPE_NO_STATX=1 duscape_total "$m/bind")"
+  # A folder mounted inside itself, and the folder above the scan mounted inside it: each is one
+  # of its own ancestors, and walked it holds itself again. Neither is walked; the second was,
+  # before, as a bind mount whose source lies outside the scan.
+  as_user mkdir -p "$m/data/inner/self" "$m/data/up"
+  mount --bind "$m/data/inner" "$m/data/inner/self"
+  mount --bind "$m" "$m/data/up"
+  local loops=(-path "$m/data/inner/self" -prune -o -path "$m/data/up" -prune -o)
+  check "mounts: a folder in itself, and one above the scan, not walked" \
+    "$(inode_oracle disk "$m/data" "${loops[@]}")" "$(duscape_total "$m/data")"
+  check "mounts: the same, without statx" \
+    "$(inode_oracle disk "$m/data" "${loops[@]}")" "$(DUSCAPE_NO_STATX=1 duscape_total "$m/data")"
+  umount "$m/data/up" "$m/data/inner/self"
   unmount "$m"
+}
+
+# ---------------------------------------------------------------------------------------------
+# A Synology DSM volume, laid out as /proc/self/mountinfo showed one: the volume is subvolume
+# /@syno of a btrfs, mounted at volume1; each share a subvolume in it, its snapshots read-only in
+# @sharesnap/<share> and shown again by a read-only mount at <share>/#snapshot; @docker mounted
+# onto itself and made shared, @docker/btrfs onto itself inside it, Docker's layers subvolumes
+# there; and every share mounted again under @appdata/ContainerManager/all_shares.
+
+synology() {
+  local top=$mnt/synology-top v=$mnt/volume1 dev share
+  make_fs btrfs "$top" || { say SKIP synology "no btrfs"; return; }
+  dev=$(findmnt -no SOURCE "$top")
+  btrfs -q subvolume create "$top/@syno"
+  mkdir -p "$v" && mount -o subvol=/@syno "$dev" "$v" || { say SKIP synology "no subvolume mount"; unmount "$top"; return; }
+  mkdir -p "$v/@sharesnap" "$v/@docker/btrfs/subvolumes" "$v/@appdata/ContainerManager/all_shares"
+  for share in homes photos; do
+    btrfs -q subvolume create "$v/$share" && chown "$U:$U" "$v/$share"
+    as_user bash -c "$(declare -f random_file)
+      for i in \$(seq 12); do random_file '$v/$share/f'\$i \$(( 65536 * i )); done"
+    btrfs -q subvolume create "$v/@sharesnap/$share"
+  done
+  sync
+  for share in homes photos; do
+    for t in 21 22; do
+      btrfs -q subvolume snapshot -r "$v/$share" "$v/@sharesnap/$share/GMT+08-2026.09.$t-00.00.01"
+    done
+    as_user bash -c "$(declare -f random_file); random_file '$v/$share/f1' 262144"
+    mkdir -p "$v/$share/#snapshot"
+    mount -o ro,subvol=/@syno/@sharesnap/$share "$dev" "$v/$share/#snapshot"
+    mkdir -p "$v/@appdata/ContainerManager/all_shares/$share"
+    mount -o subvol=/@syno/$share "$dev" "$v/@appdata/ContainerManager/all_shares/$share"
+  done
+  # A second btrfs filesystem's share mounted in as well, as cachedev_0's are: another volume.
+  local other=$mnt/synology-other
+  if make_fs btrfs "$other"; then
+    btrfs -q subvolume create "$other/@syno"
+    btrfs -q subvolume create "$other/@syno/backup" && chown "$U:$U" "$other/@syno/backup"
+    as_user bash -c "$(declare -f random_file); random_file '$other/@syno/backup/archive' 1048576"
+    mkdir -p "$v/@appdata/ContainerManager/all_shares/backup"
+    mount -o subvol=/@syno/backup "$(findmnt -no SOURCE "$other")" \
+      "$v/@appdata/ContainerManager/all_shares/backup"
+  fi
+  mount --bind "$v/@docker" "$v/@docker" && mount --make-shared "$v/@docker"
+  mount --bind "$v/@docker/btrfs" "$v/@docker/btrfs"
+  for layer in 1 2 3; do
+    btrfs -q subvolume create "$v/@docker/btrfs/subvolumes/layer$layer"
+    random_file "$v/@docker/btrfs/subvolumes/layer$layer/blob" $(( 131072 * layer ))
+  done
+  sync
+  # Each distinct file once: the all_shares copies are the same subvolumes (same device and
+  # inode), which `find` sees through by itself; the snapshots are not walked by default.
+  local live
+  live=$(inode_oracle disk "$v" -path "$v/@sharesnap" -prune -o -name '#snapshot' -prune -o)
+  local t0=$SECONDS
+  check "synology: the volume, each file once, snapshots left out" "$live" \
+    "$(timeout 120 bash -c "$(declare -f as_user duscape_total); U=$U W=$W duscape_total '$v'")"
+  check "synology: the same, without statx (DSM's 4.4)" "$live" \
+    "$(timeout 120 bash -c "$(declare -f as_user duscape_total); U=$U W=$W DUSCAPE_NO_STATX=1 duscape_total '$v'")"
+  check "synology: with --snapshots, each block once" \
+    "$(( $(btrfs_data_used "$top") + $(btrfs_data_used "$other" || echo 0) ))" \
+    "$(timeout 120 bash -c "$(declare -f as_user duscape_total); U=$U W=$W duscape_total '$v' --snapshots")" 65536
+  # `-x` keeps to the volume's btrfs filesystem: all its shares, which are subvolumes (`du -x`
+  # would stop at each), but not the other volume's share mounted in.
+  check "synology: -x keeps the volume's shares, not another volume's" \
+    "$(inode_oracle disk "$v" -path "$v/@sharesnap" -prune -o -name '#snapshot' -prune -o \
+      -path "$v/@appdata/ContainerManager/all_shares/backup" -prune -o)" \
+    "$(timeout 120 bash -c "$(declare -f as_user duscape_total); U=$U W=$W duscape_total '$v' -x")"
+  say INFO "synology: four scans" "$((SECONDS - t0))s"
+  umount -R "$v" 2>/dev/null || umount -l "$v"
+  unmount "$other"
+  unmount "$top"
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -482,6 +570,7 @@ for name in $names; do
   case $name in
     mounts | network | snapshots | compression) "$name" ;;
     compressed-snapshots) compressed_snapshots ;;
+    synology) synology ;;
     *) filesystem "$name" ;;
   esac
 done

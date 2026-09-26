@@ -102,7 +102,8 @@ Six kinds of thread communicate via `mpsc` channels (bounded, except the preview
 - `scan/mod.rs` — the scan protocol: `ScanOptions`, `EntryMeta`, `DirEntries` (its `later` and
   `extent_space` are filled by the Linux walker for the second pass; a failure is counted with
   `DirEntries::fail(action, name, error)`, never `failed += 1`, so that `--issues` can say why:
-  `Issues` counts every one by kind (64 kinds at most, the rest as `Issues::OTHER`, so an error
+  `Issues` counts every one by kind and by the name of the folder holding it (`folders`: a
+  Synology NAS's million `@eaDir` failures in one line; 64 kinds and 64 names at most, the rest as `Issues::OTHER`, so an error
   that names its path cannot make one kind a failure) and keeps a few examples — 8 a directory,
   200 a scan — and
   `FileTree::add_dir_entries`/`merge_from` gather them into `FileTree::issues`), `Outline`/`DirSummary` (the
@@ -476,6 +477,17 @@ Exiting { app_loaded: bool }
   attribute is chosen per device. See `docs/scan-performance.md`.
 - **Pseudo-filesystems**: crossing a mount point into `/proc`, `/sys`, cgroup, debugfs and friends
   is refused (by `statfs` magic); naming one as the scan root still scans it.
+- **Loops**: a mount of a directory inside itself, or of one above the scan inside it, is one of
+  its own ancestors, and walked holds itself again (Synology's `/volume1/@docker`, a folder
+  mounted onto itself, is not one: the `synology` fixture scenario lays out a real DSM mount table
+  and passes with this check disabled). At every mount root or crossing — only a mount can loop, Linux having
+  no directory hard links — `linux::loops_back` stats the ancestors up to `/` and compares device
+  and inode; a match is not walked, and is noted (`DirEntries::note`, kind `loop`: in `--issues`,
+  not in the failure count). `walk_would_enter` refuses such a folder to a rescan.
+- **`-x` on btrfs**: the boundary is the filesystem, not the subvolume (`linux::same_filesystem`:
+  the same device, or btrfs with the root's `extent_space`, the filesystem's UUID hash). Every
+  subvolume has its own `st_dev`, so by device `-x` stopped at each — every Synology share.
+  Deliberately unlike `du -x`.
 - **Snapshots**: a read-only btrfs subvolume inside the scan is left empty by default, as a mount
   `-x` refuses; `--snapshots` walks it, the extent ledger counting what it shares once. Named as
   the scan root, it is scanned.

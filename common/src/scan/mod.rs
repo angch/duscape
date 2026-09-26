@@ -18,7 +18,9 @@ pub struct ScanOptions {
     pub show_apparent_size: bool,
     /// Stop descending below this depth (the root is depth 0). `None` means no limit.
     pub max_depth: Option<usize>,
-    /// Do not cross filesystem boundaries (like `du -x`).
+    /// Do not cross filesystem boundaries (like `du -x`). On btrfs the boundary is the
+    /// filesystem, not the subvolume: every subvolume has a device of its own, and `du -x` stops
+    /// at each — on a Synology NAS, at every share — where this keeps to the volume's.
     ///
     /// Whatever this is set to, the scan never crosses into a pseudo filesystem (`/proc`, `/sys`)
     /// or a network one (NFS, SMB, sshfs and other remote FUSE filesystems), since neither holds
@@ -221,6 +223,9 @@ pub struct Issues {
     pub examples: Vec<Issue>,
     /// How many of each kind: `(action, error)`.
     pub kinds: ::std::collections::BTreeMap<(&'static str, String), u64>,
+    /// How many in folders of each name — the name of the folder holding what failed: on a
+    /// Synology NAS, a million-odd in folders called `@eaDir`, which no list of examples shows.
+    pub folders: ::std::collections::BTreeMap<String, u64>,
 }
 
 impl Issues {
@@ -248,6 +253,11 @@ impl Issues {
     /// One failure, kept as an example while there are fewer than `kept`.
     pub fn add(&mut self, issue: Issue, kept: usize) {
         self.count((issue.action, issue.error.clone()), 1);
+        let folder = issue.path.parent().and_then(Path::file_name).map_or_else(
+            || "/".to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        self.count_folder(folder, 1);
         if self.examples.len() < kept {
             self.examples.push(issue);
         }
@@ -264,10 +274,24 @@ impl Issues {
         *self.kinds.entry(kind).or_default() += count;
     }
 
+    /// `count` more in folders named `name`, or in [`Self::OTHER`] folders once there are
+    /// [`Self::KINDS`] names.
+    fn count_folder(&mut self, name: String, count: u64) {
+        let name = if self.folders.len() < Self::KINDS || self.folders.contains_key(&name) {
+            name
+        } else {
+            Self::OTHER.to_string()
+        };
+        *self.folders.entry(name).or_default() += count;
+    }
+
     /// Another's failures added to these.
     pub fn merge(&mut self, other: Issues) {
         for (kind, count) in other.kinds {
             self.count(kind, count);
+        }
+        for (name, count) in other.folders {
+            self.count_folder(name, count);
         }
         let room = Self::KEPT.saturating_sub(self.examples.len());
         self.examples.extend(other.examples.into_iter().take(room));
@@ -279,16 +303,27 @@ impl Issues {
         use ::std::fmt::Write;
         let mut out = String::new();
         if self.is_empty() {
-            out.push_str("No read failures.\n");
+            out.push_str("Nothing failed to read, and nothing was left out.\n");
             return out;
         }
         let total = self.total();
-        let noun = if total == 1 { "failure" } else { "failures" };
-        let _ = writeln!(out, "{total} read {noun}, by kind:");
+        let noun = if total == 1 { "issue" } else { "issues" };
+        let _ = writeln!(out, "{total} {noun}, by kind:");
         let mut kinds: Vec<_> = self.kinds.iter().collect();
         kinds.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
         for ((action, error), count) in kinds {
             let _ = writeln!(out, "  {count:>10}  {action}: {error}");
+        }
+        // Where they gather, by the name of the folder holding them: the ten commonest.
+        let mut folders: Vec<_> = self.folders.iter().collect();
+        folders.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+        let _ = writeln!(out, "By the name of the folder they are in:");
+        for (name, count) in folders.iter().take(10) {
+            let _ = writeln!(out, "  {count:>10}  {name}");
+        }
+        if folders.len() > 10 {
+            let rest: u64 = folders[10..].iter().map(|(_, count)| **count).sum();
+            let _ = writeln!(out, "  {rest:>10}  in {} other names", folders.len() - 10);
         }
         let _ = writeln!(
             out,
@@ -317,6 +352,28 @@ impl Issues {
 }
 
 impl DirEntries {
+    /// Something the walk did not do here, and why — a folder not walked, not a read that failed:
+    /// kept for `--issues` as a failure is, but not counted in [`Self::failed`].
+    pub fn note(
+        &mut self,
+        action: &'static str,
+        name: Option<&OsStr>,
+        why: impl ::std::fmt::Display,
+    ) {
+        let path = match name {
+            Some(name) => self.path.join(name),
+            None => self.path.to_path_buf(),
+        };
+        self.issues.add(
+            Issue {
+                path,
+                action,
+                error: why.to_string(),
+            },
+            Issues::KEPT_IN_A_DIRECTORY,
+        );
+    }
+
     /// Count a failure here — of the directory itself (`name` is `None`) or of one of its
     /// entries — and keep why, for `--issues`.
     pub fn fail(
@@ -623,10 +680,7 @@ mod tests {
         assert_eq!(scan.total(), 2100);
         assert_eq!(scan.examples.len(), Issues::KEPT);
         let report = scan.report();
-        assert!(
-            report.starts_with("2100 read failures, by kind:"),
-            "{report}"
-        );
+        assert!(report.starts_with("2100 issues, by kind:"), "{report}");
         // The most frequent kind first.
         let stat = report
             .find("stat: Function not implemented")
@@ -638,6 +692,53 @@ mod tests {
         assert!(
             report.contains("Where, the first 200 (at most 8 a folder):"),
             "{report}"
+        );
+    }
+
+    #[test]
+    fn failures_are_gathered_by_the_name_of_their_folder() {
+        let mut issues = Issues::default();
+        for share in ["homes", "photos", "backup"] {
+            let mut directory = DirEntries::new(Arc::from(
+                Path::new("/volume1").join(share).join("@eaDir").as_path(),
+            ));
+            for index in 0..100 {
+                let name = format!("f{index}@SynoEAStream");
+                directory.fail(
+                    "stat",
+                    Some(OsStr::new(&name)),
+                    "Permission denied (os error 13)",
+                );
+            }
+            issues.merge(directory.take_issues());
+        }
+        let mut locked = DirEntries::new(Arc::from(Path::new("/volume1/@apphome/git")));
+        locked.fail("open", None, "Permission denied (os error 13)");
+        issues.merge(locked.take_issues());
+        assert_eq!(issues.folders["@eaDir"], 300);
+        // A folder that cannot be opened is counted where it is: in @apphome.
+        assert_eq!(issues.folders["@apphome"], 1);
+        let report = issues.report();
+        let folders = report
+            .split("By the name of the folder they are in:\n")
+            .nth(1)
+            .expect("the folders section");
+        assert!(folders.starts_with("         300  @eaDir\n"), "{report}");
+    }
+
+    #[test]
+    fn a_note_is_kept_but_not_counted_as_a_failure() {
+        let mut directory = DirEntries::new(Arc::from(Path::new("/volume1")));
+        directory.note(
+            "loop",
+            Some(OsStr::new("@docker")),
+            "a mount of /volume1 inside itself",
+        );
+        assert_eq!(directory.failed, 0);
+        assert_eq!(directory.issues.total(), 1);
+        assert_eq!(
+            directory.issues.examples[0].path,
+            Path::new("/volume1/@docker")
         );
     }
 
@@ -668,7 +769,10 @@ mod tests {
 
     #[test]
     fn a_scan_with_no_failures_says_so() {
-        assert_eq!(Issues::default().report(), "No read failures.\n");
+        assert_eq!(
+            Issues::default().report(),
+            "Nothing failed to read, and nothing was left out.\n"
+        );
         let mut one = Issues::default();
         one.add(
             Issue {
@@ -679,7 +783,7 @@ mod tests {
             Issues::KEPT,
         );
         assert!(
-            one.report().starts_with("1 read failure, by kind:"),
+            one.report().starts_with("1 issue, by kind:"),
             "{}",
             one.report()
         );

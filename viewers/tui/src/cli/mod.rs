@@ -40,7 +40,8 @@ pub struct Opt {
     /// default they are left empty
     #[arg(long)]
     pub snapshots: bool,
-    /// Do not cross filesystem boundaries (like `du -x`)
+    /// Do not cross filesystem boundaries (like `du -x`; on btrfs, stays on the filesystem and
+    /// its subvolumes, where `du -x` stops at each subvolume)
     #[arg(short = 'x', long = "one-file-system")]
     pub one_file_system: bool,
     /// Windows: count hard links once for every file of at least this many bytes, in every folder.

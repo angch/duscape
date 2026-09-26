@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `-x` on btrfs keeps to the filesystem and all its subvolumes, instead of stopping at every
+  subvolume as `du -x` does: every btrfs subvolume has a device number of its own, and a Synology
+  share is one, so `-x /volume1` left out every share. The filesystem is told by its UUID, which
+  all its subvolumes share (`BTRFS_IOC_FS_INFO`, any user); another volume's share mounted in —
+  Container Manager mounts them all under `@appdata/ContainerManager/all_shares` — is still left
+  out. Elsewhere `-x` goes by device, as before.
+
 - **Renamed to duscape**, so that its command no longer clashes with upstream's `diskonaut`: the
   binary is `duscape` (`duscape.exe`, `Duscape.app`, `DUSCAPE.EXE` for DOS), the `diskonaut` and
   `diskonaut-angch` names are gone, and the crates are `duscape`, `libduscape`, `duscape-scan`,
@@ -30,6 +37,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its root (inode 256), that btrfs says is read-only (`BTRFS_IOC_SUBVOL_GETFLAGS`, no privilege
   needed) — so snapper's `.snapshots` and `btrfs subvolume snapshot -r` are covered too, and a
   snapshot mounted inside an ext4 volume the device reader walks. `--issues` says whether they are walked.
+- `--issues` gathers failures by the name of the folder holding them, the ten commonest, so a
+  pattern shows at once: on a Synology NAS, 1.66 million `stat: Permission denied` were nearly all
+  in `@eaDir` folders (DSM's metadata), which the 200 examples, all from one game's folder, hid.
 - `duscape --issues FOLDER`: a scan with nothing drawn, which prints the walker, the kernel,
   whether it has `statx`, the filesystem and the user, then every kind of read failure with the
   system's error and a count, and examples of where — at most 8 a folder and 200 in all, however
@@ -51,6 +61,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A mount of a folder above the scan inside it was walked, counting that folder again (a bind
+  mount whose source lies outside the scan, which the duplicate check did not look at), and a
+  folder mounted inside itself had no guard of its own. Each such mount is one of its own
+  ancestors (same device and inode), and is now left empty, as `du` and `find` do; only mount
+  points are checked, since only a mount can make a loop. (A Synology NAS's `/volume1/@docker`,
+  first suspected, is the folder mounted onto itself, not a loop: its slow scan was the size of
+  the walk — Docker's layers, every share mounted again for Container Manager, another volume's
+  among them — as its mount table reproduced in the fixtures showed.) `--issues` lists each as a `loop`, apart from the read failures. The fixtures check
+  both shapes, with and without `statx`; with the check disabled, the second counted its folder
+  twice.
 - On a kernel older than Linux 4.11 — Synology DSM runs 4.4 — every entry failed to read: the
   Linux walker sizes entries with `statx`, which such a kernel lacks. It now falls back to
   `fstatat` there, and where a container's seccomp filter refuses `statx` with `EPERM`; the totals

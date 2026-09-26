@@ -26,7 +26,10 @@ Two things follow that are worth knowing:
 ## Filesystems and mount points
 
 By default the scan crosses mount points, like `du`. Pass `-x` / `--one-file-system` to keep it on
-the filesystem the scan started on.
+the filesystem the scan started on. On btrfs that is the whole filesystem, all its subvolumes
+included: each has a device number of its own, so `du -x`, which goes by device, stops at every
+subvolume — on a Synology NAS, at every share — where duscape keeps to the filesystem (by its
+UUID, which every subvolume of it shares) and leaves out only other filesystems.
 
 One thing is skipped either way: a mount point that leads back to the filesystem the scan started
 on, because those files are already being counted by another path. On macOS that is

@@ -40,7 +40,8 @@ reasoning. The native windows came after, sharing everything but their drawing.
 - **Hard-link aware** — a file reached by several names counts once in each folder that holds it
 - **Native walkers** — Linux, macOS and Windows each get their own parallel directory walk; other
   platforms, the BSDs included, use `dua-core`'s portable one
-- **Stays put on request** — `-x` keeps the scan on one filesystem, like `du -x`
+- **Stays put on request** — `-x` keeps the scan on one filesystem, like `du -x`; on btrfs, on the
+  filesystem and all its subvolumes (a Synology share is one), where `du -x` stops at each
 - **Snapshots left alone** — on Linux, read-only btrfs snapshots inside the folder (Synology's
   `#snapshot`, snapper's `.snapshots`) are not walked, since each is a whole earlier copy of what
   is scanned; `--snapshots` walks them, counting each shared block once
@@ -115,10 +116,12 @@ The terminal viewer wants a terminal of roughly 50×15 cells at least.
 A folder's size is the space held under it: each distinct file counted once, however many names
 point at it, so sizes do not add up where hard links are involved, and deleting one link frees
 nothing until the last is gone. By default the scan crosses mount points, like `du`; `-x` keeps it
-on one filesystem. Read-only btrfs snapshots inside the scan are left empty unless `--snapshots` is
-given: a NAS keeping hourly snapshots of a share would otherwise be walked once for each, and what
-they hold of their own shows as what the scan did not reach. On a whole volume duscape shows the disk's used space and how much of it the
-scan did not reach (the terminal viewer in its title, the Windows window under the path, the
+on one filesystem — on btrfs the whole filesystem, its subvolumes included, so on a Synology NAS
+`duscape -x /volume1` keeps every share of the volume and leaves out another volume's shares that
+Container Manager mounts into it. Read-only btrfs snapshots inside the scan are left empty unless
+`--snapshots` is given: a NAS keeping hourly snapshots of a share would otherwise be walked once
+for each, and what they hold of their own shows as what the scan did not reach. On a whole
+volume duscape shows the disk's used space and how much of it the scan did not reach (the terminal viewer in its title, the Windows window under the path, the
 macOS and Linux windows in their status bar).
 [`docs/sizes.md`](docs/sizes.md) explains all of this, including what Windows does about hard
 links and why running as administrator there shows more (and, for a whole volume, reads the
@@ -144,13 +147,16 @@ duscape --issues /volume1
 
 It prints where it runs — the walker, and on Linux the kernel, whether it has `statx`, the
 filesystem and who is asking — then every kind of failure with the system's error and a count,
-and examples of where. That output is what to send with a problem report.
+where they gather by the name of the folder holding them (a Synology NAS shows over a million in
+`@eaDir` folders, its metadata, which only root may look into), and examples of where. That output is what to send with a problem report.
 
 Old kernels are fine: before Linux 4.11 there is no `statx`, the call duscape sizes entries with
 (Synology's DSM runs 4.4, for one), and every entry used to fail; it now asks `fstatat` there
 instead, as it does where a container's seccomp filter refuses `statx`. What a kernel before 5.8
 cannot say — which directories are mount points, so that a folder bind-mounted inside the scan is
-not counted twice — comes from `/proc/self/mountinfo` instead. `DUSCAPE_NO_STATX=1` makes any
+not counted twice — comes from `/proc/self/mountinfo` instead. A folder mounted inside itself, or a
+folder above the scan mounted inside it, is recognised as a loop and not walked again; `--issues`
+lists each one. `DUSCAPE_NO_STATX=1` makes any
 kernel read that way, should its `statx` ever be the trouble.
 
 ## Configuration

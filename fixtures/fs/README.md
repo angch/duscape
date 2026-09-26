@@ -40,7 +40,8 @@ Scenarios:
 - **`snapshots`** (btrfs): a subvolume, three read-only snapshots, a file rewritten after them —
   once with large files, once with small; walked (`--snapshots`) the oracle is btrfs's own *data
   used*, since `st_dev` differs per snapshot and no inode oracle can see the sharing, and by
-  default only the live copy is counted. `-x` must see only the top level. Then a share as
+  default only the live copy is counted. `-x` keeps to the btrfs filesystem, subvolumes
+  included, so it counts the live copy too. Then a share as
   Synology keeps one, its snapshots inside it under `#snapshot`: left out, walked (each block
   once), without `statx`, and one snapshot named as the root.
 - **`compression`**: btrfs with `compress-force=zstd` holding text, random data, a file half of
@@ -49,6 +50,13 @@ Scenarios:
 - **`compressed-snapshots`**: compressed files of 128 extents each (more than one FIEMAP page),
   two snapshots, a reflink copy and a rewrite: as root, btrfs's data used exactly; as a user, each
   distinct file once at its uncompressed size.
+- **`synology`** (btrfs): a Synology DSM volume laid out as a real one's mount table showed it —
+  the volume a subvolume (`/@syno`), shares subvolumes in it with read-only snapshots in
+  `@sharesnap` and a read-only mount of those at `<share>/#snapshot`, `@docker` mounted onto
+  itself and shared, `@docker/btrfs` onto itself, Docker layers as subvolumes, every share mounted
+  again under `@appdata/ContainerManager/all_shares`, and a second btrfs filesystem's share among
+  them. Each file once by default and without `statx`; each block once with `--snapshots`; and
+  `-x` keeping the volume's shares but not the other volume's. Every scan has two minutes.
 - **`mounts`**: an ext4 root with XFS nested in it, `proc` (must be skipped), `tmpfs` (counted, as
   `du` counts it), checked with and without `-x`; then a bind mount of a folder inside the scan,
   and the whole layout again without `statx`, where the mount table has to say which directories
