@@ -43,14 +43,16 @@ describes each, and [`docs/features.md`](docs/features.md) lists what every view
 Each [release](https://github.com/angch/diskonaut/releases) has fully static Linux binaries for
 x86_64 and aarch64, `diskonaut-angch-<version>-<arch>-unknown-linux-musl.tar.gz`. They need no
 particular glibc, or any glibc: they run on old distributions, Alpine and busybox alike. Unpack and
-run; `diskonaut` and `diskonaut-angch` are the same program.
+run; `diskonaut` and `diskonaut-angch` are the same program, the terminal viewer, and
+`diskonaut-linux` is the window, on Wayland or X11.
 
 ```bash
 tar -xzf diskonaut-angch-*-x86_64-unknown-linux-musl.tar.gz && ./diskonaut-angch
+./diskonaut-linux ~   # the window
 ```
 
 To build them yourself: `make static` (needs `musl-tools`) or `make static-aarch64` (needs
-`cargo-zigbuild`).
+`cargo-zigbuild`), and `make static-linux-gui` or `make static-linux-gui-aarch64` for the window.
 
 ## Sizes, hard links and mount points
 

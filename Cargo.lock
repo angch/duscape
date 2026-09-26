@@ -371,7 +371,7 @@ dependencies = [
 
 [[package]]
 name = "diskonaut-angch"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "diskonaut-scan",
@@ -389,7 +389,7 @@ dependencies = [
 
 [[package]]
 name = "diskonaut-linux"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "diskonaut-scan",
  "diskonaut-viewer",
@@ -405,7 +405,7 @@ dependencies = [
 
 [[package]]
 name = "diskonaut-mac"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "diskonaut-scan",
  "diskonaut-viewer",
@@ -419,7 +419,7 @@ dependencies = [
 
 [[package]]
 name = "diskonaut-scan"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dua-core",
  "libc",
@@ -429,7 +429,7 @@ dependencies = [
 
 [[package]]
 name = "diskonaut-viewer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "diskonaut-scan",
  "libdiskonaut",
@@ -437,7 +437,7 @@ dependencies = [
 
 [[package]]
 name = "diskonaut-windows"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "diskonaut-scan",
@@ -697,7 +697,7 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
 name = "libdiskonaut"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "image",
  "libc",

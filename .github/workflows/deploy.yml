@@ -62,35 +62,40 @@ jobs:
 
       # jemalloc fixes its page size at build time. 2^16 is correct on 4K, 16K and 64K kernels, all
       # of which aarch64 ships with; a 4K build aborts on the other two.
-      - name: Build static release binary
+      # The terminal viewer, and the Linux window (`diskonaut-linux`: pure Rust down to the Wayland
+      # and X11 protocols, so it needs no C compiler and no system library).
+      - name: Build static release binaries
         env:
           CC_x86_64_unknown_linux_musl: musl-gcc
         run: |
           if [ -n "${{ matrix.lg_page }}" ]; then export JEMALLOC_SYS_WITH_LG_PAGE=${{ matrix.lg_page }}; fi
-          ${{ matrix.cargo }} -p diskonaut-angch --release --locked --target ${{ matrix.target }}
+          ${{ matrix.cargo }} -p diskonaut-angch -p diskonaut-linux --release --locked --target ${{ matrix.target }}
 
-      - name: Check the binary is static
+      - name: Check the binaries are static
         run: |
-          file target/${{ matrix.target }}/release/diskonaut-angch | tee /dev/stderr \
-            | grep -qE 'static-pie linked|statically linked'
+          for bin in diskonaut-angch diskonaut-linux; do
+            file target/${{ matrix.target }}/release/$bin | tee /dev/stderr \
+              | grep -qE 'static-pie linked|statically linked'
+          done
 
       # Only the native target can run on the runner.
       - name: Smoke test
         if: startsWith(matrix.target, 'x86_64')
         run: target/${{ matrix.target }}/release/diskonaut-angch --benchmark --bench-stage sharded /usr
 
-      # The release profile already strips; both names are the same program. jemalloc is linked in,
-      # so its BSD-2-Clause notice ships alongside our own licence.
+      # The release profile already strips; `diskonaut` and `diskonaut-angch` are the same program,
+      # `diskonaut-linux` the window. jemalloc is linked into the terminal viewer, so its
+      # BSD-2-Clause notice ships alongside our own licence.
       - name: Package archive
         run: |
           VERSION="${GITHUB_REF_NAME:-dev}"
           ARCHIVE="diskonaut-angch-${VERSION}-${{ matrix.target }}.tar.gz"
           STAGE="$(mktemp -d)"
-          cp target/${{ matrix.target }}/release/{diskonaut-angch,diskonaut} LICENSE "$STAGE"/
+          cp target/${{ matrix.target }}/release/{diskonaut-angch,diskonaut,diskonaut-linux} LICENSE "$STAGE"/
           JEMALLOC_SYS="$(cargo metadata --format-version 1 --filter-platform ${{ matrix.target }} \
             | jq -r '.packages[] | select(.name == "tikv-jemalloc-sys") | .manifest_path')"
           cp "$(dirname "$JEMALLOC_SYS")/jemalloc/COPYING" "$STAGE/LICENSE-jemalloc"
-          tar -czf "$ARCHIVE" -C "$STAGE" diskonaut-angch diskonaut LICENSE LICENSE-jemalloc
+          tar -czf "$ARCHIVE" -C "$STAGE" diskonaut-angch diskonaut diskonaut-linux LICENSE LICENSE-jemalloc
           echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v7

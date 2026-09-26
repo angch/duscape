@@ -7,7 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-26
+
+The first release of the `diskonaut-angch` fork since it restarted at `0.1.0`: everything below,
+down to the rename.
+
 ### Added
+
+- The release tarballs carry the Linux window, `diskonaut-linux`, beside the terminal viewer:
+  static for x86_64 and aarch64 like it, needing no system library (`make static-linux-gui`,
+  `make static-linux-gui-aarch64`).
 
 - The Windows viewer does what the terminal viewer does: the list beside the treemap (Tab
   switches, `s` hides it), the live treemap while scanning, breadcrumbs, marks (Ctrl+click,

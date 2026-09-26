@@ -5,7 +5,7 @@
 **Diskonaut** is an interactive terminal disk space navigator (TUI) written in Rust. It visualizes
 disk usage via a squarify treemap, supports live scanning, and allows deleting large files in-place.
 
-**Workspace layout** (Rust 2024 edition, version 0.1.0; the `diskonaut-angch` fork — see README):
+**Workspace layout** (Rust 2024 edition, version 0.2.0; the `diskonaut-angch` fork — see README):
 ```
 diskonaut/
 ├── common/            # libdiskonaut: what every viewer shares — model, treemap, scan protocol,
@@ -579,8 +579,10 @@ measured and none helped — read the 2026-09-24 section before trying them agai
 ### Releases
 A `v*` tag runs `deploy.yml`. It builds `diskonaut-angch-<tag>-<target>.tar.gz` for
 `x86_64-unknown-linux-musl` (`musl-gcc`) and `aarch64-unknown-linux-musl` (`cargo zigbuild`,
-zig 0.13.0). The binaries are fully static, so they have no glibc floor and run on Alpine and
+zig 0.13.0), each holding the terminal viewer and the Linux window (`diskonaut-linux`, pure Rust,
+so no C compiler). The binaries are fully static, so they have no glibc floor and run on Alpine and
 busybox. One job then publishes both tarballs: matrix jobs that each create the release race.
+The version is the workspace's (`Cargo.toml`), with the path dependencies' `version` beside it.
 - **`opt-level = "s"`**: the release profile is size-optimised for the viewers' binaries, but
   `"z"` cost the scan 13% and the tree build 30%; `"s"` is as fast as `3` at 2% more size. With
   `lto = true` a per-crate `opt-level` does nothing, the final codegen uses the top level's.

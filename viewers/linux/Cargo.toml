@@ -18,7 +18,7 @@ path = "src/main.rs"
 [dependencies]
 libdiskonaut = { workspace = true }
 diskonaut-scan = { workspace = true }
-diskonaut-viewer = { path = "../shared", version = "0.1.0" }
+diskonaut-viewer = { path = "../shared", version = "0.2.0" }
 image = { workspace = true }
 
 # The window is Linux and FreeBSD only (`main.rs`); elsewhere the binary is a stub that says so,

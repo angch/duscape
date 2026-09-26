@@ -1,4 +1,4 @@
-.PHONY: build run install test test-fs quality coverage static static-aarch64 static-linux-gui pgo dos dos-tools dos-run
+.PHONY: build run install test test-fs quality coverage static static-aarch64 static-linux-gui static-linux-gui-aarch64 pgo dos dos-tools dos-run
 
 build:
 	cargo build --workspace
@@ -80,6 +80,10 @@ pgo:
 # and no system library, and runs under XWayland as well as on any X server.
 static-linux-gui:
 	cargo build -p diskonaut-linux --release --target x86_64-unknown-linux-musl
+
+# The same for aarch64, cross-built with cargo-zigbuild; with no C in it, no page size to fix.
+static-linux-gui-aarch64:
+	cargo zigbuild -p diskonaut-linux --release --target aarch64-unknown-linux-musl
 
 # diskonaut for MS-DOS (viewers/dos), in 16-bit assembly. FASM assembles it inside DOSBox-X, under
 # the CWSDPMI DPMI host; both are fetched once into target/dos and checked against these hashes.
