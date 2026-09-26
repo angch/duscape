@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- One program per platform: `diskonaut` is the terminal viewer in a terminal and the
+  platform's window when started from a desktop — a Linux launcher, Explorer, or Finder through
+  `Diskonaut.app` (`make mac-app`, both architectures in one binary). `--gui` and `--tui` choose,
+  as does a name ending `-gui` (a link); `--benchmark` and a redirected run stay in the terminal.
+  The window takes the whole command line: the folder, the scan flags, `--no-elevate`. The Linux
+  release binaries hold the window (2.9 MB, static, in place of the separate `diskonaut-linux`),
+  and releases gain a Windows zip, `diskonaut.exe` needing only DLLs Windows 10 carries
+  (`make static-windows`). The window crates are libraries now, each with its own binary still;
+  `--no-default-features` builds the terminal viewer alone. On Windows the executable is a
+  console program, so that it can be the terminal viewer too, with a manifest whose
+  `consoleAllocationPolicy` is `detached`: from Windows 11 24H2 on, Explorer starts it with no
+  console and the window opens clean; older Windows shows a console for a moment first.
+- MSVC builds on Windows link the C runtime statically (`.cargo/config.toml`).
+
+### Fixed
+
+- `--help` opened with the command line's internal notes; it says what diskonaut is.
+
 ## [0.2.0] - 2026-09-26
 
 The first release of the `diskonaut-angch` fork since it restarted at `0.1.0`: everything below,

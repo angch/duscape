@@ -27,7 +27,10 @@ name = "diskonaut"
 path = "src/bin/diskonaut.rs"
 
 [features]
-default = []
+# The platform's window in the same binary: `diskonaut` is the terminal viewer in a terminal and
+# the window from a desktop (`front`). `--no-default-features` builds the terminal viewer alone.
+default = ["gui"]
+gui = ["dep:diskonaut-linux", "dep:diskonaut-windows", "dep:diskonaut-mac"]
 
 [dependencies]
 clap = { workspace = true }
@@ -42,6 +45,17 @@ unicode-width = { workspace = true }
 # Previews: PNG and JPEG only, decoded to be scaled down before they are sent to the terminal.
 image = { workspace = true }
 
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+diskonaut-linux = { path = "../linux", version = "0.2.0", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+diskonaut-mac = { path = "../macos", version = "0.2.0", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+diskonaut-windows = { path = "../windows", version = "0.2.0", optional = true }
+# Whether Explorer started the program, with a console of its own (`front`).
+windows-sys = { workspace = true, features = ["Win32_System_Console"] }
+
 [target.'cfg(unix)'.dependencies]
 # Asking the terminal whether it shows pictures, and reading the answer before crossterm does.
 libc = { workspace = true }
@@ -51,3 +65,7 @@ libc = { workspace = true }
 # glibc. glibc builds keep the system allocator. 32-bit musl is left alone, as ripgrep does.
 [target.'cfg(all(target_env = "musl", target_pointer_width = "64"))'.dependencies]
 tikv-jemallocator = { version = "0.6", default-features = false }
+
+# Windows: the manifest that keeps Explorer from giving `diskonaut.exe` a console (`build.rs`).
+[build-dependencies]
+embed-manifest = "1.5.1"

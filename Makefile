@@ -1,4 +1,4 @@
-.PHONY: build run install test test-fs quality coverage static static-aarch64 static-linux-gui static-linux-gui-aarch64 pgo dos dos-tools dos-run
+.PHONY: build run install test test-fs quality coverage static static-aarch64 static-linux-gui static-linux-gui-aarch64 static-windows mac-universal mac-app pgo dos dos-tools dos-run
 
 build:
 	cargo build --workspace
@@ -47,8 +47,9 @@ coverage:
 test-fs:
 	fixtures/fs/run.sh $(FS)
 
-# Fully static x86_64 binary for any Linux (the release artifact). Needs musl-gcc (`musl-tools`)
-# for jemalloc; see .github/workflows/deploy.yml.
+# Fully static x86_64 binary for any Linux (the release artifact): the terminal viewer and the
+# window in one (`diskonaut --gui`, and the default from a desktop). Needs musl-gcc
+# (`musl-tools`) for jemalloc; see .github/workflows/deploy.yml.
 static:
 	CC_x86_64_unknown_linux_musl=musl-gcc cargo build -p diskonaut-angch --release --target x86_64-unknown-linux-musl
 
@@ -76,7 +77,31 @@ pgo:
 	RUSTFLAGS="-Cprofile-use=$(PGO_DIR)/merged.profdata" cargo build -p diskonaut-angch --release --target-dir $(PGO_DIR)
 	@echo "built $(PGO_DIR)/release/diskonaut"
 
-# The Linux GUI viewer, fully static: pure Rust down to the X11 protocol, so it needs no musl-gcc
+# Windows, cross-built with cargo-zigbuild against the Universal C Runtime: `diskonaut.exe`, the
+# terminal viewer and the window in one, needing only DLLs that come with Windows 10 and later.
+# (Built on Windows with MSVC, `.cargo/config.toml` links the C runtime in the same way.)
+static-windows:
+	cargo zigbuild -p diskonaut-angch --release --target x86_64-pc-windows-gnu
+
+# macOS, on a Mac: `diskonaut` for both architectures in one file (`target/universal/diskonaut`),
+# then Diskonaut.app around it, for Finder — a bare binary opened from Finder runs in Terminal.
+# Nothing on macOS links fully static (libSystem is always shared); this links only the system's
+# own libraries and frameworks. Signed ad hoc, as the linker signs each architecture.
+VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+MAC_APP := target/universal/Diskonaut.app
+mac-universal:
+	cargo build -p diskonaut-angch --release --target aarch64-apple-darwin
+	cargo build -p diskonaut-angch --release --target x86_64-apple-darwin
+	mkdir -p target/universal
+	lipo -create -output target/universal/diskonaut target/aarch64-apple-darwin/release/diskonaut target/x86_64-apple-darwin/release/diskonaut
+
+mac-app: mac-universal
+	mkdir -p $(MAC_APP)/Contents/MacOS
+	cp target/universal/diskonaut $(MAC_APP)/Contents/MacOS/diskonaut
+	sed 's/@VERSION@/$(VERSION)/g' viewers/macos/Info.plist > $(MAC_APP)/Contents/Info.plist
+	codesign --force --sign - $(MAC_APP)
+
+# The Linux GUI viewer alone, fully static: pure Rust down to the X11 protocol, so it needs no musl-gcc
 # and no system library, and runs under XWayland as well as on any X server.
 static-linux-gui:
 	cargo build -p diskonaut-linux --release --target x86_64-unknown-linux-musl

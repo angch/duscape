@@ -25,11 +25,19 @@ This fork exists to **explore further performance optimizations for everyday dis
 
 ## Other viewers
 
-The same walker and model also drive native windows for [macOS](viewers/macos/README.md)
-(`cargo run -p diskonaut-mac --release`), [Linux](viewers/linux/README.md) — Wayland or X11,
-no toolkit, builds static (`cargo run -p diskonaut-linux --release`) — and Windows
-(`cargo run -p diskonaut-windows --release`), and an [MS-DOS port](viewers/dos/README.md) in
-16-bit assembly (`make dos-run`). All are experimental. [`docs/viewers.md`](docs/viewers.md)
+The same walker and model also drive native windows for [macOS](viewers/macos/README.md),
+[Linux](viewers/linux/README.md) — Wayland or X11, no toolkit — and Windows, and an
+[MS-DOS port](viewers/dos/README.md) in 16-bit assembly (`make dos-run`). All are experimental.
+
+The platform's window is built into `diskonaut` itself: one binary is the terminal viewer in a
+terminal and the window when started from a desktop — a launcher, Finder (through
+`Diskonaut.app`, `make mac-app`) or Explorer. `--gui` and `--tui` choose, and so does the name:
+a link called `diskonaut-gui` is the window. On Windows the one executable is a console program
+that asks, in its manifest, for no console unless it inherits one: from Windows 11 24H2 a
+double-click opens the window alone; older Windows shows a console for a moment first.
+Each window still builds alone as well (`cargo run -p diskonaut-mac --release`, `-p
+diskonaut-linux`, `-p diskonaut-windows`), and `--no-default-features` builds the terminal
+viewer without it. [`docs/viewers.md`](docs/viewers.md)
 describes each, and [`docs/features.md`](docs/features.md) lists what every viewer offers.
 
 ## Requirements
@@ -38,21 +46,29 @@ describes each, and [`docs/features.md`](docs/features.md) lists what every view
 - A terminal with reasonable size (roughly 50×15 cells minimum for the main UI)
 - [Rust](https://www.rust-lang.org/tools/install), unless you use a release binary
 
-## Linux release binaries
+## Release binaries
 
-Each [release](https://github.com/angch/diskonaut/releases) has fully static Linux binaries for
-x86_64 and aarch64, `diskonaut-angch-<version>-<arch>-unknown-linux-musl.tar.gz`. They need no
-particular glibc, or any glibc: they run on old distributions, Alpine and busybox alike. Unpack and
-run; `diskonaut` and `diskonaut-angch` are the same program, the terminal viewer, and
-`diskonaut-linux` is the window, on Wayland or X11.
+Each [release](https://github.com/angch/diskonaut/releases) has one binary per platform that is
+both the terminal viewer and the window:
+
+- **Linux**, x86_64 and aarch64: `diskonaut-angch-<version>-<arch>-unknown-linux-musl.tar.gz`,
+  fully static. They need no particular glibc, or any glibc, and no system library for the
+  window: they run on old distributions, Alpine and busybox alike, on Wayland or X11.
+- **Windows**, x86_64: `diskonaut-angch-<version>-x86_64-pc-windows-gnu.zip`, needing only DLLs
+  that come with Windows 10 and later.
+
+`diskonaut` and `diskonaut-angch` are the same program.
 
 ```bash
-tar -xzf diskonaut-angch-*-x86_64-unknown-linux-musl.tar.gz && ./diskonaut-angch
-./diskonaut-linux ~   # the window
+tar -xzf diskonaut-angch-*-x86_64-unknown-linux-musl.tar.gz
+./diskonaut ~        # the terminal viewer
+./diskonaut --gui ~  # the window (the default from a desktop launcher)
 ```
 
-To build them yourself: `make static` (needs `musl-tools`) or `make static-aarch64` (needs
-`cargo-zigbuild`), and `make static-linux-gui` or `make static-linux-gui-aarch64` for the window.
+To build them yourself: `make static` (needs `musl-tools`), `make static-aarch64` and `make
+static-windows` (need `cargo-zigbuild`); on a Mac, `make mac-app` builds `diskonaut` for both
+architectures in one file and `Diskonaut.app` around it (macOS links its system libraries
+dynamically, always; nothing else).
 
 ## Sizes, hard links and mount points
 

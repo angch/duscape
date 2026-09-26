@@ -3,6 +3,18 @@
 The terminal viewer is the primary one. The same walker and model also drive three native
 windows and an MS-DOS port. `features.md` lists what each offers.
 
+Each window is linked into `diskonaut` too, so a platform has one program: the terminal viewer
+in a terminal, the window from a desktop. `viewers/tui/src/front.rs` decides, in order: `--tui`
+or `--gui`; `--benchmark`, `--help` and `--version` are the terminal's; a name ending `-gui`,
+`-linux`, `-windows` or `-mac` (a link) is the window; then on Linux and macOS a terminal on
+stdin or stdout means the terminal viewer, neither (a launcher, `Diskonaut.app` from Finder)
+the window where there is a display; on Windows no console, or one of the program's own, means
+Explorer started it. The executable's manifest (`consoleAllocationPolicy`: `detached`) keeps
+Explorer from making a console at all from Windows 11 24H2 on; older Windows makes one, which
+is let go before the window opens, so it shows for a moment. The
+window reads the same command line: the folder and the scan flags (`-a`, `-x`, `--max-depth`,
+`--threads`…), and on Windows `--no-elevate`.
+
 ## macOS GUI (experimental)
 
 `diskonaut-mac` is a native macOS window on the same walker and model, drawn with AppKit (through

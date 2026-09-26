@@ -11,7 +11,11 @@ cargo run -p diskonaut-linux --release -- -a ~       # apparent sizes to begin w
 cargo run -p diskonaut-linux --release               # the current folder
 DISKONAUT_BACKEND=x11 cargo run -p diskonaut-linux    # X11 even under Wayland (else the reverse)
 make static-linux-gui                                # a static binary, ~1.7 MB, for any Linux
+diskonaut --gui ~                                    # the same window, from the one binary
 ```
+
+`diskonaut` (`make static`, the release) holds this window beside the terminal viewer, 2.9 MB in
+all, and opens it when started from a desktop launcher or with `--gui`.
 
 ## Why no toolkit
 

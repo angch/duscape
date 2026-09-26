@@ -8,7 +8,12 @@ delete and preview reading (`libdiskonaut`) as the terminal viewer, drawn with A
 cargo run -p diskonaut-mac --release -- ~/Downloads
 cargo run -p diskonaut-mac --release -- -a ~       # apparent sizes to begin with
 cargo run -p diskonaut-mac --release               # asks for a folder; or drop one on the window
+make mac-app                                       # diskonaut for both architectures, and Diskonaut.app
 ```
+
+`diskonaut` holds this window beside the terminal viewer: in a terminal it is the terminal viewer
+(`--gui` for the window), and inside `Diskonaut.app`, opened from Finder, it is the window. A
+bare binary opened from Finder runs in Terminal, so the bundle is the way to the window there.
 
 The binary is unbundled: run from a terminal, it takes the terminal's permissions (Full Disk
 Access, if the terminal has it). macOS asks separately for Desktop, Documents and Downloads the

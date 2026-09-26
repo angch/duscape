@@ -4,6 +4,7 @@ mod cli;
 mod clipboard;
 mod config;
 mod error;
+mod front;
 mod input;
 mod messages;
 mod preview;
@@ -49,8 +50,66 @@ use messages::{Event, Instruction, handle_events};
 /// did, costs more than reading the filesystem.
 const SCAN_BATCH_SIZE: usize = 4096;
 
-/// The program entry point, shared by both binaries (`diskonaut-angch` and its `diskonaut` alias).
+/// Whether this binary holds the platform's window as well (the `gui` feature, on a platform
+/// that has one).
+const WINDOW_BUILT: bool = cfg!(all(
+    feature = "gui",
+    any(
+        target_os = "linux",
+        target_os = "freebsd",
+        target_os = "macos",
+        windows
+    )
+));
+
+/// The program entry point, shared by both binaries (`diskonaut-angch` and its `diskonaut`
+/// alias): the terminal viewer, or the window (`front::choose`).
 pub fn run() {
+    let args: Vec<::std::ffi::OsString> = ::std::env::args_os().collect();
+    let started = front::started();
+    match front::choose(&args, started, WINDOW_BUILT) {
+        front::Front::Window => {
+            // Read before the console goes, so a mistake in it can still be told there.
+            let opts = Opt::parse_from(front::without_launch_services(args));
+            front::leave_own_console(started);
+            run_window(&opts);
+        }
+        front::Front::Terminal => {
+            if !WINDOW_BUILT && args.iter().any(|arg| arg == front::GUI) {
+                eprintln!("Error: this diskonaut was built without the window (the `gui` feature)");
+                process::exit(2);
+            }
+            front::ensure_console();
+            run_terminal();
+        }
+    }
+}
+
+/// The platform's window, on the folder and with the scan options the command line gives. The
+/// config file is the terminal viewer's (its keys are a terminal's), so only the flags count.
+fn run_window(opts: &Opt) {
+    let folder = opts.folder.clone();
+    let options = opts.scan_options(false);
+    #[cfg(all(feature = "gui", any(target_os = "linux", target_os = "freebsd")))]
+    diskonaut_linux::run_with(folder, options);
+    #[cfg(all(feature = "gui", windows))]
+    diskonaut_windows::run_with(folder, options, opts.no_elevate);
+    #[cfg(all(feature = "gui", target_os = "macos"))]
+    diskonaut_mac::run_with(folder, options);
+    #[cfg(not(all(
+        feature = "gui",
+        any(
+            target_os = "linux",
+            target_os = "freebsd",
+            target_os = "macos",
+            windows
+        )
+    )))]
+    let _ = (folder, options);
+}
+
+/// The terminal viewer.
+pub fn run_terminal() {
     if let Err(err) = try_main() {
         println!("Error: {}", err);
         process::exit(2);
@@ -110,16 +169,7 @@ fn try_main() -> Result<(), Error> {
             path: config_path,
             source,
         })?;
-    let show_apparent_size = opts.apparent_size || diskonaut_config.base.apparent_size;
-    let scan_options = ScanOptions {
-        parallel: !opts.single_thread,
-        threads: opts.threads,
-        show_apparent_size,
-        max_depth: opts.max_depth,
-        one_file_system: opts.one_file_system,
-        hard_link_threshold: opts.hard_link_threshold,
-        read_device: !opts.no_device_read,
-    };
+    let scan_options = opts.scan_options(diskonaut_config.base.apparent_size);
 
     if opts.benchmark {
         let folder = opts.resolve_folder()?;

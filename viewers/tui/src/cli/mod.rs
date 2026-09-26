@@ -7,12 +7,28 @@ use crate::error::Error;
 /// Command-line options for `diskonaut`.
 ///
 /// `name` fixes the identity shown by `--version` to the fork's, regardless of whether the program
-/// was invoked as `diskonaut-angch` or the `diskonaut` alias.
+/// was invoked as `diskonaut-angch` or the `diskonaut` alias; `about` is what `--help` opens with.
 #[derive(Parser, Debug, PartialEq, Eq)]
-#[command(name = "diskonaut-angch", version)]
+#[command(
+    name = "diskonaut-angch",
+    version,
+    about = "Where the disk space went: a treemap of FOLDER (else this one) in the terminal, or \
+             in a window (--gui, and the default when started from a desktop)",
+    long_about = None
+)]
 pub struct Opt {
     /// The folder to scan
     pub folder: Option<PathBuf>,
+    /// Open the window instead: the default when started from a desktop, with no terminal
+    #[arg(long, conflicts_with = "tui")]
+    pub gui: bool,
+    /// The terminal viewer, even with no terminal on stdin or stdout
+    #[arg(long)]
+    pub tui: bool,
+    /// Windows, the window: do not ask to run as administrator when the folder is a whole
+    /// volume (elevated, the volume is read from its master file table)
+    #[arg(long)]
+    pub no_elevate: bool,
     /// Show file sizes rather than their block usage on disk
     #[arg(short, long)]
     pub apparent_size: bool,
@@ -65,6 +81,19 @@ pub struct Opt {
 }
 
 impl Opt {
+    /// How to scan, as the flags say; `apparent` from the config file as well.
+    pub fn scan_options(&self, apparent: bool) -> libdiskonaut::ScanOptions {
+        libdiskonaut::ScanOptions {
+            parallel: !self.single_thread,
+            threads: self.threads,
+            show_apparent_size: self.apparent_size || apparent,
+            max_depth: self.max_depth,
+            one_file_system: self.one_file_system,
+            hard_link_threshold: self.hard_link_threshold,
+            read_device: !self.no_device_read,
+        }
+    }
+
     /// Resolves the scan root: explicit `--folder` or the current working directory.
     pub fn resolve_folder(&self) -> Result<PathBuf, Error> {
         let folder = match &self.folder {

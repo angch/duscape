@@ -36,6 +36,8 @@ fn options() -> Options {
     for arg in ::std::env::args_os().skip(1) {
         match arg.to_str() {
             Some("-a" | "--apparent-size") => options.apparent = true,
+            // Which viewer: `diskonaut` has already chosen this one.
+            Some("--gui") => {}
             Some("-h" | "--help") => {
                 println!(
                     "diskonaut-mac [-a|--apparent-size] [FOLDER]\n\n\
@@ -117,6 +119,15 @@ impl Delegate {
 
 pub fn run() {
     let options = options();
+    let scan_options = ScanOptions {
+        show_apparent_size: options.apparent,
+        ..ScanOptions::default()
+    };
+    run_with(options.folder, scan_options);
+}
+
+/// The app on `folder` (else it asks for one), scanning with `scan_options`.
+pub fn run_with(folder: Option<PathBuf>, scan_options: ScanOptions) {
     let mtm = MainThreadMarker::new().expect("AppKit runs on the main thread");
     let app = NSApplication::sharedApplication(mtm);
     let delegate = Delegate::new(mtm);
@@ -145,10 +156,6 @@ pub fn run() {
     window.setFrameAutosaveName(&NSString::from_str("diskonaut main window"));
     window.setAcceptsMouseMovedEvents(true);
 
-    let scan_options = ScanOptions {
-        show_apparent_size: options.apparent,
-        ..ScanOptions::default()
-    };
     let view = DiskView::new(mtm, frame, scan_options);
     view.setAutoresizingMask(
         NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
@@ -159,7 +166,7 @@ pub fn run() {
     let ivars = delegate.ivars();
     let _ = ivars.window.set(window);
     let _ = ivars.view.set(view);
-    if let Some(folder) = options.folder {
+    if let Some(folder) = folder {
         let _ = ivars.folder.set(folder);
     }
     app.run();

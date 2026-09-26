@@ -756,13 +756,13 @@ fn dispatch(window: &mut Window, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
 /// A whole local volume: ask to run as administrator, and if the elevated process starts, it
 /// takes over (true); declined, or elevated already, the scan goes on as it is. If the shell
 /// would not start it, the scan goes on too, with a notice for the status bar.
-fn handed_to_elevated(opt: &Opt, root: &Path) -> (bool, Option<String>) {
-    if !elevate::wanted(root, opt.no_elevate, libdiskonaut::os::is_user_admin())
+fn handed_to_elevated(given: bool, no_elevate: bool, root: &Path) -> (bool, Option<String>) {
+    if !elevate::wanted(root, no_elevate, libdiskonaut::os::is_user_admin())
         || !elevate::is_local_disk(root)
     {
         return (false, None);
     }
-    let picked = opt.folder.is_none().then_some(root);
+    let picked = (!given).then_some(root);
     let args = elevate::relaunch_args(::std::env::args_os(), picked);
     match elevate::relaunch(&args) {
         Ok(()) => (true, None),
@@ -815,9 +815,9 @@ fn dpi_scale() -> f64 {
 
 /// The command line and the folder to scan, resolved: `None` when there is nothing to do —
 /// `--help` shown, the chooser cancelled, no such folder.
-fn choose() -> Option<(Opt, PathBuf)> {
-    let opt = match Opt::try_parse() {
-        Ok(opt) => opt,
+fn parse() -> Option<Opt> {
+    match Opt::try_parse() {
+        Ok(opt) => Some(opt),
         Err(error) => {
             // No console to print to: `--help`, `--version` and mistakes all go in a box.
             let style = if error.use_stderr() {
@@ -826,10 +826,14 @@ fn choose() -> Option<(Opt, PathBuf)> {
                 MB_OK | MB_ICONINFORMATION
             };
             message(null_mut(), &error.to_string(), style);
-            return None;
+            None
         }
-    };
-    let root = opt.folder.clone().or_else(pick_folder)?;
+    }
+}
+
+/// The folder to scan: `folder`, else one picked in the dialog; resolved.
+fn resolve(folder: Option<PathBuf>) -> Option<PathBuf> {
+    let root = folder.or_else(pick_folder)?;
     if !root.is_dir() {
         message(
             null_mut(),
@@ -838,22 +842,30 @@ fn choose() -> Option<(Opt, PathBuf)> {
         );
         return None;
     }
-    let root = root.canonicalize().unwrap_or(root);
-    Some((opt, root))
+    Some(root.canonicalize().unwrap_or(root))
 }
 
 pub fn run() {
+    if let Some(opt) = parse() {
+        let options = opt.scan_options();
+        run_with(opt.folder, options, opt.no_elevate);
+    }
+}
+
+/// The window on `folder` (else one picked in a dialog), scanning with `options`; `no_elevate`
+/// never asks to run as administrator.
+pub fn run_with(folder: Option<PathBuf>, options: ScanOptions, no_elevate: bool) {
     // SAFETY: called before any window exists.
     unsafe { SetProcessDPIAware() };
-    let Some((opt, root)) = choose() else {
+    let given = folder.is_some();
+    let Some(root) = resolve(folder) else {
         return;
     };
     // The root is resolved, so `.` in a volume root is the volume.
-    let (handed, notice) = handed_to_elevated(&opt, &root);
+    let (handed, notice) = handed_to_elevated(given, no_elevate, &root);
     if handed {
         return;
     }
-    let options = opt.scan_options();
     let shown = if options.show_apparent_size {
         SizeKind::Apparent
     } else {

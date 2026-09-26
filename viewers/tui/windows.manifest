@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- Embedded in diskonaut.exe by build.rs (the `gui` feature). `diskonaut.exe` is a console
+     program, so that it can be the terminal viewer; `detached` means it gets a console only by
+     inheriting one — from a shell — and none when Explorer starts it, which opens the window with
+     no console flashing first (`src/front.rs`). Windows 11 24H2 and Server 2025 on; older Windows
+     ignores it and makes the console, which `front.rs` lets go of. -->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <application>
+    <windowsSettings>
+      <consoleAllocationPolicy xmlns="http://schemas.microsoft.com/SMI/2024/WindowsSettings">detached</consoleAllocationPolicy>
+    </windowsSettings>
+  </application>
+</assembly>

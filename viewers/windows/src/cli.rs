@@ -30,6 +30,9 @@ pub struct Opt {
     /// opens)
     #[arg(long)]
     pub no_elevate: bool,
+    /// The window rather than the terminal viewer, which `diskonaut` has already chosen
+    #[arg(long, hide = true)]
+    pub gui: bool,
 }
 
 impl Opt {

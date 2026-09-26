@@ -58,6 +58,7 @@ by copying it.
 
 | | terminal (`diskonaut-angch`) | Windows (`diskonaut-windows`) | macOS (`diskonaut-mac`) | Linux (`diskonaut-linux`) |
 | --- | --- | --- | --- | --- |
+| One program with the terminal viewer | — | yes (`diskonaut.exe`: the window from Explorer — with no console from Windows 11 24H2, a console flashing first before it; `--gui`) | yes (`diskonaut`, and `Diskonaut.app` for Finder; `--gui`) | yes (`diskonaut`: the window from a launcher; `--gui`) |
 | Scan with the native walker | yes | yes | yes | yes |
 | Live treemap while scanning | yes (`Outline`) | yes (`Outline`) | yes (`Outline`) | yes (`Outline`) |
 | Treemap | yes, in cells | yes, GDI, nested: a folder's tile holds its entries' tiles, and theirs in turn, down to the files wherever there is room; a file's size sits at its tile's bottom right; clicking a nested tile opens the tree to it, Ctrl+click marks its folder | yes, AppKit, nested as on Windows, the same labels | yes, software-drawn (native Wayland or X11), nested as on Windows, the same labels |

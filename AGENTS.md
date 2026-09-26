@@ -13,7 +13,8 @@ diskonaut/
 ├── scanners/          # diskonaut-scan: the walkers (Linux, macOS, Windows, fallback), NTFS,
 │                      #   the parallel build, the second pass, rescan/refine threads
 ├── viewers/
-│   ├── tui/           # diskonaut-angch: the ratatui viewer (primary) — CLI, UI, input, config
+│   ├── tui/           # diskonaut-angch: the ratatui viewer (primary) — CLI, UI, input, config;
+│   │                  #   its `diskonaut` binary holds the platform's window too (`front.rs`)
 │   ├── windows/       # diskonaut-windows: the Win32/GDI viewer
 │   ├── macos/         # diskonaut-mac: the AppKit viewer (objc2)
 │   ├── linux/         # diskonaut-linux: the Wayland/X11 viewer, no toolkit (wayland-client, x11rb, fontdue)
@@ -27,7 +28,10 @@ diskonaut/
 └── Cargo.toml         # Workspace root
 ```
 Dependencies run one way: `diskonaut-scan` → `libdiskonaut`, each viewer → both, and the desktop
-viewers (Windows, macOS, Linux) → `diskonaut-viewer` too. A feature that is not drawing or input goes in `common`
+viewers (Windows, macOS, Linux) → `diskonaut-viewer` too. The terminal viewer → the platform's
+window crate, by its `gui` feature (default): the window crates are libraries (`run`, and
+`run_with` for a command line read elsewhere) with a thin binary of their own each, and
+`diskonaut` is one program per platform. A feature that is not drawing or input goes in `common`
 (or `scanners`, if it reads the disk), so the other viewers get it by calling it; what is about the
 *window* but not about a toolkit (which entry is in hand, marks, the layout in points, what a
 delete changes) goes in `viewers/shared`, so the three desktop viewers behave alike. The scan protocol types (`ScanOptions`, `EntryMeta`, `DirEntries`,
@@ -331,6 +335,20 @@ window: a `rep stos`/`movs` into DS there must set ES first, and a table in the 
 read through `cs:`.
 
 **`diskonaut-angch`** (`viewers/tui/`) — the ratatui viewer:
+- `front.rs` — which viewer this `diskonaut` is: `choose` (pure, tested) on the arguments and
+  `Started` — `--tui`/`--gui`; `--benchmark`, `--help`, `--version` the terminal's; a name ending
+  `-gui`/`-linux`/`-windows`/`-mac` the window; then a terminal on stdin *or* stdout is the
+  terminal viewer (so a redirected benchmark stays one), neither with a display the window, and on
+  Windows no console, or one the process has alone (`GetConsoleProcessList`), is Explorer's start:
+  the window, after `FreeConsole`. `windows.manifest`, embedded by `build.rs` (`embed-manifest`,
+  bins only, `gui` feature), sets `consoleAllocationPolicy` to `detached`, so from Windows 11 24H2
+  Explorer makes no console at all and nothing flashes; older Windows ignores it and makes one,
+  which is let go. The terminal viewer with no console (`--tui` from a shortcut) gets one
+  (`ensure_console`, `AllocConsole`). `lib.rs`'s `run` dispatches: the window gets the same `Opt`, parsed once
+  (`Opt::scan_options`, the folder, `--no-elevate`), not the config file. The executable is
+  console subsystem, or the terminal viewer would have no stdin; `diskonaut-windows.exe` alone
+  keeps `windows_subsystem = "windows"`. The window's elevated relaunch passes `--gui`
+  (`elevate::relaunch_args`), since the program relaunched may be this one
 - `main.rs` — entry point, thread spawning, channel setup
 - `app/mod.rs` — `App` state machine, `UiMode` enum, render dispatch
 - `input/controls.rs` — per-mode keypress handlers
@@ -579,9 +597,15 @@ measured and none helped — read the 2026-09-24 section before trying them agai
 ### Releases
 A `v*` tag runs `deploy.yml`. It builds `diskonaut-angch-<tag>-<target>.tar.gz` for
 `x86_64-unknown-linux-musl` (`musl-gcc`) and `aarch64-unknown-linux-musl` (`cargo zigbuild`,
-zig 0.13.0), each holding the terminal viewer and the Linux window (`diskonaut-linux`, pure Rust,
-so no C compiler). The binaries are fully static, so they have no glibc floor and run on Alpine and
-busybox. One job then publishes both tarballs: matrix jobs that each create the release race.
+zig 0.13.0), and `diskonaut-angch-<tag>-x86_64-pc-windows-gnu.zip` (`cargo zigbuild`, against the
+Universal C Runtime: only DLLs Windows 10 carries), each `diskonaut` being the terminal viewer and
+the window. The Linux binaries are fully static, so they have no glibc floor and run on Alpine
+and busybox; the job checks it, and that `diskonaut.exe` is console subsystem. macOS is not in
+it: linking AppKit needs a Mac, where `make mac-app` makes the universal binary and
+`Diskonaut.app` (`viewers/macos/Info.plist`) — a bare binary opened from Finder runs in Terminal,
+so Finder's way to the window is the bundle. One job then publishes every archive: matrix jobs
+that each create the release race. The repository's Actions permission must allow actions from
+outside it (`actions/checkout`…): set to local actions only, every run fails to start.
 The version is the workspace's (`Cargo.toml`), with the path dependencies' `version` beside it.
 - **`opt-level = "s"`**: the release profile is size-optimised for the viewers' binaries, but
   `"z"` cost the scan 13% and the tree build 30%; `"s"` is as fast as `3` at 2% more size. With
@@ -648,10 +672,10 @@ Regenerated by hand from `wc -l` when this file is touched; `make quality` print
 
 | File | Purpose |
 |------|---------|
-| `viewers/tui/src/lib.rs` | ~420 lines — terminal setup, thread/channel setup |
+| `viewers/tui/src/lib.rs` | ~470 lines — which viewer (`front`), terminal setup, thread/channel setup |
 | `viewers/tui/src/app/mod.rs` | ~1300 lines — the TUI's state machine |
 | `viewers/tui/src/preview.rs` | ~1300 lines — preview thread, kitty/sixel/half-block output, detection |
-| `viewers/windows/src/win/mod.rs` | ~940 lines — the Windows window: input → `Viewer`, threads, messages |
+| `viewers/windows/src/win/mod.rs` | ~950 lines — the Windows window: input → `Viewer`, threads, messages |
 | `viewers/windows/src/win/paint.rs` | ~870 lines — GDI drawing by `Viewer::layout` |
 | `viewers/shared/src/state.rs` | ~1670 lines — the desktop viewers' shared state, no toolkit |
 | `viewers/macos/src/mac/view.rs` | ~1300 lines — the macOS viewer's view, events and commands |

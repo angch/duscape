@@ -12,6 +12,8 @@ use ::std::path::{Component, Path, Prefix};
 
 /// The flag that stops the asking, which the elevated process is started with.
 pub const NO_ELEVATE: &str = "--no-elevate";
+/// The flag that makes `diskonaut` the window rather than the terminal viewer.
+pub const GUI: &str = "--gui";
 
 /// Whether to ask: `root` is a volume root, the process is not elevated, and nobody opted out.
 /// Whether the volume is a local disk is [`is_local_disk`]'s to say.
@@ -59,13 +61,16 @@ pub fn is_local_disk(root: &Path) -> bool {
     }
 }
 
-/// The arguments the elevated process is started with: [`NO_ELEVATE`], then this process's
-/// (`args`, without the program's name), then the folder if it was chosen in the dialog rather
-/// than given (`picked`), so the new process does not ask for it again.
+/// The arguments the elevated process is started with: [`NO_ELEVATE`] and [`GUI`], then this
+/// process's (`args`, without the program's name), then the folder if it was chosen in the
+/// dialog rather than given (`picked`), so the new process does not ask for it again. [`GUI`]
+/// because `diskonaut`, which is the terminal viewer as well, may be the program started: the
+/// elevated process is the window whatever it would have guessed.
 #[must_use]
 pub fn relaunch_args(args: impl Iterator<Item = OsString>, picked: Option<&Path>) -> Vec<OsString> {
-    let mut out = vec![OsString::from(NO_ELEVATE)];
-    out.extend(args.skip(1));
+    let mut out = vec![OsString::from(NO_ELEVATE), OsString::from(GUI)];
+    // Once: a flag given twice is a mistake to the command line's parser.
+    out.extend(args.skip(1).filter(|arg| arg != GUI));
     if let Some(folder) = picked {
         out.push(folder.as_os_str().to_owned());
     }
@@ -176,7 +181,7 @@ mod tests {
     use ::std::ffi::OsString;
     use ::std::path::Path;
 
-    use super::{NO_ELEVATE, command_line, relaunch_args, wanted};
+    use super::{GUI, NO_ELEVATE, command_line, relaunch_args, wanted};
 
     fn args(list: &[&str]) -> Vec<OsString> {
         list.iter().map(OsString::from).collect()
@@ -246,12 +251,17 @@ mod tests {
         let mine = args(&["diskonaut-windows.exe", "-a", "--max-depth", "3"]);
         assert_eq!(
             relaunch_args(mine.clone().into_iter(), None),
-            args(&[NO_ELEVATE, "-a", "--max-depth", "3"])
+            args(&[NO_ELEVATE, GUI, "-a", "--max-depth", "3"])
         );
         // Chosen in the dialog, the folder is passed on so it is not asked for again.
         assert_eq!(
             relaunch_args(mine.into_iter(), Some(Path::new(r"C:\"))),
-            args(&[NO_ELEVATE, "-a", "--max-depth", "3", r"C:\"])
+            args(&[NO_ELEVATE, GUI, "-a", "--max-depth", "3", r"C:\"])
+        );
+        // `diskonaut --gui`: the window's flag once, not twice.
+        assert_eq!(
+            relaunch_args(args(&["diskonaut.exe", GUI, "-a"]).into_iter(), None),
+            args(&[NO_ELEVATE, GUI, "-a"])
         );
     }
 
