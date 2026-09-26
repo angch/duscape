@@ -475,15 +475,16 @@ impl Viewer {
         self.select_row(path, chosen);
     }
 
-    /// Open the folders above `path` in the tree; a top-level path opens nothing.
+    /// Open the folders above `path` in the tree; a top-level path, or one whose folders are
+    /// open already, changes nothing, so the rows are rebuilt only when something opened.
     fn open_above(&mut self, path: &[OsString]) {
-        if path.len() < 2 {
-            return;
-        }
+        let mut opened = false;
         for depth in 1..path.len() {
-            self.expansion.open(&path[..depth]);
+            opened |= self.expansion.open(&path[..depth]);
         }
-        self.rebuild_rows();
+        if opened {
+            self.rebuild_rows();
+        }
     }
 
     fn rebuild_rows(&mut self) {
@@ -978,6 +979,7 @@ impl Viewer {
             self.open_above(&path);
             self.cursor = Some(path);
             self.sync_board();
+            self.scroll_to_selected();
         } else if mods.toggle {
             // Starting a selection takes in the entry already in hand, as a file manager does —
             // but only one the user picked, never one the viewer placed there.
@@ -1300,9 +1302,18 @@ impl Viewer {
     }
 
     /// Scan the selected folder again — or the folder shown, when a file or nothing is in hand.
+    /// Rescan the folder in hand — the row's, nested or not — or the folder holding the file
+    /// in hand: the folder shown for a top-level file, a nested file's own.
     pub fn rescan_selected(&mut self) {
         let mut relative = self.tree.current_folder_names.clone();
-        if let Some(entry) = self.selected_entry()
+        if let Some(row) = self.cursor_entry() {
+            let keep = if row.entry.file_type == FileType::Folder {
+                row.path.len()
+            } else {
+                row.path.len() - 1
+            };
+            relative.extend(row.path[..keep].iter().cloned());
+        } else if let Some(entry) = self.selected_entry()
             && entry.file_type == FileType::Folder
         {
             relative.push(entry.name.clone());
@@ -1461,7 +1472,7 @@ impl Viewer {
     pub fn status(&self) -> (String, String) {
         let left = match &self.message {
             Some((message, at)) if at.elapsed() < MESSAGE_TIME => message.clone(),
-            _ if !self.marked.is_empty() && self.hover.is_none() => {
+            _ if !self.marked.is_empty() && self.hover.is_none() && self.hover_nested.is_none() => {
                 let size: u128 = self
                     .marked
                     .iter()

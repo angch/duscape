@@ -473,6 +473,27 @@ fn a_rescan_brings_in_what_changed_on_disk() {
     let small = viewer.entry_named(OsStr::new("small")).expect("small");
     assert_eq!(small.size, 5100);
     assert_eq!(selected(&viewer).as_deref(), Some("small"), "still in hand");
+    // A nested row is what is rescanned: a nested folder itself, a nested file's folder.
+    viewer.set_tree_view(true);
+    viewer.jump(Jump::Home, false);
+    viewer.arrow(Direction::Right, false);
+    viewer.arrow(Direction::Right, false);
+    assert_eq!(
+        cursor_of(&viewer).as_deref(),
+        Some("new"),
+        "small/new in hand: small is the larger since the rescan"
+    );
+    viewer.rescan_selected();
+    assert_eq!(
+        viewer.rescanning().as_deref(),
+        Some("small"),
+        "the file's folder is rescanned"
+    );
+    let (id, outcome): (u64, Outcome) = answers
+        .recv_timeout(Duration::from_secs(20))
+        .expect("the rescan reports back");
+    viewer.rescan_done(id, outcome);
+    assert_eq!(viewer.rescanning(), None);
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -898,6 +919,10 @@ fn a_tile_inside_a_folders_tile_is_pointed_at_and_reveals_its_row() {
     assert_eq!(cursor_of(&viewer).as_deref(), Some("a"));
     viewer.click(ax, ay, toggle);
     assert_eq!(viewer.marked, ["tiny.bin", "big"], "and on again");
+    // With marks present, hovering a nested tile still names it, as hovering any tile does.
+    assert!(viewer.hover_at(ax, ay));
+    let (left, _) = viewer.status();
+    assert!(left.starts_with("a — 600"), "{left}");
     // Off, nothing is nested and the tile is the folder's again.
     viewer.set_tree_view(false);
     assert!(viewer.nested().is_empty());

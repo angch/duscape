@@ -6,6 +6,7 @@
 
 use ::std::ffi::OsString;
 
+use super::treemap::{MINIMUM_HEIGHT, MINIMUM_WIDTH};
 use super::{Area, FileType, Tile, TreeMap, largest_in_folder};
 use crate::model::{FileOrFolder, Folder, SizeKind};
 
@@ -51,16 +52,26 @@ impl Default for Nesting {
 /// The least a folder's inside must measure, in cells, for its entries to be laid out in it:
 /// two of the squarify's minimum tiles side by side, and two on top of each other. This is
 /// what ends the nesting.
-const NEST_MIN_WIDTH: u16 = 2 * MIN_TILE_WIDTH;
-const NEST_MIN_HEIGHT: u16 = 2 * MIN_TILE_HEIGHT;
-/// The squarify's minimum tile (`treemap::MINIMUM_WIDTH`/`HEIGHT`), in cells.
-const MIN_TILE_WIDTH: u16 = 8;
-const MIN_TILE_HEIGHT: u16 = 3;
+const NEST_MIN_WIDTH: u16 = 2 * MINIMUM_WIDTH;
+const NEST_MIN_HEIGHT: u16 = 2 * MINIMUM_HEIGHT;
 
 /// The tiles inside `tiles` — the board's, for `folder` — down to `nesting`'s limits, parents
 /// before their children.
 #[must_use]
 pub fn nest(folder: &Folder, tiles: &[Tile], kind: SizeKind, nesting: &Nesting) -> Vec<NestedTile> {
+    // However deep it goes, the nesting holds at most as many tiles as the folder tiles' area
+    // holds at the minimum size: the bound on a relayout's and a paint's work is the screen.
+    let area: usize = tiles
+        .iter()
+        .map(|tile| usize::from(tile.width) * usize::from(tile.height))
+        .sum();
+    let nesting = Nesting {
+        max_tiles: nesting
+            .max_tiles
+            .min(area / (usize::from(MINIMUM_WIDTH) * usize::from(MINIMUM_HEIGHT)) + 1),
+        ..*nesting
+    };
+    let nesting = &nesting;
     let mut out = Vec::new();
     for tile in tiles {
         if tile.file_type != FileType::Folder {
@@ -109,8 +120,8 @@ fn nest_into(
     // Only as many entries as the inside has room for at the minimum tile size, plus one so
     // the squarify still sees what follows: a folder of fifty thousand entries is not listed
     // and sorted whole for the dozen that get a tile.
-    let room = (usize::from(width) / usize::from(MIN_TILE_WIDTH) + 1)
-        * (usize::from(height) / usize::from(MIN_TILE_HEIGHT) + 1)
+    let room = (usize::from(width) / usize::from(MINIMUM_WIDTH) + 1)
+        * (usize::from(height) / usize::from(MINIMUM_HEIGHT) + 1)
         + 1;
     let files = largest_in_folder(folder, kind, room);
     let mut map = TreeMap::new(&inside);
@@ -242,10 +253,28 @@ mod tests {
     #[test]
     fn the_largest_entries_are_the_head_of_the_whole_listing() {
         use crate::tiles::{files_in_folder, largest_in_folder};
-        let tree = tree();
+        // Equal sizes rank by name, as the whole listing sorts them; a limit in the middle of
+        // a run of equals must take the first of them by name.
+        let root = Path::new("/r");
+        let mut tree = FileTree::new(Folder::new(root), root.to_path_buf());
+        for (name, size, is_dir) in [
+            ("x", 500, false),
+            ("t3", 100, false),
+            ("t1", 100, false),
+            ("t4", 100, false),
+            ("t2", 100, false),
+            ("small", 10, false),
+        ] {
+            tree.add_entry(meta(size, is_dir), &root.join(name));
+        }
         let folder = tree.get_current_folder();
         let whole = files_in_folder(folder, 0, SizeKind::Disk);
-        for limit in [0, 1, 2, 5] {
+        let names: Vec<_> = whole
+            .iter()
+            .map(|f| f.name.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["x", "t1", "t2", "t3", "t4", "small"]);
+        for limit in 0..=7 {
             let top = largest_in_folder(folder, SizeKind::Disk, limit);
             assert_eq!(top, whole[..limit.min(whole.len())], "limit {limit}");
         }

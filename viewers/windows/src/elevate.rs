@@ -213,6 +213,28 @@ mod tests {
         }
     }
 
+    /// The system drive is a local disk, given plainly or as the resolved root the viewer
+    /// decides on (`\\?\C:\`), which `GetDriveTypeW` must take as well.
+    #[cfg(windows)]
+    #[test]
+    fn the_system_drive_is_a_local_disk_by_either_spelling() {
+        let drive = ::std::env::var("SystemDrive").unwrap_or_else(|_| "C:".to_string());
+        for root in [format!("{drive}\\"), format!("\\\\?\\{drive}\\")] {
+            assert!(super::is_local_disk(Path::new(&root)), "{root}");
+        }
+        // A letter no drive has: whichever one this machine leaves free (all 26 in use — no
+        // absent letter to try, and nothing to assert).
+        // SAFETY: no preconditions.
+        let used = unsafe { windows_sys::Win32::Storage::FileSystem::GetLogicalDrives() };
+        if let Some(free) = (b'A'..=b'Z').find(|letter| used & (1 << (letter - b'A')) == 0) {
+            let root = format!("{}:\\", free as char);
+            assert!(
+                !super::is_local_disk(Path::new(&root)),
+                "{root} is no drive"
+            );
+        }
+    }
+
     #[test]
     fn the_elevated_process_gets_the_same_arguments_and_never_asks_again() {
         let mine = args(&["diskonaut-windows.exe", "-a", "--max-depth", "3"]);

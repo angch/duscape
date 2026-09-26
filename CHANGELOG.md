@@ -144,6 +144,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `r` and the context menu's rescan act on the row in hand — a nested folder itself, a nested
+  file's folder — as the menu says, not on the top-level folder.
+- With entries marked, hovering a tile inside a folder's tile still names it in the status bar,
+  as hovering any tile does; a Shift+click on one scrolls the list to the row it revealed.
 - The Windows viewer's preview caption and context menu are about the row in hand — a nested
   file's, after its tile was clicked — not its top-level folder, so a nested file's hex dump is
   captioned with its own name and the menu offers what a file can do.

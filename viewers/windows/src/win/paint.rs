@@ -331,10 +331,8 @@ fn draw_treemap(canvas: &Canvas, window: &Window, layout: &Layout) {
             let ink = if marked { INK } else { rgb(240, 240, 240) };
             draw_tile_label(canvas, fonts, rect, pad, pad / 2.0, tile, ink, fonts.bold);
         }
-        if hover == Some(tile.name.as_os_str())
-            && viewer.hover_nested.is_none()
-            && board.get_selected_index() != Some(index)
-        {
+        // (`hover` is never a name while a nested tile is hovered: `hover_at` sees to that.)
+        if hover == Some(tile.name.as_os_str()) && board.get_selected_index() != Some(index) {
             canvas.frame(rect, rgb(170, 170, 170), 1);
         }
     }

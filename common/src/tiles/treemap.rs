@@ -1,8 +1,8 @@
 use crate::tiles::{Area, FileMetadata, RectFloat, Tile};
 
 const HEIGHT_WIDTH_RATIO: f64 = 2.5;
-const MINIMUM_HEIGHT: u16 = 3;
-const MINIMUM_WIDTH: u16 = 8;
+pub(crate) const MINIMUM_HEIGHT: u16 = 3;
+pub(crate) const MINIMUM_WIDTH: u16 = 8;
 
 /// The least the "small files" placeholder may occupy, so that hidden entries always leave a
 /// visible trace: a border plus at least one row of one or two `x` cells inside it.

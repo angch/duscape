@@ -47,8 +47,9 @@ impl Expansion {
         }
     }
 
-    pub fn open(&mut self, path: &[OsString]) {
-        self.open.insert(path.to_vec());
+    /// Open `path`. Whether it was closed before.
+    pub fn open(&mut self, path: &[OsString]) -> bool {
+        self.open.insert(path.to_vec())
     }
 
     /// Close `path`, and everything opened below it: opened again, it opens shallow.
