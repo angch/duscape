@@ -184,7 +184,13 @@ mod tests {
 
     #[test]
     fn a_volume_root_asks_unless_elevated_or_opted_out() {
-        for root in [r"C:\", r"\\?\C:\", r"D:\", "/"] {
+        // A drive letter is a path prefix only on Windows; elsewhere `C:\` is a file's name.
+        let roots: &[&str] = if cfg!(windows) {
+            &[r"C:\", r"\\?\C:\", r"D:\", "/"]
+        } else {
+            &["/"]
+        };
+        for &root in roots {
             assert!(wanted(Path::new(root), false, false), "{root}");
             assert!(!wanted(Path::new(root), true, false), "{root} opted out");
             assert!(

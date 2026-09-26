@@ -4,6 +4,8 @@ ratatui = "ratatui"
 exportfs = "exportfs"
 # PNG's Paeth filter, after Alan W. Paeth
 paeth = "paeth"
+# xkb's name for the Again key (`xkb_keycodes`), in the Linux viewer's test keymap.
+AGAI = "AGAI"
 
 [files]
 extend-exclude = ["trayd/", "target/", "**/*.snap"]
