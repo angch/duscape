@@ -302,6 +302,7 @@ fn draw_treemap(canvas: &Canvas, window: &Window, layout: &Layout) {
             canvas.frame(rect, rgb(170, 170, 170), 1);
         }
     }
+    draw_nested(canvas, window, layout);
     // The "small files" corner: from where the board says it starts to the treemap's far corner.
     if let Some((sx, sy)) = board.unrenderable_tile_coordinates {
         let corner = layout.cells_to_rect(
@@ -322,6 +323,15 @@ fn draw_treemap(canvas: &Canvas, window: &Window, layout: &Layout) {
     if let Some(tile) = board.currently_selected() {
         canvas.frame(
             layout.cells_to_rect(tile.x, tile.y, tile.width, tile.height),
+            rgb(255, 255, 255),
+            canvas.px(2.0),
+        );
+    }
+    // The row in hand, when it is a tile inside a folder's.
+    if let Some(index) = viewer.cursor_nested() {
+        let t = &viewer.nested()[index].tile;
+        canvas.frame(
+            layout.cells_to_rect(t.x, t.y, t.width, t.height),
             rgb(255, 255, 255),
             canvas.px(2.0),
         );
@@ -409,6 +419,38 @@ fn draw_list(canvas: &Canvas, window: &Window, list: Rect) {
     }
     if viewer.focus == Focus::List {
         canvas.frame(list, ACCENT, 1);
+    }
+}
+
+/// The tiles inside the folder tiles — the nesting — parents first, so each level paints
+/// over its parent's body and under the parent's label; a level deeper is a shade darker, and
+/// a label goes on whatever has the room for one.
+fn draw_nested(canvas: &Canvas, window: &Window, layout: &Layout) {
+    let viewer = &window.viewer;
+    let fonts = &window.fonts;
+    let pad = 3.0;
+    for (index, nested) in viewer.nested().iter().enumerate() {
+        let t = &nested.tile;
+        let rect = layout.cells_to_rect(t.x, t.y, t.width, t.height);
+        let (r, g, b) = tile_color(&t.name, t.file_type, index);
+        // Each level in, the colour is a step darker: the nesting reads as depth.
+        let shade = 1.0 - 0.12 * nested.depth.min(4) as f64;
+        let byte = |value: f64| ((value * shade).clamp(0.0, 1.0) * 255.0).round() as u8;
+        canvas.fill(rect, rgb(byte(r), byte(g), byte(b)));
+        canvas.frame(rect, BORDER, 1);
+        if rect.w > 30.0 && rect.h > LINE {
+            let name = t.name.to_string_lossy();
+            let label = if t.file_type == FileType::Folder {
+                format!("{name}\\")
+            } else {
+                name.into_owned()
+            };
+            let line = Rect::new(rect.x + pad, rect.y + 1.0, rect.w - 2.0 * pad, LINE);
+            canvas.text(line, &label, rgb(235, 235, 235), fonts.ui, false);
+        }
+        if viewer.hover_nested == Some(index) {
+            canvas.frame(rect, rgb(200, 200, 200), 1);
+        }
     }
 }
 

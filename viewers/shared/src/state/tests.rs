@@ -815,3 +815,44 @@ fn the_expander_opens_a_folder_on_a_click() {
     let (left, _) = viewer.status();
     assert!(left.starts_with("2 marked"), "{left}");
 }
+
+/// The treemap nested: a folder's tile holds its entries' tiles; pointing at one names it,
+/// clicking it opens the folders above it in the tree and puts it in hand.
+#[test]
+fn a_tile_inside_a_folders_tile_is_pointed_at_and_reveals_its_row() {
+    let mut viewer = tree_viewer();
+    viewer.set_tree_view(true);
+    assert!(!viewer.nested().is_empty(), "big's tile holds a and b");
+    let a = viewer
+        .nested()
+        .iter()
+        .find(|t| t.tile.name == "a")
+        .expect("a's tile");
+    assert_eq!(a.path, ["big", "a"]);
+    let rect = viewer
+        .layout
+        .cells_to_rect(a.tile.x, a.tile.y, a.tile.width, a.tile.height);
+    let (x, y) = (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
+    let index = match viewer.hit(x, y) {
+        Hit::Nested(index) => index,
+        other => panic!("expected a nested tile, got {other:?}"),
+    };
+    assert_eq!(viewer.nested()[index].path, ["big", "a"]);
+    assert!(viewer.hover_at(x, y));
+    let (left, _) = viewer.status();
+    assert!(left.starts_with("a — 600"), "{left}");
+
+    viewer.click(x, y, Mods::default());
+    assert_eq!(
+        rows_of(&viewer)[..3],
+        ["big/", "  a", "  b"],
+        "big opened in the tree"
+    );
+    assert_eq!(cursor_of(&viewer).as_deref(), Some("a"));
+    assert_eq!(selected(&viewer).as_deref(), Some("big"));
+    assert_eq!(viewer.cursor_nested(), Some(index));
+    // Off, nothing is nested and the tile is the folder's again.
+    viewer.set_tree_view(false);
+    assert!(viewer.nested().is_empty());
+    assert_eq!(viewer.hit(x, y), Hit::Tile(OsString::from("big")));
+}

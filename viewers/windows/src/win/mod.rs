@@ -726,9 +726,10 @@ pub fn run() {
     };
     let scale = dpi_scale();
     let mut viewer = Viewer::new(&root, shown, 0);
-    // The list as a tree, WizTree's: folders open in place, drawn with their depth and an
-    // expander (`paint::draw_list`).
-    viewer.tree_view = true;
+    // The tree view: the list as a tree, folders open in place, drawn with their depth and an
+    // expander (`paint::draw_list`); the treemap nested, tiles inside the folder tiles
+    // (`paint::draw_nested`).
+    viewer.set_tree_view(true);
     let window = Box::new(Window {
         hwnd: 0,
         viewer,

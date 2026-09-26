@@ -21,7 +21,9 @@ use ::std::time::{Duration, Instant};
 use diskonaut_scan::rescan::{Outcome, Rescanner, Rescans};
 use libdiskonaut::format::copied_path;
 use libdiskonaut::model::SizeKind;
-use libdiskonaut::tiles::{Area, Board, Expansion, FileMetadata, FileType, Row};
+use libdiskonaut::tiles::{
+    Area, Board, Expansion, FileMetadata, FileType, NestedTile, Nesting, Row,
+};
 use libdiskonaut::{
     DirSummary, DisplayCount, DisplaySize, FileOrFolder, FileToDelete, FileTree, Folder,
 };
@@ -206,6 +208,8 @@ pub enum Hit {
     SmallFiles,
     /// A folder row's expander, in the tree view: its index in the rows.
     Expander(usize),
+    /// A tile inside a folder's tile, in the tree view: its index in [`Viewer::nested`].
+    Nested(usize),
     Nothing,
 }
 
@@ -278,6 +282,10 @@ pub struct Viewer {
     cursor: Option<Vec<OsString>>,
     /// The row under the pointer.
     pub hover_row: Option<usize>,
+    /// The treemap nested, in the tree view: the tiles inside the board's folder tiles.
+    nested: Vec<NestedTile>,
+    /// The nested tile under the pointer.
+    pub hover_nested: Option<usize>,
     /// The zoom level of each folder above this one, to restore on the way back up.
     zooms: Vec<usize>,
     pub scanning: bool,
@@ -331,6 +339,8 @@ impl Viewer {
             rows: Vec::new(),
             cursor: None,
             hover_row: None,
+            nested: Vec::new(),
+            hover_nested: None,
             zooms: Vec::new(),
             scanning: true,
             scan_id,
@@ -345,6 +355,18 @@ impl Viewer {
             preview_generation: 0,
             preview: Preview::None,
         }
+    }
+
+    /// The list as a tree and the treemap nested, for a viewer that draws rows with their
+    /// depth and tiles inside tiles.
+    pub fn set_tree_view(&mut self, on: bool) {
+        self.tree_view = on;
+        if !on {
+            self.expansion.clear();
+            self.rebuild_rows();
+        }
+        self.rebuild_nested();
+        self.sync_board();
     }
 
     /// Allow rescans, which `rescanner` runs.
@@ -379,6 +401,7 @@ impl Viewer {
             width: self.layout.cols,
             height: self.layout.rows,
         });
+        self.rebuild_nested();
         if self.layout.list.is_none() {
             self.focus = Focus::Treemap;
         }
@@ -396,8 +419,61 @@ impl Viewer {
     fn refresh(&mut self) {
         self.board.change_files(self.tree.get_current_folder());
         self.rebuild_rows();
+        self.rebuild_nested();
         self.sync_board();
         self.clamp_list_top();
+    }
+
+    /// The tiles inside the folder tiles, when the tree view is on; none otherwise.
+    fn rebuild_nested(&mut self) {
+        self.nested = if self.tree_view {
+            libdiskonaut::tiles::nest(
+                self.tree.get_current_folder(),
+                &self.board.tiles,
+                self.tree.shown,
+                &Nesting::default(),
+            )
+        } else {
+            Vec::new()
+        };
+        if self.hover_nested.is_some_and(|i| i >= self.nested.len()) {
+            self.hover_nested = None;
+        }
+    }
+
+    /// The tree view's treemap: the tiles inside the board's folder tiles, parents first.
+    #[must_use]
+    pub fn nested(&self) -> &[NestedTile] {
+        &self.nested
+    }
+
+    /// The nested tile of the row in hand, if it has one.
+    #[must_use]
+    pub fn cursor_nested(&self) -> Option<usize> {
+        let cursor = self.cursor.as_ref()?;
+        self.nested.iter().position(|tile| &tile.path == cursor)
+    }
+
+    /// The deepest nested tile under a cell.
+    fn nested_at(&self, column: u16, row: u16) -> Option<usize> {
+        self.nested
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| {
+                (t.tile.x..t.tile.x.saturating_add(t.tile.width)).contains(&column)
+                    && (t.tile.y..t.tile.y.saturating_add(t.tile.height)).contains(&row)
+            })
+            .max_by_key(|(_, t)| t.depth)
+            .map(|(index, _)| index)
+    }
+
+    /// Open the folders above `path` in the tree, so its row is there, and put it in hand.
+    fn reveal(&mut self, path: Vec<OsString>, chosen: bool) {
+        for depth in 1..path.len() {
+            self.expansion.open(&path[..depth]);
+        }
+        self.rebuild_rows();
+        self.select_row(path, chosen);
     }
 
     fn rebuild_rows(&mut self) {
@@ -844,6 +920,9 @@ impl Viewer {
         let Some((col, row)) = self.layout.cell_at(x, y) else {
             return Hit::Nothing;
         };
+        if let Some(index) = self.nested_at(col, row) {
+            return Hit::Nested(index);
+        }
         if let Some(index) = self.board.tile_at(col, row) {
             return Hit::Tile(self.board.tiles[index].name.clone());
         }
@@ -859,6 +938,15 @@ impl Viewer {
         let (focus, path) = match self.hit(x, y) {
             Hit::Row(index) | Hit::Expander(index) => (Focus::List, self.rows[index].path.clone()),
             Hit::Tile(name) => (Focus::Treemap, vec![name]),
+            // A tile inside a folder's: the folders above it open in the tree, and it is the
+            // row in hand.
+            Hit::Nested(index) => {
+                let path = self.nested[index].path.clone();
+                self.focus = Focus::Treemap;
+                self.clear_marks();
+                self.reveal(path.clone(), true);
+                return path.first().cloned();
+            }
             Hit::SmallFiles | Hit::Nothing => return None,
         };
         let name = path[0].clone();
@@ -904,27 +992,31 @@ impl Viewer {
         let path = match self.hit(x, y) {
             Hit::Row(index) | Hit::Expander(index) => self.rows[index].path.clone(),
             Hit::Tile(name) => vec![name],
+            Hit::Nested(index) => self.nested[index].path.clone(),
             Hit::SmallFiles | Hit::Nothing => return false,
         };
         if !self.is_marked(&path[0]) {
             self.clear_marks();
         }
-        self.select_row(path, true);
+        self.reveal(path, true);
         true
     }
 
     /// The pointer moved. Returns whether what it is over changed.
     pub fn hover_at(&mut self, x: f64, y: f64) -> bool {
-        let (hover, hover_row) = match self.hit(x, y) {
+        let (hover, hover_row, hover_nested) = match self.hit(x, y) {
             Hit::Row(index) | Hit::Expander(index) => {
-                (Some(self.rows[index].path[0].clone()), Some(index))
+                (Some(self.rows[index].path[0].clone()), Some(index), None)
             }
-            Hit::Tile(name) => (Some(name), None),
-            Hit::SmallFiles | Hit::Nothing => (None, None),
+            Hit::Tile(name) => (Some(name), None, None),
+            Hit::Nested(index) => (Some(self.nested[index].path[0].clone()), None, Some(index)),
+            Hit::SmallFiles | Hit::Nothing => (None, None, None),
         };
-        let changed = hover != self.hover || hover_row != self.hover_row;
+        let changed =
+            hover != self.hover || hover_row != self.hover_row || hover_nested != self.hover_nested;
         self.hover = hover;
         self.hover_row = hover_row;
+        self.hover_nested = hover_nested;
         changed
     }
 
@@ -987,16 +1079,19 @@ impl Viewer {
 
     pub fn zoom_in(&mut self) {
         self.board.zoom_in(self.tree.get_current_folder());
+        self.rebuild_nested();
         self.sync_board();
     }
 
     pub fn zoom_out(&mut self) {
         self.board.zoom_out(self.tree.get_current_folder());
+        self.rebuild_nested();
         self.sync_board();
     }
 
     pub fn reset_zoom(&mut self) {
         self.board.reset_zoom(self.tree.get_current_folder());
+        self.rebuild_nested();
         self.sync_board();
     }
 
@@ -1362,16 +1457,18 @@ impl Viewer {
                 )
             }
             _ => {
+                let nested = self.hover_nested.and_then(|index| self.nested.get(index));
                 let entry = self
                     .hover_row
                     .and_then(|index| self.rows.get(index))
                     .map(|row| &row.entry)
                     .or_else(|| self.hover.as_ref().and_then(|name| self.entry_named(name)))
                     .or_else(|| self.cursor_entry().map(|row| &row.entry));
-                match entry {
-                    Some(entry) => describe(entry),
-                    None if self.scanning => "Scanning…".to_string(),
-                    None => String::new(),
+                match (nested, entry) {
+                    (Some(nested), _) => describe_tile(&nested.tile),
+                    (None, Some(entry)) => describe(entry),
+                    (None, None) if self.scanning => "Scanning…".to_string(),
+                    (None, None) => String::new(),
                 }
             }
         };
@@ -1426,6 +1523,17 @@ fn last_name(file: &FileToDelete) -> String {
         .last()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default()
+}
+
+/// [`describe`] for a tile: the same line, from what a tile carries.
+pub fn describe_tile(tile: &libdiskonaut::tiles::Tile) -> String {
+    describe(&FileMetadata {
+        name: tile.name.clone(),
+        size: tile.size,
+        descendants: tile.descendants,
+        percentage: tile.percentage,
+        file_type: tile.file_type,
+    })
 }
 
 /// One line on an entry: name, size, share of its folder, and what it is.

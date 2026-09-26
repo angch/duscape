@@ -55,7 +55,8 @@ a window that draws one picture. See [`viewers/linux/README.md`](../viewers/linu
 
 `diskonaut-windows` is the terminal viewer in a native window: the same walker (`diskonaut-scan`), and
 the same tree, treemap, deletion, previews and rescans (`libdiskonaut`), with the list and the
-treemap side by side. What the window shows and does is `diskonaut-viewer`, the state the macOS
+treemap side by side — the list as a tree whose folders open in place, and the treemap nested,
+each folder's tile holding its entries' tiles. What the window shows and does is `diskonaut-viewer`, the state the macOS
 and Linux windows share, so the three behave alike. It is built on `windows-sys` and GDI rather than a GUI framework, so the
 release binary is about **840 KB**, most of it the PNG and JPEG decoders for the preview.
 [`features.md`](features.md) compares the viewers feature by feature.
