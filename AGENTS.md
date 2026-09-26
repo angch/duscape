@@ -167,6 +167,14 @@ Six kinds of thread communicate via `mpsc` channels (bounded, except the preview
   shows), so bind-mount duplicates are still found; `mount_at` likewise. `DUSCAPE_NO_STATX=1`
   makes a scan read as a pre-4.11 kernel would — the fixtures run their totals and mount layouts
   that way too — and `strace -e inject=statx:error=ENOSYS` reproduces such a kernel from outside.
+  A read-only btrfs snapshot inside the scan is left empty unless `ScanOptions::snapshots`
+  (`--snapshots`): every subvolume has a device of its own, so one is always a crossing, onto
+  btrfs (`filesystem::Kind::btrfs`), at a root numbered 256 — only there does
+  `btrfs_subvolume::is_read_only` open it and ask `BTRFS_IOC_SUBVOL_GETFLAGS` (no privilege
+  needed), never off btrfs, where opening an automount point would mount it; `walk_would_enter`
+  says the same for a rescan and for the ext4 device reader's mount points, the scan's own root
+  excepted. Synology keeps a share's snapshots under
+  its `#snapshot`, one an hour, and walking them walked the share once each.
   `environment` is what `--issues` says about the machine
 - `ntfs.rs` — NTFS file-record parser: sizes `$MFT` and the other metadata files the Windows
   walker adds at a volume root when elevated (records fetched with `FSCTL_GET_NTFS_FILE_RECORD`).
@@ -468,6 +476,9 @@ Exiting { app_loaded: bool }
   attribute is chosen per device. See `docs/scan-performance.md`.
 - **Pseudo-filesystems**: crossing a mount point into `/proc`, `/sys`, cgroup, debugfs and friends
   is refused (by `statfs` magic); naming one as the scan root still scans it.
+- **Snapshots**: a read-only btrfs subvolume inside the scan is left empty by default, as a mount
+  `-x` refuses; `--snapshots` walks it, the extent ledger counting what it shares once. Named as
+  the scan root, it is scanned.
 - **Bind mounts**: a mount root (`STATX_ATTR_MOUNT_ROOT`) is looked up in `/proc/self/mountinfo`
   by `stx_mnt_id` (`linux::mounts`); if an earlier mount of the same device shows the same
   directory at a path inside the scan — checked by device and inode — the mount is left empty.

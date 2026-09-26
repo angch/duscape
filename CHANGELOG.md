@@ -22,6 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Read-only btrfs snapshots inside the scan are left empty by default, as `-x` leaves another
+  filesystem: on a Synology NAS each share keeps its snapshots under `#snapshot`, often one an
+  hour, and the scan walked the share once for each, which made it very slow. `--snapshots` walks
+  them, counting each shared block once as before; a snapshot named as the root is scanned. They
+  are recognised by what they are, not by name — where the walk crosses onto a btrfs subvolume,
+  its root (inode 256), that btrfs says is read-only (`BTRFS_IOC_SUBVOL_GETFLAGS`, no privilege
+  needed) — so snapper's `.snapshots` and `btrfs subvolume snapshot -r` are covered too, and a
+  snapshot mounted inside an ext4 volume the device reader walks. `--issues` says whether they are walked.
 - `duscape --issues FOLDER`: a scan with nothing drawn, which prints the walker, the kernel,
   whether it has `statx`, the filesystem and the user, then every kind of read failure with the
   system's error and a count, and examples of where — at most 8 a folder and 200 in all, however

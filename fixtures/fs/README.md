@@ -38,8 +38,11 @@ For each of **ext4, XFS, btrfs, f2fs, tmpfs, FAT32, exFAT, NTFS** (`ntfs3`):
 Scenarios:
 
 - **`snapshots`** (btrfs): a subvolume, three read-only snapshots, a file rewritten after them —
-  once with large files, once with small; the oracle is btrfs's own *data used*, since `st_dev`
-  differs per snapshot and no inode oracle can see the sharing. `-x` must see only the top level.
+  once with large files, once with small; walked (`--snapshots`) the oracle is btrfs's own *data
+  used*, since `st_dev` differs per snapshot and no inode oracle can see the sharing, and by
+  default only the live copy is counted. `-x` must see only the top level. Then a share as
+  Synology keeps one, its snapshots inside it under `#snapshot`: left out, walked (each block
+  once), without `statx`, and one snapshot named as the root.
 - **`compression`**: btrfs with `compress-force=zstd` holding text, random data, a file half of
   each, a preallocated file and a sparse one, scanned as the user and **as root**; btrfs without
   compression but a `chattr +c` folder, as root; f2fs with lz4. The oracle is btrfs's data used.

@@ -42,6 +42,13 @@ pub struct ScanOptions {
     /// writes. Off for rescans, whose folders are small and want to be current, and with
     /// `--no-device-read`.
     pub read_device: bool,
+    /// Walk into read-only btrfs snapshots inside the scan (Linux). Off, each is left empty, as a
+    /// mount `-x` leaves is: a snapshot is a whole earlier copy of what the scan already walks —
+    /// Synology keeps one per share per hour under `#snapshot` — so walking a few dozen of them
+    /// walks the volume a few dozen times, and what they hold of their own (the blocks since
+    /// rewritten) is a small part of it. Named as the scan root, a snapshot is scanned. Nothing
+    /// else has such snapshots: the other walkers ignore this.
+    pub snapshots: bool,
 }
 
 impl ScanOptions {
@@ -66,6 +73,7 @@ impl Default for ScanOptions {
             one_file_system: false,
             hard_link_threshold: None,
             read_device: true,
+            snapshots: false,
         }
     }
 }

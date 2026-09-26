@@ -506,6 +506,26 @@ mod linux_walker {
     use ::std::io::Write;
     use ::std::path::{Path, PathBuf};
 
+    /// Off btrfs nothing is a read-only subvolume: the question gets `ENOTTY`, and the answer is no.
+    #[test]
+    fn nothing_off_btrfs_is_a_snapshot() {
+        use crate::linux::btrfs_subvolume::{is_read_only, path_is_read_only};
+        let root = temp_scan_dir("not_a_snapshot");
+        create_dir_all(root.join("dir")).expect("mkdir");
+        let dir = ::rustix::fs::open(
+            &root,
+            ::rustix::fs::OFlags::RDONLY | ::rustix::fs::OFlags::DIRECTORY,
+            ::rustix::fs::Mode::empty(),
+        )
+        .expect("open");
+        // Whatever the temp directory is on, a plain directory is no read-only subvolume, and a
+        // name that is not there cannot be one.
+        assert!(!is_read_only(::std::os::fd::AsFd::as_fd(&dir), c"dir"));
+        assert!(!is_read_only(::std::os::fd::AsFd::as_fd(&dir), c"missing"));
+        assert!(!path_is_read_only(&root.join("dir")));
+        ::std::fs::remove_dir_all(&root).expect("clean up");
+    }
+
     /// On a kernel with no `statx` (before 4.11) the walker asks `fstatat`; what it makes of the
     /// answer must be what `statx` itself says, field by field, for every kind of entry.
     #[test]
@@ -1188,8 +1208,15 @@ mod btrfs {
         snapshot(&root, "snap3");
         write(&root.join("live/changed"), size, 3);
 
-        let (tree, failed) = scan_into_tree(&root, ScanOptions::default());
+        let walked = ScanOptions {
+            snapshots: true,
+            ..ScanOptions::default()
+        };
+        let (tree, failed) = scan_into_tree(&root, walked);
         let total = tree.get_total_size();
+        // By default the snapshots are left empty: the live copy is all there is.
+        let (live, _) = scan_into_tree(&root, ScanOptions::default());
+        let live = live.get_total_size();
         remove(&root);
 
         assert_eq!(failed, 0);
@@ -1199,6 +1226,11 @@ mod btrfs {
             total >= held && total < held + 64 * 1024,
             "expected about {held}, got {total}: a snapshot counted again is {} more",
             size
+        );
+        let alive = 2 * size as u128;
+        assert!(
+            live >= alive && live < alive + 64 * 1024,
+            "expected about {alive} with the snapshots left out, got {live}"
         );
     }
 }

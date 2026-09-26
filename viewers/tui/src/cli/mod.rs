@@ -35,6 +35,11 @@ pub struct Opt {
     /// Path to config file (default: `~/.config/duscape/config.toml`)
     #[arg(short = 'c', long, value_name = "FILE")]
     pub config: Option<PathBuf>,
+    /// Linux: walk into the read-only btrfs snapshots inside the folder too (Synology's
+    /// `#snapshot`, snapper's `.snapshots`), each a whole earlier copy of what is scanned; by
+    /// default they are left empty
+    #[arg(long)]
+    pub snapshots: bool,
     /// Do not cross filesystem boundaries (like `du -x`)
     #[arg(short = 'x', long = "one-file-system")]
     pub one_file_system: bool,
@@ -96,6 +101,7 @@ impl Opt {
             one_file_system: self.one_file_system,
             hard_link_threshold: self.hard_link_threshold,
             read_device: !self.no_device_read,
+            snapshots: self.snapshots,
         }
     }
 

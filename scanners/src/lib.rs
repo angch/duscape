@@ -241,6 +241,14 @@ pub fn environment(root: &Path, options: ScanOptions) -> Vec<(&'static str, Stri
     #[cfg(target_os = "linux")]
     return ::std::iter::once(walker)
         .chain(linux::environment(root))
+        .chain(::std::iter::once((
+            "snapshots",
+            if options.snapshots {
+                "walked (--snapshots)".to_string()
+            } else {
+                "read-only btrfs snapshots are left empty (--snapshots walks them)".to_string()
+            },
+        )))
         .collect();
     #[cfg(not(target_os = "linux"))]
     vec![walker]

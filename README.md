@@ -41,6 +41,9 @@ reasoning. The native windows came after, sharing everything but their drawing.
 - **Native walkers** — Linux, macOS and Windows each get their own parallel directory walk; other
   platforms, the BSDs included, use `dua-core`'s portable one
 - **Stays put on request** — `-x` keeps the scan on one filesystem, like `du -x`
+- **Snapshots left alone** — on Linux, read-only btrfs snapshots inside the folder (Synology's
+  `#snapshot`, snapper's `.snapshots`) are not walked, since each is a whole earlier copy of what
+  is scanned; `--snapshots` walks them, counting each shared block once
 - **Reads the disk itself** — as root on ext4, the metadata comes straight off the block device
   in ordered sweeps rather than one `stat` per file (a cold scan in half the time); elevated on
   Windows, a whole NTFS volume can be read from its master file table, as WizTree does, where a
@@ -112,7 +115,9 @@ The terminal viewer wants a terminal of roughly 50×15 cells at least.
 A folder's size is the space held under it: each distinct file counted once, however many names
 point at it, so sizes do not add up where hard links are involved, and deleting one link frees
 nothing until the last is gone. By default the scan crosses mount points, like `du`; `-x` keeps it
-on one filesystem. On a whole volume duscape shows the disk's used space and how much of it the
+on one filesystem. Read-only btrfs snapshots inside the scan are left empty unless `--snapshots` is
+given: a NAS keeping hourly snapshots of a share would otherwise be walked once for each, and what
+they hold of their own shows as what the scan did not reach. On a whole volume duscape shows the disk's used space and how much of it the
 scan did not reach (the terminal viewer in its title, the Windows window under the path, the
 macOS and Linux windows in their status bar).
 [`docs/sizes.md`](docs/sizes.md) explains all of this, including what Windows does about hard

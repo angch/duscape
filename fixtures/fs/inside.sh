@@ -224,6 +224,39 @@ snapshots() {
   snapshot_case "large files" 4194304 4194304 ""
   # 4 KiB and up, so none is inline and all of it is in btrfs's data figure.
   snapshot_case "small files" 4096 61440 ""
+  synology_snapshots
+}
+
+# As Synology DSM shows a shared folder's snapshots: read-only snapshots of the share inside it,
+# under `#snapshot`, one per point in time. Walking them walked the share once per snapshot.
+synology_snapshots() {
+  local at=$mnt/synology share
+  make_fs btrfs "$at" || { say SKIP "snapshots: synology" "no btrfs"; return; }
+  share=$at/share
+  btrfs -q subvolume create "$share" && chown "$U:$U" "$share"
+  # Files of 64 KiB and up: none inline, so all of it is in btrfs's data figure.
+  as_user bash -c "$(declare -f random_file)
+    mkdir -p '$share/data/photos'
+    for i in \$(seq 24); do random_file '$share/data/photos/p'\$i \$(( 65536 * i )); done"
+  mkdir "$share/#snapshot"
+  sync
+  for t in 21 22 23; do
+    btrfs -q subvolume snapshot -r "$share" "$share/#snapshot/GMT+08-2026.09.$t-00.00.01"
+  done
+  sync
+  check "snapshots: a share's #snapshot, left out" \
+    "$(inode_oracle disk "$share" -path "$share/#snapshot" -prune -o)" "$(duscape_total "$share")"
+  check "snapshots: a share's #snapshot, walked, each block once" "$(btrfs_data_used "$at")" \
+    "$(duscape_total "$share" --snapshots)" 65536
+  # And as a kernel before 4.11 reads it — Synology's own — with fstatat standing in for statx.
+  check "snapshots: a share's #snapshot, left out, without statx" \
+    "$(inode_oracle disk "$share" -path "$share/#snapshot" -prune -o)" \
+    "$(DUSCAPE_NO_STATX=1 duscape_total "$share")"
+  # Named as the root, a snapshot is scanned: it is what was asked for.
+  check "snapshots: one snapshot named as the root" \
+    "$(inode_oracle disk "$share/#snapshot/GMT+08-2026.09.21-00.00.01")" \
+    "$(duscape_total "$share/#snapshot/GMT+08-2026.09.21-00.00.01")"
+  unmount "$at"
 }
 
 # A subvolume of 40 files between $2 and $3 bytes, three read-only snapshots of it, then one file
@@ -241,7 +274,11 @@ snapshot_case() {
   for n in 1 2 3; do btrfs -q subvolume snapshot -r "$at/live" "$at/snap$n"; done
   as_user bash -c "$(declare -f random_file); random_file '$at/live/f1' $high"
   sync
-  check "snapshots: $name, 3 snapshots" "$(btrfs_data_used "$at")" "$(duscape_total "$at")" 65536 "$known"
+  check "snapshots: $name, 3 snapshots walked" "$(btrfs_data_used "$at")" \
+    "$(duscape_total "$at" --snapshots)" 65536 "$known"
+  # By default a read-only snapshot is left empty, as `-x` leaves a mount: the live copy is all.
+  check "snapshots: $name, left out by default" "$(inode_oracle disk "$at/live")" \
+    "$(duscape_total "$at")"
   check "snapshots: $name, -x sees the top level only" 0 "$(duscape_total "$at" -x)" 0
   unmount "$at"
 }
@@ -313,13 +350,14 @@ compressed_snapshots() {
     yes 'rewritten after the snapshots' | head -c 16777216 >'$at/live/t1'"
   sync
   check "compressed snapshots: as root" "$(btrfs_data_used "$at")" \
-    "$(duscape_total_as_root "$at")" 65536
+    "$(duscape_total_as_root "$at" --snapshots)" 65536
   # As a user the sizes are uncompressed, but every distinct file must still count once: the live
   # files, less the reflink copy, plus the old t1 the snapshots keep. The files have 128 extents
   # each, more than one FIEMAP page.
   local blocks=$(( $(inode_oracle disk "$at/live") - $(stat -c %b "$at/live/t2.copy") * 512 \
     + $(stat -c %b "$at/snap1/t1") * 512 ))
-  check "compressed snapshots: as a user, each file once" "$blocks" "$(duscape_total "$at")"
+  check "compressed snapshots: as a user, each file once" "$blocks" \
+    "$(duscape_total "$at" --snapshots)"
   unmount "$at"
 }
 
