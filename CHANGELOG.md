@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `duscape --issues FOLDER`: a scan with nothing drawn, which prints the walker, the kernel,
+  whether it has `statx`, the filesystem and the user, then every kind of read failure with the
+  system's error and a count, and examples of where — at most 8 a folder and 200 in all, however
+  much fails. Every walker now records why a failure happened, not only that it did. The terminal
+  viewer's help line points at it.
 - One program per platform: `diskonaut` is the terminal viewer in a terminal and the
   platform's window when started from a desktop — a Linux launcher, Explorer, or Finder through
   `Diskonaut.app` (`make mac-app`, both architectures in one binary). `--gui` and `--tui` choose,
@@ -38,6 +43,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- On a kernel older than Linux 4.11 — Synology DSM runs 4.4 — every entry failed to read: the
+  Linux walker sizes entries with `statx`, which such a kernel lacks. It now falls back to
+  `fstatat` there, and where a container's seccomp filter refuses `statx` with `EPERM`; the totals
+  are the same to the byte (checked by making `statx` fail with `strace`), and a normal kernel's
+  scan is no slower.
+- Before Linux 5.8 the kernel does not say which directories are mount points, so a folder
+  bind-mounted inside the scan was counted twice there; the mount table says it instead
+  (`/proc/self/mountinfo`, the last mount at a point being the one shown). `DUSCAPE_NO_STATX=1`
+  reads as a kernel without `statx` would, and the filesystem fixtures check every filesystem's
+  totals and the bind-mount layouts that way as well.
 - The docs claimed a native BSD walker; there is none, the BSDs scan with `dua-core`'s portable
   walk. The Linux window's FreeBSD support is stated as what it is: it type-checks there, and has
   never been run there.

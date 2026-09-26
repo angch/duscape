@@ -44,6 +44,8 @@ pub struct FileTree {
     /// Which size the totals below report. The tree holds both; this is only which is shown.
     pub shown: SizeKind,
     pub failed_to_read: u64,
+    /// Why they failed, as far as the walker could say (`duscape --issues`).
+    pub issues: crate::scan::Issues,
     /// Bytes in use on the volume the scan covered, when it covered a whole volume in disk-usage
     /// mode and stayed on it, so that the two are comparable. See [`Self::outside_scan`].
     pub volume_used: Option<u128>,
@@ -79,6 +81,7 @@ impl FileTree {
             freed_since_scan: Sizes::ZERO,
             shown: SizeKind::Disk,
             failed_to_read: 0,
+            issues: crate::scan::Issues::default(),
             volume_used: None,
             hard_links: HardLinks::default(),
             size_at_depth: Vec::new(),
@@ -112,6 +115,7 @@ impl FileTree {
             &mut remap,
         );
         self.failed_to_read += other.failed_to_read;
+        self.issues.merge(other.issues);
         if let Some(theirs) = other.deferred {
             let mine = self.deferred.get_or_insert_with(Vec::new);
             mine.reserve(theirs.len());
@@ -464,7 +468,8 @@ impl FileTree {
     ///
     /// Resolving `dir_path` is O(depth), and doing it once for the whole directory rather than
     /// once per entry is what keeps tree building off the critical path of a fast walk.
-    pub fn add_dir_entries(&mut self, directory: DirEntries) {
+    pub fn add_dir_entries(&mut self, mut directory: DirEntries) {
+        self.issues.merge(directory.take_issues());
         let (dir_path, names, entries) = directory.into_parts();
         // A directory from outside the scanned tree has no place in it. Silently folding such a
         // path into the base folder, as skipping a component count would, invents entries.

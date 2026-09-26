@@ -187,6 +187,9 @@ filesystem() {
   say INFO "$fs: dataset" "has:${quirks:- none of hardlinks, sparse, symlinks}"
   check "$fs: disk usage" "$(inode_oracle disk "$at/data")" "$(duscape_total "$at/data")"
   check "$fs: apparent size" "$(inode_oracle apparent "$at/data")" "$(duscape_total "$at/data" -a)"
+  # As a kernel before 4.11 reads it, with fstatat standing in for statx.
+  check "$fs: disk usage, without statx" \
+    "$(inode_oracle disk "$at/data")" "$(DUSCAPE_NO_STATX=1 duscape_total "$at/data")"
   case $fs in vfat | exfat | ntfs3) ;; *) run_suites "$fs" "$at" ;; esac
   case $fs in xfs | btrfs) copy_on_write "$fs" "$at" ;; esac
   unmount "$at"
@@ -354,6 +357,14 @@ mounts() {
   # Scanning the bind mount alone, its source is outside the scan: it is all there is.
   check "mounts: a bind mount scanned on its own" \
     "$(inode_oracle disk "$m/bind")" "$(duscape_total "$m/bind")"
+  # As a kernel before 4.11 reads it (Synology's DSM runs 4.4): no statx, so no mount root or
+  # mount id from the kernel, and the mount table has to say where the bind mount is.
+  check "mounts: everything, as a kernel without statx" \
+    "$(inode_oracle disk "$m" "${prune[@]}")" "$(DUSCAPE_NO_STATX=1 duscape_total "$m")"
+  check "mounts: the same, with -x" \
+    "$(inode_oracle disk "$m" -xdev)" "$(DUSCAPE_NO_STATX=1 duscape_total "$m" -x)"
+  check "mounts: the bind mount on its own, without statx" \
+    "$(inode_oracle disk "$m/bind")" "$(DUSCAPE_NO_STATX=1 duscape_total "$m/bind")"
   unmount "$m"
 }
 

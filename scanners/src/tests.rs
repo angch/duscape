@@ -506,6 +506,62 @@ mod linux_walker {
     use ::std::io::Write;
     use ::std::path::{Path, PathBuf};
 
+    /// On a kernel with no `statx` (before 4.11) the walker asks `fstatat`; what it makes of the
+    /// answer must be what `statx` itself says, field by field, for every kind of entry.
+    #[test]
+    fn fstatat_answers_as_statx_does() {
+        use ::rustix::fs::{AtFlags, CWD, StatxFlags, statat, statx};
+        let root = temp_scan_dir("fstatat_as_statx");
+        let file = root.join("file.bin");
+        ::std::fs::write(&file, vec![7u8; 10_000]).expect("write");
+        let sparse = root.join("sparse.bin");
+        File::create(&sparse)
+            .and_then(|f| f.set_len(1 << 20))
+            .expect("sparse");
+        create_dir_all(root.join("dir")).expect("mkdir");
+        ::std::os::unix::fs::symlink("file.bin", root.join("link")).expect("symlink");
+        for name in ["file.bin", "sparse.bin", "dir", "link"] {
+            let path = root.join(name);
+            let flags = AtFlags::SYMLINK_NOFOLLOW | AtFlags::NO_AUTOMOUNT;
+            let want = statx(CWD, &path, flags, StatxFlags::BASIC_STATS).expect("statx");
+            let got = crate::linux::statx_from_stat(&statat(CWD, &path, flags).expect("fstatat"));
+            assert_eq!(
+                (
+                    got.stx_mode,
+                    got.stx_nlink,
+                    got.stx_ino,
+                    got.stx_size,
+                    got.stx_blocks
+                ),
+                (
+                    want.stx_mode,
+                    want.stx_nlink,
+                    want.stx_ino,
+                    want.stx_size,
+                    want.stx_blocks
+                ),
+                "{name}"
+            );
+            assert_eq!(
+                (
+                    got.stx_dev_major,
+                    got.stx_dev_minor,
+                    got.stx_uid,
+                    got.stx_gid
+                ),
+                (
+                    want.stx_dev_major,
+                    want.stx_dev_minor,
+                    want.stx_uid,
+                    want.stx_gid
+                ),
+                "{name}"
+            );
+            assert_eq!(got.stx_mask, StatxFlags::BASIC_STATS.bits(), "{name}");
+        }
+        ::std::fs::remove_dir_all(&root).expect("clean up");
+    }
+
     /// `root/a/deep/x.bin`, `root/a/y.bin`, `root/b/z.bin`, each 1024 bytes.
     fn tree(name: &str) -> PathBuf {
         let root = temp_scan_dir(name);
@@ -765,6 +821,43 @@ mod linux_walker {
             Path::new("/"),
             everything
         ));
+    }
+
+    /// Before Linux 5.8 `statx` says neither whether a directory is a mount root nor which mount
+    /// it is; the mount table says both, the last mount at a point being the one that shows.
+    #[test]
+    fn a_kernel_that_cannot_say_leaves_mount_roots_to_the_table() {
+        use crate::linux::mount_of;
+        use crate::linux::mounts::{parse, points};
+        use ::rustix::fs::{AtFlags, CWD, StatxFlags, statat, statx};
+        let table = parse(
+            "\
+22 1 259:2 / / rw - ext4 /dev/nvme0n1p2 rw
+30 22 259:2 /home/u/data /srv/data rw - ext4 /dev/nvme0n1p2 rw
+34 30 0:40 / /srv/data rw - tmpfs tmpfs rw
+",
+        );
+        let at = points(&table);
+        // Mounted over: the tmpfs shows at /srv/data now, not the bind mount under it.
+        assert_eq!(at.get(Path::new("/srv/data")), Some(&34));
+        assert_eq!(at.get(Path::new("/")), Some(&22));
+        assert_eq!(at.get(Path::new("/srv")), None);
+
+        // `fstatat`'s answer carries no mount attributes, so the table decides.
+        let old =
+            crate::linux::statx_from_stat(&statat(CWD, "/", AtFlags::empty()).expect("stat /"));
+        assert_eq!(mount_of(&old, || Some(22)), (true, 22));
+        assert_eq!(mount_of(&old, || None), (false, 0));
+        // Where `statx` says, it is believed, and the table is not asked.
+        if let Ok(new) = statx(CWD, "/", AtFlags::empty(), StatxFlags::MNT_ID)
+            && new
+                .stx_attributes_mask
+                .contains(::rustix::fs::StatxAttributes::MOUNT_ROOT)
+        {
+            let (root, id) = mount_of(&new, || panic!("the table was asked"));
+            assert!(root, "/ is a mount root");
+            assert_eq!(id, new.stx_mnt_id);
+        }
     }
 
     /// btrfs file-extent items, as `BTRFS_IOC_TREE_SEARCH_V2` returns them: what each occupies.

@@ -55,7 +55,9 @@ pub fn choose(args: &[OsString], started: Started, window_built: bool) -> Front 
         match flag {
             TUI => return Front::Terminal,
             GUI => return Front::Window,
-            "--benchmark" | "-h" | "--help" | "-V" | "--version" => return Front::Terminal,
+            "--benchmark" | "--issues" | "-h" | "--help" | "-V" | "--version" => {
+                return Front::Terminal;
+            }
             _ => {}
         }
     }
@@ -217,9 +219,13 @@ mod tests {
             choose(&args(&["duscape", "--tui"]), LAUNCHER, true),
             Front::Terminal
         );
-        // Redirected, as the benchmark scripts run it.
+        // Redirected, as the benchmark scripts run it, and a report of what failed to read.
         assert_eq!(
             choose(&args(&["duscape", "--benchmark", "/"]), LAUNCHER, true),
+            Front::Terminal
+        );
+        assert_eq!(
+            choose(&args(&["duscape", "--issues", "/"]), LAUNCHER, true),
             Front::Terminal
         );
         assert_eq!(

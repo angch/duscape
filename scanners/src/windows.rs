@@ -597,7 +597,8 @@ fn read_directory(
     let mut children = Vec::new();
 
     let Some(handle) = Handle::open(&job.path, ffi::FILE_LIST_DIRECTORY, false) else {
-        directory.failed = 1;
+        // `Handle::open`'s own call is the last one made, so its error is still the thread's.
+        directory.fail("open", None, ::std::io::Error::last_os_error());
         return (directory, children);
     };
 
@@ -640,7 +641,9 @@ fn read_directory(
                     continue;
                 }
                 _ => {
-                    directory.failed += 1;
+                    #[allow(clippy::cast_possible_wrap)]
+                    let error = ::std::io::Error::from_raw_os_error(error as i32);
+                    directory.fail("list", None, error);
                     break;
                 }
             }

@@ -30,6 +30,8 @@ For each of **ext4, XFS, btrfs, f2fs, tmpfs, FAT32, exFAT, NTFS** (`ntfs3`):
 - on the POSIX ones, the whole `libduscape` and `duscape` test suites with `TMPDIR` on
   that filesystem, so every test that makes a temp tree makes it there; `DUSCAPE_TEST_REFLINK_DIR`
   is set on XFS and btrfs and `DUSCAPE_TEST_BTRFS_DIR` on btrfs, which enables their tests
+- the disk usage again as a kernel without `statx` reads it (`DUSCAPE_NO_STATX=1`, `fstatat`
+  standing in: Linux before 4.11, Synology's DSM 4.4)
 - on XFS and btrfs, **copy-on-write**: whole reflink clones held once, a clone rewritten in part
   counted in full (by design), and a clone below the probe threshold
 
@@ -45,7 +47,9 @@ Scenarios:
   two snapshots, a reflink copy and a rewrite: as root, btrfs's data used exactly; as a user, each
   distinct file once at its uncompressed size.
 - **`mounts`**: an ext4 root with XFS nested in it, `proc` (must be skipped), `tmpfs` (counted, as
-  `du` counts it), checked with and without `-x`; then a bind mount of a folder inside the scan.
+  `du` counts it), checked with and without `-x`; then a bind mount of a folder inside the scan,
+  and the whole layout again without `statx`, where the mount table has to say which directories
+  are mount points (the kernel says so itself only from 5.8).
 - **`network`**: a loopback NFSv4 server (kernel `nfsd`, exporting a tmpfs) and an `rclone mount
   :memory:` (`fuse.rclone`, remote by subtype, no network needed), both mounted inside an ext4
   root. Neither may be walked into; an NFS mount named as the root must still scan. The container

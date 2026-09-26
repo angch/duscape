@@ -23,7 +23,7 @@ use ::std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use ::std::sync::{Arc, Condvar, Mutex};
 use ::std::thread::JoinHandle;
 
-use ::rustix::fs::{AtFlags, FileType, Mode, OFlags, RawDir, StatxFlags, openat, statx};
+use ::rustix::fs::{AtFlags, FileType, Mode, OFlags, RawDir, StatxFlags, openat};
 
 use super::{DirEntries, EntryMeta, ScanOptions};
 
@@ -77,6 +77,9 @@ struct Shared {
     /// The mount table, read the first time the walk meets a mount root, which most walks of a
     /// home directory never do.
     mounts: ::std::sync::OnceLock<Vec<mounts::Mount>>,
+    /// Each mount point in the table and the id of what shows there, built from it the first
+    /// time a kernel that cannot say (before 5.8) leaves the walk to ask; see [`Shared::mounted_at`].
+    points: ::std::sync::OnceLock<::std::collections::HashMap<PathBuf, u64>>,
     /// The block devices opened for [`dirblocks`], by `st_dev`; `None` where one could not be.
     devices: Mutex<::std::collections::HashMap<u64, Option<Arc<dirblocks::Device>>>>,
 }
@@ -86,6 +89,16 @@ impl Shared {
     fn mount_table(&self) -> &[mounts::Mount] {
         self.mounts
             .get_or_init(|| mounts::read().unwrap_or_default())
+    }
+
+    /// The mount shown at `path`, by id, if `path` is a mount point: what `statx` says itself
+    /// from Linux 5.8 (`STATX_ATTR_MOUNT_ROOT`, `stx_mnt_id`), found in the mount table before
+    /// then. The last mount at a point is the one that shows there.
+    fn mounted_at(&self, path: &Path) -> Option<u64> {
+        self.points
+            .get_or_init(|| mounts::points(self.mount_table()))
+            .get(path)
+            .copied()
     }
 
     /// The block device under `device`, opened the first time it is asked for.
@@ -172,7 +185,7 @@ fn inspect(
     scan_device: u64,
     shared: &Shared,
     descend: bool,
-) -> Option<Inspected> {
+) -> Result<Inspected, ::rustix::io::Errno> {
     // NO_AUTOMOUNT matters as much as SYMLINK_NOFOLLOW here. `stat`, `lstat` and `fstatat` all
     // behave as though it were set; bare `statx` does not, and the man page names this exact
     // case: "can be used in tools that scan directories to prevent mass-automounting of a
@@ -185,8 +198,7 @@ fn inspect(
         name,
         AtFlags::SYMLINK_NOFOLLOW | AtFlags::NO_AUTOMOUNT,
         WANTED,
-    )
-    .ok()?;
+    )?;
 
     let kind = FileType::from_raw_mode(u32::from(stat.stx_mode));
     let is_dir = kind == FileType::Directory;
@@ -233,16 +245,11 @@ fn inspect(
         // A mount root showing a directory the walk reaches anyway — a bind mount of a folder
         // inside the scan, or a second mount of a filesystem already in it — is left empty:
         // same `st_dev`, often, so nothing below would notice the files were seen already.
-        let mount_root = stat
-            .stx_attributes_mask
-            .contains(::rustix::fs::StatxAttributes::MOUNT_ROOT)
-            && stat
-                .stx_attributes
-                .contains(::rustix::fs::StatxAttributes::MOUNT_ROOT);
+        let (mount_root, mount_id) = mount_of(&stat, || shared.mounted_at(&path));
         let duplicate = mount_root && {
             mounts::reached_elsewhere(
                 shared.mount_table(),
-                stat.stx_mnt_id,
+                mount_id,
                 &path,
                 &shared.root,
                 |path| {
@@ -292,7 +299,7 @@ fn inspect(
         }
     }
 
-    Some(Inspected {
+    Ok(Inspected {
         meta: EntryMeta {
             size: on_disk,
             apparent: stat.stx_size,
@@ -343,8 +350,8 @@ fn read_directory(
         Mode::empty(),
     ) {
         Ok(dir) => dir,
-        Err(_) => {
-            directory.failed = 1;
+        Err(error) => {
+            directory.fail("open", None, ::std::io::Error::from(error));
             return (directory, children);
         }
     };
@@ -377,13 +384,13 @@ fn read_directory(
             // It matters here: the TUI resizes on `SIGWINCH` while a scan is running, and treating
             // that as a dead directory would silently drop the rest of it and its whole subtree.
             Err(::rustix::io::Errno::INTR) => continue,
-            Err(_) => {
+            Err(error) => {
                 // Otherwise stop reading this directory rather than asking again. A `getdents64`
                 // error is a property of the descriptor, not of one entry, so it is still there on
                 // the next call: `/proc/<pid>/net` for a process that has since died returns
                 // `EINVAL` every time, and retrying it is an infinite loop. `std`'s `ReadDir` ends
                 // on the first error too.
-                directory.failed += 1;
+                directory.fail("list", None, ::std::io::Error::from(error));
                 break;
             }
         };
@@ -417,43 +424,49 @@ fn read_directory(
             descend,
         )
     };
-    let mut keep = |directory: &mut DirEntries, l: &Listed, found: Option<Inspected>| {
-        let Some(found) = found else {
-            // A file that vanished between the readdir and the stat, or one whose parent we may
-            // list but not interrogate. Counted, not guessed at.
-            directory.failed += 1;
-            return;
+    let mut keep =
+        |directory: &mut DirEntries, l: &Listed, found: Result<Inspected, ::rustix::io::Errno>| {
+            let found = match found {
+                Ok(found) => found,
+                Err(error) => {
+                    // A file that vanished between the readdir and the stat, or one whose parent we
+                    // may list but not interrogate. Counted, not guessed at.
+                    let name = OsStr::from_bytes(name_of(l).to_bytes());
+                    directory.fail("stat", Some(name), ::std::io::Error::from(error));
+                    return;
+                }
+            };
+            if let Some(child) = found.child {
+                children.push(child);
+            }
+            if found.later {
+                directory
+                    .later
+                    .push(u32::try_from(directory.len()).unwrap_or(u32::MAX));
+            }
+            directory.push(OsStr::from_bytes(name_of(l).to_bytes()), found.meta);
         };
-        if let Some(child) = found.child {
-            children.push(child);
-        }
-        if found.later {
-            directory
-                .later
-                .push(u32::try_from(directory.len()).unwrap_or(u32::MAX));
-        }
-        directory.push(OsStr::from_bytes(name_of(l).to_bytes()), found.meta);
-    };
 
     let helpers = (listed.len() / STAT_CHUNK).min(shared.threads);
     if listed.len() >= STAT_SHARED_ABOVE && helpers > 1 {
         // This worker takes the first chunk itself; the helpers take the rest, and hand their
         // findings back in listing order so the packed directory comes out the same either way.
         let chunk = listed.len().div_ceil(helpers);
-        let found: Vec<Vec<Option<Inspected>>> = ::std::thread::scope(|scope| {
-            let mut chunks = listed.chunks(chunk);
-            let first = chunks.next().unwrap_or(&[]);
-            let handles: Vec<_> = chunks
-                .map(|part| scope.spawn(move || part.iter().map(look).collect::<Vec<_>>()))
-                .collect();
-            let mut all = vec![first.iter().map(look).collect::<Vec<_>>()];
-            all.extend(handles.into_iter().map(|handle| {
-                handle
-                    .join()
-                    .unwrap_or_else(|panic| ::std::panic::resume_unwind(panic))
-            }));
-            all
-        });
+        let found: Vec<Vec<Result<Inspected, ::rustix::io::Errno>>> =
+            ::std::thread::scope(|scope| {
+                let mut chunks = listed.chunks(chunk);
+                let first = chunks.next().unwrap_or(&[]);
+                let handles: Vec<_> = chunks
+                    .map(|part| scope.spawn(move || part.iter().map(look).collect::<Vec<_>>()))
+                    .collect();
+                let mut all = vec![first.iter().map(look).collect::<Vec<_>>()];
+                all.extend(handles.into_iter().map(|handle| {
+                    handle
+                        .join()
+                        .unwrap_or_else(|panic| ::std::panic::resume_unwind(panic))
+                }));
+                all
+            });
         for (l, found) in listed.iter().zip(found.into_iter().flatten()) {
             keep(&mut directory, l, found);
         }
@@ -824,14 +837,18 @@ pub(crate) mod filesystem {
         path: &Path,
         table: &'a [super::mounts::Mount],
     ) -> Option<&'a super::mounts::Mount> {
-        let stat = ::rustix::fs::statx(
+        let stat = super::statx(
             ::rustix::fs::CWD,
             path,
             ::rustix::fs::AtFlags::NO_AUTOMOUNT,
             ::rustix::fs::StatxFlags::MNT_ID,
         )
         .ok()?;
-        table.iter().find(|mount| mount.id == stat.stx_mnt_id)
+        if stat.stx_mask & ::rustix::fs::StatxFlags::MNT_ID.bits() != 0 {
+            return table.iter().find(|mount| mount.id == stat.stx_mnt_id);
+        }
+        // No mount id before Linux 5.8: the last mount at this point is the one that shows.
+        table.iter().rev().find(|mount| mount.point == path)
     }
 
     /// Whether the FUSE filesystem mounted at `path` is one of [`NETWORK_FUSE`]: `statfs` says only
@@ -1193,21 +1210,20 @@ pub fn walk_would_enter(scan_root: &Path, folder: &Path, options: ScanOptions) -
         return true;
     };
     let device = device_of(&stat);
-    let mount_root = stat
-        .stx_attributes_mask
-        .contains(::rustix::fs::StatxAttributes::MOUNT_ROOT)
-        && stat
-            .stx_attributes
-            .contains(::rustix::fs::StatxAttributes::MOUNT_ROOT);
+    // Read only if it is needed: at a mount point, or on a kernel that cannot say whether this is
+    // one (before 5.8), which a rescan of a folder asks every time.
+    let table = ::std::cell::OnceCell::new();
+    let table = || table.get_or_init(|| mounts::read().unwrap_or_default());
+    let (mount_root, mount_id) = mount_of(&stat, || mounts::points(table()).get(folder).copied());
     if device == device_of(&parent) && !mount_root {
         return true;
     }
-    let table = mounts::read().unwrap_or_default();
-    let kind = filesystem::classify_with(folder, &table);
+    let table = table();
+    let kind = filesystem::classify_with(folder, table);
     let crossing_allowed =
         (!options.one_file_system || device == device_of(&root)) && !kind.pseudo && !kind.network;
     let duplicate = mount_root
-        && mounts::reached_elsewhere(&table, stat.stx_mnt_id, folder, scan_root, |path| {
+        && mounts::reached_elsewhere(table, mount_id, folder, scan_root, |path| {
             stat_of(path)
                 .is_ok_and(|other| device_of(&other) == device && other.stx_ino == stat.stx_ino)
         });
@@ -1285,6 +1301,15 @@ pub(crate) mod mounts {
             .collect()
     }
 
+    /// Every mount point in `table` and the id of the mount that shows there: the last one
+    /// mounted at it, as the table lists them in the order they were mounted.
+    pub fn points(table: &[Mount]) -> ::std::collections::HashMap<PathBuf, u64> {
+        table
+            .iter()
+            .map(|mount| (mount.point.clone(), mount.id))
+            .collect()
+    }
+
     /// `mountinfo` writes space, tab, newline and backslash in paths as `\040`, `\011`, `\012`
     /// and `\134`.
     fn unescape(field: &str) -> PathBuf {
@@ -1348,6 +1373,147 @@ pub(crate) mod mounts {
     }
 }
 
+/// For `duscape --issues`: the kernel, whether its `statx` answers (and what stands in when it
+/// does not), the filesystem `root` is on, and whether the scan runs as root.
+pub fn environment(root: &Path) -> Vec<(&'static str, String)> {
+    let kernel = ::std::fs::read_to_string("/proc/sys/kernel/osrelease")
+        .map(|release| release.trim().to_string())
+        .unwrap_or_else(|error| format!("unknown ({error})"));
+    let asked = ::rustix::fs::statx(
+        rustix::fs::CWD,
+        root,
+        AtFlags::NO_AUTOMOUNT,
+        StatxFlags::BASIC_STATS | StatxFlags::MNT_ID,
+    );
+    let mount_roots = match &asked {
+        Ok(stat)
+            if stat
+                .stx_attributes_mask
+                .contains(::rustix::fs::StatxAttributes::MOUNT_ROOT)
+                && ::std::env::var_os("DUSCAPE_NO_STATX").is_none() =>
+        {
+            "from statx".to_string()
+        }
+        _ => "from /proc/self/mountinfo (the kernel does not say, before Linux 5.8)".to_string(),
+    };
+    let statx_words = match asked {
+        Ok(_) if ::std::env::var_os("DUSCAPE_NO_STATX").is_some() => {
+            "not used (DUSCAPE_NO_STATX): sizes come from fstatat".to_string()
+        }
+        Ok(_) => "available".to_string(),
+        Err(::rustix::io::Errno::NOSYS) => {
+            "missing (the kernel is older than 4.11): sizes come from fstatat".to_string()
+        }
+        Err(::rustix::io::Errno::PERM) => {
+            "refused (EPERM, a seccomp filter): sizes come from fstatat".to_string()
+        }
+        Err(error) => format!(
+            "fails on the folder itself: {}",
+            ::std::io::Error::from(error)
+        ),
+    };
+    let filesystem = mounts::read()
+        .and_then(|table| {
+            let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+            // The last of the longest mount points above the folder is what it is on.
+            table
+                .into_iter()
+                .filter(|mount| root.starts_with(&mount.point))
+                .max_by_key(|mount| mount.point.as_os_str().len())
+                .map(|mount| format!("{} (mounted at {})", mount.fstype, mount.point.display()))
+        })
+        .unwrap_or_else(|| "unknown (no /proc/self/mountinfo)".to_string());
+    let user = if ::rustix::process::geteuid().is_root() {
+        "root".to_string()
+    } else {
+        format!("uid {}", ::rustix::process::geteuid().as_raw())
+    };
+    vec![
+        ("kernel", kernel),
+        ("statx", statx_words),
+        ("mount points", mount_roots),
+        ("filesystem", filesystem),
+        ("running as", user),
+    ]
+}
+
+/// Whether a directory is a mount root, and the id of the mount shown there: `statx`'s own
+/// answer from Linux 5.8, else the mount table's (`mounted_at`), since before 5.8 the kernel has
+/// neither `STATX_ATTR_MOUNT_ROOT` nor `stx_mnt_id`, and a bind mount of a folder inside the scan
+/// would be walked twice.
+pub(crate) fn mount_of(
+    stat: &::rustix::fs::Statx,
+    mounted_at: impl FnOnce() -> Option<u64>,
+) -> (bool, u64) {
+    let root = ::rustix::fs::StatxAttributes::MOUNT_ROOT;
+    if stat.stx_attributes_mask.contains(root) {
+        (stat.stx_attributes.contains(root), stat.stx_mnt_id)
+    } else {
+        mounted_at().map_or((false, 0), |id| (true, id))
+    }
+}
+
+/// Set once `statx` has said the kernel has none, so that the walk stops asking. Set from the
+/// start by `DUSCAPE_NO_STATX` (any value), which makes a scan read as it would on a kernel
+/// before 4.11: for testing that path on a new kernel, and a way around a `statx` that misbehaves.
+static NO_STATX: AtomicBool = AtomicBool::new(false);
+
+/// `statx`, or on a kernel that has none — before Linux 4.11, which Synology's DSM still runs,
+/// among others — `fstatat`, answered in `statx`'s shape. Old container seccomp profiles refuse
+/// `statx` with `EPERM` instead, which is no file's permission error (that is `EACCES`): there
+/// `fstatat` is tried, and used from then on if it answers. Without it every entry of such a
+/// kernel failed to read. What `fstatat` cannot say is left empty and not claimed in `stx_mask`:
+/// the attributes (compression, mount roots) and the mount id, which the walk already goes
+/// without on kernels before 5.8.
+pub(crate) fn statx<P: ::rustix::path::Arg + Copy, Fd: AsFd>(
+    dir: Fd,
+    path: P,
+    flags: AtFlags,
+    mask: StatxFlags,
+) -> ::rustix::io::Result<::rustix::fs::Statx> {
+    if !NO_STATX.load(Ordering::Relaxed) {
+        match ::rustix::fs::statx(dir.as_fd(), path, flags, mask) {
+            Err(::rustix::io::Errno::NOSYS) => NO_STATX.store(true, Ordering::Relaxed),
+            Err(::rustix::io::Errno::PERM) => {
+                let stat = ::rustix::fs::statat(dir, path, flags)?;
+                NO_STATX.store(true, Ordering::Relaxed);
+                return Ok(statx_from_stat(&stat));
+            }
+            other => return other,
+        }
+    }
+    ::rustix::fs::statat(dir, path, flags).map(|stat| statx_from_stat(&stat))
+}
+
+/// `fstatat`'s answer as a `statx` one: the basic fields, nothing else.
+pub(crate) fn statx_from_stat(stat: &::rustix::fs::Stat) -> ::rustix::fs::Statx {
+    // SAFETY: `Statx` is `repr(C)` and made only of integers and flag sets of integers, for
+    // which all zeroes is a valid value; every field the walk reads is set below.
+    let mut statx: ::rustix::fs::Statx = unsafe { MaybeUninit::zeroed().assume_init() };
+    // The kernel's `struct stat` differs in its integer widths from one architecture to the
+    // next; `statx`'s are fixed.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::unnecessary_cast
+    )]
+    {
+        statx.stx_mask = StatxFlags::BASIC_STATS.bits();
+        statx.stx_mode = stat.st_mode as u16;
+        statx.stx_nlink = stat.st_nlink as u32;
+        statx.stx_uid = stat.st_uid as u32;
+        statx.stx_gid = stat.st_gid as u32;
+        statx.stx_ino = stat.st_ino as u64;
+        statx.stx_size = stat.st_size as u64;
+        statx.stx_blocks = stat.st_blocks as u64;
+        statx.stx_blksize = stat.st_blksize as u32;
+        let device = stat.st_dev as u64;
+        statx.stx_dev_major = ::rustix::fs::major(device);
+        statx.stx_dev_minor = ::rustix::fs::minor(device);
+    }
+    statx
+}
+
 /// The device a `statx` result names, in the same encoding `st_dev` uses.
 fn device_of(stat: &rustix::fs::Statx) -> u64 {
     ::rustix::fs::makedev(stat.stx_dev_major, stat.stx_dev_minor)
@@ -1397,6 +1563,9 @@ impl Drop for LinuxWalk {
 
 /// Walk `root` with `threads` workers, yielding one [`DirEntries`] per directory.
 pub fn walk_linux(root: &Path, threads: usize, options: ScanOptions) -> LinuxWalk {
+    if ::std::env::var_os("DUSCAPE_NO_STATX").is_some() {
+        NO_STATX.store(true, Ordering::Relaxed);
+    }
     let root: PathBuf = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let root: Arc<Path> = Arc::from(root.as_path());
 
@@ -1420,6 +1589,7 @@ pub fn walk_linux(root: &Path, threads: usize, options: ScanOptions) -> LinuxWal
         root: Arc::clone(&root),
         threads,
         mounts: ::std::sync::OnceLock::new(),
+        points: ::std::sync::OnceLock::new(),
         devices: Mutex::new(::std::collections::HashMap::new()),
     });
     shared.jobs.lock().expect("scan queue poisoned").push(Job {

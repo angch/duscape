@@ -35,14 +35,20 @@ pub struct MacosEntry {
     pub meta: EntryMeta,
 }
 
+/// A failure while reading a directory: the entry's name when it is known, what was being done,
+/// and what the system said.
+type Failure = (Option<OsString>, &'static str, String);
+
 /// Collect owned entries into the packed form the rest of the scan expects.
-fn packed(path: &Path, entries: Vec<MacosEntry>, failed: u64) -> DirEntries {
+fn packed(path: &Path, entries: Vec<MacosEntry>, failures: Vec<Failure>) -> DirEntries {
     let name_bytes = entries.iter().map(|entry| entry.name.len()).sum();
     let mut directory = DirEntries::with_capacity(Arc::from(path), entries.len(), name_bytes);
     for entry in entries {
         directory.push(&entry.name, entry.meta);
     }
-    directory.failed = failed;
+    for (name, action, error) in failures {
+        directory.fail(action, name.as_deref(), error);
+    }
     directory
 }
 
@@ -330,7 +336,7 @@ fn read_dir_bulk(
     let length_for_disk = size.length_for_disk(directory.as_raw_fd(), device);
     let mut entries = Vec::new();
     let mut listed = Vec::new();
-    let mut failed = 0u64;
+    let mut failures: Vec<Failure> = Vec::new();
     loop {
         let mut attributes = requested_attributes();
         // SAFETY: the descriptor is owned and open, `attributes` is a valid initialized attrlist,
@@ -364,7 +370,13 @@ fn read_dir_bulk(
                 .filter(|length| *length >= 4 && offset + *length <= buffer.0.len())
             else {
                 // The rest of the batch cannot be located without this record's length.
-                failed += (count - index) as u64;
+                for _ in index..count {
+                    failures.push((
+                        None,
+                        "list",
+                        "a bulk record that could not be located".into(),
+                    ));
+                }
                 break;
             };
             if index == 0
@@ -382,14 +394,14 @@ fn read_dir_bulk(
                         inode: record.inode,
                     });
                 }
-                None => failed += 1,
+                None => failures.push((None, "list", "a bulk record marked unreadable".into())),
             }
             offset += length;
         }
     }
 
     Ok(DirRead {
-        entries: packed(path, entries, failed),
+        entries: packed(path, entries, failures),
         inode,
         device,
         listed,
@@ -407,15 +419,22 @@ fn read_dir_stat(path: &Path, inode: u64, device: u64) -> io::Result<DirRead> {
 
     let mut entries = Vec::new();
     let mut listed = Vec::new();
-    let mut failed = 0u64;
+    let mut failures: Vec<Failure> = Vec::new();
     for entry in ::std::fs::read_dir(path)? {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                failures.push((None, "list", error.to_string()));
+                continue;
+            }
+        };
         // `DirEntry::metadata` does not follow symlinks, matching the bulk path.
-        let Ok((entry, metadata)) = entry.and_then(|entry| {
-            let metadata = entry.metadata()?;
-            Ok((entry, metadata))
-        }) else {
-            failed += 1;
-            continue;
+        let metadata = match entry.metadata() {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                failures.push((Some(entry.file_name()), "stat", error.to_string()));
+                continue;
+            }
         };
         let size = libduscape::os::size_on_disk_fast(&metadata);
         entries.push(MacosEntry {
@@ -436,7 +455,7 @@ fn read_dir_stat(path: &Path, inode: u64, device: u64) -> io::Result<DirRead> {
     }
 
     Ok(DirRead {
-        entries: packed(path, entries, failed),
+        entries: packed(path, entries, failures),
         inode,
         device,
         listed,
@@ -614,9 +633,9 @@ pub fn walk_macos(
                                 stop = sender.send(read.entries).is_err();
                                 queue.push_all(children);
                             }
-                            Err(_) => {
+                            Err(error) => {
                                 let mut unreadable = DirEntries::new(Arc::from(job.path.as_path()));
-                                unreadable.failed = 1;
+                                unreadable.fail("open", None, error);
                                 stop = sender.send(unreadable).is_err();
                             }
                         }

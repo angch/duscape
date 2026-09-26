@@ -190,9 +190,148 @@ pub struct DirEntries {
     pub later: Vec<u32>,
     /// What those entries' extent offsets index; see `linux::Job::extent_space`.
     pub extent_space: u64,
+    /// Why what [`Self::failed`] counts failed, for `--issues`; see [`Self::fail`].
+    pub issues: Issues,
+}
+
+/// A failure a scan counted, kept to be shown (`duscape --issues`): where, what was being done
+/// there, and what the system said.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Issue {
+    pub path: PathBuf,
+    /// `open`, `list`, `stat`…
+    pub action: &'static str,
+    pub error: String,
+}
+
+/// The failures of a directory, or of a whole scan: every one counted by its kind (what was
+/// being done and the error), a few kept whole as examples. Bounded whatever fails: a scan in
+/// which every entry fails — a kernel without a call the walker uses — keeps a few hundred
+/// examples and a line per kind, not one per entry.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Issues {
+    pub examples: Vec<Issue>,
+    /// How many of each kind: `(action, error)`.
+    pub kinds: ::std::collections::BTreeMap<(&'static str, String), u64>,
+}
+
+impl Issues {
+    /// Examples a scan keeps.
+    pub const KEPT: usize = 200;
+    /// Examples a directory keeps: what a scan keeps is spread over many.
+    pub const KEPT_IN_A_DIRECTORY: usize = 8;
+    /// Kinds kept apart; the rest are counted together as [`Self::OTHER`]. An error that names
+    /// its path would otherwise make a kind of every failure.
+    pub const KINDS: usize = 64;
+    /// What the kinds past [`Self::KINDS`] are counted as.
+    pub const OTHER: &'static str = "other errors";
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.kinds.is_empty()
+    }
+
+    /// Every failure counted.
+    #[must_use]
+    pub fn total(&self) -> u64 {
+        self.kinds.values().sum()
+    }
+
+    /// One failure, kept as an example while there are fewer than `kept`.
+    pub fn add(&mut self, issue: Issue, kept: usize) {
+        self.count((issue.action, issue.error.clone()), 1);
+        if self.examples.len() < kept {
+            self.examples.push(issue);
+        }
+    }
+
+    /// `count` more of `kind`, or of the action's [`Self::OTHER`] once there are
+    /// [`Self::KINDS`] kinds.
+    fn count(&mut self, kind: (&'static str, String), count: u64) {
+        let kind = if self.kinds.len() < Self::KINDS || self.kinds.contains_key(&kind) {
+            kind
+        } else {
+            (kind.0, Self::OTHER.to_string())
+        };
+        *self.kinds.entry(kind).or_default() += count;
+    }
+
+    /// Another's failures added to these.
+    pub fn merge(&mut self, other: Issues) {
+        for (kind, count) in other.kinds {
+            self.count(kind, count);
+        }
+        let room = Self::KEPT.saturating_sub(self.examples.len());
+        self.examples.extend(other.examples.into_iter().take(room));
+    }
+
+    /// What `duscape --issues` prints: every kind with its count, most first, then the examples.
+    #[must_use]
+    pub fn report(&self) -> String {
+        use ::std::fmt::Write;
+        let mut out = String::new();
+        if self.is_empty() {
+            out.push_str("No read failures.\n");
+            return out;
+        }
+        let total = self.total();
+        let noun = if total == 1 { "failure" } else { "failures" };
+        let _ = writeln!(out, "{total} read {noun}, by kind:");
+        let mut kinds: Vec<_> = self.kinds.iter().collect();
+        kinds.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+        for ((action, error), count) in kinds {
+            let _ = writeln!(out, "  {count:>10}  {action}: {error}");
+        }
+        let _ = writeln!(
+            out,
+            "Where{}:",
+            if total > self.examples.len() as u64 {
+                format!(
+                    ", the first {} (at most {} a folder)",
+                    self.examples.len(),
+                    Self::KEPT_IN_A_DIRECTORY
+                )
+            } else {
+                String::new()
+            }
+        );
+        for issue in &self.examples {
+            let _ = writeln!(
+                out,
+                "  {}: {}: {}",
+                issue.path.display(),
+                issue.action,
+                issue.error
+            );
+        }
+        out
+    }
 }
 
 impl DirEntries {
+    /// Count a failure here — of the directory itself (`name` is `None`) or of one of its
+    /// entries — and keep why, for `--issues`.
+    pub fn fail(
+        &mut self,
+        action: &'static str,
+        name: Option<&OsStr>,
+        error: impl ::std::fmt::Display,
+    ) {
+        self.failed += 1;
+        let path = match name {
+            Some(name) => self.path.join(name),
+            None => self.path.to_path_buf(),
+        };
+        self.issues.add(
+            Issue {
+                path,
+                action,
+                error: error.to_string(),
+            },
+            Issues::KEPT_IN_A_DIRECTORY,
+        );
+    }
+
     #[must_use]
     pub fn new(path: Arc<Path>) -> Self {
         Self {
@@ -202,6 +341,7 @@ impl DirEntries {
             failed: 0,
             later: Vec::new(),
             extent_space: 0,
+            issues: Issues::default(),
         }
     }
 
@@ -215,6 +355,7 @@ impl DirEntries {
             failed: 0,
             later: Vec::new(),
             extent_space: 0,
+            issues: Issues::default(),
         }
     }
 
@@ -279,6 +420,11 @@ impl DirEntries {
     #[must_use]
     pub fn into_parts(self) -> (Arc<Path>, Vec<u8>, Vec<NamedEntry>) {
         (self.path, self.names, self.entries)
+    }
+
+    /// The failures' reasons, taken out, leaving none.
+    pub fn take_issues(&mut self) -> Issues {
+        ::std::mem::take(&mut self.issues)
     }
 }
 
@@ -433,4 +579,107 @@ pub struct FoundFile {
     pub name: OsString,
     pub sizes: crate::model::Sizes,
     pub identity: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_failure_is_counted_and_a_few_are_kept_whole() {
+        let mut directory = DirEntries::new(Arc::from(Path::new("/volume1/share")));
+        for index in 0..20 {
+            let name = format!("file{index}");
+            directory.fail(
+                "stat",
+                Some(OsStr::new(&name)),
+                "Function not implemented (os error 38)",
+            );
+        }
+        directory.fail("list", None, "Input/output error (os error 5)");
+        assert_eq!(directory.failed, 21);
+        assert_eq!(directory.issues.total(), 21);
+        assert_eq!(directory.issues.examples.len(), Issues::KEPT_IN_A_DIRECTORY);
+        assert_eq!(
+            directory.issues.examples[0].path,
+            Path::new("/volume1/share").join("file0")
+        );
+
+        // A whole scan of such directories keeps its examples bounded, and every count.
+        let mut scan = Issues::default();
+        for _ in 0..100 {
+            let mut again = directory.issues.clone();
+            again.examples.truncate(Issues::KEPT_IN_A_DIRECTORY);
+            scan.merge(again);
+        }
+        assert_eq!(scan.total(), 2100);
+        assert_eq!(scan.examples.len(), Issues::KEPT);
+        let report = scan.report();
+        assert!(
+            report.starts_with("2100 read failures, by kind:"),
+            "{report}"
+        );
+        // The most frequent kind first.
+        let stat = report
+            .find("stat: Function not implemented")
+            .expect("the stat kind");
+        let list = report
+            .find("list: Input/output error")
+            .expect("the list kind");
+        assert!(stat < list, "{report}");
+        assert!(
+            report.contains("Where, the first 200 (at most 8 a folder):"),
+            "{report}"
+        );
+    }
+
+    #[test]
+    fn errors_that_name_their_path_do_not_make_a_kind_each() {
+        let mut issues = Issues::default();
+        for index in 0..1000 {
+            issues.add(
+                Issue {
+                    path: PathBuf::from(format!("/d/{index}")),
+                    action: "walk",
+                    error: format!("IO error for operation on /d/{index}: Permission denied"),
+                },
+                Issues::KEPT,
+            );
+        }
+        assert_eq!(issues.total(), 1000);
+        assert!(
+            issues.kinds.len() <= Issues::KINDS + 1,
+            "{}",
+            issues.kinds.len()
+        );
+        assert_eq!(
+            issues.kinds[&("walk", Issues::OTHER.to_string())],
+            1000 - 64
+        );
+    }
+
+    #[test]
+    fn a_scan_with_no_failures_says_so() {
+        assert_eq!(Issues::default().report(), "No read failures.\n");
+        let mut one = Issues::default();
+        one.add(
+            Issue {
+                path: PathBuf::from("/x"),
+                action: "open",
+                error: "Permission denied (os error 13)".to_string(),
+            },
+            Issues::KEPT,
+        );
+        assert!(
+            one.report().starts_with("1 read failure, by kind:"),
+            "{}",
+            one.report()
+        );
+        assert!(
+            one.report()
+                .contains("Where:\n  /x: open: Permission denied"),
+            "{}",
+            one.report()
+        );
+    }
 }

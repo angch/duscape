@@ -47,6 +47,11 @@ pub struct Opt {
     /// Scan headlessly and report timings instead of starting the UI
     #[arg(long)]
     pub benchmark: bool,
+    /// Scan headlessly and print what could not be read and why — each kind of failure with the
+    /// system's error and examples of where — with the kernel, filesystem and walker, instead of
+    /// starting the UI: what to send when entries fail to read
+    #[arg(long)]
+    pub issues: bool,
     /// Which part of the scan pipeline to time under `--benchmark`
     #[arg(long, value_name = "STAGE", default_value = "all")]
     pub bench_stage: crate::bench::BenchStage,

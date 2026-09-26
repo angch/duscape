@@ -6,6 +6,7 @@ mod config;
 mod error;
 mod front;
 mod input;
+mod issues;
 mod messages;
 mod preview;
 mod state;
@@ -168,6 +169,11 @@ fn try_main() -> Result<(), Error> {
         source,
     })?;
     let scan_options = opts.scan_options(duscape_config.base.apparent_size);
+
+    if opts.issues {
+        issues::run(&opts.resolve_folder()?, scan_options);
+        return Ok(());
+    }
 
     if opts.benchmark {
         let folder = opts.resolve_folder()?;

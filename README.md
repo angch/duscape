@@ -128,6 +128,26 @@ the UI; `docs/probes/bench-diskus.sh` compares it with `diskus`, warm and cold. 
 [`docs/scan-performance.md`](docs/scan-performance.md) for what was measured and why, and
 [`docs/scan-roadmap.md`](docs/scan-roadmap.md) for what is next.
 
+## When files fail to read
+
+The terminal viewer's title counts what it could not read ("failed to read 12 files"). To see why,
+run a scan with nothing drawn:
+
+```bash
+duscape --issues /volume1
+```
+
+It prints where it runs — the walker, and on Linux the kernel, whether it has `statx`, the
+filesystem and who is asking — then every kind of failure with the system's error and a count,
+and examples of where. That output is what to send with a problem report.
+
+Old kernels are fine: before Linux 4.11 there is no `statx`, the call duscape sizes entries with
+(Synology's DSM runs 4.4, for one), and every entry used to fail; it now asks `fstatat` there
+instead, as it does where a container's seccomp filter refuses `statx`. What a kernel before 5.8
+cannot say — which directories are mount points, so that a folder bind-mounted inside the scan is
+not counted twice — comes from `/proc/self/mountinfo` instead. `DUSCAPE_NO_STATX=1` makes any
+kernel read that way, should its `statx` ever be the trouble.
+
 ## Configuration
 
 The terminal viewer reads an optional TOML config — its key bindings, and apparent sizes by

@@ -136,6 +136,9 @@ fn tips(kb: &Keybinds, scanning: bool, switch_panel: bool) -> Vec<String> {
         kb.toggle_size
     ));
     tips.push("Tip: every key can be rebound in ~/.config/duscape/config.toml".to_string());
+    tips.push(
+        "Tip: when files fail to read, `duscape --issues FOLDER` prints why, and where".to_string(),
+    );
     tips
 }
 

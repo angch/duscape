@@ -858,12 +858,16 @@ fn read_tree(
                                 let descend =
                                     options.max_depth.is_none_or(|max| pending.depth + 1 < max);
                                 for (ino, name) in entries {
+                                    let name = OsStr::from_bytes(name);
                                     let Some(meta) = inodes_ref.metas.get(ino).copied() else {
-                                        directory.failed += 1;
+                                        directory.fail(
+                                            "stat",
+                                            Some(name),
+                                            "its inode is not in the table read from the device",
+                                        );
                                         continue;
                                     };
                                     let is_dir = meta.mode & S_IFMT == S_IFDIR;
-                                    let name = OsStr::from_bytes(name);
                                     directory.push(
                                         name,
                                         EntryMeta {

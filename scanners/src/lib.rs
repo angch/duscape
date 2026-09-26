@@ -232,6 +232,52 @@ pub mod parallel {
     }
 }
 
+/// What `duscape --issues` says about where a scan of `root` runs, before the scan: which walker
+/// reads it, and on Linux the kernel, whether it has `statx`, the filesystem and who is asking —
+/// what a report of an unreadable scan needs first.
+#[must_use]
+pub fn environment(root: &Path, options: ScanOptions) -> Vec<(&'static str, String)> {
+    let walker = ("walker", walker_words(root, options));
+    #[cfg(target_os = "linux")]
+    return ::std::iter::once(walker)
+        .chain(linux::environment(root))
+        .collect();
+    #[cfg(not(target_os = "linux"))]
+    vec![walker]
+}
+
+/// Which walker `scan_directories` picks for `root`, in words.
+fn walker_words(root: &Path, options: ScanOptions) -> String {
+    #[cfg(target_os = "linux")]
+    {
+        if options.read_device && ext4::would_read_device(root) {
+            "ext4, read from the block device (root)".to_string()
+        } else {
+            "the kernel walk: getdents64 and statx".to_string()
+        }
+    }
+    #[cfg(windows)]
+    {
+        match (options.read_device, mft::would_read_device(root)) {
+            (true, Ok(())) => "NTFS, read from the master file table (elevated)".to_string(),
+            (true, Err(why)) => {
+                format!("bulk directory listing (not the master file table: {why})")
+            }
+            (false, _) => "bulk directory listing (--no-device-read)".to_string(),
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (root, options);
+        "getattrlistbulk".to_string()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        let _ = (root, options);
+        "dua-core, the portable walk (there is no native walker here)".to_string()
+    }
+}
+
 /// Whether a walk of `scan_root` goes into `folder`, a folder inside it: what a rescan of that
 /// folder alone has to ask first, since a walk starting there applies no rule to its own root.
 /// On Linux it asks what the walk would at a mount point; elsewhere every folder is entered.
@@ -382,13 +428,13 @@ mod fallback {
                 };
                 let entry = match entry {
                     Ok(entry) => entry,
-                    Err(_) => {
+                    Err(error) => {
                         // No entry, so nothing identifies which directory this belongs to.
                         match &mut open {
-                            Some(open) => open.failed += 1,
+                            Some(open) => open.fail("walk", None, &error),
                             None => {
                                 let mut lost = DirEntries::new(Arc::clone(&root));
-                                lost.failed = 1;
+                                lost.fail("walk", None, &error);
                                 return Some(lost);
                             }
                         }
@@ -408,7 +454,12 @@ mod fallback {
                     // It is not an entry inside the tree being scanned.
                     continue;
                 }
-                let named = metadata.and_then(Result::ok).map(|metadata| {
+                let metadata = match metadata {
+                    Some(Ok(metadata)) => Ok(metadata),
+                    Some(Err(error)) => Err(error.to_string()),
+                    None => Err("the walk gave no metadata".to_string()),
+                };
+                let named = metadata.map(|metadata| {
                     let (inode, links) = entry_identity(
                         Some(&parent_path.join(&file_name)),
                         file_type.is_dir(),
@@ -429,8 +480,8 @@ mod fallback {
                         if Arc::ptr_eq(&open.path, &parent_path) || open.path == parent_path =>
                     {
                         match named {
-                            Some(meta) => open.push(&file_name, meta),
-                            None => open.failed += 1,
+                            Ok(meta) => open.push(&file_name, meta),
+                            Err(error) => open.fail("stat", Some(&file_name), error),
                         }
                     }
                     // A different directory: start its group, and hand back the finished one.
@@ -438,8 +489,8 @@ mod fallback {
                     _ => {
                         let mut group = DirEntries::with_capacity(parent_path, 32, 32 * 32);
                         match named {
-                            Some(meta) => group.push(&file_name, meta),
-                            None => group.failed = 1,
+                            Ok(meta) => group.push(&file_name, meta),
+                            Err(error) => group.fail("stat", Some(&file_name), error),
                         }
                         let finished = open.replace(group);
                         if let Some(finished) = finished {
