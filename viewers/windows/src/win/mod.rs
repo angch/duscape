@@ -16,7 +16,7 @@ use ::std::cell::{Cell, RefCell};
 use ::std::collections::VecDeque;
 use ::std::ffi::{OsString, c_void};
 use ::std::os::windows::ffi::OsStringExt;
-use ::std::path::PathBuf;
+use ::std::path::{Path, PathBuf};
 use ::std::ptr::{null, null_mut};
 use ::std::sync::Arc;
 use ::std::sync::atomic::{AtomicBool, Ordering};
@@ -56,6 +56,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::cli::Opt;
+use crate::elevate;
 use crate::preview::{Picture, PreviewRequest, prepare_picture};
 
 /// A report from a thread off the window's.
@@ -653,6 +654,20 @@ fn dispatch(window: &mut Window, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
     0
 }
 
+/// A whole volume: ask to run as administrator, and if the elevated process starts, it takes
+/// over (true); declined, or elevated already, the scan goes on as it is.
+fn handed_to_elevated(opt: &Opt, root: &Path) -> bool {
+    if !elevate::wanted(root, opt.no_elevate, libdiskonaut::os::is_user_admin()) {
+        return false;
+    }
+    let picked = opt.folder.is_none().then_some(root);
+    let args = elevate::relaunch_args(::std::env::args_os(), picked);
+    match elevate::relaunch(&args) {
+        Ok(()) => true,
+        Err(elevate::Refused::Declined | elevate::Refused::Failed(_)) => false,
+    }
+}
+
 /// The folder chooser. `None` if the user cancels.
 fn pick_folder() -> Option<PathBuf> {
     let title = wide("Choose a folder to scan");
@@ -715,6 +730,9 @@ pub fn run() {
             &format!("Not a folder: {}", root.display()),
             MB_OK | MB_ICONERROR,
         );
+        return;
+    }
+    if handed_to_elevated(&opt, &root) {
         return;
     }
     let root = root.canonicalize().unwrap_or(root);

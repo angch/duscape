@@ -66,7 +66,9 @@ cargo run -p diskonaut-windows --release -- C:\   # or run with no argument for 
 ```
 
 It takes the terminal viewer's scan flags: `-a`, `--max-depth`, `--threads`,
-`--hard-link-threshold`.
+`--hard-link-threshold`. Given a whole volume unelevated it asks to run as administrator and
+starts itself again elevated (`--no-elevate` scans as it is): elevated, the volume is read from
+its master file table and every folder opens.
 
 - **Live:** the treemap and list fill in as the scan runs, as in the terminal.
 - **The list is a tree**, as WizTree's: → on a folder opens it in place, its entries indented

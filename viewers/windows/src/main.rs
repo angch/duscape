@@ -14,6 +14,8 @@
 #[cfg_attr(not(windows), allow(dead_code))]
 mod cli;
 #[cfg_attr(not(windows), allow(dead_code))]
+mod elevate;
+#[cfg_attr(not(windows), allow(dead_code))]
 mod preview;
 #[cfg(windows)]
 mod win;

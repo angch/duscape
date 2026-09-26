@@ -164,7 +164,12 @@ feature parity with the TUI bar configurable keys (`docs/features.md`). Behaviou
 shared `Viewer`, not in `win/`:
 - `preview.rs` — `prepare_picture`: a picture decoded and scaled to the pixels it will take, as
   BGRA rows blended over the panel, for `libdiskonaut::preview::Reader`; no Win32, tested everywhere
-- `cli.rs` — the TUI's scan flags
+- `cli.rs` — the TUI's scan flags, and `--no-elevate`
+- `elevate.rs` — a whole volume unelevated asks to run as administrator: `wanted` decides,
+  `relaunch_args` and `command_line` (Win32 quoting, tested) make the new process's arguments
+  — this process's plus `--no-elevate`, so it never asks in turn, plus the folder if it was
+  picked in the dialog — and `relaunch` starts it through the shell's `runas`; declined
+  (`Refused::Declined`) or failed, the scan goes on unelevated
 - `win/mod.rs` — the window: input → `Viewer` calls (points are pixels over the DPI scale), then
   `changed()` (a preview request at the drawn size — `wanted_preview_sized` — title, redraw).
   Threads post one boxed `AppMsg`; one arriving during a modal loop (message box, context menu)

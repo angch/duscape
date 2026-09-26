@@ -33,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the treemap follows its top-level folder. The rows come from `libdiskonaut::tiles::
   tree_rows` and the behaviour is the shared viewer's (`tree_view`), so the macOS and Linux
   windows can have it by drawing the rows' depth.
+- The Windows viewer asks to run as administrator (the UAC prompt) when the folder is a whole
+  volume, and starts itself again elevated with the same arguments: elevated, the volume is
+  read from its master file table, every hard link is counted, NTFS's own files are sized and
+  every folder opens. Declined, it scans as it is; `--no-elevate` never asks.
 - The Windows viewer's treemap is nested: a folder's tile holds its entries' tiles, laid out
   under its label, and theirs in turn, as deep as there is room (each level a shade darker,
   labelled where it fits — the name at the left, the size at the right, as every tile is

@@ -25,6 +25,11 @@ pub struct Opt {
     /// Number of scan worker threads (default: two thirds of the cores, at most 12)
     #[arg(long, value_name = "N")]
     pub threads: Option<usize>,
+    /// Do not ask to run as administrator when the folder is a whole volume (elevated, the
+    /// volume is read from its master file table, every hard link is counted and every folder
+    /// opens)
+    #[arg(long)]
+    pub no_elevate: bool,
 }
 
 impl Opt {
@@ -61,5 +66,11 @@ mod tests {
             "the walk is parallel as in the terminal viewer"
         );
         assert!(Opt::try_parse_from(["diskonaut-windows", "--bogus"]).is_err());
+        assert!(!opt.no_elevate);
+        assert!(
+            Opt::try_parse_from(["diskonaut-windows", crate::elevate::NO_ELEVATE])
+                .expect("parses")
+                .no_elevate
+        );
     }
 }
