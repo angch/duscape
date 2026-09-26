@@ -38,6 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The docs claimed a native BSD walker; there is none, the BSDs scan with `dua-core`'s portable
+  walk. The Linux window's FreeBSD support is stated as what it is: it type-checks there, and has
+  never been run there.
 - `--help` opened with the command line's internal notes; it says what diskonaut is.
 
 ## [0.2.0] - 2026-09-26

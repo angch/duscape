@@ -35,7 +35,8 @@ cargo run -p duscape-mac --release -- ~   # or run with no argument, or drop a f
 
 ## Linux GUI (experimental)
 
-`duscape-linux` is a window on the same walker and model for Linux and FreeBSD, drawn with no
+`duscape-linux` is a window on the same walker and model for Linux (FreeBSD too in principle: it
+type-checks there, but has never been run there), drawn with no
 toolkit at all: the frame is painted in software and put on the screen by one of two backends,
 native Wayland (`wayland-client`, `xdg-shell`, a `wl_shm` buffer) or X11 (`x11rb`), both pure
 Rust, with text from the system's fonts (`fontconfig`'s sans-serif, rasterised by `fontdue`).

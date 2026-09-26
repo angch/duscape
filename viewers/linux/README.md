@@ -1,9 +1,13 @@
 # duscape-linux
 
-A window on duscape for Linux and FreeBSD: the same walker (`duscape-scan`) and model,
+A window on duscape for Linux: the same walker (`duscape-scan`) and model,
 treemap, delete and preview reading (`libduscape`) as the terminal viewer, and the same window
 state as the macOS viewer (`duscape-viewer`, in `viewers/shared/`), drawn with **no toolkit**,
 natively on **Wayland** or on **X11**. `docs/features.md` compares it with the other viewers.
+
+FreeBSD should work in principle — the window code is built for it and type-checks there — but it
+has never been run on FreeBSD, and its scan would be `dua-core`'s portable walk: there is no native
+BSD walker.
 
 ```sh
 cargo run -p duscape-linux --release -- ~/Downloads

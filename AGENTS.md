@@ -517,6 +517,9 @@ Exiting { app_loaded: bool }
   movement, drags, releases and scrolls too (`is_mouse_noise`): mouse capture reports every
   movement, and the warning modal closes on any event. CI runs on Linux only
   — check other targets with `cargo clippy --workspace --all-targets --target <triple>`.
+  The BSDs have no native walker: they scan with the `dua-core` fallback. The Linux window is
+  gated to Linux and FreeBSD and type-checks for `x86_64-unknown-freebsd`, but has never been
+  run there; say so rather than claim BSD support.
 - **musl**: the release is built for musl, and `libc` types differ there. `ioctl`'s request is
   `c_ulong` on glibc but `c_int` on musl, so request constants are `libc::Ioctl`. CI tests
   `x86_64-unknown-linux-musl` on every push (`test-musl`).

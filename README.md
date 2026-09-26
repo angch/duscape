@@ -21,7 +21,8 @@ This fork exists to **explore further performance optimizations for everyday dis
 - **In-session cleanup** — delete files or folders and track space freed in the title bar
 - **Apparent or on-disk size** — default shows blocks allocated on disk; `-a` uses logical file size
 - **Hard-link aware** — a file reached by several names counts once in each folder that holds it
-- **Native walkers** — Linux, macOS, Windows and BSD each get their own parallel directory walk
+- **Native walkers** — Linux, macOS and Windows each get their own parallel directory walk; other
+  platforms, the BSDs included, use `dua-core`'s portable one
 - **Stays put on request** — `-x` keeps the scan on one filesystem, like `du -x`
 - **Reads the disk itself as root** — on ext4, the metadata comes straight off the block
   device in ordered sweeps rather than one `stat` per file: a cold scan in half the time

@@ -6,8 +6,8 @@
 //! drawn into a software canvas (`canvas`, text by `font`) and put on a window by one of two
 //! backends behind one trait (`backend`): native Wayland through `wayland-client` (`wayland`,
 //! with `xkb` reading the keymap) or X11 through `x11rb` (`x11`) — both pure Rust with no C
-//! library, so the binary builds static and runs wherever either is served. Linux and FreeBSD:
-//! the frame's memory is a `memfd`, which the other BSDs lack.
+//! library, so the binary builds static and runs wherever either is served. Linux, and FreeBSD
+//! (type-checked, never run there): the frame's memory is a `memfd`, which the other BSDs lack.
 
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 mod app;

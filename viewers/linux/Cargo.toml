@@ -21,8 +21,8 @@ duscape-scan = { workspace = true }
 duscape-viewer = { path = "../shared", version = "0.2.0" }
 image = { workspace = true }
 
-# The window is Linux and FreeBSD only (`main.rs`); elsewhere the binary is a stub that says so,
-# and these (Unix-only) crates are not built at all.
+# The window is Linux and FreeBSD only (`lib.rs`; FreeBSD type-checks but has never been run);
+# elsewhere `run` is a stub that says so, and these (Unix-only) crates are not built at all.
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
 x11rb = { version = "0.14.0", features = ["image", "resource_manager"] }
 fontdue = "0.9.4"

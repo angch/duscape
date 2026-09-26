@@ -9,7 +9,7 @@ scanners/          duscape-scan    reading the disk: one walker per platform, an
 viewers/tui/       duscape   the terminal viewer (ratatui) — the primary one
 viewers/windows/   duscape-windows a native Windows window (Win32 and GDI)
 viewers/macos/     duscape-mac     a native macOS window (AppKit, through objc2)
-viewers/linux/     duscape-linux   a Wayland or X11 window for Linux and FreeBSD, no toolkit (wayland-client, x11rb, fontdue)
+viewers/linux/     duscape-linux   a Wayland or X11 window for Linux (FreeBSD untried), no toolkit (wayland-client, x11rb, fontdue)
 viewers/shared/    duscape-viewer  what the desktop viewers share: the window's state and layout,
                                      the first scan with its live outline, the preview reader
 viewers/dos/       (FASM, not Cargo) the treemap for MS-DOS in 16-bit assembly, ported from the
@@ -48,7 +48,7 @@ by copying it.
 | `macos` | `getattrlistbulk(2)`, choosing the size attribute per device because FAT misreports it. |
 | `windows` | One handle per directory, entries in bulk (`FileIdExtdDirectoryInfo`). Hard links deduplicated by file id where they are made (or everywhere, elevated). Elevated, NTFS's metadata files are sized from their MFT records (`ntfs`) and shown at the volume's root. |
 | `mft` | Elevated, a whole NTFS volume read from its master file table instead of walked: the `$MFT` in a few large sequential reads, parsed on several threads into every record's names, parent and sizes, the tree handed on as the walk would hand it. Used only where a sample of the table says the volume's directories are small enough for it to pay; `--no-device-read` walks instead. The parsing runs and is tested everywhere. |
-| fallback | `dua-core`, on every other platform. |
+| fallback | `dua-core`, on every other platform — the BSDs included: there is no native BSD walker. |
 | `scan_directories` | Picks the walker. Every walker yields the same thing: one `DirEntries` per directory. |
 | `parallel` | `build_tree`: the tree built on several threads as the walk runs, with an optional callback per directory for a live view. |
 | `refine` | The second pass: small files the walk left for later, probed after the tree is on screen, the folder in view first. It finds nothing to do off Linux. |
@@ -59,7 +59,7 @@ by copying it.
 | | terminal (`duscape`) | Windows (`duscape-windows`) | macOS (`duscape-mac`) | Linux (`duscape-linux`) |
 | --- | --- | --- | --- | --- |
 | One program with the terminal viewer | — | yes (`duscape.exe`: the window from Explorer — with no console from Windows 11 24H2, a console flashing first before it; `--gui`) | yes (`duscape`, and `Duscape.app` for Finder; `--gui`) | yes (`duscape`: the window from a launcher; `--gui`) |
-| Scan with the native walker | yes | yes | yes | yes |
+| Scan with the native walker | yes (Linux, macOS, Windows; `dua-core` on the BSDs) | yes | yes | yes |
 | Live treemap while scanning | yes (`Outline`) | yes (`Outline`) | yes (`Outline`) | yes (`Outline`) |
 | Treemap | yes, in cells | yes, GDI, nested: a folder's tile holds its entries' tiles, and theirs in turn, down to the files wherever there is room; a file's size sits at its tile's bottom right; clicking a nested tile opens the tree to it, Ctrl+click marks its folder | yes, AppKit, nested as on Windows, the same labels | yes, software-drawn (native Wayland or X11), nested as on Windows, the same labels |
 | List of entries beside it | yes | yes, as a tree: folders open in place (→ / ←, or the expander), their entries indented under them with each one's share of its parent — WizTree's tree view; the entry's details under it (`s` hides) | yes, as the same tree (→ / ←, or the expander), with the entry's details under it (⌃⌘S hides) | yes, as the same tree (→ / ←, or the expander), with the entry's details under it (`s` hides) |
