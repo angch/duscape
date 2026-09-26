@@ -94,6 +94,7 @@ define_class!(
 
         #[unsafe(method(setFrameSize:))]
         fn set_frame_size(&self, size: NSSize) {
+            // SAFETY: the superclass's method, with the argument it declares.
             let _: () = unsafe { msg_send![super(self), setFrameSize: size] };
             self.with(|viewer| viewer.resize(size.width, size.height));
         }
@@ -120,6 +121,7 @@ define_class!(
         #[unsafe(method(keyDown:))]
         fn key_down(&self, event: &NSEvent) {
             if !self.key(event) {
+                // SAFETY: the superclass's method, with the argument it declares.
                 let _: () = unsafe { msg_send![super(self), keyDown: event] };
             }
         }
@@ -452,6 +454,7 @@ impl DiskView {
             scrolled: Cell::new(0.0),
             context_menu: RefCell::new(None),
         });
+        // SAFETY: the superclass's designated initialiser, on the instance just allocated.
         let view: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
         // SAFETY: the view owns the area, and `InVisibleRect` keeps it matched to the view.
         let area = unsafe {

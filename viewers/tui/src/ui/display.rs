@@ -1,3 +1,4 @@
+use ::ratatui::Frame;
 use ::ratatui::Terminal;
 use ::ratatui::backend::Backend;
 use ::ratatui::layout::Rect;
@@ -52,6 +53,83 @@ pub struct PanelState {
 pub struct ViewStatus {
     pub title: TitleStatus,
     pub panel: PanelState,
+}
+
+/// What a mode shows of the chrome every mode has — the title, the treemap and the bottom
+/// line — beyond what the tree says: which of the title's and the bottom line's extras are on.
+struct Chrome {
+    /// The scan is running (or was, when the exit was asked for): its progress indicator in
+    /// the title, its last path in the bottom line.
+    scanning: bool,
+    /// The space freed by the last delete flashes in the title.
+    flashes_space: bool,
+    /// What was copied flashes in the title.
+    flashes_clipboard: bool,
+    shows_zoom: bool,
+}
+
+impl Chrome {
+    fn of(ui_mode: &UiMode) -> Self {
+        Chrome {
+            scanning: matches!(
+                ui_mode,
+                UiMode::Loading | UiMode::WarningMessage(_) | UiMode::Exiting { app_loaded: false }
+            ),
+            flashes_space: matches!(
+                ui_mode,
+                UiMode::Normal | UiMode::ErrorMessage(_) | UiMode::Exiting { app_loaded: true }
+            ),
+            flashes_clipboard: matches!(ui_mode, UiMode::Loading | UiMode::Normal),
+            shows_zoom: !matches!(ui_mode, UiMode::WarningMessage(_)),
+        }
+    }
+}
+
+/// The list beside the treemap and, when there is room, the preview under it.
+fn render_side_panel(
+    f: &mut Frame,
+    areas: &ScreenAreas,
+    ui_mode: &UiMode,
+    file_tree: &FileTree,
+    board: &Board,
+    panel_state: &PanelState,
+) {
+    let Some(panel) = areas.side_panel else {
+        return;
+    };
+    let current_path = file_tree.get_current_path();
+    let at_root = file_tree.current_folder_names.is_empty();
+    let scanned = !matches!(
+        ui_mode,
+        UiMode::Loading | UiMode::Exiting { app_loaded: false }
+    );
+    let details = FolderDetails {
+        path: &current_path,
+        size: file_tree.get_current_folder_size(),
+        descendants: file_tree.get_current_folder().num_descendants,
+        scan_total: (!at_root).then_some(file_tree.get_total_size()),
+        disk: file_tree
+            .volume_used
+            .zip(file_tree.outside_scan())
+            .filter(|_| at_root && scanned),
+    };
+    f.render_widget(
+        SidePanel::new(
+            details,
+            board.listing(),
+            panel_state.highlighted,
+            &board.tiles,
+        )
+        .focused(panel_state.list_focused)
+        .marked(&panel_state.marked),
+        panel,
+    );
+    if let Some(preview) = areas.preview {
+        f.render_widget(
+            PreviewPanel::new(&panel_state.caption, &panel_state.preview),
+            preview,
+        );
+    }
 }
 
 pub struct Display<B>
@@ -133,333 +211,87 @@ where
         self.terminal
             .draw(|f| {
                 let full_screen = f.area();
-                let current_path = file_tree.get_current_path();
-                let current_path_size = file_tree.get_current_folder_size();
-                let current_path_descendants = file_tree.get_current_folder().num_descendants;
-                let base_path_size = file_tree.get_total_size();
-                let base_path_descendants = file_tree.get_total_descendants();
-                let current_path_info = FolderInfo {
-                    path: &current_path,
-                    size: current_path_size,
-                    num_descendants: current_path_descendants,
-                };
-                let path_in_filesystem = &file_tree.path_in_filesystem;
-                let base_path_info = FolderInfo {
-                    path: path_in_filesystem,
-                    size: base_path_size,
-                    num_descendants: base_path_descendants,
-                };
                 let areas = screen_areas(full_screen, cell_pixels);
-                let chunks = [areas.title, areas.grid, areas.bottom];
-                let grid_area = areas.grid;
                 board.change_area(&Area {
-                    x: grid_area.x,
-                    y: grid_area.y,
-                    width: grid_area.width,
-                    height: grid_area.height,
+                    x: areas.grid.x,
+                    y: areas.grid.y,
+                    width: areas.grid.width,
+                    height: areas.grid.height,
                 });
-                if let (Some(panel), false) =
-                    (areas.side_panel, matches!(ui_mode, UiMode::ScreenTooSmall))
-                {
-                    let at_root = file_tree.current_folder_names.is_empty();
-                    let scanned = !matches!(ui_mode, UiMode::Loading)
-                        && !matches!(ui_mode, UiMode::Exiting { app_loaded: false });
-                    let details = FolderDetails {
-                        path: &current_path,
-                        size: current_path_size,
-                        descendants: current_path_descendants,
-                        scan_total: (!at_root).then_some(base_path_size),
-                        disk: file_tree
-                            .volume_used
-                            .zip(file_tree.outside_scan())
-                            .filter(|_| at_root && scanned),
-                    };
-                    f.render_widget(
-                        SidePanel::new(
-                            details,
-                            board.listing(),
-                            panel_state.highlighted,
-                            &board.tiles,
-                        )
-                        .focused(panel_state.list_focused)
-                        .marked(&panel_state.marked),
-                        panel,
-                    );
-                    if let Some(preview) = areas.preview {
-                        f.render_widget(
-                            PreviewPanel::new(&panel_state.caption, &panel_state.preview),
-                            preview,
-                        );
-                    }
+                if matches!(ui_mode, UiMode::ScreenTooSmall) {
+                    f.render_widget(TermTooSmall::new(), full_screen);
+                    return;
                 }
+                let current_path = file_tree.get_current_path();
+                let current = FolderInfo {
+                    path: &current_path,
+                    size: file_tree.get_current_folder_size(),
+                    num_descendants: file_tree.get_current_folder().num_descendants,
+                };
+                let base = FolderInfo {
+                    path: &file_tree.path_in_filesystem,
+                    size: file_tree.get_total_size(),
+                    num_descendants: file_tree.get_total_descendants(),
+                };
+                let chrome = Chrome::of(ui_mode);
+                if areas.side_panel.is_some() {
+                    render_side_panel(f, &areas, ui_mode, file_tree, board, &panel_state);
+                }
+                let mut title =
+                    TitleLine::new(base, current, file_tree.space_freed.get(file_tree.shown))
+                        .apparent_size(apparent_size)
+                        .scan_duration(scan_duration)
+                        .refining(refining)
+                        .path_error(ui_effects.current_path_is_red)
+                        .read_errors(file_tree.failed_to_read)
+                        .outside_scan(file_tree.outside_scan());
+                if chrome.scanning {
+                    title = title
+                        .progress_indicator(ui_effects.loading_progress_indicator)
+                        .show_loading();
+                }
+                if chrome.flashes_space {
+                    title = title.flash_space(ui_effects.flash_space_freed);
+                }
+                if chrome.flashes_clipboard {
+                    title = title.clipboard_flash(clipboard_flash);
+                }
+                if chrome.shows_zoom {
+                    title = title.zoom_level(board.zoom_level);
+                }
+                f.render_widget(title, areas.title);
+                f.render_widget(
+                    RectangleGrid::new(
+                        &board.tiles,
+                        board.unrenderable_tile_coordinates,
+                        board.selected_index,
+                    )
+                    .marked(&panel_state.marked),
+                    areas.grid,
+                );
+                let mut bottom = BottomLine::new(keybinds, ui_effects)
+                    .currently_selected(panel_state.selected.as_ref())
+                    .switch_panel_hint(areas.side_panel.is_some())
+                    .hide_small_files_legend(board.unrenderable_tile_coordinates.is_none());
+                if chrome.scanning {
+                    bottom = bottom
+                        .last_read_path(ui_effects.last_read_path.as_ref())
+                        .scanning();
+                }
+                f.render_widget(bottom, areas.bottom);
+                // The modal over it all, where the mode has one.
                 match ui_mode {
-                    UiMode::Loading => {
-                        f.render_widget(
-                            TitleLine::new(
-                                base_path_info,
-                                current_path_info,
-                                file_tree.space_freed.get(file_tree.shown),
-                            )
-                            .apparent_size(apparent_size)
-                            .scan_duration(scan_duration)
-                            .refining(refining)
-                            .progress_indicator(ui_effects.loading_progress_indicator)
-                            .path_error(ui_effects.current_path_is_red)
-                            .read_errors(file_tree.failed_to_read)
-                            .outside_scan(file_tree.outside_scan())
-                            .zoom_level(board.zoom_level)
-                            .clipboard_flash(clipboard_flash)
-                            .show_loading(),
-                            chunks[0],
-                        );
-                        f.render_widget(
-                            RectangleGrid::new(
-                                &board.tiles,
-                                board.unrenderable_tile_coordinates,
-                                board.selected_index,
-                            )
-                            .marked(&panel_state.marked),
-                            grid_area,
-                        );
-                        f.render_widget(
-                            BottomLine::new(keybinds, ui_effects)
-                                .currently_selected(panel_state.selected.as_ref())
-                                .switch_panel_hint(areas.side_panel.is_some())
-                                .last_read_path(ui_effects.last_read_path.as_ref())
-                                .scanning()
-                                .hide_small_files_legend(
-                                    board.unrenderable_tile_coordinates.is_none(),
-                                ),
-                            chunks[2],
-                        );
-                    }
-                    UiMode::Normal => {
-                        f.render_widget(
-                            TitleLine::new(
-                                base_path_info,
-                                current_path_info,
-                                file_tree.space_freed.get(file_tree.shown),
-                            )
-                            .apparent_size(apparent_size)
-                            .scan_duration(scan_duration)
-                            .refining(refining)
-                            .path_error(ui_effects.current_path_is_red)
-                            .flash_space(ui_effects.flash_space_freed)
-                            .clipboard_flash(clipboard_flash)
-                            .zoom_level(board.zoom_level)
-                            .read_errors(file_tree.failed_to_read)
-                            .outside_scan(file_tree.outside_scan()),
-                            chunks[0],
-                        );
-                        f.render_widget(
-                            RectangleGrid::new(
-                                &board.tiles,
-                                board.unrenderable_tile_coordinates,
-                                board.selected_index,
-                            )
-                            .marked(&panel_state.marked),
-                            grid_area,
-                        );
-                        f.render_widget(
-                            BottomLine::new(keybinds, ui_effects)
-                                .currently_selected(panel_state.selected.as_ref())
-                                .switch_panel_hint(areas.side_panel.is_some())
-                                .hide_small_files_legend(
-                                    board.unrenderable_tile_coordinates.is_none(),
-                                ),
-                            chunks[2],
-                        );
-                    }
-                    UiMode::ScreenTooSmall => {
-                        f.render_widget(TermTooSmall::new(), full_screen);
-                    }
-                    UiMode::DeleteFiles(files) => {
-                        f.render_widget(
-                            TitleLine::new(
-                                base_path_info,
-                                current_path_info,
-                                file_tree.space_freed.get(file_tree.shown),
-                            )
-                            .apparent_size(apparent_size)
-                            .scan_duration(scan_duration)
-                            .refining(refining)
-                            .path_error(ui_effects.current_path_is_red)
-                            .zoom_level(board.zoom_level)
-                            .read_errors(file_tree.failed_to_read)
-                            .outside_scan(file_tree.outside_scan()),
-                            chunks[0],
-                        );
-                        f.render_widget(
-                            RectangleGrid::new(
-                                &board.tiles,
-                                board.unrenderable_tile_coordinates,
-                                board.selected_index,
-                            )
-                            .marked(&panel_state.marked),
-                            grid_area,
-                        );
-                        f.render_widget(
-                            BottomLine::new(keybinds, ui_effects)
-                                .currently_selected(panel_state.selected.as_ref())
-                                .switch_panel_hint(areas.side_panel.is_some())
-                                .hide_small_files_legend(
-                                    board.unrenderable_tile_coordinates.is_none(),
-                                ),
-                            chunks[2],
-                        );
-                        f.render_widget(
-                            MessageBox::new(files, ui_effects.deletion_in_progress),
-                            full_screen,
-                        );
-                    }
+                    UiMode::DeleteFiles(files) => f.render_widget(
+                        MessageBox::new(files, ui_effects.deletion_in_progress),
+                        full_screen,
+                    ),
                     UiMode::ErrorMessage(message) => {
-                        f.render_widget(
-                            TitleLine::new(
-                                base_path_info,
-                                current_path_info,
-                                file_tree.space_freed.get(file_tree.shown),
-                            )
-                            .apparent_size(apparent_size)
-                            .scan_duration(scan_duration)
-                            .refining(refining)
-                            .path_error(ui_effects.current_path_is_red)
-                            .flash_space(ui_effects.flash_space_freed)
-                            .zoom_level(board.zoom_level)
-                            .read_errors(file_tree.failed_to_read)
-                            .outside_scan(file_tree.outside_scan()),
-                            chunks[0],
-                        );
-                        f.render_widget(
-                            RectangleGrid::new(
-                                &board.tiles,
-                                board.unrenderable_tile_coordinates,
-                                board.selected_index,
-                            )
-                            .marked(&panel_state.marked),
-                            grid_area,
-                        );
-                        f.render_widget(
-                            BottomLine::new(keybinds, ui_effects)
-                                .currently_selected(panel_state.selected.as_ref())
-                                .switch_panel_hint(areas.side_panel.is_some())
-                                .hide_small_files_legend(
-                                    board.unrenderable_tile_coordinates.is_none(),
-                                ),
-                            chunks[2],
-                        );
                         f.render_widget(ErrorBox::new(message), full_screen);
                     }
-                    UiMode::Exiting { app_loaded } => {
-                        if *app_loaded {
-                            // render normal ui mode
-                            f.render_widget(
-                                TitleLine::new(
-                                    base_path_info,
-                                    current_path_info,
-                                    file_tree.space_freed.get(file_tree.shown),
-                                )
-                                .apparent_size(apparent_size)
-                                .scan_duration(scan_duration)
-                                .refining(refining)
-                                .path_error(ui_effects.current_path_is_red)
-                                .flash_space(ui_effects.flash_space_freed)
-                                .zoom_level(board.zoom_level)
-                                .read_errors(file_tree.failed_to_read)
-                                .outside_scan(file_tree.outside_scan()),
-                                chunks[0],
-                            );
-                            f.render_widget(
-                                BottomLine::new(keybinds, ui_effects)
-                                    .currently_selected(panel_state.selected.as_ref())
-                                    .switch_panel_hint(areas.side_panel.is_some())
-                                    .hide_small_files_legend(
-                                        board.unrenderable_tile_coordinates.is_none(),
-                                    ),
-                                chunks[2],
-                            );
-                        } else {
-                            // render loading ui mode
-                            f.render_widget(
-                                TitleLine::new(
-                                    base_path_info,
-                                    current_path_info,
-                                    file_tree.space_freed.get(file_tree.shown),
-                                )
-                                .apparent_size(apparent_size)
-                                .scan_duration(scan_duration)
-                                .refining(refining)
-                                .progress_indicator(ui_effects.loading_progress_indicator)
-                                .path_error(ui_effects.current_path_is_red)
-                                .zoom_level(board.zoom_level)
-                                .read_errors(file_tree.failed_to_read)
-                                .outside_scan(file_tree.outside_scan())
-                                .show_loading(),
-                                chunks[0],
-                            );
-                            f.render_widget(
-                                BottomLine::new(keybinds, ui_effects)
-                                    .currently_selected(panel_state.selected.as_ref())
-                                    .switch_panel_hint(areas.side_panel.is_some())
-                                    .last_read_path(ui_effects.last_read_path.as_ref())
-                                    .scanning()
-                                    .hide_small_files_legend(
-                                        board.unrenderable_tile_coordinates.is_none(),
-                                    ),
-                                chunks[2],
-                            );
-                        }
-                        // render common widgets
-                        f.render_widget(
-                            RectangleGrid::new(
-                                &board.tiles,
-                                board.unrenderable_tile_coordinates,
-                                board.selected_index,
-                            )
-                            .marked(&panel_state.marked),
-                            grid_area,
-                        );
-                        f.render_widget(ConfirmBox::new(), full_screen);
-                    }
-                    UiMode::WarningMessage(_) => {
-                        f.render_widget(
-                            TitleLine::new(
-                                base_path_info,
-                                current_path_info,
-                                file_tree.space_freed.get(file_tree.shown),
-                            )
-                            .apparent_size(apparent_size)
-                            .scan_duration(scan_duration)
-                            .refining(refining)
-                            .progress_indicator(ui_effects.loading_progress_indicator)
-                            .path_error(ui_effects.current_path_is_red)
-                            .read_errors(file_tree.failed_to_read)
-                            .outside_scan(file_tree.outside_scan())
-                            .show_loading(),
-                            chunks[0],
-                        );
-                        f.render_widget(
-                            RectangleGrid::new(
-                                &board.tiles,
-                                board.unrenderable_tile_coordinates,
-                                board.selected_index,
-                            )
-                            .marked(&panel_state.marked),
-                            grid_area,
-                        );
-                        f.render_widget(
-                            BottomLine::new(keybinds, ui_effects)
-                                .currently_selected(panel_state.selected.as_ref())
-                                .switch_panel_hint(areas.side_panel.is_some())
-                                .last_read_path(ui_effects.last_read_path.as_ref())
-                                .scanning()
-                                .hide_small_files_legend(
-                                    board.unrenderable_tile_coordinates.is_none(),
-                                ),
-                            chunks[2],
-                        );
-                        f.render_widget(WarningBox::new(), full_screen);
-                    }
-                };
+                    UiMode::Exiting { .. } => f.render_widget(ConfirmBox::new(), full_screen),
+                    UiMode::WarningMessage(_) => f.render_widget(WarningBox::new(), full_screen),
+                    UiMode::Loading | UiMode::Normal | UiMode::ScreenTooSmall => {}
+                }
             })
             .expect("failed to draw");
     }

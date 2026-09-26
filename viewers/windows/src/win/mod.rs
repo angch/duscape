@@ -520,8 +520,10 @@ fn destroy(state: *mut Window, hwnd: HWND) {
     let window = unsafe { Box::from_raw(state) };
     window.running.store(false, Ordering::Release);
     drop(window);
+    // SAFETY: `hwnd` is the window being destroyed; clearing its user data ends every use of the pointer.
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) };
     PENDING.with(|pending| pending.borrow_mut().clear());
+    // SAFETY: no preconditions.
     unsafe { PostQuitMessage(0) };
 }
 
@@ -551,6 +553,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         });
     }
     if state.is_null() {
+        // SAFETY: the message's own arguments, passed on unchanged.
         return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
     }
     if msg == WM_DESTROY {
@@ -565,6 +568,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         if msg == WM_PAINT {
             REPAINT.with(|flag| flag.set(true));
         }
+        // SAFETY: the message's own arguments, passed on unchanged.
         return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
     }
     run_handler(state, |window| dispatch(window, hwnd, msg, wparam, lparam))
@@ -636,6 +640,7 @@ fn dispatch(window: &mut Window, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
             }
             invalidate(hwnd);
         }
+        // SAFETY: the message's own arguments, passed on unchanged.
         _ => return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
     }
     0
@@ -650,12 +655,15 @@ fn pick_folder() -> Option<PathBuf> {
     info.pszDisplayName = display.as_mut_ptr();
     info.lpszTitle = title.as_ptr();
     info.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+    // SAFETY: `info` is filled in and outlives the call, as do the buffers it points to.
     let pidl = unsafe { SHBrowseForFolderW(&info) };
     if pidl.is_null() {
         return None;
     }
     let mut path = [0u16; 260];
+    // SAFETY: `pidl` is the list the chooser just returned; `path` has the MAX_PATH the call may fill.
     let ok = unsafe { SHGetPathFromIDListW(pidl, path.as_mut_ptr()) };
+    // SAFETY: the shell allocated `pidl` for us, and it is freed once, here.
     unsafe { CoTaskMemFree(pidl as *const c_void) };
     if ok == 0 {
         return None;

@@ -115,6 +115,7 @@ fn mods(state: u16) -> Mods {
 
 impl X11 {
     /// Open the display and a window of `size` points, at least `min` points.
+    #[allow(clippy::too_many_lines)] // quality debt: the X11 window's setup
     pub fn open(
         title: &str,
         size: (f64, f64),

@@ -456,7 +456,9 @@ fn scan_into_tree_follows_symlinked_root_directory() {
         }
     };
     if let Err(e) = res {
-        if e.kind() == std::io::ErrorKind::PermissionDenied {
+        // Windows grants symlink creation only in Developer Mode or elevated
+        // (ERROR_PRIVILEGE_NOT_HELD, 1314): not this machine's to test, then.
+        if e.kind() == std::io::ErrorKind::PermissionDenied || e.raw_os_error() == Some(1314) {
             let _ = std::fs::remove_dir_all(&dir);
             return;
         }
@@ -1486,6 +1488,7 @@ fn a_scanned_tree_shows_either_size_without_scanning_again() {
     let dir = dir.canonicalize().unwrap();
     // Sparse where the filesystem allows it: long, with a little written.
     let sparse = fs::File::create(dir.join("sparse")).unwrap();
+    libdiskonaut::os::set_sparse(&sparse);
     sparse.set_len(8 << 20).unwrap();
     drop(sparse);
     fs::write(dir.join("small"), [1u8; 100]).unwrap();
@@ -1498,6 +1501,9 @@ fn a_scanned_tree_shows_either_size_without_scanning_again() {
 
     assert_eq!(apparent, (8 << 20) + 100);
     assert_eq!(tree.total_sizes().disk, disk);
-    assert_eq!(disk % 512, 0, "whole blocks");
+    // NTFS keeps a small file's data in its record and reports what it takes there (to the
+    // 8 bytes), not blocks.
+    let granule = if cfg!(windows) { 8 } else { 512 };
+    assert_eq!(disk % granule, 0, "whole blocks");
     assert!(disk < apparent, "the hole takes no space on disk");
 }

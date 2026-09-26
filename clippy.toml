@@ -1,0 +1,6 @@
+# The size limits `cargo clippy` holds every crate to (`[workspace.lints]` in Cargo.toml turns
+# the lints on; CI runs clippy with `-D warnings`). A function over either limit is either split
+# or carries `#[allow(clippy::too_many_lines)]` with a reason — the quality debt register that
+# `make quality` prints. See AGENTS.md, "Quality".
+too-many-lines-threshold = 100
+cognitive-complexity-threshold = 25

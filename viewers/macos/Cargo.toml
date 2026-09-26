@@ -8,6 +8,9 @@ repository.workspace = true
 homepage.workspace = true
 description = "macOS GUI viewer for diskonaut-angch: the shared model and native walker, drawn with AppKit."
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "diskonaut-mac"
 path = "src/main.rs"

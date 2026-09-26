@@ -1,4 +1,4 @@
-.PHONY: build run install test test-fs static static-aarch64 static-linux-gui pgo dos dos-tools dos-run
+.PHONY: build run install test test-fs quality coverage static static-aarch64 static-linux-gui pgo dos dos-tools dos-run
 
 build:
 	cargo build --workspace
@@ -11,6 +11,35 @@ install:
 
 test:
 	cargo test --workspace
+
+# The source's measurements (AGENTS.md, "Quality"): lines, tests and `unsafe` per crate, every
+# `unsafe` block's SAFETY comment accounted for, the register of functions over clippy's size
+# limits (each `#[allow(clippy::too_many_lines)]` with its reason), and clippy with those limits
+# on every target this machine has.
+quality:
+	@echo "== per crate: lines of Rust, #[test], unsafe blocks, and those with no SAFETY comment above"; \
+	for c in common scanners viewers/shared viewers/tui viewers/windows viewers/macos viewers/linux; do \
+	  lines=$$(find $$c/src -name '*.rs' | xargs cat | wc -l); \
+	  tests=$$(grep -r '#\[test\]' $$c/src --include='*.rs' | wc -l); \
+	  blocks=$$(grep -r 'unsafe {' $$c/src --include='*.rs' | wc -l); \
+	  bare=$$(find $$c/src -name '*.rs' -exec awk '/unsafe \{/ { if (p1 !~ /SAFETY/ && p2 !~ /SAFETY/ && p3 !~ /SAFETY/) n++ } { p3=p2; p2=p1; p1=$$0 } END { print n+0 }' {} \; | awk '{ s+=$$1 } END { print s+0 }'); \
+	  printf '%-16s %7d lines %5d tests %4d unsafe %4d without SAFETY\n' $$c $$lines $$tests $$blocks $$bare; \
+	done; \
+	echo "== quality debt: functions over clippy's limits (clippy.toml), with their reasons"; \
+	grep -rn 'allow(clippy::too_many_lines)\|allow(clippy::cognitive_complexity)' --include='*.rs' common scanners viewers \
+	  | sed 's/: *#\[allow(clippy::[a-z_]*)\] *\/\/ */: /'; \
+	echo "== clippy, with the limits, on every target this machine has"; \
+	for t in x86_64-unknown-linux-gnu x86_64-pc-windows-msvc aarch64-apple-darwin; do \
+	  if rustup target list --installed | grep -q "^$$t$$"; then \
+	    if cargo clippy --workspace --all-targets --target $$t -- -D warnings >/dev/null 2>&1; then echo "$$t: clean"; else echo "$$t: NOT clean"; fi; \
+	  else echo "$$t: not installed"; fi; \
+	done
+
+# Test coverage, line and function, per file and in all (`rustup component add
+# llvm-tools-preview; cargo install cargo-llvm-cov`). The viewers that are stubs on this
+# platform show as uncovered; read the row for the crate you changed.
+coverage:
+	cargo llvm-cov --workspace --summary-only
 
 # The tests and totals on real filesystems (ext4, XFS, btrfs, f2fs, tmpfs, FAT, exFAT, NTFS) and
 # mount layouts, on loopback images. Needs root or the docker group; see fixtures/fs/README.md.

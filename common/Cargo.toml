@@ -9,6 +9,9 @@ homepage.workspace = true
 description = "What every diskonaut-angch viewer shares: the disk-usage model with hard-link and reflink accounting, the squarified treemap, the scan protocol, deletion, file previews and the native clipboard."
 readme = "../README.md"
 
+[lints]
+workspace = true
+
 [dependencies]
 # Previews (`preview`): PNG and JPEG only.
 image = { workspace = true }

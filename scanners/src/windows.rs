@@ -586,6 +586,7 @@ fn read_u64(buffer: &[u8], at: usize) -> u64 {
 const BUFFER_BYTES: usize = 64 * 1024;
 
 /// Read one directory, returning its entries and the subdirectories to descend into.
+#[allow(clippy::too_many_lines)] // quality debt: one directory's listing, decoded entry by entry
 fn read_directory(
     job: &Job,
     options: &ScanOptions,

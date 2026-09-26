@@ -302,8 +302,10 @@ impl Dispatch<XdgToplevel, ()> for State {
             } => {
                 state.pending = Some((width, height));
                 let maximized = states
-                    .chunks_exact(4)
-                    .map(|bytes| u32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|bytes| u32::from_ne_bytes(*bytes))
                     .any(|value| value == xdg_toplevel::State::Maximized as u32);
                 state.shared().maximized.store(maximized, Ordering::Release);
             }

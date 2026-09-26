@@ -3,6 +3,7 @@ use ::std::fs::{self, File};
 use ::std::io::Write;
 use ::std::path::{Path, PathBuf};
 use ::std::sync::mpsc;
+use libdiskonaut::format::quote_path_for_shell;
 
 use diskonaut_scan::scan_into_tree;
 use libdiskonaut::{DirEntries, FileTree, Folder, ScanOptions};
@@ -423,7 +424,10 @@ fn the_relative_path_includes_the_folders_entered() {
     assert_eq!(app.file_tree.get_current_path(), dir.join("big"));
     right_click(&mut app, "data", ::std::time::Instant::now());
 
-    assert_eq!(recorder.copied(), vec!["big/data".to_string()]);
+    assert_eq!(
+        recorder.copied(),
+        vec![quote_path_for_shell(&Path::new("big").join("data"))]
+    );
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -447,7 +451,10 @@ fn copied_paths_are_quoted_for_the_shell() {
 
     assert_eq!(
         recorder.copied(),
-        vec![r"'it'\''s a file'".to_string(), "./-rf".to_string()]
+        vec![
+            quote_path_for_shell(Path::new("it's a file")),
+            quote_path_for_shell(&Path::new(".").join("-rf"))
+        ]
     );
     let _ = fs::remove_dir_all(&dir);
 }
@@ -515,11 +522,12 @@ fn relative_paths_start_from_the_working_directory() {
     let recorder = recording(&mut app, &foo);
     right_click(&mut app, "baz", ::std::time::Instant::now());
 
-    assert_eq!(recorder.copied(), vec!["../bar/baz".to_string()]);
+    let relative = quote_path_for_shell(&Path::new("..").join("bar").join("baz"));
+    assert_eq!(recorder.copied(), vec![relative.clone()]);
     assert_eq!(
         app.ui_effects
             .clipboard_flash_at(::std::time::Instant::now()),
-        Some("relative path: ../bar/baz")
+        Some(format!("relative path: {relative}").as_str())
     );
     let _ = fs::remove_dir_all(&base);
 }
@@ -532,7 +540,10 @@ fn relative_paths_climb_out_of_a_working_directory_inside_the_scan() {
     let recorder = recording(&mut app, &dir.join("big"));
     right_click(&mut app, "small", ::std::time::Instant::now());
 
-    assert_eq!(recorder.copied(), vec!["../small".to_string()]);
+    assert_eq!(
+        recorder.copied(),
+        vec![quote_path_for_shell(&Path::new("..").join("small"))]
+    );
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -1026,7 +1037,14 @@ fn every_marked_path_is_quoted_on_its_own() {
     let mut app = app_with_scanned_dir(&dir, 120, 30);
     let recorder = recording(&mut app, &dir);
     app.extend_selection(1);
-    assert_eq!(recorder.copied(), vec![r"'my file' 'it'\''s'".to_string()]);
+    assert_eq!(
+        recorder.copied(),
+        vec![format!(
+            "{} {}",
+            quote_path_for_shell(Path::new("my file")),
+            quote_path_for_shell(Path::new("it's"))
+        )]
+    );
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -1715,6 +1733,7 @@ mod refining {
 fn a_toggles_between_apparent_and_on_disk_sizes_without_a_scan() {
     let dir = temp_app_dir("toggle_size");
     let sparse = File::create(dir.join("sparse")).unwrap();
+    libdiskonaut::os::set_sparse(&sparse);
     sparse.set_len(4 << 20).unwrap();
     drop(sparse);
     fs::write(dir.join("small"), vec![1u8; 10_000]).unwrap();

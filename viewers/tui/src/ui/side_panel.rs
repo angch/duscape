@@ -274,6 +274,7 @@ fn bar(share: f64, width: usize) -> String {
 }
 
 impl Widget for SidePanel<'_> {
+    #[allow(clippy::too_many_lines)] // quality debt: one widget's rows, drawn in the order they are seen
     fn render(self, area: Rect, buf: &mut Buffer) {
         // One column is left blank beside the treemap's border.
         let width = usize::from(area.width.saturating_sub(1));

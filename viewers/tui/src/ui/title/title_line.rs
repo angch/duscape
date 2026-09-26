@@ -141,6 +141,7 @@ impl<'a> TitleLine<'a> {
 }
 
 impl<'a> Widget for TitleLine<'a> {
+    #[allow(clippy::too_many_lines)] // quality debt: the title's segments, fitted left to right
     fn render(self, rect: Rect, buf: &mut Buffer) {
         if let Some(copied) = self.clipboard_flash {
             render_clipboard_flash(copied, rect, buf);

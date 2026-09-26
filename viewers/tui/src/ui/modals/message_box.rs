@@ -236,7 +236,13 @@ mod tests {
     fn one_entry_reads_as_it_always_did() {
         let files = [file("notes.txt", 10)];
         assert_eq!(question_line(&files, 60), "Delete this file?");
-        assert_eq!(names_line(&files, 60), "/data/notes.txt");
+        assert_eq!(
+            names_line(&files, 60),
+            PathBuf::from("/data")
+                .join("notes.txt")
+                .display()
+                .to_string()
+        );
     }
 
     #[test]

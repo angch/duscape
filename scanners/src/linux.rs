@@ -163,6 +163,7 @@ struct Inspected {
 }
 
 /// One entry of a listing: `statx` and everything decided from it.
+#[allow(clippy::too_many_lines)] // quality debt: the Linux walker's directory read
 fn inspect(
     dir: BorrowedFd<'_>,
     name: &::std::ffi::CStr,
@@ -323,6 +324,7 @@ struct Listed {
 const STAT_SHARED_ABOVE: usize = 2048;
 const STAT_CHUNK: usize = 1024;
 
+#[allow(clippy::too_many_lines)] // quality debt: the Linux walker's entry loop
 fn read_directory(
     job: &Job,
     options: &ScanOptions,

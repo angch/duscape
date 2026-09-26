@@ -8,6 +8,9 @@ repository.workspace = true
 homepage.workspace = true
 description = "What the diskonaut-angch desktop viewers share: the window's state and layout, the first scan with its live outline, and the preview reader — with no toolkit in it."
 
+[lints]
+workspace = true
+
 [dependencies]
 libdiskonaut = { workspace = true }
 diskonaut-scan = { workspace = true }

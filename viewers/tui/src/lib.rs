@@ -176,8 +176,6 @@ fn start<B>(
 ) where
     B: Backend + Send + 'static,
 {
-    let mut active_threads = vec![];
-
     let (event_sender, event_receiver): (SyncSender<Event>, Receiver<Event>) =
         mpsc::sync_channel(1);
     let (instruction_sender, instruction_receiver): (
@@ -200,6 +198,68 @@ fn start<B>(
         keybinds.clone(),
         scan_options.show_apparent_size,
     );
+    enable_background_work(&mut app, &instruction_sender, scan_options, &running);
+
+    let threads = [
+        spawn("event_executer", {
+            let instruction_sender = instruction_sender.clone();
+            move || handle_events(event_receiver, instruction_sender)
+        }),
+        spawn(
+            "stdin_handler",
+            stdin_handler(
+                terminal_events,
+                instruction_sender.clone(),
+                running.clone(),
+                keybinds,
+            ),
+        ),
+        spawn(
+            "hd_scanner",
+            scanner(
+                path,
+                scan_options,
+                instruction_sender.clone(),
+                running.clone(),
+                loaded.clone(),
+            ),
+        ),
+        spawn(
+            "loading_loop",
+            loading_loop(instruction_sender.clone(), running.clone(), loaded),
+        ),
+        spawn(
+            "ticker",
+            ticker(instruction_sender, running.clone(), app.ticker_pace()),
+        ),
+    ];
+
+    app.start(instruction_receiver);
+    running.store(false, Ordering::Release);
+
+    for thread in threads {
+        thread.join().unwrap();
+    }
+}
+
+/// A named thread. Every thread of the app has a name, for what `top` and a debugger show.
+fn spawn(name: &str, work: impl FnOnce() + Send + 'static) -> thread::JoinHandle<()> {
+    thread::Builder::new()
+        .name(name.to_string())
+        .spawn(work)
+        .unwrap()
+}
+
+/// The previewer, rescans and the second pass: threads the app starts as it needs them, each
+/// reporting back as an [`Instruction`].
+fn enable_background_work<B>(
+    app: &mut App<B>,
+    instruction_sender: &SyncSender<Instruction>,
+    scan_options: ScanOptions,
+    running: &Arc<AtomicBool>,
+) where
+    B: Backend + Send + 'static,
+{
     {
         let instruction_sender = instruction_sender.clone();
         let previewer = preview::Previewer::spawn(move |generation, preview| {
@@ -233,165 +293,131 @@ fn start<B>(
             },
         ));
     }
+}
 
-    active_threads.push(
-        thread::Builder::new()
-            .name("event_executer".to_string())
-            .spawn({
-                let instruction_sender = instruction_sender.clone();
-                || handle_events(event_receiver, instruction_sender)
-            })
-            .unwrap(),
-    );
+/// Terminal events into instructions, with the pause a quit key needs.
+fn stdin_handler(
+    terminal_events: Box<dyn Iterator<Item = BackEvent> + Send>,
+    instruction_sender: SyncSender<Instruction>,
+    running: Arc<AtomicBool>,
+    keybinds: config::Keybinds,
+) -> impl FnOnce() + Send + 'static {
+    move || {
+        for evt in terminal_events {
+            if let BackEvent::Resize(_x, _y) = evt {
+                let _ = instruction_sender.send(Instruction::ResetUiMode);
+                let _ = instruction_sender.send(Instruction::Render);
+                continue;
+            }
 
-    active_threads.push(
-        thread::Builder::new()
-            .name("stdin_handler".to_string())
-            .spawn({
-                let instruction_sender = instruction_sender.clone();
-                let running = running.clone();
-                let keybinds = keybinds.clone();
-                move || {
-                    for evt in terminal_events {
-                        if let BackEvent::Resize(_x, _y) = evt {
-                            let _ = instruction_sender.send(Instruction::ResetUiMode);
-                            let _ = instruction_sender.send(Instruction::Render);
-                            continue;
-                        }
+            let delay = matches!(&evt, BackEvent::Key(_)) && needs_quit_delay(&evt, &keybinds);
+            if instruction_sender.send(Instruction::Keypress(evt)).is_err() {
+                break;
+            }
+            if delay {
+                // not ideal, but works in a pinch
+                park_timeout(time::Duration::from_millis(100));
+                // if we don't wait, the app won't have time to quit
+                if !running.load(Ordering::Acquire) {
+                    // sometimes ctrl-c doesn't shut down the app
+                    // (eg. dismissing an error message)
+                    // in order not to be aware of those particularities
+                    // we check "running"
+                    break;
+                }
+            }
+        }
+    }
+}
 
-                        let delay =
-                            matches!(&evt, BackEvent::Key(_)) && needs_quit_delay(&evt, &keybinds);
-                        if instruction_sender.send(Instruction::Keypress(evt)).is_err() {
-                            break;
-                        }
-                        if delay {
-                            // not ideal, but works in a pinch
-                            park_timeout(time::Duration::from_millis(100));
-                            // if we don't wait, the app won't have time to quit
-                            if !running.load(Ordering::Acquire) {
-                                // sometimes ctrl-c doesn't shut down the app
-                                // (eg. dismissing an error message)
-                                // in order not to be aware of those particularities
-                                // we check "running"
-                                break;
-                            }
-                        }
+/// The scan. It runs here, and the tree is built on `parallel::SHARDS` threads of its own; this
+/// thread sends the rendering thread an outline of each directory as it goes past, so the view
+/// can follow the scan, and the finished tree once the builders are merged.
+fn scanner(
+    path: PathBuf,
+    scan_options: ScanOptions,
+    instruction_sender: SyncSender<Instruction>,
+    running: Arc<AtomicBool>,
+    loaded: Arc<AtomicBool>,
+) -> impl FnOnce() + Send + 'static {
+    move || {
+        let progress_sender = instruction_sender.clone();
+        let progress_running = running.clone();
+        let mut outline = Outline::new(path.clone(), Outline::DEFAULT_DEPTH, SCAN_BATCH_SIZE);
+        let built = parallel::build_tree(
+            &path,
+            scan_options,
+            parallel::SHARDS,
+            parallel::SHARD_DEPTH,
+            |directory| {
+                if !progress_running.load(Ordering::Acquire) {
+                    return false;
+                }
+                if let Some(batch) = outline.add(directory) {
+                    // A failed send means the program has ended; stop rather than hang.
+                    if progress_sender
+                        .send(Instruction::AddScannedSummaries(batch))
+                        .is_err()
+                    {
+                        return false;
                     }
                 }
-            })
-            .unwrap(),
-    );
-
-    active_threads.push(
-        thread::Builder::new()
-            .name("hd_scanner".to_string())
-            .spawn({
-                let path = path.clone();
-                let instruction_sender = instruction_sender.clone();
-                let loaded = loaded.clone();
-                let running = running.clone();
-                move || {
-                    // The scan runs here; the tree is built on `parallel::SHARDS` threads of its
-                    // own. This thread sends the rendering thread an outline of each directory as
-                    // it goes past, so the view can follow the scan, and the finished tree once
-                    // the builders are merged.
-                    let progress_sender = instruction_sender.clone();
-                    let progress_running = running.clone();
-                    let mut outline =
-                        Outline::new(path.clone(), Outline::DEFAULT_DEPTH, SCAN_BATCH_SIZE);
-                    let built = parallel::build_tree(
-                        &path,
-                        scan_options,
-                        parallel::SHARDS,
-                        parallel::SHARD_DEPTH,
-                        |directory| {
-                            if !progress_running.load(Ordering::Acquire) {
-                                return false;
-                            }
-                            if let Some(batch) = outline.add(directory) {
-                                // A failed send means the program has ended; stop rather than hang.
-                                if progress_sender
-                                    .send(Instruction::AddScannedSummaries(batch))
-                                    .is_err()
-                                {
-                                    return false;
-                                }
-                            }
-                            true
-                        },
-                    );
-                    if running.load(Ordering::Acquire) {
-                        if let Some((mut tree, failed, _, small)) = built {
-                            let rest = outline.finish();
-                            if !rest.is_empty() {
-                                let _ =
-                                    instruction_sender.send(Instruction::AddScannedSummaries(rest));
-                            }
-                            tree.failed_to_read = failed;
-                            let _ = instruction_sender
-                                .send(Instruction::ScanComplete(Box::new(tree), small));
-                            let _ = instruction_sender.send(Instruction::StartUi);
-                        }
-                        loaded.store(true, Ordering::Release);
-                    }
+                true
+            },
+        );
+        if running.load(Ordering::Acquire) {
+            if let Some((mut tree, failed, _, small)) = built {
+                let rest = outline.finish();
+                if !rest.is_empty() {
+                    let _ = instruction_sender.send(Instruction::AddScannedSummaries(rest));
                 }
-            })
-            .unwrap(),
-    );
+                tree.failed_to_read = failed;
+                let _ = instruction_sender.send(Instruction::ScanComplete(Box::new(tree), small));
+                let _ = instruction_sender.send(Instruction::StartUi);
+            }
+            loaded.store(true, Ordering::Release);
+        }
+    }
+}
 
-    active_threads.push(
-        thread::Builder::new()
-            .name("loading_loop".to_string())
-            .spawn({
-                let instruction_sender = instruction_sender.clone();
-                let running = running.clone();
-                move || {
-                    while running.load(Ordering::Acquire) && !loaded.load(Ordering::Acquire) {
-                        let _ = instruction_sender.send(Instruction::ToggleScanningVisualIndicator);
-                        let _ = instruction_sender.send(Instruction::RenderAndUpdateBoard);
-                        park_timeout(time::Duration::from_millis(100));
-                    }
-                }
-            })
-            .unwrap(),
-    );
+/// The loading indicator, toggled while the scan runs.
+fn loading_loop(
+    instruction_sender: SyncSender<Instruction>,
+    running: Arc<AtomicBool>,
+    loaded: Arc<AtomicBool>,
+) -> impl FnOnce() + Send + 'static {
+    move || {
+        while running.load(Ordering::Acquire) && !loaded.load(Ordering::Acquire) {
+            let _ = instruction_sender.send(Instruction::ToggleScanningVisualIndicator);
+            let _ = instruction_sender.send(Instruction::RenderAndUpdateBoard);
+            park_timeout(time::Duration::from_millis(100));
+        }
+    }
+}
 
-    active_threads.push(
-        thread::Builder::new()
-            .name("ticker".to_string())
-            .spawn({
-                let instruction_sender = instruction_sender.clone();
-                let running = running.clone();
-                let fast = app.ticker_pace();
-                move || {
-                    // Drives the help line: a frame's worth apart while it slides, a few a second
-                    // while it rests. Dropped rather than queued when the rendering thread is
-                    // behind: a late tick is worth nothing.
-                    //
-                    // A slide begins on a resting tick, so the flag is looked at again a frame after
-                    // each: sleeping the whole resting interval would miss the start of the slide.
-                    // Twice per resting interval, not sixty times a second.
-                    while running.load(Ordering::Acquire) {
-                        if let Err(mpsc::TrySendError::Disconnected(_)) =
-                            instruction_sender.try_send(Instruction::Tick)
-                        {
-                            break;
-                        }
-                        park_timeout(ui::FRAME);
-                        if fast.load(Ordering::Acquire) {
-                            continue;
-                        }
-                        park_timeout(ui::IDLE_TICK.saturating_sub(ui::FRAME));
-                    }
-                }
-            })
-            .unwrap(),
-    );
-
-    app.start(instruction_receiver);
-    running.store(false, Ordering::Release);
-
-    for thread_handler in active_threads {
-        thread_handler.join().unwrap();
+/// Drives the help line: a frame's worth apart while it slides, a few a second while it rests.
+/// Dropped rather than queued when the rendering thread is behind: a late tick is worth nothing.
+///
+/// A slide begins on a resting tick, so the flag is looked at again a frame after each: sleeping
+/// the whole resting interval would miss the start of the slide. Twice per resting interval, not
+/// sixty times a second.
+fn ticker(
+    instruction_sender: SyncSender<Instruction>,
+    running: Arc<AtomicBool>,
+    fast: Arc<AtomicBool>,
+) -> impl FnOnce() + Send + 'static {
+    move || {
+        while running.load(Ordering::Acquire) {
+            if let Err(mpsc::TrySendError::Disconnected(_)) =
+                instruction_sender.try_send(Instruction::Tick)
+            {
+                break;
+            }
+            park_timeout(ui::FRAME);
+            if fast.load(Ordering::Acquire) {
+                continue;
+            }
+            park_timeout(ui::IDLE_TICK.saturating_sub(ui::FRAME));
+        }
     }
 }

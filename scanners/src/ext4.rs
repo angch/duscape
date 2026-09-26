@@ -714,6 +714,7 @@ pub fn walk_ext4(root: &Path, options: ScanOptions) -> Option<Ext4Walk> {
 }
 
 /// Read the directories under `root` a generation at a time and send each as it is parsed.
+#[allow(clippy::too_many_lines)] // quality debt: the device walk, a generation at a time
 fn read_tree(
     mut fs: Fs,
     mut inodes: Inodes,

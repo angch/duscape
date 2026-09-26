@@ -26,6 +26,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `diskonaut_scan::rescan::Rescans`'s, as the terminal viewer's are; a status message shows over
   the marks' summary while it lasts; the status bar says the zoom; `wanted_preview_sized` asks for
   a preview again when the pixels it will take change.
+- Quality measurements: `cargo clippy` now holds every crate to `clippy.toml`'s limits (a
+  function of at most 100 lines and cognitive complexity 25), on every target; a function over
+  them is split or carries `#[allow(clippy::too_many_lines)]` with its reason, the debt register
+  `make quality` prints along with lines, tests, `unsafe` blocks and `SAFETY` comments per
+  crate. `make coverage` measures test coverage with `cargo llvm-cov`. The terminal viewer's
+  frame and thread start-up were split by that measure; every `unsafe` block has its SAFETY
+  comment. The test suite passes on Windows: paths, quoting, sparse files and symlink fixtures
+  are platform-correct rather than Unix-shaped (`os::set_sparse` makes a hole on NTFS).
 - Elevated on Windows, a whole-volume scan reads NTFS's master file table instead of walking
   the directories — the volume flushed, then one sequential read of the `$MFT`, parsed on a
   few threads, the tree handed on from it exactly as the walk would (the roadmap's step 2 for

@@ -89,6 +89,7 @@ define_class!(
             };
             match self.ivars().folder.get() {
                 Some(folder) => view.start_scan(folder.clone()),
+                // SAFETY: the view's own action method, which takes an optional sender.
                 None => unsafe {
                     let _: () = msg_send![&**view, scanFolder: Option::<&NSObject>::None];
                 },
@@ -109,6 +110,7 @@ impl Delegate {
             view: OnceCell::new(),
             folder: OnceCell::new(),
         });
+        // SAFETY: the superclass's initialiser, on the instance just allocated.
         unsafe { msg_send![super(this), init] }
     }
 }
@@ -165,6 +167,7 @@ pub fn run() {
 
 /// The menu bar. Commands go to the first responder, which is the view; the standard ones
 /// (hide, quit, minimise, full screen) to the application and the window further along.
+#[allow(clippy::too_many_lines)] // quality debt: the AppKit menus, built in one place
 fn menu_bar(mtm: MainThreadMarker, app: &NSApplication) -> Retained<NSMenu> {
     let command = NSEventModifierFlags::Command;
     let option = NSEventModifierFlags::Option;

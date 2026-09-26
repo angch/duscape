@@ -37,3 +37,9 @@ pub fn volume_used(path: &::std::path::Path) -> Option<u64> {
             .saturating_mul(fs.f_frsize),
     )
 }
+
+/// A file whose unwritten length occupies nothing. Unix filesystems make the hole without
+/// being asked when the length is set, so there is nothing to do; see the Windows one.
+pub fn set_sparse(_file: &::std::fs::File) -> bool {
+    true
+}

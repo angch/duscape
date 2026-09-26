@@ -62,7 +62,9 @@ fn resolve_folder_resolves_symlinks() {
         }
     };
     if let Err(e) = res {
-        if e.kind() == std::io::ErrorKind::PermissionDenied {
+        // Windows grants symlink creation only in Developer Mode or elevated
+        // (ERROR_PRIVILEGE_NOT_HELD, 1314): not this machine's to test, then.
+        if e.kind() == std::io::ErrorKind::PermissionDenied || e.raw_os_error() == Some(1314) {
             let _ = std::fs::remove_dir_all(&dir);
             return;
         }

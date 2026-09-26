@@ -9,6 +9,9 @@ homepage.workspace = true
 description = "Native directory walkers for diskonaut-angch (Linux statx, macOS getattrlistbulk, Windows bulk directory info), the parallel tree build, and the second pass."
 readme = "../README.md"
 
+[lints]
+workspace = true
+
 [dependencies]
 libdiskonaut = { workspace = true }
 dua-core = { workspace = true }

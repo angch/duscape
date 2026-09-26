@@ -40,6 +40,7 @@ pub fn is_user_admin() -> bool {
 
     let mut admin_sid: *mut core::ffi::c_void = core::ptr::null_mut();
     let auth = SECURITY_NT_AUTHORITY;
+    // SAFETY: `auth` and `admin_sid` are valid for the call; the SID is freed below.
     let alloc_success = unsafe {
         AllocateAndInitializeSid(
             &auth,
@@ -62,8 +63,10 @@ pub fn is_user_admin() -> bool {
 
     let mut is_member: i32 = 0;
     let check_success =
+        // SAFETY: a null token means the calling thread's; `admin_sid` is the SID just allocated; `is_member` is a valid out-pointer.
         unsafe { CheckTokenMembership(core::ptr::null_mut(), admin_sid, &mut is_member) };
 
+    // SAFETY: the SID was allocated above and is freed once.
     unsafe {
         FreeSid(admin_sid);
     }
@@ -130,6 +133,7 @@ fn query_file_info(path: &::std::path::Path) -> Option<BY_HANDLE_FILE_INFORMATIO
     let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
     wide.push(0);
 
+    // SAFETY: `wide` is NUL-terminated and outlives the call.
     let handle = unsafe {
         CreateFileW(
             wide.as_ptr(),
@@ -147,7 +151,9 @@ fn query_file_info(path: &::std::path::Path) -> Option<BY_HANDLE_FILE_INFORMATIO
     }
 
     let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: `handle` is open, and `info` is a valid out-pointer.
     let ok = unsafe { GetFileInformationByHandle(handle, &mut info) };
+    // SAFETY: the handle was opened above and is closed once.
     unsafe {
         CloseHandle(handle);
     }
@@ -316,4 +322,40 @@ pub fn link_count(path: &::std::path::Path) -> u64 {
     query_file_info(path)
         .map(|info| u64::from(info.nNumberOfLinks))
         .unwrap_or(1)
+}
+
+/// Mark `file` sparse, so that a length set beyond what is written occupies nothing: NTFS
+/// otherwise allocates every cluster up to the end. For fixtures that need a hole (a size on
+/// disk smaller than the length); the Unix filesystems make one without being asked. Whether
+/// it took.
+pub fn set_sparse(file: &::std::fs::File) -> bool {
+    use ::std::os::windows::io::AsRawHandle;
+    const FSCTL_SET_SPARSE: u32 = 0x0009_00C4;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn DeviceIoControl(
+            hDevice: *mut ::std::ffi::c_void,
+            dwIoControlCode: u32,
+            lpInBuffer: *const u8,
+            nInBufferSize: u32,
+            lpOutBuffer: *mut u8,
+            nOutBufferSize: u32,
+            lpBytesReturned: *mut u32,
+            lpOverlapped: *mut u8,
+        ) -> i32;
+    }
+    let mut returned = 0u32;
+    // SAFETY: the handle is open for the call; no buffers are passed, and the lengths say so.
+    unsafe {
+        DeviceIoControl(
+            file.as_raw_handle(),
+            FSCTL_SET_SPARSE,
+            ::std::ptr::null(),
+            0,
+            ::std::ptr::null_mut(),
+            0,
+            &raw mut returned,
+            ::std::ptr::null_mut(),
+        ) != 0
+    }
 }
