@@ -16,9 +16,12 @@ pub const NO_ELEVATE: &str = "--no-elevate";
 /// Whether to ask: `root` is a volume root, the process is not elevated, and nobody opted out.
 #[must_use]
 pub fn wanted(root: &Path, opted_out: bool, is_admin: bool) -> bool {
-    let is_volume_root = !root
-        .components()
-        .any(|component| matches!(component, Component::Normal(_)));
+    // A prefix and a root and nothing else: `C:\`, `\\?\D:\`, `/`. A relative path — `.`, or
+    // one with a `..` in it — is not one, whatever it resolves to; the caller resolves it first.
+    let mut components = root.components().peekable();
+    let is_volume_root = components.peek().is_some()
+        && components
+            .all(|component| matches!(component, Component::Prefix(_) | Component::RootDir));
     is_volume_root && !opted_out && !is_admin
 }
 
@@ -105,6 +108,11 @@ pub fn relaunch(args: &[OsString]) -> Result<(), Refused> {
     let verb = wide("runas");
     let file: Vec<u16> = exe.as_os_str().encode_wide().chain(Some(0)).collect();
     let parameters = wide(&command_line(args));
+    // The new process starts in this one's directory, so a folder given relative to it — the
+    // arguments are passed on as given — names the same place.
+    let directory: Vec<u16> = ::std::env::current_dir()
+        .map(|dir| dir.as_os_str().encode_wide().chain(Some(0)).collect())
+        .unwrap_or_else(|_| vec![0]);
     // SAFETY: every string is NUL-terminated and outlives the call; no window is needed.
     let started = unsafe {
         ShellExecuteW(
@@ -112,7 +120,7 @@ pub fn relaunch(args: &[OsString]) -> Result<(), Refused> {
             verb.as_ptr(),
             file.as_ptr(),
             parameters.as_ptr(),
-            null(),
+            directory.as_ptr(),
             SW_SHOWNORMAL,
         )
     };
@@ -150,7 +158,17 @@ mod tests {
                 "{root} elevated already"
             );
         }
-        for root in [r"C:\Users", r"\\?\C:\Windows\", "/home", "project"] {
+        // A relative path is never one, even `.` in a volume root: the caller resolves it.
+        // (`C:\.` is `C:\` to `Path`, and a volume root.)
+        for root in [
+            r"C:\Users",
+            r"\\?\C:\Windows\",
+            "/home",
+            "project",
+            ".",
+            "..",
+            "",
+        ] {
             assert!(
                 !wanted(Path::new(root), false, false),
                 "{root} is a subtree"

@@ -795,10 +795,11 @@ pub fn run() {
         );
         return;
     }
+    let root = root.canonicalize().unwrap_or(root);
+    // Resolved first, so `.` in a volume root is the volume.
     if handed_to_elevated(&opt, &root) {
         return;
     }
-    let root = root.canonicalize().unwrap_or(root);
     let options = opt.scan_options();
     let shown = if options.show_apparent_size {
         SizeKind::Apparent
