@@ -269,7 +269,7 @@ pub fn enable_backup_privilege() -> bool {
         fn GetLastError() -> u32;
     }
 
-    let name: Vec<u16> = "SeBackupPrivilege ".encode_utf16().collect();
+    let name: Vec<u16> = "SeBackupPrivilege\0".encode_utf16().collect();
     let mut luid = Luid::default();
     // SAFETY: `name` is NUL-terminated and `luid` is a live `LUID`.
     if unsafe { LookupPrivilegeValueW(core::ptr::null(), name.as_ptr(), &raw mut luid) } == 0 {
@@ -330,20 +330,8 @@ pub fn link_count(path: &::std::path::Path) -> u64 {
 /// it took.
 pub fn set_sparse(file: &::std::fs::File) -> bool {
     use ::std::os::windows::io::AsRawHandle;
-    const FSCTL_SET_SPARSE: u32 = 0x0009_00C4;
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        fn DeviceIoControl(
-            hDevice: *mut ::std::ffi::c_void,
-            dwIoControlCode: u32,
-            lpInBuffer: *const u8,
-            nInBufferSize: u32,
-            lpOutBuffer: *mut u8,
-            nOutBufferSize: u32,
-            lpBytesReturned: *mut u32,
-            lpOverlapped: *mut u8,
-        ) -> i32;
-    }
+    use ::windows_sys::Win32::System::IO::DeviceIoControl;
+    use ::windows_sys::Win32::System::Ioctl::FSCTL_SET_SPARSE;
     let mut returned = 0u32;
     // SAFETY: the handle is open for the call; no buffers are passed, and the lengths say so.
     unsafe {

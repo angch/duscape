@@ -20,13 +20,13 @@ quality:
 	@echo "== per crate: lines of Rust, #[test], unsafe blocks, and those with no SAFETY comment above"; \
 	for c in common scanners viewers/shared viewers/tui viewers/windows viewers/macos viewers/linux; do \
 	  lines=$$(find $$c/src -name '*.rs' | xargs cat | wc -l); \
-	  tests=$$(grep -r '#\[test\]' $$c/src --include='*.rs' | wc -l); \
-	  blocks=$$(grep -r 'unsafe {' $$c/src --include='*.rs' | wc -l); \
+	  tests=$$(grep -ra '#\[test\]' $$c/src --include='*.rs' | wc -l); \
+	  blocks=$$(grep -ra 'unsafe {' $$c/src --include='*.rs' | wc -l); \
 	  bare=$$(find $$c/src -name '*.rs' -exec awk '/unsafe \{/ { if (p1 !~ /SAFETY/ && p2 !~ /SAFETY/ && p3 !~ /SAFETY/) n++ } { p3=p2; p2=p1; p1=$$0 } END { print n+0 }' {} \; | awk '{ s+=$$1 } END { print s+0 }'); \
 	  printf '%-16s %7d lines %5d tests %4d unsafe %4d without SAFETY\n' $$c $$lines $$tests $$blocks $$bare; \
 	done; \
 	echo "== quality debt: functions over clippy's limits (clippy.toml), with their reasons"; \
-	grep -rn 'allow(clippy::too_many_lines)\|allow(clippy::cognitive_complexity)' --include='*.rs' common scanners viewers \
+	grep -ran 'allow(clippy::too_many_lines)\|allow(clippy::cognitive_complexity)' --include='*.rs' common scanners viewers \
 	  | sed 's/: *#\[allow(clippy::[a-z_]*)\] *\/\/ */: /'; \
 	echo "== clippy, with the limits, on every target this machine has"; \
 	for t in x86_64-unknown-linux-gnu x86_64-pc-windows-msvc aarch64-apple-darwin; do \

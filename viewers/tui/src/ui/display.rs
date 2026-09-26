@@ -93,20 +93,20 @@ fn render_side_panel(
     file_tree: &FileTree,
     board: &Board,
     panel_state: &PanelState,
+    current: &FolderInfo,
 ) {
     let Some(panel) = areas.side_panel else {
         return;
     };
-    let current_path = file_tree.get_current_path();
     let at_root = file_tree.current_folder_names.is_empty();
     let scanned = !matches!(
         ui_mode,
         UiMode::Loading | UiMode::Exiting { app_loaded: false }
     );
     let details = FolderDetails {
-        path: &current_path,
-        size: file_tree.get_current_folder_size(),
-        descendants: file_tree.get_current_folder().num_descendants,
+        path: current.path,
+        size: current.size,
+        descendants: current.num_descendants,
         scan_total: (!at_root).then_some(file_tree.get_total_size()),
         disk: file_tree
             .volume_used
@@ -234,9 +234,7 @@ where
                     num_descendants: file_tree.get_total_descendants(),
                 };
                 let chrome = Chrome::of(ui_mode);
-                if areas.side_panel.is_some() {
-                    render_side_panel(f, &areas, ui_mode, file_tree, board, &panel_state);
-                }
+                render_side_panel(f, &areas, ui_mode, file_tree, board, &panel_state, &current);
                 let mut title =
                     TitleLine::new(base, current, file_tree.space_freed.get(file_tree.shown))
                         .apparent_size(apparent_size)

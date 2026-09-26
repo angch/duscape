@@ -1324,7 +1324,6 @@ mod disk_size_fsctl {
     use ::std::os::windows::io::AsRawHandle;
 
     const FSCTL_SET_COMPRESSION: u32 = 0x0009_C040;
-    const FSCTL_SET_SPARSE: u32 = 0x0009_00C4;
     const COMPRESSION_FORMAT_DEFAULT: u16 = 1;
 
     // Pointer types match the crate's other `DeviceIoControl` declaration (`os::windows`) so the
@@ -1368,10 +1367,6 @@ mod disk_size_fsctl {
             FSCTL_SET_COMPRESSION,
             &COMPRESSION_FORMAT_DEFAULT.to_le_bytes(),
         );
-    }
-
-    pub fn set_sparse(file: &File) {
-        control(file, FSCTL_SET_SPARSE, &[]);
     }
 }
 
@@ -1423,7 +1418,7 @@ fn windows_sparse_file_is_sized_by_its_allocation() {
         .truncate(true)
         .open(&path)
         .expect("create file");
-    disk_size_fsctl::set_sparse(&file);
+    assert!(libdiskonaut::os::set_sparse(&file));
     file.set_len(16 * 1024 * 1024).expect("grow to a hole");
     file.seek(SeekFrom::End(-4)).expect("seek to tail");
     file.write_all(&[1, 2, 3, 4]).expect("write the tail");

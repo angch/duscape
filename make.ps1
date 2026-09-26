@@ -38,7 +38,7 @@ function Find-Bash {
     )
     foreach ($c in $candidates) { if (Test-Path $c) { return $c } }
     # Not the WSL launcher in System32, which runs a Linux, not this checkout.
-    $onPath = Get-Command bash -ErrorAction SilentlyContinue | Where-Object { $_.Source -notmatch 'System32' } | Select-Object -First 1
+    $onPath = Get-Command bash -All -ErrorAction SilentlyContinue | Where-Object { $_.Source -notmatch 'System32' } | Select-Object -First 1
     if ($onPath) { return $onPath.Source }
     Fail "make: no bash: install Git for Windows, or set MAKE_SHELL to a bash"
 }
@@ -47,17 +47,22 @@ $bash = Find-Bash
 # A path as bash and cargo both take it: forward slashes.
 $curdir = ($here -replace '\\', '/')
 $home_ = if ($env:HOME) { $env:HOME } else { $env:USERPROFILE }
-$vars = @{ "CURDIR" = $curdir; "HOME" = ($home_ -replace '\\', '/') }
+# Variables and targets are case-sensitive in make; PowerShell's hashtables are not by default.
+function Ordinal-Table { New-Object System.Collections.Hashtable ([StringComparer]::Ordinal) }
+$vars = Ordinal-Table
 
 # Command-line assignments first: they beat `?=` and `:=` alike, and reach the recipes.
 $targets = @()
+$commandLine = @()
 foreach ($goal in $Goals) {
     if ($goal -match '^([A-Za-z_][A-Za-z0-9_]*)=(.*)$') {
         $vars[$Matches[1]] = $Matches[2]
+        $commandLine += $Matches[1]
         Set-Item -Path "env:$($Matches[1])" -Value $Matches[2]
     } else { $targets += $goal }
 }
-$commandLine = @($vars.Keys)
+if (-not $vars.ContainsKey("CURDIR")) { $vars["CURDIR"] = $curdir }
+if (-not $vars.ContainsKey("HOME")) { $vars["HOME"] = ($home_ -replace '\\', '/') }
 
 # Run `script` in bash, in the Makefile's directory. Its output flows on (a PowerShell function
 # returns everything it emits, so the status comes back in `$LastStatus` instead); with
@@ -66,7 +71,7 @@ $commandLine = @($vars.Keys)
 # stderr as an error under `Stop`, so that is relaxed for the call.
 $script:LastStatus = 0
 function Run-Shell([string]$script, [switch]$Capture) {
-    $file = [IO.Path]::GetTempFileName() + ".sh"
+    $file = [IO.Path]::GetTempFileName()
     [IO.File]::WriteAllText($file, "cd `"$curdir`" || exit 1`n" + $script + "`n", (New-Object Text.UTF8Encoding($false)))
     $was = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
@@ -103,6 +108,7 @@ function Expand([string]$text) {
             if ($text[$j] -eq '(') { $depth++ } elseif ($text[$j] -eq ')') { $depth-- }
             $j++
         } while ($depth -gt 0 -and $j -lt $text.Length)
+        if ($depth -ne 0) { Fail "make: unterminated variable reference in: $text" }
         $inner = $text.Substring($i + 2, $j - $i - 3)
         if ($inner -match '^shell\s+(.*)$') {
             [void]$out.Append((Run-Shell (Expand $Matches[1]) -Capture).Trim())
@@ -140,8 +146,8 @@ while ($i -lt $lines.Length) {
     $logical += , @($line, $isRecipe)
 }
 
-$rules = [ordered]@{}   # name -> @{ Prereqs = @(); Recipe = @() }
-$phony = @{}
+$rules = New-Object System.Collections.Specialized.OrderedDictionary ([StringComparer]::Ordinal)   # name -> @{ Prereqs; Recipe }
+$phony = Ordinal-Table
 $current = $null
 foreach ($entry in $logical) {
     $text, $isRecipe = $entry
@@ -152,7 +158,7 @@ foreach ($entry in $logical) {
     }
     $t = $text.Trim()
     if ($t -eq "" -or $t.StartsWith("#")) { continue }
-    if ($t -match '^(ifeq|ifneq|ifdef|ifndef|include|-include|define|export|unexport)\b' -or $t -match '%') {
+    if ($t -match '^(ifeq|ifneq|ifdef|ifndef|include|-include|define|export|unexport)\b') {
         Fail "make: line `"$t`": a make construct this does not know (see make.ps1)" 2
     }
     if ($t -match '^([A-Za-z_][A-Za-z0-9_]*)\s*(:=|\?=|=)\s*(.*)$') {
@@ -163,6 +169,7 @@ foreach ($entry in $logical) {
         continue
     }
     if ($t -match '^([^:=]+):(.*)$') {
+        if ($Matches[1] -match '%') { Fail "make: line `"$t`": a pattern rule, which this does not know (see make.ps1)" }
         $names = (Expand $Matches[1].Trim()) -split '\s+' | Where-Object { $_ }
         $prereqs = @((Expand $Matches[2].Trim()) -split '\s+' | Where-Object { $_ })
         foreach ($name in $names) {
@@ -177,7 +184,7 @@ foreach ($entry in $logical) {
 }
 
 # --- run
-$done = @{}
+$done = Ordinal-Table
 function Build([string]$name, [int]$depth) {
     if ($done.ContainsKey($name)) { return }
     if (-not $rules.Contains($name)) {

@@ -45,6 +45,8 @@
 # Kernel Module Compile Results
 *.mod*
 *.cmd
+# The Windows `make` shim, which the pattern above would hide.
+!make.cmd
 .tmp_versions/
 modules.order
 Module.symvers
