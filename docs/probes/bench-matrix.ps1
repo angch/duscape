@@ -194,7 +194,7 @@ foreach ($path in $resolved) {
     Bench "warm" $path @("--warmup", "1")
     if ($canDrop) {
         Write-Host "== cold $path"
-        Bench "cold" $path @("--prepare", "powershell -NoProfile -ExecutionPolicy Bypass -File $dropCache")
+        Bench "cold" $path @("--prepare", "powershell -NoProfile -ExecutionPolicy Bypass -File $(Arg $dropCache)")
     }
 }
 

@@ -63,6 +63,15 @@ fn file_name(parent: u64, namespace: u8, name: &str) -> Vec<u8> {
     resident(0x30, &value)
 }
 
+/// A `$FILE_NAME` for a reparse point: the attribute flag set and the tag at 0x3C, as NTFS
+/// keeps them in the name.
+fn file_name_reparse(parent: u64, name: &str, tag: u32) -> Vec<u8> {
+    let mut attribute = file_name(parent, 3, name);
+    attribute[0x18 + 0x38..0x18 + 0x3C].copy_from_slice(&0x0410u32.to_le_bytes());
+    attribute[0x18 + 0x3C..0x18 + 0x40].copy_from_slice(&tag.to_le_bytes());
+    attribute
+}
+
 fn data_resident(bytes: usize) -> Vec<u8> {
     resident(0x80, &vec![b'x'; bytes])
 }
@@ -267,7 +276,8 @@ fn records_parse_into_names_sizes_and_kinds() {
     assert_eq!(big.sequence, 7);
     assert!(big.names.is_empty(), "its name is in the extension record");
     let extension = table[70].as_ref().expect("in use");
-    assert_eq!(extension.base, 66);
+    assert_eq!(extension.base, Some(66));
+    assert_eq!(big.base, None);
     assert_eq!(extension.names.len(), 1);
     let small = table[65].as_ref().expect("in use");
     assert_eq!(small.data, Some((0, 10)), "resident: nothing allocated");
@@ -345,14 +355,16 @@ fn the_tree_comes_out_as_the_kernel_walk_would_give_it() {
 
 #[test]
 fn the_depth_limit_lists_but_does_not_enter() {
-    let directories = walk(Some(0));
+    // As the kernel walkers count it: `--max-depth 1` is the root's entries alone.
+    let directories = walk(Some(1));
     assert_eq!(directories.len(), 1, "the root only");
     assert!(
         directories[0]
             .iter()
             .any(|(name, meta)| name == "docs" && meta.is_dir)
     );
-    assert_eq!(walk(Some(1)).len(), 2);
+    assert_eq!(walk(Some(0)).len(), 1);
+    assert_eq!(walk(Some(2)).len(), 2);
 }
 
 #[test]
@@ -433,8 +445,6 @@ fn runs_are_decoded_with_signed_relative_offsets() {
             (Some(12 + 0x100), 1)
         ]
     );
-    let table = volume();
-    let _ = table;
     let zero = record(
         0,
         1,
@@ -446,4 +456,28 @@ fn runs_are_decoded_with_signed_relative_offsets() {
         ],
     );
     assert_eq!(data_runs(&zero), Some((0, vec![(Some(4), 8)])));
+}
+
+/// A junction whose `$REPARSE_POINT` is out of reach (non-resident, or elsewhere) is still known
+/// from its name's tag, so it is not entered; a placeholder with another tag is a directory.
+#[test]
+fn a_reparse_tag_in_the_name_marks_a_link() {
+    let junction = parse_file_record(&record(
+        69,
+        1,
+        2,
+        0,
+        &[file_name_reparse(5, "junction", 0xA000_0003)],
+    ))
+    .expect("in use");
+    assert!(junction.is_dir && junction.link);
+    let placeholder = parse_file_record(&record(
+        69,
+        1,
+        2,
+        0,
+        &[file_name_reparse(5, "cloud", 0x9000_601A)],
+    ))
+    .expect("in use");
+    assert!(placeholder.is_dir && !placeholder.link);
 }

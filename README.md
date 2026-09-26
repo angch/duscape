@@ -59,7 +59,8 @@ point at it, so sizes do not add up where hard links are involved, and deleting 
 nothing until the last is gone. By default the scan crosses mount points, like `du`; `-x` keeps it
 on one filesystem. On a whole volume the title shows the disk's used space and how much of it the
 scan did not reach. [`docs/sizes.md`](docs/sizes.md) explains all of this, including what Windows
-does about hard links and why running as administrator there shows more.
+does about hard links and why running as administrator there shows more (and, for a whole
+volume, reads the master file table instead of walking, as WizTree does).
 
 ## Benchmarking the scan
 

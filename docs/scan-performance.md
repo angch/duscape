@@ -3252,7 +3252,9 @@ likely `$Extend\$UsnJrnl`, which the table has and no listing shows; not yet con
 
 Memory: about 600 MB at peak for 2.46M records (the parsed records, then the entries under
 their directories), against WizTree's 180 MB; the records could be freed as they are assembled,
-and the names kept once. The cold read: the synchronous 32 MiB reads through the cache manager
+and the names kept once — they are copied twice now, into `Entry` and again into `DirEntries`.
+Each 32 MiB chunk is a fresh allocation, zeroed and freed: 2.3 GB of it a scan, which a few
+buffers passed back from the parsers would avoid. The cold read: the synchronous 32 MiB reads through the cache manager
 got 0.5 GB/s on one cold run (`C:\Windows`: 4.4 s to read and parse) where the device does
 3 GB/s; overlapped reads would take the cold `C:\` from 3.1 s towards 2 s. The sample is one
 machine's predictor, and its threshold is set from two volumes.

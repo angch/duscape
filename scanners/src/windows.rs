@@ -693,7 +693,7 @@ fn read_directory(
                     // meaningful on ReFS. Fold both, with the volume, into one 64-bit identity.
                     let low = read_u64(entry, layout::EXTD_FILE_ID);
                     let high = read_u64(entry, layout::EXTD_FILE_ID + 8);
-                    low ^ high.rotate_left(32) ^ shared.volume.rotate_left(48)
+                    crate::ntfs::fold_file_id(low, high, shared.volume)
                 } else {
                     0
                 };

@@ -389,28 +389,28 @@ fn bench_ext4_raw(_path: &Path) -> StageResult {
 
 /// Whether the scan will read the filesystem from its device: asked for, and possible here.
 #[cfg(target_os = "linux")]
-fn device_read_words(path: &Path, options: ScanOptions) -> &'static str {
+fn device_read_words(path: &Path, options: ScanOptions) -> String {
     if !options.read_device {
-        "off (--no-device-read)"
+        "off (--no-device-read)".to_string()
     } else if diskonaut_scan::ext4::would_read_device(path) {
-        "yes (ext4, as root)"
+        "yes (ext4, as root)".to_string()
     } else {
-        "no (not ext4, or not root)"
+        "no (not ext4, or not root)".to_string()
     }
 }
 #[cfg(windows)]
-fn device_read_words(path: &Path, options: ScanOptions) -> &'static str {
+fn device_read_words(path: &Path, options: ScanOptions) -> String {
     if !options.read_device {
-        "off (--no-device-read)"
-    } else if diskonaut_scan::mft::would_read_device(path) {
-        "yes (NTFS master file table, elevated)"
-    } else {
-        "no (not NTFS, or not elevated)"
+        return "off (--no-device-read)".to_string();
+    }
+    match diskonaut_scan::mft::would_read_device(path) {
+        Ok(()) => "yes (NTFS master file table, elevated)".to_string(),
+        Err(why) => format!("no ({why})"),
     }
 }
 #[cfg(not(any(target_os = "linux", windows)))]
-fn device_read_words(_path: &Path, _options: ScanOptions) -> &'static str {
-    "no (Linux and Windows only)"
+fn device_read_words(_path: &Path, _options: ScanOptions) -> String {
+    "no (Linux and Windows only)".to_string()
 }
 
 /// Run the requested benchmark stages against `path` and print a report.

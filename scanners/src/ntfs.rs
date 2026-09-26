@@ -11,6 +11,15 @@
 
 pub use libdiskonaut::metafiles::{EXTEND, ROOT_METAFILES, is_metafile_path, is_root_metafile};
 
+/// One 64-bit identity for a file from its 128-bit id (`low` is the NTFS file reference; `high`
+/// is zero on NTFS and meaningful on ReFS) and the volume's serial, so that ids from two
+/// volumes cannot collide. The walk and the table read must fold alike, since a rescan through
+/// the kernel is grafted into a tree read from the table.
+#[must_use]
+pub fn fold_file_id(low: u64, high: u64, volume: u64) -> u64 {
+    low ^ high.rotate_left(32) ^ volume.rotate_left(48)
+}
+
 /// The record-number half of a file reference; the top 16 bits are a sequence number.
 #[must_use]
 pub fn record_number(file_reference: u64) -> u64 {

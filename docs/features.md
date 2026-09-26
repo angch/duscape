@@ -46,6 +46,7 @@ by copying it.
 | `linux` | `getdents64` and `statx` on its own thread pool. Probes shared extents (FIEMAP) for reflinks from 64 KiB up, reads btrfs compressed sizes when root, and refuses pseudo filesystems (`/proc`, `/sys`…), network filesystems (NFS, SMB, sshfs…) and bind-mount duplicates at their mount points. |
 | `macos` | `getattrlistbulk(2)`, choosing the size attribute per device because FAT misreports it. |
 | `windows` | One handle per directory, entries in bulk (`FileIdExtdDirectoryInfo`). Hard links deduplicated by file id where they are made (or everywhere, elevated). Elevated, NTFS's metadata files are sized from their MFT records (`ntfs`) and shown at the volume's root. |
+| `mft` | Elevated, a whole NTFS volume read from its master file table instead of walked: the `$MFT` in a few large sequential reads, parsed on several threads into every record's names, parent and sizes, the tree handed on as the walk would hand it. Used only where a sample of the table says the volume's directories are small enough for it to pay; `--no-device-read` walks instead. The parsing runs and is tested everywhere. |
 | fallback | `dua-core`, on every other platform. |
 | `scan_directories` | Picks the walker. Every walker yields the same thing: one `DirEntries` per directory. |
 | `parallel` | `build_tree`: the tree built on several threads as the walk runs, with an optional callback per directory for a live view. |

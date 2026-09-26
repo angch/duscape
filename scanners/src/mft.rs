@@ -30,7 +30,6 @@ use ::std::sync::Arc;
 use super::{DirEntries, EntryMeta};
 use crate::ntfs::{self, Run, u16_at, u32_at, u64_at};
 
-const STANDARD_INFORMATION: u32 = 0x10;
 const FILE_NAME: u32 = 0x30;
 const DATA: u32 = 0x80;
 const REPARSE_POINT: u32 = 0xC0;
@@ -41,6 +40,7 @@ const RECORD_IS_DIRECTORY: u16 = 0x0002;
 const ATTRIBUTE_COMPRESSED: u16 = 0x0001;
 const ATTRIBUTE_SPARSE: u16 = 0x8000;
 
+const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
 const IO_REPARSE_TAG_MOUNT_POINT: u32 = 0xA000_0003;
 const IO_REPARSE_TAG_SYMLINK: u32 = 0xA000_000C;
 
@@ -69,8 +69,10 @@ pub struct Name {
 pub struct Parsed {
     pub number: u32,
     pub sequence: u16,
-    /// The base record this one extends, or 0 when it is a base record itself.
-    pub base: u32,
+    /// The base record this one extends, or `None` when it is a base record itself. Read
+    /// from the raw reference, whose sequence number keeps an extension of record 0 apart
+    /// from a base record.
+    pub base: Option<u32>,
     pub is_dir: bool,
     /// A junction or symbolic link, which the walk does not follow.
     pub link: bool,
@@ -104,7 +106,10 @@ pub fn parse_file_record_in_place(record: &mut [u8]) -> Option<Parsed> {
     let mut parsed = Parsed {
         number: u32_at(record, 0x2C)?,
         sequence: u16_at(record, 0x10)?,
-        base: u32::try_from(ntfs::record_number(u64_at(record, 0x20)?)).ok()?,
+        base: match u64_at(record, 0x20)? {
+            0 => None,
+            reference => Some(u32::try_from(ntfs::record_number(reference)).ok()?),
+        },
         is_dir: flags & RECORD_IS_DIRECTORY != 0,
         ..Parsed::default()
     };
@@ -128,8 +133,9 @@ pub fn parse_file_record_in_place(record: &mut [u8]) -> Option<Parsed> {
             let value = attribute.get(value_offset..value_offset + value_length);
             match (kind, value) {
                 (FILE_NAME, Some(value)) => {
-                    if let Some(name) = parse_file_name(value) {
+                    if let Some((name, reparse_tag)) = parse_file_name(value) {
                         parsed.names.push(name);
+                        parsed.link |= is_link(reparse_tag);
                     }
                 }
                 (DATA, Some(value)) if name_length == 0 && parsed.data.is_none() => {
@@ -137,9 +143,7 @@ pub fn parse_file_record_in_place(record: &mut [u8]) -> Option<Parsed> {
                     parsed.data = Some((0, value.len() as u64));
                 }
                 (REPARSE_POINT, Some(value)) => {
-                    let tag = u32_at(value, 0).unwrap_or(0);
-                    parsed.link |=
-                        matches!(tag, IO_REPARSE_TAG_MOUNT_POINT | IO_REPARSE_TAG_SYMLINK);
+                    parsed.link |= is_link(u32_at(value, 0));
                 }
                 _ => {}
             }
@@ -166,13 +170,27 @@ pub fn parse_file_record_in_place(record: &mut [u8]) -> Option<Parsed> {
         }
         at += length;
     }
-    let _ = STANDARD_INFORMATION;
     Some(parsed)
 }
 
-/// A `$FILE_NAME` value: the parent's reference, then the name's length and namespace at 0x40.
-fn parse_file_name(value: &[u8]) -> Option<Name> {
+/// A junction or symbolic link, which the walk does not follow, by its reparse tag; every
+/// other reparse point (OneDrive placeholders, dedup) is a real file or directory with a tag.
+fn is_link(reparse_tag: Option<u32>) -> bool {
+    matches!(
+        reparse_tag,
+        Some(IO_REPARSE_TAG_MOUNT_POINT | IO_REPARSE_TAG_SYMLINK)
+    )
+}
+
+/// A `$FILE_NAME` value: the parent's reference, the file attributes at 0x38 and — for a
+/// reparse point — its tag at 0x3C, then the name's length and namespace at 0x40. The tag is
+/// read here rather than from `$REPARSE_POINT`, which may be non-resident and out of reach.
+fn parse_file_name(value: &[u8]) -> Option<(Name, Option<u32>)> {
     let parent = u32::try_from(ntfs::record_number(u64_at(value, 0)?)).ok()?;
+    let attributes = u32_at(value, 0x38)?;
+    let reparse_tag = (attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0)
+        .then(|| u32_at(value, 0x3C))
+        .flatten();
     let length = usize::from(*value.get(0x40)?);
     let namespace = *value.get(0x41)?;
     let bytes = value.get(0x42..0x42 + length * 2)?;
@@ -182,11 +200,14 @@ fn parse_file_name(value: &[u8]) -> Option<Name> {
         .iter()
         .map(|pair| u16::from_le_bytes(*pair))
         .collect();
-    Some(Name {
-        parent,
-        namespace,
-        name,
-    })
+    Some((
+        Name {
+            parent,
+            namespace,
+            name,
+        },
+        reparse_tag,
+    ))
 }
 
 /// The runs of `$MFT`'s own data, from record 0: where the table is on the volume. A piece of
@@ -246,11 +267,12 @@ fn os_name(name: &[u16]) -> OsString {
     }
 }
 
-/// The identity the kernel walk gives a file: its reference, folded with the volume's serial so
-/// that ids from two volumes cannot collide (see `windows::read_directory`).
+/// The identity the kernel walk gives a file: its reference, folded with the volume's serial as
+/// `windows::read_directory` folds a listing's id, so a rescan through the kernel grafts into a
+/// table's tree with the same ids.
 fn file_id(number: u32, sequence: u16, volume: u64) -> u64 {
     let reference = u64::from(number) | (u64::from(sequence) << 48);
-    reference ^ volume.rotate_left(48)
+    ntfs::fold_file_id(reference, 0, volume)
 }
 
 impl Catalog {
@@ -261,13 +283,14 @@ impl Catalog {
         let count = records.len();
         for index in 0..count {
             let extension = match &records[index] {
-                Some(parsed) if parsed.base != 0 && parsed.base != parsed.number => {
+                Some(parsed) if parsed.base.is_some_and(|base| base != parsed.number) => {
                     records[index].take()
                 }
                 _ => None,
             };
             if let Some(extension) = extension
-                && let Some(Some(base)) = records.get_mut(extension.base as usize)
+                && let Some(base) = extension.base
+                && let Some(Some(base)) = records.get_mut(base as usize)
             {
                 base.names.extend(extension.names);
                 base.data = base.data.or(extension.data);
@@ -277,8 +300,6 @@ impl Catalog {
         }
         let mut children: Vec<Vec<Entry>> = (0..count).map(|_| Vec::new()).collect();
         for parsed in records.into_iter().flatten() {
-            // One entry per directory the file is in: a Win32 name, or a DOS name only where it
-            // is the only one there. The root's own `.` is nobody's entry.
             // One entry per name, except a DOS name beside a Win32 one in the same directory:
             // that is one entry under its short name. Two Win32 names in one directory are two
             // hard links, and both are listed, as the kernel lists them. The root's own `.` is
@@ -363,7 +384,9 @@ impl Catalog {
             let name_bytes = entries.iter().map(|e| e.name.len()).sum();
             let mut directory =
                 DirEntries::with_capacity(Arc::clone(&pending.path), entries.len(), name_bytes);
-            let descend = max_depth.is_none_or(|max| pending.depth < max);
+            // As the kernel walkers count it (`job.depth + 1 < max`): `--max-depth 1` is the
+            // root's entries alone.
+            let descend = max_depth.is_none_or(|max| pending.depth + 1 < max);
             for entry in entries {
                 let mut meta = entry.meta;
                 let system_file = pending.system
@@ -416,7 +439,7 @@ mod volume {
     use ::std::thread::JoinHandle;
     use ::std::time::Instant;
 
-    use super::{Catalog, Parsed, ROOT_RECORD, data_runs, parse_file_record_in_place};
+    use super::{Catalog, Parsed, data_runs, parse_file_record_in_place};
     use crate::ntfs::{self, Run};
     use crate::{DirEntries, ScanOptions};
 
@@ -593,6 +616,11 @@ mod volume {
                     if length == 0 {
                         continue;
                     }
+                    // A run that ends mid-record (clusters smaller than a record, an odd
+                    // count) would put every record after it out of step: decline.
+                    if length % self.record_bytes as u64 != 0 {
+                        return None;
+                    }
                     let offset = lcn.saturating_mul(self.cluster_bytes);
                     if offset.saturating_add(length) > self.volume_bytes {
                         return None;
@@ -601,7 +629,9 @@ mod volume {
                     left -= length;
                 }
             }
-            (left == 0 || !runs.is_empty()).then_some(runs)
+            // Anything short of the whole table would be a tree with files silently missing:
+            // decline instead, and the kernel walk takes over.
+            (left == 0 && !runs.is_empty()).then_some(runs)
         }
 
         /// Entries a directory holds on this volume, on average — files over directories among
@@ -702,16 +732,21 @@ mod volume {
     /// took 5.7 s against the walk's 4.6 s, `C:\Program Files` 2.3 s against 0.6 s — on a
     /// volume that opens and reads as NTFS, whose directories are small enough for the table
     /// to pay.
-    fn chosen(root: &Path) -> Option<Chosen> {
+    fn chosen(root: &Path) -> Result<Chosen, String> {
         let is_volume_root = !root
             .components()
             .any(|component| matches!(component, Component::Normal(_)));
         if !is_volume_root {
-            return None;
+            return Err("not a volume root".to_string());
         }
-        let volume = Volume::open(root)?;
-        let runs = volume.table_runs()?;
-        let ratio = volume.entries_per_directory(&runs)?;
+        let volume = Volume::open(root)
+            .ok_or_else(|| "the volume does not open (not NTFS, or not elevated)".to_string())?;
+        let runs = volume
+            .table_runs()
+            .ok_or_else(|| "the table's runs could not be read".to_string())?;
+        let ratio = volume
+            .entries_per_directory(&runs)
+            .ok_or_else(|| "the table could not be sampled".to_string())?;
         // Printed under `--benchmark --bench-profile`, with the build profile.
         if libdiskonaut::model::files::profile::enabled() {
             eprintln!(
@@ -726,10 +761,13 @@ mod volume {
             );
         }
         if ratio > TABLE_UP_TO {
-            return None;
+            return Err(format!(
+                "{ratio:.1} entries a directory in the table's sample, over {TABLE_UP_TO}"
+            ));
         }
-        let (record, serial) = directory_record(root)?;
-        Some(Chosen {
+        let (record, serial) = directory_record(root)
+            .ok_or_else(|| "the root's record could not be found".to_string())?;
+        Ok(Chosen {
             volume,
             record,
             serial,
@@ -748,13 +786,12 @@ mod volume {
         ratio: f64,
     }
 
-    /// Whether a scan of `root` by this process would read the table: NTFS, the volume opens
-    /// (elevated), and the tree and the volume are ones the table pays for. For the
-    /// benchmark's report.
-    #[must_use]
-    pub fn would_read_device(root: &Path) -> bool {
+    /// Whether a scan of `root` by this process would read the table — NTFS, the volume opens
+    /// (elevated), and the tree and the volume are ones the table pays for — or why not. For
+    /// the benchmark's report.
+    pub fn would_read_device(root: &Path) -> Result<(), String> {
         let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-        chosen(&root).is_some()
+        chosen(&root).map(|_| ())
     }
 
     /// The walk of an NTFS volume from its table, one [`DirEntries`] per directory.
@@ -821,9 +858,6 @@ mod volume {
                 })
                 .collect();
             drop(parsed_out);
-            // Read on this thread, collecting what the workers hand back between reads so that
-            // neither side waits on the other for long.
-            let mut first = 0usize;
             let place = |records: &mut Vec<Option<Parsed>>,
                          (start, parsed): (usize, Vec<Option<Parsed>>)| {
                 for (index, record) in parsed.into_iter().enumerate() {
@@ -832,42 +866,51 @@ mod volume {
                     }
                 }
             };
-            for (offset, length) in runs {
-                let mut at = 0u64;
-                while at < length {
-                    let take = usize::try_from((length - at).min(chunk_bytes as u64))
-                        .map_err(|_| "chunk".to_string())?;
-                    let mut buffer = vec![0u8; take];
-                    let mut got = 0usize;
-                    while got < take {
-                        let read = volume
-                            .file
-                            .seek_read(&mut buffer[got..], offset + at + got as u64)
-                            .map_err(|e| format!("reading the table: {e}"))?;
-                        if read == 0 {
-                            return Err("the table ended early".to_string());
+            // Read on this thread, collecting what the workers hand back between reads so that
+            // neither side waits on the other for long.
+            let mut read_all = || -> Result<(), String> {
+                let mut first = 0usize;
+                for &(offset, length) in &runs {
+                    let mut at = 0u64;
+                    while at < length {
+                        let take = usize::try_from((length - at).min(chunk_bytes as u64))
+                            .map_err(|_| "chunk".to_string())?;
+                        let mut buffer = vec![0u8; take];
+                        let mut got = 0usize;
+                        while got < take {
+                            let read = volume
+                                .file
+                                .seek_read(&mut buffer[got..], offset + at + got as u64)
+                                .map_err(|e| format!("reading the table: {e}"))?;
+                            if read == 0 {
+                                return Err("the table ended early".to_string());
+                            }
+                            got += read;
                         }
-                        got += read;
-                    }
-                    let records_in = take / record_bytes;
-                    chunks
-                        .send((first, buffer))
-                        .map_err(|_| "a parser stopped".to_string())?;
-                    first += records_in;
-                    at += take as u64;
-                    while let Ok(done) = parsed_inbox.try_recv() {
-                        place(&mut records, done);
+                        let records_in = take / record_bytes;
+                        chunks
+                            .send((first, buffer))
+                            .map_err(|_| "a parser stopped".to_string())?;
+                        first += records_in;
+                        at += take as u64;
+                        while let Ok(done) = parsed_inbox.try_recv() {
+                            place(&mut records, done);
+                        }
                     }
                 }
-            }
+                Ok(())
+            };
+            let outcome = read_all();
+            // Whatever happened: close the workers' inbox, take everything they still hand
+            // back — one blocked on a full channel is waiting for exactly that — then join.
             drop(chunks);
-            for worker in workers {
-                let _ = worker.join();
-            }
             while let Ok(done) = parsed_inbox.recv() {
                 place(&mut records, done);
             }
-            Ok(())
+            for worker in workers {
+                let _ = worker.join();
+            }
+            outcome
         })?;
         Ok(records)
     }
@@ -883,7 +926,7 @@ mod volume {
             serial,
             runs,
             ratio,
-        } = chosen(&root)?;
+        } = chosen(&root).ok()?;
         let started = Instant::now();
         volume.flush();
         let threads = threads.clamp(1, 8);
@@ -911,7 +954,6 @@ mod volume {
                 ratio
             );
         }
-        let _ = ROOT_RECORD;
         let root: Arc<Path> = Arc::from(root.as_path());
         let (sender, batches): (SyncSender<Vec<DirEntries>>, Receiver<Vec<DirEntries>>) =
             sync_channel(64);
