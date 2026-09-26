@@ -551,8 +551,16 @@ fn nothing_is_deleted_while_the_outline_is_on_screen() {
     viewer.resize(1200.0, 800.0);
     let mut directory = libdiskonaut::DirEntries::new(Arc::from(root));
     directory.push(OsStr::new("folder"), meta(0, true));
-    viewer.add_summaries(vec![DirSummary::of(&directory)]);
+    // Absorbed, a batch is in the tree but not yet on screen; catching up lays it out.
+    viewer.absorb_summaries(vec![DirSummary::of(&directory)]);
+    assert!(names(&viewer).is_empty(), "not laid out yet");
+    assert_eq!(viewer.entries_scanned, 1);
+    viewer.catch_up();
     assert_eq!(names(&viewer), ["folder"]);
+    let mut more = libdiskonaut::DirEntries::new(Arc::from(root));
+    more.push(OsStr::new("other"), meta(0, true));
+    viewer.add_summaries(vec![DirSummary::of(&more)]);
+    assert_eq!(names(&viewer).len(), 2, "add_summaries lays out at once");
     viewer.jump(Jump::Home, false);
     assert!(viewer.selected.is_some());
     assert!(viewer.targets().is_empty());

@@ -602,12 +602,25 @@ impl Viewer {
 
     /// Folder outlines from the running scan: the live view.
     pub fn add_summaries(&mut self, summaries: Vec<DirSummary>) {
+        self.absorb_summaries(summaries);
+        self.catch_up();
+    }
+
+    /// A batch of the outline into the tree, and nothing else: what is shown is not touched
+    /// until [`Viewer::catch_up`]. A window that gets dozens of batches a second lays the view
+    /// out once per frame rather than once per batch — laid out per batch, the window's
+    /// thread is fully taken up by the scan and answers nothing until it ends.
+    pub fn absorb_summaries(&mut self, summaries: Vec<DirSummary>) {
         for summary in summaries {
             self.entries_scanned += summary.entries;
             self.tree.failed_to_read += summary.dirs.failed;
             self.last_read = Some(summary.dirs.path.to_path_buf());
             self.tree.add_summary(summary);
         }
+    }
+
+    /// Lay the view out for what the outline holds by now.
+    pub fn catch_up(&mut self) {
         self.refresh();
     }
 

@@ -174,7 +174,10 @@ shared `Viewer`, not in `win/`:
   `changed()` (a preview request at the drawn size — `wanted_preview_sized` — title, redraw).
   Threads post one boxed `AppMsg`; one arriving during a modal loop (message box, context menu)
   is queued FIFO in `PENDING` and handled when the handler returns — order matters, the outline's
-  last batch comes before the finished tree
+  last batch comes before the finished tree. Outline batches are absorbed as they come and the
+  view laid out once per burst, `OUTLINE_MS` after the first (`OUTLINE_TIMER`): the elevated
+  scan of a volume sends dozens a second, and laid out per batch (15–25 ms each) the window
+  answered nothing until the scan ended
 - `win/paint.rs` — GDI, double-buffered, by `Viewer::layout`; returns the breadcrumbs for clicks.
   The list is drawn as the tree (`Viewer::rows`): each level indented `ROW_INDENT`, a folder's
   expander (`▸`/`▾`) in the `EXPANDER` column before its name, the "% of parent" bar from its
@@ -187,7 +190,8 @@ shared `Viewer`, not in `win/`:
   tiles in 2.4×6 pt cells, the treemap's 2.5 ratio), the entry in hand kept by *name* so a
   relayout cannot move it, marks, navigation, zoom, delete (`delete`, `delete_prompt`, and
   `removed` for a Trash), rescans (through `diskonaut_scan::rescan::Rescans`), the status bar's
-  words. It keeps the TUI's rules from "Key Patterns": `chosen` says whether the entry in hand was
+  words; `absorb_summaries` takes outline batches in without a relayout and `catch_up` lays the
+  view out for them (`add_summaries` is both). It keeps the TUI's rules from "Key Patterns": `chosen` says whether the entry in hand was
   picked or placed, and only a picked one seeds a Ctrl+click selection; a Shift run adds its range
   to the marks it started from (`mark_run`) and shrinks when reversed; every change to the marks
   copies their paths once the viewer has called `set_clipboard` (Windows does; macOS and Linux

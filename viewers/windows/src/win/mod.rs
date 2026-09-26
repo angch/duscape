@@ -63,6 +63,12 @@ use crate::preview::{Picture, PreviewRequest, prepare_picture};
 const WM_APP_MSG: u32 = WM_APP + 1;
 /// Ticks while the status bar has a message to take down.
 const FLASH_TIMER: usize = 1;
+/// Fires once after a burst of outline batches, to lay the live view out for them.
+const OUTLINE_TIMER: usize = 2;
+/// How long after a batch the live view is laid out — the elevated scan of a volume sends
+/// dozens of batches a second, and each relayout took 15–25 ms, so laid out per batch the
+/// window answered nothing until the scan ended.
+const OUTLINE_MS: u32 = 100;
 /// How many rows one notch of the wheel scrolls the list.
 const WHEEL_ROWS: isize = 3;
 
@@ -102,6 +108,8 @@ struct Window {
     /// The breadcrumbs as last painted, in points, each with the depth it goes up to.
     crumbs: Vec<(Rect, usize)>,
     fonts: paint::Fonts,
+    /// Outline batches have come in since the view was last laid out; `OUTLINE_TIMER` is set.
+    outline_behind: bool,
 }
 
 /// The preview panel's caption line and, under it, the area for the picture or text: in points.
@@ -177,8 +185,21 @@ impl Window {
 
     fn on_app_message(&mut self, hwnd: HWND, message: AppMsg) {
         match message {
-            AppMsg::Summaries(summaries) => self.viewer.add_summaries(summaries),
-            AppMsg::Scanned(tree) => self.viewer.finish_scan(*tree),
+            // Into the tree now, on screen when the timer fires: a burst of batches costs one
+            // relayout, not one each.
+            AppMsg::Summaries(summaries) => {
+                self.viewer.absorb_summaries(summaries);
+                if !self.outline_behind {
+                    self.outline_behind = true;
+                    // SAFETY: our own timer on our own window.
+                    unsafe { SetTimer(hwnd, OUTLINE_TIMER, OUTLINE_MS, None) };
+                }
+                return;
+            }
+            AppMsg::Scanned(tree) => {
+                self.outline_caught_up(hwnd);
+                self.viewer.finish_scan(*tree);
+            }
             AppMsg::Rescanned(id, outcome) => self.viewer.rescan_done(id, outcome),
             AppMsg::Preview(generation, ready) => {
                 let (preview, picture) = match ready {
@@ -195,6 +216,15 @@ impl Window {
             }
         }
         self.changed(hwnd);
+    }
+
+    /// The outline timer's turn, or the finished tree's: nothing is behind any more.
+    fn outline_caught_up(&mut self, hwnd: HWND) {
+        if self.outline_behind {
+            self.outline_behind = false;
+            // SAFETY: our own timer.
+            unsafe { KillTimer(hwnd, OUTLINE_TIMER) };
+        }
     }
 
     fn on_key(&mut self, hwnd: HWND, key: u16) {
@@ -641,6 +671,11 @@ fn dispatch(window: &mut Window, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
         WM_MOUSEMOVE => window.on_mouse_move(hwnd, low_word(lparam), high_word(lparam)),
         WM_KEYDOWN => window.on_key(hwnd, wparam as u16),
         WM_CHAR => window.on_char(hwnd, wparam as u16),
+        WM_TIMER if wparam == OUTLINE_TIMER => {
+            window.outline_caught_up(hwnd);
+            window.viewer.catch_up();
+            window.changed(hwnd);
+        }
         WM_TIMER if wparam == FLASH_TIMER => {
             if window.viewer.message_left().is_none() {
                 // SAFETY: our own timer.
@@ -758,6 +793,7 @@ pub fn run() {
         picture: None,
         crumbs: Vec::new(),
         fonts: paint::Fonts::new(scale),
+        outline_behind: false,
     });
     let state = Box::into_raw(window);
 

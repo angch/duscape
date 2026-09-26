@@ -136,6 +136,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Windows viewer answers while a volume is scanned elevated. The table read hands the tree
+  on in a burst — dozens of outline batches a second — and the window laid the view out for
+  each (15–25 ms: the listing sorted, the tree rows and the nested tiles rebuilt), so its
+  thread was taken up until the scan ended and it painted, moved and closed nothing meanwhile.
+  Batches now go into the tree as they come (`Viewer::absorb_summaries`) and the view is laid
+  out once, 100 ms after the first of a burst (`Viewer::catch_up`).
 - The workspace builds on Windows and macOS again: the Linux viewer's Wayland and X11 crates are
   Unix-only, so they are now dependencies of Linux and FreeBSD targets alone, and elsewhere
   `diskonaut-linux` is the stub it already was.
