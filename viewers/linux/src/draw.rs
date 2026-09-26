@@ -308,7 +308,7 @@ fn details(canvas: &mut Canvas, viewer: &Viewer, info: Rect, picture: Option<&Rg
         }
         Preview::Loading => pens.secondary.draw(canvas, "…", line),
         Preview::Info(info) => pens.secondary.draw(canvas, info, line),
-        Preview::Text(lines) => {
+        Preview::Text(lines) | Preview::Hex(lines) => {
             canvas.rounded(body, 6.0, TEXT_BACKGROUND, 1.0);
             let text = body.inset(8.0, 6.0);
             for (row, line) in lines.iter().enumerate() {

@@ -33,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the treemap follows its top-level folder. The rows come from `libdiskonaut::tiles::
   tree_rows` and the behaviour is the shared viewer's (`tree_view`), so the macOS and Linux
   windows can have it by drawing the rows' depth.
+- The Windows viewer previews a binary file as a hex dump: sixteen bytes a line, spaced, a dash
+  after the eighth, the characters beside (`.` for one not printable), the monospace font shrunk
+  until a whole line fits the panel. `libdiskonaut::preview::hex_dump` makes the lines, so any
+  viewer can show them.
 - The Windows viewer asks to run as administrator (the UAC prompt) when the folder is a whole
   volume, and starts itself again elevated with the same arguments: elevated, the volume is
   read from its master file table, every hard link is counted, NTFS's own files are sized and

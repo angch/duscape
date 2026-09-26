@@ -388,7 +388,9 @@ impl Previewer {
                     generation,
                     match ready {
                         Ready::Info(info) => Preview::Info(info),
-                        Ready::Text(lines) => Preview::Text(lines),
+                        Ready::Text(lines) | Ready::Binary { info: lines, .. } => {
+                            Preview::Text(lines)
+                        }
                         Ready::Picture(preview) => preview,
                     },
                 );

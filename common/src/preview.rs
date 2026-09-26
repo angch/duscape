@@ -59,9 +59,15 @@ pub enum Contents {
     /// A line saying what it is instead of showing it: `empty file`, `binary file`, or why it
     /// could not be read.
     Info(String),
-    /// Its first lines, safe to draw. For a binary file, what can be said about it instead:
-    /// `binary file · 1.7M`, then where its blocks are (see [`crate::placement`]).
+    /// Its first lines, safe to draw.
     Text(Vec<String>),
+    /// A binary file: what can be said about it — `binary file · 1.7M`, then where its blocks
+    /// are (see [`crate::placement`]) — and its first bytes as a hex dump ([`hex_dump`]), for a
+    /// viewer that shows one.
+    Binary {
+        info: Vec<String>,
+        dump: Vec<String>,
+    },
     /// A picture, not yet decoded, and the file's size.
     Picture { kind: Kind, size: u64 },
 }
@@ -74,7 +80,10 @@ pub fn read(path: &Path) -> Contents {
         Err(reason) => Contents::Info(reason),
         Ok((head, size)) => match sniff(&head) {
             Kind::Empty => Contents::Info("empty file".to_string()),
-            Kind::Binary => Contents::Text(describe_binary(path, size)),
+            Kind::Binary => Contents::Binary {
+                info: describe_binary(path, size),
+                dump: hex_dump(&head, HEX_LINES),
+            },
             Kind::Text => Contents::Text(text_lines(&head, MAX_LINES)),
             kind @ (Kind::Png | Kind::Jpeg) => Contents::Picture { kind, size },
         },
@@ -91,6 +100,46 @@ pub fn describe_binary(path: &Path, size: u64) -> Vec<String> {
     )];
     lines.extend(crate::placement::describe(path));
     lines
+}
+
+/// Lines of a hex dump, at most.
+pub const HEX_LINES: usize = 256;
+/// Bytes on one line of it.
+pub const HEX_BYTES_PER_LINE: usize = 16;
+
+/// `bytes` as a hex dump, [`HEX_BYTES_PER_LINE`] a line: the bytes in hex, spaced, a dash after
+/// the eighth, then the same as characters, `.` for one that is not printable ASCII —
+/// `00 01 02 03 04 05 06 07-08 09 0A 0B 0C 0D 0E 0F ................`. A short last line is
+/// padded so the characters line up.
+#[must_use]
+pub fn hex_dump(bytes: &[u8], max_lines: usize) -> Vec<String> {
+    bytes
+        .chunks(HEX_BYTES_PER_LINE)
+        .take(max_lines)
+        .map(|chunk| {
+            let mut line = String::with_capacity(HEX_BYTES_PER_LINE * 4 + 1);
+            for slot in 0..HEX_BYTES_PER_LINE {
+                if slot > 0 {
+                    // The dash only between bytes: a short last line is padded with spaces.
+                    let dash = slot == HEX_BYTES_PER_LINE / 2 && slot < chunk.len();
+                    line.push(if dash { '-' } else { ' ' });
+                }
+                match chunk.get(slot) {
+                    Some(byte) => line.push_str(&format!("{byte:02X}")),
+                    None => line.push_str("  "),
+                }
+            }
+            line.push(' ');
+            line.extend(chunk.iter().map(|&byte| {
+                if byte.is_ascii_graphic() || byte == b' ' {
+                    byte as char
+                } else {
+                    '.'
+                }
+            }));
+            line
+        })
+        .collect()
 }
 
 /// Tell what a file is from its first bytes: pictures by their magic numbers, text by the
@@ -239,12 +288,16 @@ pub trait Wanted: Send + 'static {
     fn path(&self) -> &Path;
 }
 
-/// What the reader answers: a line saying what the file is, its first lines, or the picture the
-/// viewer prepared of it.
+/// What the reader answers: a line saying what the file is, its first lines, a binary file's
+/// description and hex dump, or the picture the viewer prepared of it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ready<P> {
     Info(String),
     Text(Vec<String>),
+    Binary {
+        info: Vec<String>,
+        dump: Vec<String>,
+    },
     Picture(P),
 }
 
@@ -299,6 +352,7 @@ fn run<R: Wanted, P>(
         let ready = match read(request.path()) {
             Contents::Info(info) => Ready::Info(info),
             Contents::Text(lines) => Ready::Text(lines),
+            Contents::Binary { info, dump } => Ready::Binary { info, dump },
             Contents::Picture { kind, size } => {
                 // Decode only once the selection has stayed here; a newer request means it moved
                 // on, and this picture is never needed.
@@ -318,7 +372,7 @@ fn run<R: Wanted, P>(
 
 #[cfg(test)]
 mod tests {
-    use super::{Kind, sniff, text_lines};
+    use super::{Kind, hex_dump, sniff, text_lines};
 
     /// Scaled down to fit, keeping its shape, and never up.
     #[test]
@@ -355,6 +409,26 @@ mod tests {
         );
         // A PNG's magic without the rest is still a PNG; a lone 0xFF 0xD8 is not a JPEG.
         assert_eq!(sniff(&[0xFF, 0xD8]), Kind::Text);
+    }
+
+    #[test]
+    fn a_hex_dump_is_sixteen_bytes_a_line_with_the_characters_beside() {
+        let bytes: Vec<u8> = (0u8..=0x11).chain(*b"Hi!~").collect();
+        let lines = hex_dump(&bytes, 10);
+        assert_eq!(
+            lines,
+            vec![
+                "00 01 02 03 04 05 06 07-08 09 0A 0B 0C 0D 0E 0F ................".to_string(),
+                // A short line is padded (no dash in the padding) so the characters line up.
+                format!("10 11 48 69 21 7E{} ..Hi!~", " ".repeat(30)),
+            ]
+        );
+        assert_eq!(lines[0].len(), lines[1].len() + 10, "the columns line up");
+        assert_eq!(hex_dump(&[0; 100], 2).len(), 2, "cut at max_lines");
+        assert!(hex_dump(&[], 2).is_empty());
+        // Space is shown as itself; DEL and anything above ASCII is not printable.
+        let line = &hex_dump(b" \x7f\xff", 1)[0];
+        assert_eq!(&line[line.len() - 3..], " ..");
     }
 
     #[test]

@@ -109,7 +109,10 @@ Six kinds of thread communicate via `mpsc` channels (bounded, except the preview
 - `metafiles.rs` — NTFS metadata names, for the Windows walker and for `delete`
 - `preview.rs` — `read` (sniff the first 64 KiB: text lines, info, or a picture), `describe_picture`,
   `decode_picture` (bounded). Scaling and encoding for display are the viewer's. A binary file
-  gets `describe_binary` as its text: its size, then `placement::describe`
+  is `Contents::Binary`: `describe_binary` (its size, then `placement::describe`) and `hex_dump`
+  (`HEX_LINES` of sixteen bytes, a dash after the eighth, the characters beside); the terminal,
+  macOS and Linux viewers show the description, Windows the dump (`Preview::Hex`, drawn with
+  the monospace font shrunk until a line fits, `Fonts::fitting`)
 - `placement.rs` — where a file's blocks are, for the preview of a file with nothing else to
   show (Linux): FIEMAP for its extents, sparseness and shared blocks, then sysfs for the disk —
   through a partition to the disk's model and SSD/HDD and the offset into it; the members of an

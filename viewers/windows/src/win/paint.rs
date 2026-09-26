@@ -5,7 +5,9 @@
 //! on grey, and the panel with the keyboard has an accent outline. Tiles take the colours the
 //! other desktop viewers give them (`tile_color`), so a file's kind looks the same everywhere.
 
+use ::std::cell::Cell;
 use ::std::ffi::OsStr;
+use ::std::ptr::null_mut;
 
 use diskonaut_viewer::state::{
     EXPANDER, Focus, LIST_PAD, Layout, Preview, ROW, ROW_INDENT, Rect, describe, tile_color,
@@ -57,50 +59,94 @@ pub struct Fonts {
     ui: HFONT,
     bold: HFONT,
     mono: HFONT,
+    /// The fonts' height in pixels.
+    height: i32,
+    /// The monospace font sized down for a hex dump to fit the preview's width: its height in
+    /// pixels and the font, made when first needed and remade when the width changes.
+    hex: Cell<(i32, HFONT)>,
 }
+
+/// The least a hex dump's font is shrunk to, in pixels.
+const HEX_MIN_HEIGHT: i32 = 6;
 
 impl Fonts {
     pub fn new(scale: f64) -> Self {
-        let height = -((15.0 * scale).round() as i32);
-        let font = |weight: u32, pitch: u32, face: &str| {
-            let face = super::wide(face);
-            // SAFETY: the face name is NUL-terminated and alive for the call.
-            unsafe {
-                CreateFontW(
-                    height,
-                    0,
-                    0,
-                    0,
-                    weight as i32,
-                    0,
-                    0,
-                    0,
-                    u32::from(DEFAULT_CHARSET),
-                    u32::from(OUT_DEFAULT_PRECIS),
-                    u32::from(CLIP_DEFAULT_PRECIS),
-                    u32::from(CLEARTYPE_QUALITY),
-                    pitch,
-                    face.as_ptr(),
-                )
-            }
-        };
+        let height = (15.0 * scale).round() as i32;
         Fonts {
-            ui: font(
+            ui: make_font(
+                height,
                 FW_NORMAL,
                 u32::from(VARIABLE_PITCH) | u32::from(FF_DONTCARE),
                 "Segoe UI",
             ),
-            bold: font(
+            bold: make_font(
+                height,
                 FW_SEMIBOLD,
                 u32::from(VARIABLE_PITCH) | u32::from(FF_DONTCARE),
                 "Segoe UI",
             ),
-            mono: font(
+            mono: make_font(
+                height,
                 FW_NORMAL,
                 u32::from(FIXED_PITCH) | u32::from(FF_MODERN),
                 "Consolas",
             ),
+            height,
+            hex: Cell::new((0, null_mut())),
         }
+    }
+
+    /// The monospace font at which `sample` fits in `width` points — the ordinary one if it
+    /// does, else one shrunk to fit, down to `HEX_MIN_HEIGHT` — and the line height to draw
+    /// it at.
+    fn fitting(&self, canvas: &Canvas, sample: &str, width: f64) -> (HFONT, f64) {
+        let full = canvas.width(sample, self.mono);
+        if full <= width || full <= 0.0 {
+            return (self.mono, LINE);
+        }
+        let height = ((f64::from(self.height) * width / full).floor() as i32).max(HEX_MIN_HEIGHT);
+        let (had, font) = self.hex.get();
+        let font = if had == height && !font.is_null() {
+            font
+        } else {
+            if !font.is_null() {
+                // SAFETY: made by `make_font`, and not selected into any DC between frames.
+                unsafe { DeleteObject(font as _) };
+            }
+            let font = make_font(
+                height,
+                FW_NORMAL,
+                u32::from(FIXED_PITCH) | u32::from(FF_MODERN),
+                "Consolas",
+            );
+            self.hex.set((height, font));
+            font
+        };
+        (font, LINE * f64::from(height) / f64::from(self.height))
+    }
+}
+
+/// A GDI font `height` pixels tall.
+fn make_font(height: i32, weight: u32, pitch: u32, face: &str) -> HFONT {
+    let face = super::wide(face);
+    // SAFETY: the face name is NUL-terminated and alive for the call.
+    unsafe {
+        CreateFontW(
+            -height,
+            0,
+            0,
+            0,
+            weight as i32,
+            0,
+            0,
+            0,
+            u32::from(DEFAULT_CHARSET),
+            u32::from(OUT_DEFAULT_PRECIS),
+            u32::from(CLIP_DEFAULT_PRECIS),
+            u32::from(CLEARTYPE_QUALITY),
+            pitch,
+            face.as_ptr(),
+        )
     }
 }
 
@@ -111,6 +157,10 @@ impl Drop for Fonts {
             DeleteObject(self.ui as _);
             DeleteObject(self.bold as _);
             DeleteObject(self.mono as _);
+            let (_, hex) = self.hex.get();
+            if !hex.is_null() {
+                DeleteObject(hex as _);
+            }
         }
     }
 }
@@ -539,8 +589,10 @@ fn draw_preview(canvas: &Canvas, window: &Window, info: Rect) {
             words.push('\\');
         }
         words.push_str(&format!(" · {}", DisplaySize(entry.size as f64)));
-        if let Preview::Picture(description) = &viewer.preview {
-            words.push_str(&format!(" · {description}"));
+        match &viewer.preview {
+            Preview::Picture(description) => words.push_str(&format!(" · {description}")),
+            Preview::Hex(_) => words.push_str(" · binary"),
+            _ => {}
         }
         words
     } else {
@@ -553,6 +605,10 @@ fn draw_preview(canvas: &Canvas, window: &Window, info: Rect) {
         Preview::Loading => vec!["…"],
         Preview::Info(info) => vec![info.as_str()],
         Preview::Text(text) => text.iter().map(String::as_str).collect(),
+        Preview::Hex(dump) => {
+            draw_hex(canvas, fonts, body, dump);
+            Vec::new()
+        }
         Preview::Picture(_) => {
             if let Some(picture) = &window.picture {
                 draw_picture(canvas, picture, body);
@@ -572,6 +628,28 @@ fn draw_preview(canvas: &Canvas, window: &Window, info: Rect) {
         }
         canvas.text(
             Rect::new(body.x, top, body.w, LINE),
+            line,
+            TEXT,
+            font,
+            false,
+        );
+    }
+}
+
+/// A hex dump in `body`: the monospace font shrunk until a whole line fits the width, so the
+/// character column is never cut off, as many lines as fit.
+fn draw_hex(canvas: &Canvas, fonts: &Fonts, body: Rect, dump: &[String]) {
+    let Some(widest) = dump.iter().max_by_key(|line| line.len()) else {
+        return;
+    };
+    let (font, line_height) = fonts.fitting(canvas, widest, body.w);
+    for (index, line) in dump.iter().enumerate() {
+        let top = body.y + index as f64 * line_height;
+        if top + line_height > body.bottom() {
+            break;
+        }
+        canvas.text(
+            Rect::new(body.x, top, body.w, line_height),
             line,
             TEXT,
             font,

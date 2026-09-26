@@ -409,7 +409,7 @@ fn details(viewer: &Viewer, info: Rect, image: Option<&NSImage>, pens: &Pens) {
         Preview::Info(info) => pens
             .secondary
             .draw(info, Rect::new(body.x, body.y, body.w, 15.0)),
-        Preview::Text(lines) => {
+        Preview::Text(lines) | Preview::Hex(lines) => {
             rounded(body, 6.0, &NSColor::textBackgroundColor());
             let text = body.inset(8.0, 6.0);
             for (row, line) in lines.iter().enumerate() {

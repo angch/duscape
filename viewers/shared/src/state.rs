@@ -231,6 +231,9 @@ pub enum Preview {
     /// A line instead of the contents: empty, binary, unreadable.
     Info(String),
     Text(Vec<String>),
+    /// A binary file's first bytes as a hex dump (`libdiskonaut::preview::hex_dump`), for a
+    /// viewer that shows one: sixteen bytes a line, the characters beside them.
+    Hex(Vec<String>),
     /// A picture; the image itself is the viewer's, which decodes it. This is its caption.
     Picture(String),
 }

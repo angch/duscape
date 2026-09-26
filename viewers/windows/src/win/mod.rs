@@ -205,6 +205,8 @@ impl Window {
                 let (preview, picture) = match ready {
                     Ready::Info(info) => (Preview::Info(info), None),
                     Ready::Text(lines) => (Preview::Text(lines), None),
+                    // A binary file is shown as its first bytes, not described.
+                    Ready::Binary { dump, .. } => (Preview::Hex(dump), None),
                     Ready::Picture(picture) => {
                         (Preview::Picture(picture.description.clone()), Some(picture))
                     }

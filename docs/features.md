@@ -68,7 +68,7 @@ by copying it.
 | Run as administrator | from an elevated terminal | asks (the UAC prompt) when the folder is a whole volume, and starts itself again elevated; `--no-elevate` scans as it is | run as root | run as root |
 | Mark several entries | yes (Shift+arrows, Ctrl+click) | yes (Shift+arrows or Shift+click, Ctrl+click, Ctrl+A) | yes (⇧ arrows or ⇧-click, ⌘-click, ⌘A) | yes (Shift+arrows or Shift+click, Ctrl+click, Ctrl+A) |
 | Copy a path, shell-quoted | yes (right-click; double for absolute) | yes (Ctrl+C; Ctrl+Shift+C absolute; marking copies; the context menu) | yes (⌘C; ⌥⌘C plain, like Finder) | yes (Ctrl+C, right-click); the window holds the selection itself when no clipboard tool is installed |
-| Preview text and pictures | yes (kitty graphics, sixels or half blocks) | yes, under the list (a bitmap, full colour) | yes, in the side panel (any format macOS decodes), and Quick Look (Space) | yes, in the side panel (PNG, JPEG) |
+| Preview text and pictures | yes (kitty graphics, sixels or half blocks) | yes, under the list (a bitmap, full colour); a binary file as a hex dump, sixteen bytes a line with the characters beside, the font shrunk to fit | yes, in the side panel (any format macOS decodes), and Quick Look (Space) | yes, in the side panel (PNG, JPEG) |
 | Show in Finder, open with the default app | — | — | yes (⌥⌘R, ⌘↓ on a file) | — |
 | Context menu | — | yes (right-click: open, copy, rescan, delete) | yes (right-click or Control-click) | — |
 | Scan a folder dropped on the window | — | — | yes | — |
