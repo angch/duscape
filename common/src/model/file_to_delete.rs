@@ -36,6 +36,27 @@ impl FileToDelete {
             sizes,
         }
     }
+    /// `entry` at `relative` below `tree`'s current folder — a row of a list opened in place,
+    /// `[name]` for one of the folder's own entries.
+    #[must_use]
+    pub fn in_current_tree(tree: &FileTree, relative: &[OsString], entry: &FileMetadata) -> Self {
+        let sizes = tree
+            .get_current_folder()
+            .path(relative.to_vec())
+            .map(FileOrFolder::sizes)
+            .unwrap_or_default();
+        let mut path_to_file = tree.current_folder_names.clone();
+        path_to_file.extend(relative.iter().cloned());
+        FileToDelete {
+            path_in_filesystem: tree.path_in_filesystem.clone(),
+            path_to_file,
+            file_type: entry.file_type,
+            num_descendants: entry.descendants,
+            size: entry.size,
+            sizes,
+        }
+    }
+
     pub fn full_path(&self) -> PathBuf {
         let mut full_path = self.path_in_filesystem.clone();
         for component in &self.path_to_file {

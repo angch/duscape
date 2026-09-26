@@ -8,7 +8,7 @@ pub enum FileType {
     Folder,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FileMetadata {
     pub name: OsString,
     pub size: u128,

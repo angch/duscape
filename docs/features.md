@@ -60,7 +60,7 @@ by copying it.
 | Scan with the native walker | yes | yes | yes | yes |
 | Live treemap while scanning | yes (`Outline`) | yes (`Outline`) | yes (`Outline`) | yes (`Outline`) |
 | Treemap | yes, in cells | yes, GDI | yes, AppKit | yes, software-drawn; native Wayland or X11 |
-| List of entries beside it | yes | yes, with the entry's details under it (`s` hides) | yes, with the entry's details under it (⌃⌘S hides) | yes, with the entry's details under it (`s` hides) |
+| List of entries beside it | yes | yes, as a tree: folders open in place (→ / ←, or the expander), their entries indented under them with each one's share of its parent — WizTree's tree view; the entry's details under it (`s` hides) | yes, with the entry's details under it (⌃⌘S hides) | yes, with the entry's details under it (`s` hides) |
 | Move by arrow keys, select by click | yes | yes, and PgUp / PgDn / Home / End; hovering names the entry in the status bar | yes; hovering names an entry in the status bar | yes; hovering names an entry in the status bar |
 | Enter a folder, go up | Enter or double-click / Esc | Enter or double-click / Esc, Backspace, a breadcrumb or the mouse's back button | Return, ⌘↓ or double-click / Esc, ⌫, ⌘↑ or a breadcrumb | Enter or double-click / Esc, Backspace or a breadcrumb |
 | Delete | yes, one or every marked entry | yes (Del or `d`), one or every marked entry | to the Trash (⌘⌫) or immediately (⌥⌘⌫), every marked entry | to the Trash (`d`, Delete) or immediately (`D`, Shift+Delete), every marked entry |

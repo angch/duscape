@@ -167,7 +167,10 @@ shared `Viewer`, not in `win/`:
   Threads post one boxed `AppMsg`; one arriving during a modal loop (message box, context menu)
   is queued FIFO in `PENDING` and handled when the handler returns — order matters, the outline's
   last batch comes before the finished tree
-- `win/paint.rs` — GDI, double-buffered, by `Viewer::layout`; returns the breadcrumbs for clicks
+- `win/paint.rs` — GDI, double-buffered, by `Viewer::layout`; returns the breadcrumbs for clicks.
+  The list is drawn as the tree (`Viewer::rows`): each level indented `ROW_INDENT`, a folder's
+  expander (`▸`/`▾`) in the `EXPANDER` column before its name, the "% of parent" bar from its
+  level's indent
 
 **`diskonaut-viewer`** (`viewers/shared/`) — what the desktop viewers share, with no toolkit:
 - `state.rs` — `Viewer`: everything the window shows and how it answers input — `Layout` (points;
@@ -179,7 +182,15 @@ shared `Viewer`, not in `win/`:
   to the marks it started from (`mark_run`) and shrinks when reversed; every change to the marks
   copies their paths once the viewer has called `set_clipboard` (Windows does; macOS and Linux
   copy through their toolkits and read `target_paths`). Its tests run on every platform; a
-  behaviour the windows should share goes here first
+  behaviour the windows should share goes here first. The list can be a *tree* (WizTree's
+  view, `tree_view`): `libdiskonaut::tiles::tree_rows` keeps which folders are open in place
+  and makes the rows (each open folder's entries indented under it, largest first, `Row::path`
+  from the listed folder); the cursor is a row's path, its first name being `selected`, so the
+  treemap and the marks follow the row's top-level entry. → opens the folder in hand and then
+  goes down into it, ← goes up to the folder and then closes it, a click on the expander
+  (`Hit::Expander`) toggles; a nested row is what is previewed, copied, entered (down through
+  the folders above it) or deleted. Off by default: a viewer that does not draw depth sees the
+  flat listing
 - `scan.rs` — the first scan with the live `Outline`, results through callbacks on the scan's
   thread; `preview.rs` — the latest-wins preview reader (pictures are handed over as bytes for
   the viewer to decode: `NSImage` on macOS, the `image` crate on Linux)

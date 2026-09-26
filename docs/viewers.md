@@ -68,6 +68,12 @@ It takes the terminal viewer's scan flags: `-a`, `--max-depth`, `--threads`,
 `--hard-link-threshold`.
 
 - **Live:** the treemap and list fill in as the scan runs, as in the terminal.
+- **The list is a tree**, as WizTree's: → on a folder opens it in place, its entries indented
+  under it with each one's share of its parent as a bar, to any depth; → again goes down into
+  it, ← goes back up to the folder and then closes it; the expander (`▸`) before a folder's name
+  does the same with the mouse. A nested entry is previewed, copied, entered (Enter goes down
+  through the folders above it) or deleted where it is; the treemap highlights its top-level
+  folder.
 - **Navigation:** arrows move through the list or the treemap (Tab switches); Enter or a double
   click opens a folder; Esc, Backspace, a breadcrumb or the mouse's back button goes up.
 - **Marks:** Ctrl+click, Shift+↑↓ or Shift+click marks several entries, Ctrl+A all of them, and

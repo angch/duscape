@@ -21,7 +21,7 @@ use ::std::time::{Duration, Instant};
 use diskonaut_scan::rescan::{Outcome, Rescanner, Rescans};
 use libdiskonaut::format::copied_path;
 use libdiskonaut::model::SizeKind;
-use libdiskonaut::tiles::{Area, Board, FileMetadata, FileType};
+use libdiskonaut::tiles::{Area, Board, Expansion, FileMetadata, FileType, Row};
 use libdiskonaut::{
     DirSummary, DisplayCount, DisplaySize, FileOrFolder, FileToDelete, FileTree, Folder,
 };
@@ -36,6 +36,10 @@ pub const PATH_BAR: f64 = 30.0;
 pub const STATUS_BAR: f64 = 24.0;
 /// One row of the list.
 pub const ROW: f64 = 22.0;
+/// The list's left padding, a level of indentation in the tree view, and the expander's column.
+pub const LIST_PAD: f64 = 6.0;
+pub const ROW_INDENT: f64 = 14.0;
+pub const EXPANDER: f64 = 16.0;
 /// The side panel is shown only in a window at least this wide, so the treemap keeps room.
 const SIDEBAR_MIN_WIDTH: f64 = 640.0;
 /// Below this height the side panel is all list, with no room for the entry's details.
@@ -200,6 +204,8 @@ pub enum Hit {
     Tile(OsString),
     /// The corner the entries too small for a tile of their own are folded into.
     SmallFiles,
+    /// A folder row's expander, in the tree view: its index in the rows.
+    Expander(usize),
     Nothing,
 }
 
@@ -261,6 +267,17 @@ pub struct Viewer {
     /// The listing's first row on screen.
     pub list_top: usize,
     pub hover: Option<OsString>,
+    /// The list as a tree, WizTree's: folders open in place and their entries follow, indented.
+    /// Only a viewer that draws rows with their depth and an expander turns it on; the others
+    /// see the flat listing, since nothing opens.
+    pub tree_view: bool,
+    expansion: Expansion,
+    rows: Vec<Row>,
+    /// The row in hand, as its path from the listed folder — `[name]` for a top-level row. Its
+    /// first name is `selected`, what the treemap and the marks know.
+    cursor: Option<Vec<OsString>>,
+    /// The row under the pointer.
+    pub hover_row: Option<usize>,
     /// The zoom level of each folder above this one, to restore on the way back up.
     zooms: Vec<usize>,
     pub scanning: bool,
@@ -309,6 +326,11 @@ impl Viewer {
                 .ok(),
             list_top: 0,
             hover: None,
+            tree_view: false,
+            expansion: Expansion::default(),
+            rows: Vec::new(),
+            cursor: None,
+            hover_row: None,
             zooms: Vec::new(),
             scanning: true,
             scan_id,
@@ -373,8 +395,15 @@ impl Viewer {
     /// Lay the folder's entries out again, after the tree or the size shown changed.
     fn refresh(&mut self) {
         self.board.change_files(self.tree.get_current_folder());
+        self.rebuild_rows();
         self.sync_board();
         self.clamp_list_top();
+    }
+
+    fn rebuild_rows(&mut self) {
+        self.rows = self
+            .expansion
+            .rows(self.tree.get_current_folder(), self.tree.shown);
     }
 
     /// Keep the entry in hand and the marks to entries that exist, and put the board's
@@ -389,6 +418,18 @@ impl Viewer {
         self.marked.retain(|name| listed(name));
         if self.hover.as_ref().is_some_and(|name| !listed(name)) {
             self.hover = None;
+        }
+        // A row that has gone (a delete, a rescan, a folder closed over it) leaves the cursor on
+        // the entry in hand's own row.
+        if self
+            .cursor
+            .as_ref()
+            .is_some_and(|cursor| !self.rows.iter().any(|row| &row.path == cursor))
+        {
+            self.cursor = self.selected.clone().map(|name| vec![name]);
+        }
+        if self.hover_row.is_some_and(|row| row >= self.rows.len()) {
+            self.hover_row = None;
         }
         match self.tile_index(self.selected.as_deref()) {
             Some(index) => self.board.set_selected_index(&index),
@@ -413,14 +454,58 @@ impl Viewer {
         self.listing_index(self.selected.as_deref())
     }
 
+    // ---------------------------------------------------------------- the rows
+
+    /// What the list shows: the folder's entries, and under each folder open in place its
+    /// own. With nothing open, the flat listing in its order.
+    #[must_use]
+    pub fn rows(&self) -> &[Row] {
+        &self.rows
+    }
+
+    /// The row in hand, by its index in [`Viewer::rows`].
+    #[must_use]
+    pub fn cursor_row(&self) -> Option<usize> {
+        let cursor = self.cursor.as_ref()?;
+        self.rows.iter().position(|row| &row.path == cursor)
+    }
+
+    /// The row in hand.
+    #[must_use]
+    pub fn cursor_entry(&self) -> Option<&Row> {
+        self.cursor_row().map(|index| &self.rows[index])
+    }
+
+    /// Where a row's entry is on disk.
+    #[must_use]
+    pub fn row_path(&self, relative: &[OsString]) -> PathBuf {
+        relative
+            .iter()
+            .fold(self.tree.get_current_path(), |path, name| path.join(name))
+    }
+
+    /// Open a folder's row in place, or close it. The row stays in hand.
+    pub fn toggle_row(&mut self, index: usize) {
+        let Some(row) = self.rows.get(index) else {
+            return;
+        };
+        if row.entry.file_type != FileType::Folder {
+            return;
+        }
+        let path = row.path.clone();
+        self.expansion.toggle(&path);
+        self.rebuild_rows();
+        self.select_row(path, true);
+    }
+
     fn clamp_list_top(&mut self) {
         let rows = self.layout.list_rows().max(1);
-        let most = self.board.listing().len().saturating_sub(rows);
+        let most = self.rows.len().saturating_sub(rows);
         self.list_top = self.list_top.min(most);
     }
 
     fn scroll_to_selected(&mut self) {
-        if let Some(index) = self.selected_listing_index() {
+        if let Some(index) = self.cursor_row() {
             let rows = self.layout.list_rows().max(1);
             if index < self.list_top {
                 self.list_top = index;
@@ -491,6 +576,18 @@ impl Viewer {
         self.chosen = chosen && self.selected.is_some();
         self.anchor = self.selected.clone();
         self.mark_run = None;
+        self.cursor = self.selected.clone().map(|name| vec![name]);
+        self.sync_board();
+        self.scroll_to_selected();
+    }
+
+    /// Put a row in hand by its path; its top-level entry is what the treemap selects.
+    fn select_row(&mut self, path: Vec<OsString>, chosen: bool) {
+        self.selected = path.first().cloned();
+        self.chosen = chosen && self.selected.is_some();
+        self.anchor = self.selected.clone();
+        self.mark_run = None;
+        self.cursor = Some(path);
         self.sync_board();
         self.scroll_to_selected();
     }
@@ -499,17 +596,6 @@ impl Viewer {
     fn select_first(&mut self) {
         let first = self.board.listing().first().map(|entry| entry.name.clone());
         self.select(first, false);
-    }
-
-    fn select_listing(&mut self, index: usize, chosen: bool) {
-        let name = self
-            .board
-            .listing()
-            .get(index)
-            .map(|entry| entry.name.clone());
-        if name.is_some() {
-            self.select(name, chosen);
-        }
     }
 
     pub fn is_marked(&self, name: &OsStr) -> bool {
@@ -523,14 +609,38 @@ impl Viewer {
         match (self.focus, direction) {
             (Focus::List, Direction::Up | Direction::Down) => {
                 let delta = if direction == Direction::Up { -1 } else { 1 };
-                let next = match self.selected_listing_index() {
+                let next = match self.cursor_row() {
                     Some(index) => index.saturating_add_signed(delta),
                     None => 0,
                 };
                 self.move_list_to(next, extend);
             }
-            (Focus::List, Direction::Right) => self.focus = Focus::Treemap,
-            (Focus::List, Direction::Left) => {}
+            // In the tree view → opens the folder in hand in place, and once open goes down
+            // into it; on a file it crosses to the treemap, as ever. ← closes the folder in
+            // hand, or goes up to the row it is under.
+            (Focus::List, Direction::Right) => match self.cursor_entry() {
+                Some(row) if self.tree_view && row.entry.file_type == FileType::Folder => {
+                    let index = self.cursor_row().unwrap_or(0);
+                    if row.open {
+                        self.move_list_to(index + 1, false);
+                    } else {
+                        self.toggle_row(index);
+                    }
+                }
+                _ => self.focus = Focus::Treemap,
+            },
+            (Focus::List, Direction::Left) => {
+                if let Some(row) = self.cursor_entry().filter(|_| self.tree_view) {
+                    if row.open {
+                        let index = self.cursor_row().unwrap_or(0);
+                        self.toggle_row(index);
+                    } else if row.depth > 0 {
+                        let parent = row.path[..row.depth].to_vec();
+                        self.clear_marks();
+                        self.select_row(parent, true);
+                    }
+                }
+            }
             (Focus::Treemap, _) => {
                 self.clear_marks();
                 let before = self.board.get_selected_index();
@@ -565,8 +675,8 @@ impl Viewer {
             self.focus = Focus::List;
         }
         let page = self.layout.list_rows().saturating_sub(1).max(1);
-        let current = self.selected_listing_index().unwrap_or(0);
-        let last = self.board.listing().len().saturating_sub(1);
+        let current = self.cursor_row().unwrap_or(0);
+        let last = self.rows.len().saturating_sub(1);
         let next = match jump {
             Jump::PageUp => current.saturating_sub(page),
             Jump::PageDown => current.saturating_add(page),
@@ -577,22 +687,28 @@ impl Viewer {
     }
 
     fn move_list_to(&mut self, index: usize, extend: bool) {
-        let len = self.board.listing().len();
+        let len = self.rows.len();
         if len == 0 {
             return;
         }
         let index = index.min(len - 1);
+        let path = self.rows[index].path.clone();
         if extend {
+            // A ⇧ range runs over the folder's own entries: the marks are theirs. A row under
+            // an open folder takes the cursor, and its top-level folder is what is marked.
             let anchor = self.anchor.clone().or_else(|| self.selected.clone());
-            self.selected = self.board.listing().get(index).map(|e| e.name.clone());
+            self.selected = path.first().cloned();
             self.chosen = true;
             self.anchor = anchor.clone();
-            self.mark_range(anchor.as_deref(), index);
+            if let Some(to) = self.listing_index(self.selected.as_deref()) {
+                self.mark_range(anchor.as_deref(), to);
+            }
+            self.cursor = Some(path);
             self.sync_board();
             self.scroll_to_selected();
         } else {
             self.clear_marks();
-            self.select_listing(index, true);
+            self.select_row(path, true);
         }
     }
 
@@ -711,11 +827,19 @@ impl Viewer {
             let row = ((y - list.y) / ROW) as usize;
             let index = self.list_top + row;
             // Past the last whole row is a sliver where no row is drawn.
-            return if row < self.layout.list_rows() && index < self.board.listing().len() {
-                Hit::Row(index)
-            } else {
-                Hit::Nothing
-            };
+            if row >= self.layout.list_rows() || index >= self.rows.len() {
+                return Hit::Nothing;
+            }
+            // In the tree view a folder row's expander is its own target.
+            let entry = &self.rows[index];
+            let expander = list.x + LIST_PAD + entry.depth as f64 * ROW_INDENT;
+            if self.tree_view
+                && entry.entry.file_type == FileType::Folder
+                && (expander..expander + EXPANDER).contains(&x)
+            {
+                return Hit::Expander(index);
+            }
+            return Hit::Row(index);
         }
         let Some((col, row)) = self.layout.cell_at(x, y) else {
             return Hit::Nothing;
@@ -732,11 +856,12 @@ impl Viewer {
     /// A press of the main button: take the entry under the pointer in hand, with ⌘ (Ctrl)
     /// toggling its mark and ⇧ marking the range to it from the anchor. Returns the entry's name.
     pub fn click(&mut self, x: f64, y: f64, mods: Mods) -> Option<OsString> {
-        let (focus, name) = match self.hit(x, y) {
-            Hit::Row(index) => (Focus::List, self.board.listing()[index].name.clone()),
-            Hit::Tile(name) => (Focus::Treemap, name),
+        let (focus, path) = match self.hit(x, y) {
+            Hit::Row(index) | Hit::Expander(index) => (Focus::List, self.rows[index].path.clone()),
+            Hit::Tile(name) => (Focus::Treemap, vec![name]),
             Hit::SmallFiles | Hit::Nothing => return None,
         };
+        let name = path[0].clone();
         self.focus = focus;
         if mods.range {
             let to = self.listing_index(Some(&name))?;
@@ -745,6 +870,7 @@ impl Viewer {
             self.selected = Some(name.clone());
             self.chosen = true;
             self.anchor = anchor;
+            self.cursor = Some(path);
             self.sync_board();
         } else if mods.toggle {
             // Starting a selection takes in the entry already in hand, as a file manager does —
@@ -763,11 +889,11 @@ impl Viewer {
                 None => self.marked.push(name.clone()),
             }
             // Placed, not picked: a click that marks does not choose what a later one adds.
-            self.select(Some(name.clone()), false);
+            self.select_row(path, false);
             self.copy_marked();
         } else {
             self.clear_marks();
-            self.select(Some(name.clone()), true);
+            self.select_row(path, true);
         }
         Some(name)
     }
@@ -775,27 +901,30 @@ impl Viewer {
     /// Take the entry under the pointer in hand for a context menu, keeping the marks if it is
     /// one of them. Returns whether there is an entry there.
     pub fn context_click(&mut self, x: f64, y: f64) -> bool {
-        let name = match self.hit(x, y) {
-            Hit::Row(index) => self.board.listing()[index].name.clone(),
-            Hit::Tile(name) => name,
+        let path = match self.hit(x, y) {
+            Hit::Row(index) | Hit::Expander(index) => self.rows[index].path.clone(),
+            Hit::Tile(name) => vec![name],
             Hit::SmallFiles | Hit::Nothing => return false,
         };
-        if !self.is_marked(&name) {
+        if !self.is_marked(&path[0]) {
             self.clear_marks();
         }
-        self.select(Some(name), true);
+        self.select_row(path, true);
         true
     }
 
     /// The pointer moved. Returns whether what it is over changed.
     pub fn hover_at(&mut self, x: f64, y: f64) -> bool {
-        let hover = match self.hit(x, y) {
-            Hit::Row(index) => Some(self.board.listing()[index].name.clone()),
-            Hit::Tile(name) => Some(name),
-            Hit::SmallFiles | Hit::Nothing => None,
+        let (hover, hover_row) = match self.hit(x, y) {
+            Hit::Row(index) | Hit::Expander(index) => {
+                (Some(self.rows[index].path[0].clone()), Some(index))
+            }
+            Hit::Tile(name) => (Some(name), None),
+            Hit::SmallFiles | Hit::Nothing => (None, None),
         };
-        let changed = hover != self.hover;
+        let changed = hover != self.hover || hover_row != self.hover_row;
         self.hover = hover;
+        self.hover_row = hover_row;
         changed
     }
 
@@ -803,13 +932,12 @@ impl Viewer {
 
     /// Enter the entry in hand, if it is a folder. Returns whether it was.
     pub fn enter_selected(&mut self) -> bool {
-        match self.selected_entry() {
-            Some(entry) if entry.file_type == FileType::Folder => {
-                let name = entry.name.clone();
-                self.enter(&name)
-            }
-            _ => false,
-        }
+        let path = match self.cursor_entry() {
+            Some(row) if row.entry.file_type == FileType::Folder => row.path.clone(),
+            _ => return false,
+        };
+        // A row under an open folder: down through each folder above it.
+        path.iter().all(|name| self.enter(name))
     }
 
     pub fn enter(&mut self, name: &OsStr) -> bool {
@@ -823,7 +951,9 @@ impl Viewer {
         self.tree.enter_folder(name);
         self.board.reset_zoom_index();
         self.clear_marks();
+        self.expansion.clear();
         self.hover = None;
+        self.hover_row = None;
         self.list_top = 0;
         self.refresh();
         self.select_first();
@@ -838,7 +968,9 @@ impl Viewer {
         self.tree.leave_folder();
         self.board.set_zoom_index(self.zooms.pop().unwrap_or(0));
         self.clear_marks();
+        self.expansion.clear();
         self.hover = None;
+        self.hover_row = None;
         self.refresh();
         self.select(Some(left), false);
         true
@@ -892,6 +1024,11 @@ impl Viewer {
     }
 
     pub fn target_paths(&self) -> Vec<PathBuf> {
+        if self.marked.is_empty()
+            && let Some(row) = self.cursor_entry()
+        {
+            return vec![self.row_path(&row.path)];
+        }
         self.target_names()
             .iter()
             .map(|name| self.path_of(name))
@@ -903,6 +1040,14 @@ impl Viewer {
     pub fn targets(&self) -> Vec<FileToDelete> {
         if self.scanning {
             return Vec::new();
+        }
+        // Nothing marked: the row in hand, wherever in the tree it is.
+        if self.marked.is_empty()
+            && let Some(row) = self.cursor_entry()
+        {
+            return vec![FileToDelete::in_current_tree(
+                &self.tree, &row.path, &row.entry,
+            )];
         }
         self.target_names()
             .iter()
@@ -998,7 +1143,8 @@ impl Viewer {
     /// in the list is put in hand, placed rather than picked. A rescan under way of a folder one
     /// of them was in is started again, or it would put the entry back.
     pub fn removed(&mut self, files: &[FileToDelete], freed: bool) {
-        let at = self.selected_listing_index();
+        let at = self.cursor_row();
+        let had = self.cursor.clone();
         for file in files {
             if self.tree.remove_path(&file.path_to_file) && freed {
                 self.tree.note_freed(file.sizes);
@@ -1012,11 +1158,15 @@ impl Viewer {
         self.clear_marks();
         self.leave_vanished_folders();
         self.refresh();
-        if self.selected.is_none()
+        // The row in hand went with them: the row now where it was — its neighbour, or with a
+        // folder re-sorted by what it lost, whatever came down to there — is put in hand.
+        let gone = had.is_some_and(|had| !self.rows.iter().any(|row| row.path == had));
+        if gone
             && let Some(at) = at
+            && !self.rows.is_empty()
         {
-            let last = self.board.listing().len().saturating_sub(1);
-            self.select_listing(at.min(last), false);
+            let path = self.rows[at.min(self.rows.len() - 1)].path.clone();
+            self.select_row(path, false);
         }
     }
 
@@ -1120,9 +1270,9 @@ impl Viewer {
     /// drawn: `pixels` is part of what was asked, so a resize asks again for the same file.
     pub fn wanted_preview_sized(&mut self, pixels: Option<(u32, u32)>) -> Option<(u64, PathBuf)> {
         let target = self
-            .selected_entry()
-            .filter(|entry| entry.file_type == FileType::File)
-            .map(|entry| (self.path_of(&entry.name), pixels));
+            .cursor_entry()
+            .filter(|row| row.entry.file_type == FileType::File)
+            .map(|row| (self.row_path(&row.path), pixels));
         if target == self.preview_for {
             return None;
         }
@@ -1212,8 +1362,13 @@ impl Viewer {
                 )
             }
             _ => {
-                let name = self.hover.as_ref().or(self.selected.as_ref());
-                match name.and_then(|name| self.entry_named(name)) {
+                let entry = self
+                    .hover_row
+                    .and_then(|index| self.rows.get(index))
+                    .map(|row| &row.entry)
+                    .or_else(|| self.hover.as_ref().and_then(|name| self.entry_named(name)))
+                    .or_else(|| self.cursor_entry().map(|row| &row.entry));
+                match entry {
                     Some(entry) => describe(entry),
                     None if self.scanning => "Scanning…".to_string(),
                     None => String::new(),

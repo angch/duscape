@@ -258,6 +258,13 @@ impl Window {
             self.viewer.go_to_depth(depth);
             return self.changed(hwnd);
         }
+        // A folder row's expander opens it in place; a double click there is one click.
+        if let Hit::Expander(index) = self.viewer.hit(x, y) {
+            if !double {
+                self.viewer.toggle_row(index);
+            }
+            return self.changed(hwnd);
+        }
         if double {
             if self.viewer.click(x, y, Mods::default()).is_some() {
                 self.viewer.enter_selected();
@@ -718,9 +725,13 @@ pub fn run() {
         SizeKind::Disk
     };
     let scale = dpi_scale();
+    let mut viewer = Viewer::new(&root, shown, 0);
+    // The list as a tree, WizTree's: folders open in place, drawn with their depth and an
+    // expander (`paint::draw_list`).
+    viewer.tree_view = true;
     let window = Box::new(Window {
         hwnd: 0,
-        viewer: Viewer::new(&root, shown, 0),
+        viewer,
         options,
         reader: None,
         running: Arc::new(AtomicBool::new(true)),

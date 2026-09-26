@@ -26,6 +26,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `diskonaut_scan::rescan::Rescans`'s, as the terminal viewer's are; a status message shows over
   the marks' summary while it lasts; the status bar says the zoom; `wanted_preview_sized` asks for
   a preview again when the pixels it will take change.
+- The Windows viewer's list is a tree, as WizTree's: → opens the folder in hand in place, its
+  entries indented under it with each one's share of its parent, to any depth; → again goes down
+  into it, ← goes up to the folder and then closes it, the expander before a folder's name does
+  the same with the mouse. A nested entry is previewed, copied, entered or deleted where it is,
+  and the treemap follows its top-level folder. The rows come from `libdiskonaut::tiles::
+  tree_rows` and the behaviour is the shared viewer's (`tree_view`), so the macOS and Linux
+  windows can have it by drawing the rows' depth.
 - `make` on Windows without make: `.\make <target>` (`make.cmd`, `make.ps1`) reads the
   Makefile and runs its recipes in Git's bash — targets, prerequisites, variables, `$(shell)`,
   continuations, `VAR=value` — so `make quality`, `make test` and the rest are one recipe

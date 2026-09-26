@@ -7,10 +7,13 @@
 
 use ::std::ffi::OsStr;
 
-use diskonaut_viewer::state::{Focus, Layout, Preview, ROW, Rect, describe, tile_color};
+use diskonaut_viewer::state::{
+    EXPANDER, Focus, LIST_PAD, Layout, Preview, ROW, ROW_INDENT, Rect, describe, tile_color,
+};
 use libdiskonaut::DisplaySize;
 use libdiskonaut::format::without_verbatim_prefix;
 use libdiskonaut::tiles::FileType;
+use libdiskonaut::tiles::Row;
 
 use windows_sys::Win32::Foundation::{COLORREF, HWND, RECT, SIZE};
 use windows_sys::Win32::Graphics::Gdi::{
@@ -346,16 +349,18 @@ fn draw_list(canvas: &Canvas, window: &Window, list: Rect) {
     let viewer = &window.viewer;
     let fonts = &window.fonts;
     canvas.fill(list, PANEL);
-    let listing = viewer.board.listing();
-    let selected = viewer.selected.as_deref();
-    let hover = viewer.hover.as_deref();
-    let pad = 6.0;
-    let size_width = 80.0;
+    let listing = viewer.rows();
+    let cursor = viewer.cursor_row();
     let rows = viewer.layout.list_rows();
-    for (shown, entry) in listing.iter().skip(viewer.list_top).take(rows).enumerate() {
+    for (shown, row) in listing.iter().enumerate().skip(viewer.list_top).take(rows) {
+        let entry = &row.entry;
+        let index = shown;
+        let shown = shown - viewer.list_top;
         let rect = Rect::new(list.x, list.y + shown as f64 * ROW, list.w, ROW);
-        let marked = viewer.is_marked(&entry.name);
-        let in_hand = selected == Some(entry.name.as_os_str());
+        // The tree: each level indented, a folder with its expander before its name.
+        let indent = LIST_PAD + row.depth as f64 * ROW_INDENT;
+        let marked = row.depth == 0 && viewer.is_marked(&entry.name);
+        let in_hand = cursor == Some(index);
         let (background, ink) = if marked {
             (Some(MARK), INK)
         } else if in_hand {
@@ -366,9 +371,15 @@ fn draw_list(canvas: &Canvas, window: &Window, list: Rect) {
         match background {
             Some(color) => canvas.fill(rect, color),
             None => {
-                // How much of the folder this entry is, as a bar behind its name.
+                // How much of its parent this entry is, as a bar behind its name — WizTree's
+                // "% of parent" — from where its level starts.
                 let share = entry.percentage.clamp(0.0, 1.0);
-                let bar = Rect::new(rect.x, rect.y + 1.0, rect.w * share, rect.h - 2.0);
+                let bar = Rect::new(
+                    rect.x + indent,
+                    rect.y + 1.0,
+                    (rect.w - indent) * share,
+                    rect.h - 2.0,
+                );
                 let color = if entry.file_type == FileType::Folder {
                     rgb(40, 58, 84)
                 } else {
@@ -377,38 +388,18 @@ fn draw_list(canvas: &Canvas, window: &Window, list: Rect) {
                 canvas.fill(bar, color);
             }
         }
-        if hover == Some(entry.name.as_os_str()) && background.is_none() {
+        if viewer.hover_row == Some(index) && background.is_none() {
             canvas.frame(rect, rgb(90, 90, 90), 1);
         }
-        let name = entry.name.to_string_lossy();
-        let label = if entry.file_type == FileType::Folder {
-            format!("{name}\\")
-        } else {
-            name.into_owned()
-        };
-        let name_rect = Rect::new(
-            rect.x + pad,
-            rect.y,
-            (rect.w - size_width - 2.0 * pad).max(0.0),
-            rect.h,
-        );
-        let font = if entry.file_type == FileType::Folder {
-            fonts.bold
-        } else {
-            fonts.ui
-        };
-        canvas.text(name_rect, &label, ink, font, false);
-        let size_rect = Rect::new(rect.right() - size_width - pad, rect.y, size_width, rect.h);
-        canvas.text(
-            size_rect,
-            &DisplaySize(entry.size as f64).to_string(),
-            ink,
-            fonts.ui,
-            true,
-        );
+        draw_row_words(canvas, fonts, row, rect, indent, ink);
     }
     if listing.is_empty() {
-        let line = Rect::new(list.x + pad, list.y + pad, list.w - 2.0 * pad, ROW);
+        let line = Rect::new(
+            list.x + LIST_PAD,
+            list.y + LIST_PAD,
+            list.w - 2.0 * LIST_PAD,
+            ROW,
+        );
         let words = if viewer.scanning {
             "Scanning…"
         } else {
@@ -419,6 +410,58 @@ fn draw_list(canvas: &Canvas, window: &Window, list: Rect) {
     if viewer.focus == Focus::List {
         canvas.frame(list, ACCENT, 1);
     }
+}
+
+/// A row's words: a folder's expander, the name, and the size on the right, in `ink`.
+fn draw_row_words(
+    canvas: &Canvas,
+    fonts: &Fonts,
+    row: &Row,
+    rect: Rect,
+    indent: f64,
+    ink: COLORREF,
+) {
+    const SIZE_WIDTH: f64 = 80.0;
+    let entry = &row.entry;
+    let is_dir = entry.file_type == FileType::Folder;
+    if is_dir {
+        let glyph = if row.open { "\u{25BE}" } else { "\u{25B8}" };
+        canvas.text(
+            Rect::new(rect.x + indent, rect.y, EXPANDER, rect.h),
+            glyph,
+            ink,
+            fonts.ui,
+            false,
+        );
+    }
+    let name = entry.name.to_string_lossy();
+    let label = if is_dir {
+        format!("{name}\\")
+    } else {
+        name.into_owned()
+    };
+    let pad = indent + EXPANDER;
+    let name_rect = Rect::new(
+        rect.x + pad,
+        rect.y,
+        (rect.w - SIZE_WIDTH - pad - LIST_PAD).max(0.0),
+        rect.h,
+    );
+    let font = if is_dir { fonts.bold } else { fonts.ui };
+    canvas.text(name_rect, &label, ink, font, false);
+    let size_rect = Rect::new(
+        rect.right() - SIZE_WIDTH - LIST_PAD,
+        rect.y,
+        SIZE_WIDTH,
+        rect.h,
+    );
+    canvas.text(
+        size_rect,
+        &DisplaySize(entry.size as f64).to_string(),
+        ink,
+        fonts.ui,
+        true,
+    );
 }
 
 fn draw_preview(canvas: &Canvas, window: &Window, info: Rect) {
@@ -639,9 +682,9 @@ fn draw_status(canvas: &Canvas, window: &Window, status: Rect) {
     if left.is_empty() {
         left = match viewer.hover.as_deref().and_then(|name| viewer.entry_named(name)) {
             Some(entry) => describe(entry),
-            None => "Enter open · Esc up · Tab list/treemap · Ctrl+click mark · Shift+↑↓ range · \
-                     Ctrl+C copy · right-click menu · Del delete · r/R rescan · a size · +/− zoom · \
-                     s panel"
+            None => "→ open in place · ← close · Enter open · Esc up · Tab list/treemap · \
+                     Ctrl+click mark · Shift+↑↓ range · Ctrl+C copy · right-click menu · Del delete · \
+                     r/R rescan · a size · +/− zoom · s panel"
                 .to_string(),
         };
     }

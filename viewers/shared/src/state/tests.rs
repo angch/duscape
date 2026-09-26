@@ -636,3 +636,182 @@ fn a_top_inset_moves_everything_down_and_the_bounds_stay_whole() {
         "the title bar is not the viewer's"
     );
 }
+
+// ---------------------------------------------------------------- the tree view
+
+fn tree_viewer() -> Viewer {
+    let mut viewer = viewer();
+    viewer.tree_view = true;
+    viewer
+}
+
+fn rows_of(viewer: &Viewer) -> Vec<String> {
+    viewer
+        .rows()
+        .iter()
+        .map(|row| {
+            format!(
+                "{}{}{}",
+                "  ".repeat(row.depth),
+                row.entry.name.to_string_lossy(),
+                if row.open { "/" } else { "" }
+            )
+        })
+        .collect()
+}
+
+fn cursor_of(viewer: &Viewer) -> Option<String> {
+    viewer
+        .cursor_entry()
+        .map(|row| row.entry.name.to_string_lossy().into_owned())
+}
+
+/// With the tree view off, the rows are the listing and the arrows do what they always did.
+#[test]
+fn without_the_tree_view_the_rows_are_the_flat_listing() {
+    let mut viewer = viewer();
+    assert_eq!(rows_of(&viewer), names(&viewer));
+    viewer.arrow(Direction::Right, false);
+    assert_eq!(viewer.focus, Focus::Treemap, "→ crosses to the treemap");
+    viewer.focus = Focus::List;
+    viewer.arrow(Direction::Left, false);
+    assert_eq!(rows_of(&viewer), ["big", "medium.txt", "small", "tiny.bin"]);
+    assert!(
+        !matches!(
+            viewer.hit(8.0, viewer.layout.list.unwrap().y + 1.0),
+            Hit::Expander(_)
+        ),
+        "no expander to hit"
+    );
+}
+
+/// → opens the folder in hand in place and its entries follow, indented; → again goes down
+/// into it; ← goes back up to the folder, and ← again closes it.
+#[test]
+fn a_folder_opens_in_place_and_the_arrows_walk_into_it() {
+    let mut viewer = tree_viewer();
+    viewer.arrow(Direction::Right, false);
+    assert_eq!(
+        rows_of(&viewer),
+        ["big/", "  a", "  b", "medium.txt", "small", "tiny.bin"]
+    );
+    assert_eq!(cursor_of(&viewer).as_deref(), Some("big"), "stays in hand");
+    assert_eq!(viewer.focus, Focus::List);
+    viewer.arrow(Direction::Right, false);
+    assert_eq!(cursor_of(&viewer).as_deref(), Some("a"));
+    assert_eq!(
+        selected(&viewer).as_deref(),
+        Some("big"),
+        "the treemap follows the row's top-level folder"
+    );
+    assert_eq!(
+        viewer.board.currently_selected().map(|t| t.name.clone()),
+        Some(OsString::from("big"))
+    );
+    viewer.arrow(Direction::Down, false);
+    assert_eq!(cursor_of(&viewer).as_deref(), Some("b"));
+    viewer.arrow(Direction::Left, false);
+    assert_eq!(
+        cursor_of(&viewer).as_deref(),
+        Some("big"),
+        "← goes up to the folder"
+    );
+    viewer.arrow(Direction::Left, false);
+    assert_eq!(rows_of(&viewer), ["big", "medium.txt", "small", "tiny.bin"]);
+    assert_eq!(cursor_of(&viewer).as_deref(), Some("big"));
+    // → on a file still crosses to the treemap.
+    viewer.jump(Jump::End, false);
+    viewer.arrow(Direction::Right, false);
+    assert_eq!(viewer.focus, Focus::Treemap);
+}
+
+/// A nested row is acted on where it is: previewed, copied, entered, deleted.
+#[test]
+fn a_nested_row_is_what_is_acted_on() {
+    let mut viewer = tree_viewer();
+    viewer.arrow(Direction::Right, false);
+    viewer.arrow(Direction::Right, false);
+    assert_eq!(cursor_of(&viewer).as_deref(), Some("a"));
+    let (_, path) = viewer.wanted_preview().expect("a file is in hand");
+    assert_eq!(path, Path::new(ROOT).join("big").join("a"));
+    assert_eq!(
+        viewer.target_paths(),
+        [Path::new(ROOT).join("big").join("a")]
+    );
+    let targets = viewer.targets();
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].path_to_file, ["big", "a"]);
+    assert_eq!(targets[0].size, 600);
+    // Removed, the folder stays open but, smaller now than medium.txt, re-sorts below it, its
+    // rows with it; the row now where the deleted one was — the folder itself — is in hand.
+    viewer.removed(&targets, true);
+    assert_eq!(
+        rows_of(&viewer),
+        ["medium.txt", "big/", "  b", "small", "tiny.bin"]
+    );
+    assert_eq!(cursor_of(&viewer).as_deref(), Some("big"));
+    assert!(!viewer.chosen, "placed, not picked");
+    assert_eq!(viewer.tree.space_freed.disk, 600);
+    // Entering a nested folder goes down through the folders above it.
+    viewer.arrow(Direction::Down, false);
+    viewer.arrow(Direction::Down, false);
+    assert_eq!(cursor_of(&viewer).as_deref(), Some("small"));
+    viewer.arrow(Direction::Right, false);
+    viewer.arrow(Direction::Right, false);
+    assert_eq!(cursor_of(&viewer).as_deref(), Some("c"));
+    assert!(!viewer.enter_selected(), "a file is not entered");
+    viewer.arrow(Direction::Left, false);
+    assert!(viewer.enter_selected());
+    assert_eq!(viewer.depth(), 1);
+    assert_eq!(viewer.title(), "small");
+    assert_eq!(
+        rows_of(&viewer),
+        ["c"],
+        "opened afresh: nothing open in the new folder"
+    );
+    viewer.go_up();
+    assert_eq!(
+        rows_of(&viewer),
+        ["medium.txt", "big", "small", "tiny.bin"],
+        "closed again on the way back"
+    );
+}
+
+/// The expander is its own target, and a click on it opens the folder without moving on.
+#[test]
+fn the_expander_opens_a_folder_on_a_click() {
+    let mut viewer = tree_viewer();
+    let list = viewer.layout.list.expect("a list");
+    let y = list.y + ROW / 2.0;
+    assert_eq!(viewer.hit(list.x + LIST_PAD + 2.0, y), Hit::Expander(0));
+    assert_eq!(
+        viewer.hit(list.x + LIST_PAD + EXPANDER + 2.0, y),
+        Hit::Row(0)
+    );
+    // A file's row has no expander.
+    assert_eq!(viewer.hit(list.x + LIST_PAD + 2.0, y + ROW), Hit::Row(1));
+    viewer.toggle_row(0);
+    assert_eq!(rows_of(&viewer)[..3], ["big/", "  a", "  b"]);
+    // Its own rows are indented, so their expanders sit one level in.
+    viewer.toggle_row(0);
+    assert_eq!(rows_of(&viewer), ["big", "medium.txt", "small", "tiny.bin"]);
+    // Clicking a nested row takes it in hand; the marks are the top-level folder's.
+    viewer.toggle_row(0);
+    viewer.click(list.x + 100.0, y + ROW, Mods::default());
+    assert_eq!(cursor_of(&viewer).as_deref(), Some("a"));
+    viewer.click(
+        list.x + 100.0,
+        y + ROW * 4.0,
+        Mods {
+            toggle: true,
+            range: false,
+        },
+    );
+    assert_eq!(
+        viewer.marked,
+        ["big", "small"],
+        "a picked nested row marks its folder"
+    );
+    let (left, _) = viewer.status();
+    assert!(left.starts_with("2 marked"), "{left}");
+}
