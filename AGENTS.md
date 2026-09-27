@@ -111,17 +111,25 @@ Six kinds of thread communicate via `mpsc` channels (bounded, except the preview
 - `model/files/hard_links.rs` — charges shared blocks to each folder once, over interned directory
   ids; two ledgers, one keyed on inode (hard links) and one on physical extent (reflinks)
 - `model/files/hash.rs` — the fast hasher behind the folder and inode maps
-- `tiles/treemap.rs` — squarify algorithm (`HEIGHT_WIDTH_RATIO = 2.5`)
+- `tiles/treemap.rs` — squarify algorithm, in a `Grid`'s cells: `Grid::TERMINAL` (the cell's
+  `HEIGHT_WIDTH_RATIO = 2.5`, an 8×3 least tile; the TUI, and the DOS port's reference) or
+  `Grid::pixels(min)` (square pixel cells, what the desktop viewers use). A loop over the
+  children, linear in them — `largest_after` answers "is any child left big enough" — since a
+  window's pixel grid gives tens of thousands; its layouts are the recursive version's exactly
 - `tiles/board.rs` — `Board`: tile selection, zoom stack, navigation
 - `tiles/nested.rs` — `nest`: the treemap nested — the same squarify run inside each folder
   tile (under its label rows, within a margin) on the folder's entries, and theirs in turn,
   down to the files wherever there is room: what ends it is an inside too small for two
   minimum tiles either way, and the tiles in all are bounded by the folder tiles' area at the
   minimum size — the screen bounds a relayout's and a paint's work (`Nesting`'s depth and
-  tile caps are guards beyond that). The minimum tile is `treemap::MINIMUM_WIDTH`/`HEIGHT`.
-  Each folder is listed by `largest_in_folder`, only as many entries as its inside has room
-  for, so a folder of fifty thousand entries is not sorted whole on every relayout; parents
-  before children, so a painter draws in order
+  tile caps are guards beyond that). The minimum tile is `Nesting::grid`'s. A folder too short
+  for its label rows nests under its margin alone; `Nesting::labelled` says which have them, so
+  a painter labels only those. Each folder is listed by `largest_in_folder_from`, only as many
+  entries as its inside has room for and none under (least − 1)² cells (which can never round
+  to a tile), so a folder of fifty thousand entries is not named and sorted whole on every
+  relayout; parents before children, so a painter draws in order. A `NestedTile` knows its
+  `parent` and `top` by index, not its path (`nested_path`, `nested_path_is`): paths cloned
+  per tile were half the nesting's time
 - `delete.rs` — `remove` (from disk, a link itself never its target) and `refused` (NTFS metadata)
 - `metafiles.rs` — NTFS metadata names, for the Windows walker and for `delete`
 - `preview.rs` — `read` (sniff the first 64 KiB: text lines, info, or a picture), `describe_picture`,
@@ -227,7 +235,13 @@ shared `Viewer`, not in `win/`:
   view laid out once per burst, `OUTLINE_MS` after the first (`OUTLINE_TIMER`): the elevated
   scan of a volume sends dozens a second, and laid out per batch (15–25 ms each) the window
   answered nothing until the scan ended
-- `win/paint.rs` — GDI, double-buffered, by `Viewer::layout`; returns the breadcrumbs for clicks.
+- `win/paint.rs` — double-buffered in a 32-bit DIB section, by `Viewer::layout`; returns the
+  breadcrumbs for clicks. `Canvas::fill`/`frame` write the section's pixels directly (a
+  `GdiFlush` first when GDI has drawn since): as `FillRect`/`FrameRect` calls, the nested
+  treemap's thousands of overdrawn tiles cost 30 ms a frame. Text (`DrawTextW`, the font
+  selected only when it changes) and pictures are GDI's. The fonts are the system's message
+  font (`SPI_GETNONCLIENTMETRICS`) and a treemap label size that fits the label band whole.
+  `DUSCAPE_PAINT_TIMES=1` prints each frame's time on stderr (redirect it: no console).
   The list is drawn as the tree (`Viewer::rows`): each level indented `ROW_INDENT`, a folder's
   expander (`▸`/`▾`) in the `EXPANDER` column before its name, the "% of parent" bar from its
   level's indent. The
@@ -236,7 +250,10 @@ shared `Viewer`, not in `win/`:
 
 **`duscape-viewer`** (`viewers/shared/`) — what the desktop viewers share, with no toolkit:
 - `state.rs` — `Viewer`: everything the window shows and how it answers input — `Layout` (points;
-  tiles in 2.4×6 pt cells, the treemap's 2.5 ratio), the entry in hand kept by *name* so a
+  tiles in 2.4×6 pt cells, the treemap's 2.5 ratio, until the viewer says its pixels per point
+  with `set_pixel_scale`: then one-pixel square cells, `Grid::pixels(MIN_TILE_PIXELS)`, and the
+  nesting's `TILE_LABEL` band and `TILE_MARGIN` kept in points; every desktop viewer does),
+  the entry in hand kept by *name* so a
   relayout cannot move it, marks, navigation, zoom, delete (`delete`, `delete_prompt`, and
   `removed` for a Trash), rescans (through `duscape_scan::rescan::Rescans`), the status bar's
   words; `absorb_summaries` takes outline batches in without a relayout and `catch_up` lays the
@@ -629,10 +646,17 @@ opening by file id, closing off the walker threads and skipping the last listing
 measured and none helped — read the 2026-09-24 section before trying them again.
 
 ### Modifying treemap layout
-- Core algorithm: `common/src/tiles/treemap.rs`
+- Core algorithm: `common/src/tiles/treemap.rs`; the grid it lays out in is `Grid`
+- The desktop viewers lay out in pixels, so the tile count follows the window: measure a change
+  with `DUSCAPE_LAYOUT_PATH='E:\' cargo test --release -p duscape-viewer --test layout_speed --
+  --ignored --nocapture` (the board and nesting at three window sizes; 2026-09-27 on E:\,
+  240k entries: 11k nested tiles laid out in 5 ms at 2560×1400 pt, 1.5x; `C:\Windows`: 26k in
+  24 ms) and, on Windows, `DUSCAPE_PAINT_TIMES` (4k tiles painted in 13–17 ms, what 250 took
+  before the pixel grid)
 - Tile rendering: `viewers/tui/src/ui/grid/` (terminal), `viewers/windows/src/win/paint.rs`,
   `viewers/macos/src/mac/draw.rs` (`treemap`)
-- Adjust `HEIGHT_WIDTH_RATIO`, `MINIMUM_HEIGHT`, `MINIMUM_WIDTH` constants
+- Adjust `HEIGHT_WIDTH_RATIO`, `MINIMUM_HEIGHT`, `MINIMUM_WIDTH` constants (the terminal's
+  `Grid`), or `MIN_TILE_PIXELS` in `viewers/shared` (the windows')
 - Entries below the minimum tile size are never dropped: they fold into the "small files" `x`
   marker, whose corner is clamped by `SMALL_FILES_MINIMUM_WIDTH/HEIGHT` so it stays visible even
   when the hidden entries round to zero cells
@@ -718,9 +742,9 @@ Regenerated by hand from `wc -l` when this file is touched; `make quality` print
 | `viewers/tui/src/lib.rs` | ~470 lines — which viewer (`front`), terminal setup, thread/channel setup |
 | `viewers/tui/src/app/mod.rs` | ~1300 lines — the TUI's state machine |
 | `viewers/tui/src/preview.rs` | ~1300 lines — preview thread, kitty/sixel/half-block output, detection |
-| `viewers/windows/src/win/mod.rs` | ~950 lines — the Windows window: input → `Viewer`, threads, messages |
-| `viewers/windows/src/win/paint.rs` | ~870 lines — GDI drawing by `Viewer::layout` |
-| `viewers/shared/src/state.rs` | ~1670 lines — the desktop viewers' shared state, no toolkit |
+| `viewers/windows/src/win/mod.rs` | ~970 lines — the Windows window: input → `Viewer`, threads, messages |
+| `viewers/windows/src/win/paint.rs` | ~1000 lines — drawing by `Viewer::layout`: pixels into a DIB section, GDI text |
+| `viewers/shared/src/state.rs` | ~1750 lines — the desktop viewers' shared state, no toolkit |
 | `viewers/macos/src/mac/view.rs` | ~1300 lines — the macOS viewer's view, events and commands |
 | `viewers/linux/src/wayland.rs` | ~1000 lines — the Wayland backend: shm, xdg-shell, seat, clipboard |
 | `viewers/linux/src/app.rs` | ~1030 lines — the Linux viewer's loop, keys, mouse, dialogs, context menu, title bar |
@@ -728,7 +752,7 @@ Regenerated by hand from `wc -l` when this file is touched; `make quality` print
 | `viewers/linux/src/x11.rs` | ~520 lines — the X11 backend: window, events, `PutImage`, keymap, clipboard |
 | `viewers/linux/src/xkb.rs` | ~360 lines — the xkb keymap reader |
 | `common/src/tiles/board.rs` | ~230 lines — tile nav/zoom |
-| `common/src/tiles/treemap.rs` | ~270 lines — squarify |
+| `common/src/tiles/treemap.rs` | ~300 lines — squarify, in a `Grid` |
 | `common/src/model/files/file_tree.rs` | ~590 lines — folder tree, hard-link accounting, the build profile |
 | `scanners/src/lib.rs` | ~770 lines — walker selection, parallel build, fallback, `environment` |
 | `scanners/src/linux.rs` | ~1700 lines — Linux `getdents64`/`statx` walker, inode order, block prefetch, the `fstatat` fallback |

@@ -156,6 +156,8 @@ impl App {
         if !backend.decorated() {
             viewer.top_inset = TITLE_BAR;
         }
+        // The treemap in the screen's pixels: every entry big enough to see gets a tile.
+        viewer.set_pixel_scale(scale);
         viewer.resize(width, height);
         let mut app = App {
             viewer,
@@ -387,6 +389,7 @@ impl App {
                     self.canvas.scale = scale;
                     self.canvas.resize(w, h);
                 }
+                self.viewer.set_pixel_scale(scale);
                 self.viewer.resize(width, height);
                 self.dirty = true;
             }
@@ -626,6 +629,7 @@ impl App {
         let mut viewer = Viewer::new(&root, kind, scan_id);
         viewer.sidebar = sidebar;
         viewer.set_tree_view(true);
+        viewer.set_pixel_scale(self.canvas.scale);
         let done = self.tx.clone();
         viewer.enable_rescans(Rescanner::new(
             options,

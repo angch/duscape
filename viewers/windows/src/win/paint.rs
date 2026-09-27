@@ -7,10 +7,12 @@
 
 use ::std::cell::Cell;
 use ::std::ffi::OsStr;
+use ::std::mem::{size_of, zeroed};
 use ::std::ptr::null_mut;
 
 use duscape_viewer::state::{
-    EXPANDER, Focus, LIST_PAD, Layout, Preview, ROW, ROW_INDENT, Rect, describe, tile_color,
+    EXPANDER, Focus, LIST_PAD, Layout, Preview, ROW, ROW_INDENT, Rect, TILE_LABEL, describe,
+    tile_color,
 };
 use libduscape::DisplaySize;
 use libduscape::format::without_verbatim_prefix;
@@ -20,12 +22,15 @@ use libduscape::tiles::{Row, Tile};
 use windows_sys::Win32::Foundation::{COLORREF, HWND, RECT, SIZE};
 use windows_sys::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BeginPaint, BitBlt, CLEARTYPE_QUALITY,
-    CLIP_DEFAULT_PRECIS, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW, CreateSolidBrush,
-    DEFAULT_CHARSET, DIB_RGB_COLORS, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_RIGHT,
-    DT_SINGLELINE, DT_VCENTER, DeleteDC, DeleteObject, DrawTextW, EndPaint, FF_DONTCARE, FF_MODERN,
-    FIXED_PITCH, FW_NORMAL, FW_SEMIBOLD, FillRect, FrameRect, GetTextExtentPoint32W, HDC, HFONT,
-    OUT_DEFAULT_PRECIS, PAINTSTRUCT, SRCCOPY, SelectObject, SetBkMode, SetDIBitsToDevice,
-    SetTextColor, TRANSPARENT, VARIABLE_PITCH,
+    CreateCompatibleDC, CreateDIBSection, CreateFontIndirectW, DEFAULT_CHARSET, DIB_RGB_COLORS,
+    DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_RIGHT, DT_SINGLELINE, DT_VCENTER, DeleteDC,
+    DeleteObject, DrawTextW, EndPaint, FF_DONTCARE, FF_MODERN, FIXED_PITCH, FW_NORMAL, FW_SEMIBOLD,
+    GdiFlush, GetCurrentObject, GetDC, GetTextExtentPoint32W, GetTextMetricsW, HDC, HFONT,
+    LOGFONTW, OBJ_FONT, PAINTSTRUCT, ReleaseDC, SRCCOPY, SelectObject, SetBkMode,
+    SetDIBitsToDevice, SetTextColor, TEXTMETRICW, TRANSPARENT, VARIABLE_PITCH,
+};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    NONCLIENTMETRICSW, SPI_GETNONCLIENTMETRICS, SystemParametersInfoW,
 };
 
 use super::{Window, client_rect, preview_parts};
@@ -54,11 +59,19 @@ const CAPTION: COLORREF = rgb(120, 200, 230);
 /// A line of text, in points.
 const LINE: f64 = 18.0;
 
-/// The fonts the window draws with, made once at its DPI.
+/// The fonts the window draws with, made once at its DPI: the system's message font — the one
+/// Explorer lists files in, at the size and weight Settings give it (text size included) — its
+/// semibold, and a monospace face at the same height.
 pub struct Fonts {
     ui: HFONT,
     bold: HFONT,
     mono: HFONT,
+    /// The treemap's labels, and a folder's at the top level: the system font a little
+    /// smaller, and smaller still if its whole height would not fit in `LABEL_LINE`.
+    label: HFONT,
+    label_bold: HFONT,
+    /// The system font the others are made from.
+    base: LOGFONTW,
     /// The fonts' height in pixels.
     height: i32,
     /// The monospace font sized down for a hex dump to fit the preview's width: its height in
@@ -69,28 +82,34 @@ pub struct Fonts {
 /// The least a hex dump's font is shrunk to, in pixels.
 const HEX_MIN_HEIGHT: i32 = 6;
 
+/// A tile's label line: from `LABEL_TOP` below the tile's top to where the nesting starts its
+/// entries (the viewer's `TILE_LABEL` band), less the pixel of their frame.
+const LABEL_TOP: f64 = 1.0;
+const LABEL_LINE: f64 = TILE_LABEL - LABEL_TOP;
+
+/// How much smaller than the system font a label is.
+const LABEL_SHRINK: f64 = 0.9;
+
+/// The monospace face, for text previews and hex dumps; the system names none.
+const MONO: &str = "Consolas";
+
 impl Fonts {
     pub fn new(scale: f64) -> Self {
-        let height = (15.0 * scale).round() as i32;
+        let base = message_font().unwrap_or_else(|| fallback_font(scale));
+        let height = base.lfHeight.abs();
+        let fits = ((LABEL_LINE - 1.0) * scale).floor() as i32;
+        let mut label_height = ((f64::from(height) * LABEL_SHRINK).round() as i32).max(1);
+        while label_height > HEX_MIN_HEIGHT && line_height(&base, label_height) > fits {
+            label_height -= 1;
+        }
+        let bold = base.lfWeight.max(FW_SEMIBOLD as i32);
         Fonts {
-            ui: make_font(
-                height,
-                FW_NORMAL,
-                u32::from(VARIABLE_PITCH) | u32::from(FF_DONTCARE),
-                "Segoe UI",
-            ),
-            bold: make_font(
-                height,
-                FW_SEMIBOLD,
-                u32::from(VARIABLE_PITCH) | u32::from(FF_DONTCARE),
-                "Segoe UI",
-            ),
-            mono: make_font(
-                height,
-                FW_NORMAL,
-                u32::from(FIXED_PITCH) | u32::from(FF_MODERN),
-                "Consolas",
-            ),
+            ui: make_font(&base, height, base.lfWeight, None),
+            bold: make_font(&base, height, bold, None),
+            mono: make_font(&base, height, base.lfWeight, Some(MONO)),
+            label: make_font(&base, label_height, base.lfWeight, None),
+            label_bold: make_font(&base, label_height, bold, None),
+            base,
             height,
             hex: Cell::new((0, null_mut())),
         }
@@ -113,12 +132,7 @@ impl Fonts {
                 // SAFETY: made by `make_font`, and not selected into any DC between frames.
                 unsafe { DeleteObject(font as _) };
             }
-            let font = make_font(
-                height,
-                FW_NORMAL,
-                u32::from(FIXED_PITCH) | u32::from(FF_MODERN),
-                "Consolas",
-            );
+            let font = make_font(&self.base, height, self.base.lfWeight, Some(MONO));
             self.hex.set((height, font));
             font
         };
@@ -126,28 +140,75 @@ impl Fonts {
     }
 }
 
-/// A GDI font `height` pixels tall.
-fn make_font(height: i32, weight: u32, pitch: u32, face: &str) -> HFONT {
-    let face = super::wide(face);
-    // SAFETY: the face name is NUL-terminated and alive for the call.
+/// The system's message font, in pixels at the system DPI (the process is system-DPI aware);
+/// `None` if Windows will not say.
+fn message_font() -> Option<LOGFONTW> {
+    // SAFETY: all-zero is a valid `NONCLIENTMETRICSW`; its size is set before the call, which
+    // writes no more than that.
     unsafe {
-        CreateFontW(
-            -height,
+        let mut metrics: NONCLIENTMETRICSW = zeroed();
+        metrics.cbSize = size_of::<NONCLIENTMETRICSW>() as u32;
+        let ok = SystemParametersInfoW(
+            SPI_GETNONCLIENTMETRICS,
+            metrics.cbSize,
+            (&raw mut metrics).cast(),
             0,
-            0,
-            0,
-            weight as i32,
-            0,
-            0,
-            0,
-            u32::from(DEFAULT_CHARSET),
-            u32::from(OUT_DEFAULT_PRECIS),
-            u32::from(CLIP_DEFAULT_PRECIS),
-            u32::from(CLEARTYPE_QUALITY),
-            pitch,
-            face.as_ptr(),
-        )
+        );
+        (ok != 0 && metrics.lfMessageFont.lfHeight != 0).then_some(metrics.lfMessageFont)
     }
+}
+
+/// Segoe UI at 15 points, what the window drew with before it asked the system.
+fn fallback_font(scale: f64) -> LOGFONTW {
+    // SAFETY: all-zero is a valid `LOGFONTW`: default everything, an empty face name.
+    let mut font: LOGFONTW = unsafe { zeroed() };
+    font.lfHeight = -((15.0 * scale).round() as i32);
+    font.lfWeight = FW_NORMAL as i32;
+    font.lfCharSet = DEFAULT_CHARSET;
+    font.lfQuality = CLEARTYPE_QUALITY;
+    font.lfPitchAndFamily = VARIABLE_PITCH | FF_DONTCARE;
+    set_face(&mut font, "Segoe UI");
+    font
+}
+
+fn set_face(font: &mut LOGFONTW, face: &str) {
+    let face = super::wide(face);
+    let len = face.len().min(font.lfFaceName.len());
+    font.lfFaceName = [0; 32];
+    font.lfFaceName[..len].copy_from_slice(&face[..len]);
+    font.lfFaceName[31] = 0;
+}
+
+/// How tall a line of `base` at `height` pixels is drawn, in pixels: ascent to descent, all
+/// that `DrawTextW` paints; `height` itself if it cannot be measured.
+fn line_height(base: &LOGFONTW, height: i32) -> i32 {
+    let font = make_font(base, height, base.lfWeight.max(FW_SEMIBOLD as i32), None);
+    // SAFETY: the screen DC is released and the font deselected and deleted before returning;
+    // all-zero is a valid `TEXTMETRICW` for the call to fill.
+    unsafe {
+        let screen = GetDC(null_mut());
+        let old = SelectObject(screen, font as _);
+        let mut metrics: TEXTMETRICW = zeroed();
+        let ok = GetTextMetricsW(screen, &mut metrics);
+        SelectObject(screen, old);
+        ReleaseDC(null_mut(), screen);
+        DeleteObject(font as _);
+        if ok != 0 { metrics.tmHeight } else { height }
+    }
+}
+
+/// A GDI font like `base`, `height` pixels tall at `weight`, in `face` (monospace) if given.
+fn make_font(base: &LOGFONTW, height: i32, weight: i32, face: Option<&str>) -> HFONT {
+    let mut font = *base;
+    font.lfHeight = -height;
+    font.lfWidth = 0;
+    font.lfWeight = weight;
+    if let Some(face) = face {
+        font.lfPitchAndFamily = FIXED_PITCH | FF_MODERN;
+        set_face(&mut font, face);
+    }
+    // SAFETY: the face name is NUL-terminated within the struct, alive for the call.
+    unsafe { CreateFontIndirectW(&font) }
 }
 
 impl Drop for Fonts {
@@ -157,6 +218,8 @@ impl Drop for Fonts {
             DeleteObject(self.ui as _);
             DeleteObject(self.bold as _);
             DeleteObject(self.mono as _);
+            DeleteObject(self.label as _);
+            DeleteObject(self.label_bold as _);
             let (_, hex) = self.hex.get();
             if !hex.is_null() {
                 DeleteObject(hex as _);
@@ -165,10 +228,24 @@ impl Drop for Fonts {
     }
 }
 
-/// A device context to draw into, taking rectangles in points.
+/// A device context to draw into, taking rectangles in points: a 32-bit DIB section, whose
+/// rectangles are filled by writing its pixels here, and whose text and pictures GDI draws.
+///
+/// A nested treemap is tens of thousands of tiles, each painted over its parent's: FillRect
+/// and FrameRect cost two microseconds or so a call, and at that a frame took 30 ms and more.
+/// Written straight into the buffer they cost what the pixels do.
 struct Canvas {
     dc: HDC,
     scale: f64,
+    /// The DIB section's pixels, top-down, `0x00RRGGBB`, `width` to a row.
+    pixels: *mut u32,
+    width: i32,
+    height: i32,
+    /// GDI has drawn since the pixels were last written: its batch is flushed first.
+    gdi: Cell<bool>,
+    /// The font selected into the DC, so it is selected only when it changes; the DC's own
+    /// is put back when the paint ends.
+    font: Cell<HFONT>,
 }
 
 impl Canvas {
@@ -186,29 +263,56 @@ impl Canvas {
         }
     }
 
-    fn fill(&self, rect: Rect, color: COLORREF) {
-        // SAFETY: the brush is made, used and deleted here.
-        unsafe {
-            let brush = CreateSolidBrush(color);
-            FillRect(self.dc, &self.rect(rect), brush);
-            DeleteObject(brush as _);
+    /// Pixels `left..right` × `top..bottom` in `color`, cut to the buffer.
+    fn span(&self, left: i32, top: i32, right: i32, bottom: i32, color: COLORREF) {
+        let (left, right) = (left.max(0), right.min(self.width));
+        let (top, bottom) = (top.max(0), bottom.min(self.height));
+        if left >= right || top >= bottom {
+            return;
         }
+        if self.gdi.replace(false) {
+            // SAFETY: no arguments; it only completes GDI's pending drawing.
+            unsafe { GdiFlush() };
+        }
+        // A DIB's pixel is blue in the low byte, a COLORREF red.
+        let pixel = ((color & 0xFF) << 16) | (color & 0xFF00) | ((color >> 16) & 0xFF);
+        let (width, run) = (self.width as usize, (right - left) as usize);
+        for y in top as usize..bottom as usize {
+            // SAFETY: `left..right` and `top..bottom` are inside the `width`×`height` buffer
+            // the DIB section gave, alive while the canvas is, and nothing else holds it now.
+            let row = unsafe {
+                ::std::slice::from_raw_parts_mut(self.pixels.add(y * width + left as usize), run)
+            };
+            row.fill(pixel);
+        }
+    }
+
+    fn fill(&self, rect: Rect, color: COLORREF) {
+        let area = self.rect(rect);
+        self.span(area.left, area.top, area.right, area.bottom, color);
     }
 
     /// A frame `thickness` pixels wide, inside `rect`.
     fn frame(&self, rect: Rect, color: COLORREF, thickness: i32) {
         let mut area = self.rect(rect);
-        // SAFETY: the brush is made, used and deleted here.
-        unsafe {
-            let brush = CreateSolidBrush(color);
-            for _ in 0..thickness.max(1) {
-                FrameRect(self.dc, &area, brush);
-                area.left += 1;
-                area.top += 1;
-                area.right -= 1;
-                area.bottom -= 1;
+        for _ in 0..thickness.max(1) {
+            if area.left >= area.right || area.top >= area.bottom {
+                return;
             }
-            DeleteObject(brush as _);
+            let RECT {
+                left,
+                top,
+                right,
+                bottom,
+            } = area;
+            self.span(left, top, right, top + 1, color);
+            self.span(left, bottom - 1, right, bottom, color);
+            self.span(left, top + 1, left + 1, bottom - 1, color);
+            self.span(right - 1, top + 1, right, bottom - 1, color);
+            area.left += 1;
+            area.top += 1;
+            area.right -= 1;
+            area.bottom -= 1;
         }
     }
 
@@ -220,9 +324,10 @@ impl Canvas {
         }
         let mut area = self.rect(rect);
         let align = if right { DT_RIGHT } else { DT_LEFT };
+        self.gdi.set(true);
         // SAFETY: `wide` and `area` are alive for the call; the old font is put back.
         unsafe {
-            let old = SelectObject(self.dc, font as _);
+            self.select(font);
             SetTextColor(self.dc, color);
             DrawTextW(
                 self.dc,
@@ -231,7 +336,15 @@ impl Canvas {
                 &mut area,
                 align | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX,
             );
-            SelectObject(self.dc, old);
+        }
+    }
+
+    fn select(&self, font: HFONT) {
+        if self.font.get() != font {
+            // SAFETY: the font is alive for the paint (the window's `Fonts`); the DC's first
+            // font is put back before the DC is deleted.
+            unsafe { SelectObject(self.dc, font as _) };
+            self.font.set(font);
         }
     }
 
@@ -244,14 +357,13 @@ impl Canvas {
         let mut size = SIZE { cx: 0, cy: 0 };
         // SAFETY: `wide` and `size` are alive for the call; the old font is put back.
         unsafe {
-            let old = SelectObject(self.dc, font as _);
+            self.select(font);
             GetTextExtentPoint32W(
                 self.dc,
                 wide.as_ptr(),
                 i32::try_from(wide.len()).unwrap_or(i32::MAX),
                 &mut size,
             );
-            SelectObject(self.dc, old);
         }
         f64::from(size.cx) / self.scale
     }
@@ -279,13 +391,35 @@ pub fn paint(window: &Window, hwnd: HWND) -> Vec<(Rect, usize)> {
             (client.bottom - client.top).max(1),
         );
         let dc = CreateCompatibleDC(screen);
-        let bitmap = CreateCompatibleBitmap(screen, width, height);
+        let mut info: BITMAPINFO = ::std::mem::zeroed();
+        info.bmiHeader = BITMAPINFOHEADER {
+            biSize: size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: width,
+            biHeight: -height,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB,
+            ..::std::mem::zeroed()
+        };
+        let mut bits = null_mut();
+        let bitmap = CreateDIBSection(screen, &info, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
+        if bitmap.is_null() || bits.is_null() {
+            DeleteDC(dc);
+            EndPaint(hwnd, &ps);
+            return Vec::new();
+        }
         let old_bitmap = SelectObject(dc, bitmap as _);
         SetBkMode(dc, TRANSPARENT as i32);
         let canvas = Canvas {
             dc,
             scale: window.scale,
+            pixels: bits.cast(),
+            width,
+            height,
+            gdi: Cell::new(false),
+            font: Cell::new(null_mut()),
         };
+        let first_font = GetCurrentObject(dc, OBJ_FONT as u32);
         let viewer = &window.viewer;
         let layout = &viewer.layout;
 
@@ -300,7 +434,9 @@ pub fn paint(window: &Window, hwnd: HWND) -> Vec<(Rect, usize)> {
         let crumbs = draw_path_bar(&canvas, window, layout.path_bar);
         draw_status(&canvas, window, layout.status);
 
+        GdiFlush();
         BitBlt(screen, 0, 0, width, height, dc, 0, 0, SRCCOPY);
+        SelectObject(dc, first_font);
         SelectObject(dc, old_bitmap);
         DeleteObject(bitmap as _);
         DeleteDC(dc);
@@ -327,9 +463,10 @@ fn draw_treemap(canvas: &Canvas, window: &Window, layout: &Layout) {
             },
         );
         canvas.frame(rect, BORDER, 1);
-        if rect.w > 40.0 && rect.h > LINE {
+        // A folder too short for its label band has its entries right under its margin.
+        if rect.w > 40.0 && rect.h > LINE && viewer.labelled(tile) {
             let ink = if marked { INK } else { rgb(240, 240, 240) };
-            draw_tile_label(canvas, fonts, rect, pad, pad / 2.0, tile, ink, fonts.bold);
+            draw_tile_label(canvas, fonts, rect, pad, tile, ink, fonts.label_bold);
         }
         // (`hover` is never a name while a nested tile is hovered: `hover_at` sees to that.)
         if hover == Some(tile.name.as_os_str()) && board.get_selected_index() != Some(index) {
@@ -470,17 +607,8 @@ fn draw_nested(canvas: &Canvas, window: &Window, layout: &Layout) {
         let shade = 1.0 - 0.12 * nested.depth.min(4) as f64;
         canvas.fill(rect, tile_colorref(&t.name, t.file_type, index, shade));
         canvas.frame(rect, BORDER, 1);
-        if rect.w > 30.0 && rect.h > LINE {
-            draw_tile_label(
-                canvas,
-                fonts,
-                rect,
-                pad,
-                1.0,
-                t,
-                rgb(235, 235, 235),
-                fonts.ui,
-            );
+        if rect.w > 30.0 && rect.h > LINE && viewer.labelled(t) {
+            draw_tile_label(canvas, fonts, rect, pad, t, rgb(235, 235, 235), fonts.label);
         }
         if viewer.hover_nested == Some(index) {
             canvas.frame(rect, rgb(200, 200, 200), 1);
@@ -488,7 +616,7 @@ fn draw_nested(canvas: &Canvas, window: &Window, layout: &Layout) {
     }
 }
 
-/// A tile's label, in `ink`, `pad` in from the sides and `top` down from the top. A folder's is
+/// A tile's label, in `ink`, `pad` in from the sides, in the `LABEL_LINE` at its top. A folder's is
 /// one line, its name (with its `\`) at the left and its size at the right, since its entries
 /// take the rest of the tile; a file's name has the whole top line, and its size goes at the
 /// bottom right when the tile has a second line, since the name is the longer and the one to
@@ -499,7 +627,6 @@ fn draw_tile_label(
     fonts: &Fonts,
     rect: Rect,
     pad: f64,
-    top: f64,
     tile: &Tile,
     ink: COLORREF,
     font: HFONT,
@@ -513,20 +640,25 @@ fn draw_tile_label(
     } else {
         name.into_owned()
     };
-    let line = Rect::new(rect.x + pad, rect.y + top, rect.w - 2.0 * pad, LINE);
+    let line = Rect::new(
+        rect.x + pad,
+        rect.y + LABEL_TOP,
+        rect.w - 2.0 * pad,
+        LABEL_LINE,
+    );
     let size = DisplaySize(tile.size as f64).to_string();
-    let size_width = canvas.width(&size, fonts.ui);
+    let size_width = canvas.width(&size, fonts.label);
     let beside = line.w - size_width - LIST_PAD >= NAME_ROOM;
-    let below = !is_dir && rect.h >= top + 2.0 * LINE + pad;
+    let below = !is_dir && rect.h >= LABEL_TOP + 2.0 * LABEL_LINE + pad;
     if below {
         canvas.text(line, &label, ink, font, false);
-        let size_line = Rect::new(line.x, rect.bottom() - pad - LINE, line.w, LINE);
-        canvas.text(size_line, &size, ink, fonts.ui, true);
+        let size_line = Rect::new(line.x, rect.bottom() - pad - LABEL_LINE, line.w, LABEL_LINE);
+        canvas.text(size_line, &size, ink, fonts.label, true);
     } else if beside {
         let name_rect = Rect::new(line.x, line.y, line.w - size_width - LIST_PAD, line.h);
         canvas.text(name_rect, &label, ink, font, false);
         let size_rect = Rect::new(line.right() - size_width, line.y, size_width, line.h);
-        canvas.text(size_rect, &size, ink, fonts.ui, true);
+        canvas.text(size_rect, &size, ink, fonts.label, true);
     } else {
         canvas.text(line, &label, ink, font, false);
     }
@@ -567,8 +699,8 @@ fn draw_row_words(
         (rect.w - SIZE_WIDTH - pad - LIST_PAD).max(0.0),
         rect.h,
     );
-    let font = if is_dir { fonts.bold } else { fonts.ui };
-    canvas.text(name_rect, &label, ink, font, false);
+    // Explorer's weight for every name; the expander and the `\` say it is a folder.
+    canvas.text(name_rect, &label, ink, fonts.ui, false);
     let size_rect = Rect::new(
         rect.right() - SIZE_WIDTH - LIST_PAD,
         rect.y,
@@ -708,6 +840,7 @@ fn draw_picture(canvas: &Canvas, picture: &crate::preview::Picture, body: Rect) 
             biCompression: BI_RGB,
             ..::std::mem::zeroed()
         };
+        canvas.gdi.set(true);
         SetDIBitsToDevice(
             canvas.dc,
             left,

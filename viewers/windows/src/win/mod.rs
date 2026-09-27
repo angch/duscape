@@ -20,6 +20,7 @@ use ::std::path::{Path, PathBuf};
 use ::std::ptr::{null, null_mut};
 use ::std::sync::Arc;
 use ::std::sync::atomic::{AtomicBool, Ordering};
+use ::std::time::Instant;
 
 use clap::Parser;
 use duscape_scan::rescan::{Outcome, Rescanner};
@@ -711,7 +712,20 @@ fn run_handler(state: *mut Window, handler: impl FnOnce(&mut Window) -> LRESULT)
 fn dispatch(window: &mut Window, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
         WM_SIZE => window.on_size(hwnd),
-        WM_PAINT => window.crumbs = paint::paint(window, hwnd),
+        WM_PAINT => {
+            let started = Instant::now();
+            window.crumbs = paint::paint(window, hwnd);
+            // How long a frame takes, on stderr (redirect it: the window has no console), to
+            // check that a change keeps the painting fast.
+            if ::std::env::var_os("DUSCAPE_PAINT_TIMES").is_some() {
+                eprintln!(
+                    "paint {:.2} ms, {} tiles, {} nested",
+                    started.elapsed().as_secs_f64() * 1000.0,
+                    window.viewer.board.tiles.len(),
+                    window.viewer.nested().len()
+                );
+            }
+        }
         WM_LBUTTONDOWN => window.on_click(hwnd, low_word(lparam), high_word(lparam), false),
         WM_LBUTTONDBLCLK => window.on_click(hwnd, low_word(lparam), high_word(lparam), true),
         WM_RBUTTONUP => window.on_context_menu(hwnd, low_word(lparam), high_word(lparam)),
@@ -880,6 +894,8 @@ pub fn run_with(folder: Option<PathBuf>, options: ScanOptions, no_elevate: bool)
     // expander (`paint::draw_list`); the treemap nested, tiles inside the folder tiles
     // (`paint::draw_nested`).
     viewer.set_tree_view(true);
+    // The treemap in the screen's pixels: every entry big enough to see gets a tile.
+    viewer.set_pixel_scale(scale);
     let window = Box::new(Window {
         hwnd: 0,
         viewer,

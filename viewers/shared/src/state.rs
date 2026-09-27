@@ -21,7 +21,9 @@ use ::std::time::{Duration, Instant};
 use duscape_scan::rescan::{Outcome, Rescanner, Rescans};
 use libduscape::format::copied_path;
 use libduscape::model::SizeKind;
-use libduscape::tiles::{Area, Board, Expansion, FileMetadata, FileType, NestedTile, Nesting, Row};
+use libduscape::tiles::{
+    Area, Board, Expansion, FileMetadata, FileType, Grid, NestedTile, Nesting, Row, Tile,
+};
 use libduscape::{
     DirSummary, DisplayCount, DisplaySize, FileOrFolder, FileToDelete, FileTree, Folder,
 };
@@ -31,6 +33,17 @@ use libduscape::{
 /// tiles, and its 8×3-cell minimum tile becomes about 19×18 points.
 pub const CELL_W: f64 = 2.4;
 pub const CELL_H: f64 = 6.0;
+/// Told the screen's pixels per point ([`Viewer::set_pixel_scale`]), the treemap is laid out in
+/// square cells of one pixel instead, and an entry gets a tile of its own once it would be
+/// this many pixels either way: a frame with colour inside. So the nesting goes on down to
+/// whatever the screen can show, however big the window or fine its pixels.
+pub const MIN_TILE_PIXELS: u16 = 4;
+/// Most cells the treemap has either way; past that a cell is more than a pixel.
+const MAX_CELLS: f64 = 4096.0;
+/// The band at the top of a folder's tile for its label, and the margin its entries are kept
+/// in from its sides and bottom, in points.
+pub const TILE_LABEL: f64 = 18.0;
+pub const TILE_MARGIN: f64 = 2.0;
 /// The breadcrumb bar across the top, and the status bar across the bottom.
 pub const PATH_BAR: f64 = 30.0;
 pub const STATUS_BAR: f64 = 24.0;
@@ -102,6 +115,19 @@ impl Layout {
     /// A layout that leaves the top `top` points to the viewer — a title bar it draws itself,
     /// where the windowing system draws none (Wayland without server-side decorations).
     pub fn with_top(width: f64, height: f64, sidebar: bool, top: f64) -> Self {
+        Self::with_cells(width, height, sidebar, top, None)
+    }
+
+    /// A layout whose treemap is in square cells of one pixel at `pixel_scale` pixels per
+    /// point (fewer, if the treemap would be more than `MAX_CELLS` of them), or in the
+    /// terminal-shaped `CELL_W`×`CELL_H` cells without one.
+    pub fn with_cells(
+        width: f64,
+        height: f64,
+        sidebar: bool,
+        top: f64,
+        pixel_scale: Option<f64>,
+    ) -> Self {
         let width = width.max(0.0);
         let height = height.max(0.0);
         let top = top.clamp(0.0, height);
@@ -126,7 +152,16 @@ impl Layout {
         } else {
             (None, None, body)
         };
-        let cells = |points: f64, cell: f64| (points / cell).floor().clamp(1.0, 4096.0) as u16;
+        let cells = |points: f64, cell: f64| (points / cell).floor().clamp(1.0, MAX_CELLS) as u16;
+        let (cell_w, cell_h) = match pixel_scale {
+            Some(scale) => {
+                let cell = (1.0 / scale)
+                    .max(treemap.w / MAX_CELLS)
+                    .max(treemap.h / MAX_CELLS);
+                (cell, cell)
+            }
+            None => (CELL_W, CELL_H),
+        };
         Layout {
             bounds: Rect::new(0.0, 0.0, width, height),
             path_bar: Rect::new(0.0, top, width, PATH_BAR),
@@ -134,8 +169,8 @@ impl Layout {
             info,
             treemap,
             status: Rect::new(0.0, (height - STATUS_BAR).max(0.0), width, STATUS_BAR),
-            cols: cells(treemap.w, CELL_W),
-            rows: cells(treemap.h, CELL_H),
+            cols: cells(treemap.w, cell_w),
+            rows: cells(treemap.h, cell_h),
         }
     }
 
@@ -252,6 +287,10 @@ pub struct Viewer {
     pub sidebar: bool,
     /// Points at the top left to the viewer for a title bar of its own; see [`Layout::with_top`].
     pub top_inset: f64,
+    /// Pixels per point, when the viewer has said: the treemap is then in pixel cells.
+    pixel_scale: Option<f64>,
+    /// How the folder tiles hold their entries, in the board's cells.
+    nesting: Nesting,
     pub focus: Focus,
     /// The entry in hand, by name, so that it stays in hand when the tiles are laid out again —
     /// a resize, a zoom, or new sizes arriving during a scan. Both panels show it.
@@ -326,6 +365,8 @@ impl Viewer {
             layout: Layout::default(),
             sidebar: true,
             top_inset: 0.0,
+            pixel_scale: None,
+            nesting: Nesting::default(),
             focus: Focus::List,
             selected: None,
             chosen: false,
@@ -401,8 +442,47 @@ impl Viewer {
 
     // ---------------------------------------------------------------- layout
 
+    /// Lay the treemap out in the screen's pixels, `scale` of them to a point: every entry
+    /// that would be `MIN_TILE_PIXELS` either way gets a tile, and the nesting goes as deep
+    /// as those reach, with the label band and margins kept at their size in points.
+    pub fn set_pixel_scale(&mut self, scale: f64) {
+        let scale = if scale.is_finite() && scale > 0.0 {
+            scale
+        } else {
+            1.0
+        };
+        if self.pixel_scale == Some(scale) {
+            return;
+        }
+        self.pixel_scale = Some(scale);
+        let grid = Grid::pixels(MIN_TILE_PIXELS);
+        self.board.set_grid(grid);
+        self.nesting = Nesting {
+            label_rows: (TILE_LABEL * scale).ceil() as u16,
+            margin: ((TILE_MARGIN * scale).round() as u16).max(1),
+            grid,
+            ..Nesting::default()
+        };
+        let bounds = self.layout.bounds;
+        self.resize(bounds.w, bounds.h);
+    }
+
+    /// Whether a tile may be labelled: a file always, where its label fits; a folder when it
+    /// has its label band above its entries — a shorter one's entries are nested right under
+    /// its margin, over where the label would be.
+    #[must_use]
+    pub fn labelled(&self, tile: &Tile) -> bool {
+        !self.tree_view || tile.file_type != FileType::Folder || self.nesting.labelled(tile)
+    }
+
     pub fn resize(&mut self, width: f64, height: f64) {
-        self.layout = Layout::with_top(width, height, self.sidebar, self.top_inset);
+        self.layout = Layout::with_cells(
+            width,
+            height,
+            self.sidebar,
+            self.top_inset,
+            self.pixel_scale,
+        );
         self.board.change_area(&Area {
             x: 0,
             y: 0,
@@ -439,7 +519,7 @@ impl Viewer {
                 self.tree.get_current_folder(),
                 &self.board.tiles,
                 self.tree.shown,
-                &Nesting::default(),
+                &self.nesting,
             )
         } else {
             Vec::new()
@@ -454,11 +534,19 @@ impl Viewer {
         &self.nested
     }
 
+    /// The names from the folder shown down to the nested tile at `index`.
+    #[must_use]
+    pub fn nested_path(&self, index: usize) -> Vec<OsString> {
+        libduscape::tiles::nested_path(&self.nested, &self.board.tiles, index)
+    }
+
     /// The nested tile of the row in hand, if it has one.
     #[must_use]
     pub fn cursor_nested(&self) -> Option<usize> {
         let cursor = self.cursor.as_ref()?;
-        self.nested.iter().position(|tile| &tile.path == cursor)
+        let tiles = &self.board.tiles;
+        (0..self.nested.len())
+            .find(|&index| libduscape::tiles::nested_path_is(&self.nested, tiles, index, cursor))
     }
 
     /// The deepest nested tile under a cell.
@@ -988,7 +1076,7 @@ impl Viewer {
             Hit::Tile(name) => (Focus::Treemap, vec![name]),
             // A tile inside a folder's: a target like the others — the marks are its top-level
             // folder's — and the folders above it open in the tree so its row is in hand.
-            Hit::Nested(index) => (Focus::Treemap, self.nested[index].path.clone()),
+            Hit::Nested(index) => (Focus::Treemap, self.nested_path(index)),
             Hit::SmallFiles | Hit::Nothing => return None,
         };
         let name = path[0].clone();
@@ -1036,7 +1124,7 @@ impl Viewer {
         let path = match self.hit(x, y) {
             Hit::Row(index) | Hit::Expander(index) => self.rows[index].path.clone(),
             Hit::Tile(name) => vec![name],
-            Hit::Nested(index) => self.nested[index].path.clone(),
+            Hit::Nested(index) => self.nested_path(index),
             Hit::SmallFiles | Hit::Nothing => return false,
         };
         if !self.is_marked(&path[0]) {

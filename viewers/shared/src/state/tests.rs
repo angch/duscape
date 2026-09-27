@@ -852,12 +852,13 @@ fn a_tile_inside_a_folders_tile_is_pointed_at_and_reveals_its_row() {
     let mut viewer = tree_viewer();
     viewer.set_tree_view(true);
     assert!(!viewer.nested().is_empty(), "big's tile holds a and b");
-    let a = viewer
+    let at = viewer
         .nested()
         .iter()
-        .find(|t| t.tile.name == "a")
+        .position(|t| t.tile.name == "a")
         .expect("a's tile");
-    assert_eq!(a.path, ["big", "a"]);
+    assert_eq!(viewer.nested_path(at), ["big", "a"]);
+    let a = &viewer.nested()[at];
     let rect = viewer
         .layout
         .cells_to_rect(a.tile.x, a.tile.y, a.tile.width, a.tile.height);
@@ -866,7 +867,7 @@ fn a_tile_inside_a_folders_tile_is_pointed_at_and_reveals_its_row() {
         Hit::Nested(index) => index,
         other => panic!("expected a nested tile, got {other:?}"),
     };
-    assert_eq!(viewer.nested()[index].path, ["big", "a"]);
+    assert_eq!(viewer.nested_path(index), ["big", "a"]);
     assert!(viewer.hover_at(x, y));
     let (left, _) = viewer.status();
     assert!(left.starts_with("a — 600"), "{left}");
@@ -1039,4 +1040,85 @@ fn copying_a_nested_row_copies_its_own_path() {
         last_copied(&copied).as_deref(),
         Some(quoted(&Path::new("big").join("inside").to_string_lossy()).as_str())
     );
+}
+
+/// Told the screen's pixels, the treemap is laid out in them: entries far too small for the
+/// terminal-shaped cells get tiles of their own, a folder too short for its label still holds
+/// its entries, and a tile a few pixels wide is pointed at like any other.
+#[test]
+fn in_pixel_cells_the_nesting_goes_down_to_what_the_screen_can_show() {
+    let root = Path::new(ROOT);
+    let tree = || {
+        let mut tree = FileTree::new(Folder::new(root), root.to_path_buf());
+        tree.add_entry(meta(0, true), &root.join("big"));
+        tree.add_entry(meta(400_000, false), &root.join("big/huge"));
+        tree.add_entry(meta(0, true), &root.join("big/many"));
+        for index in 0..2000 {
+            tree.add_entry(meta(1_000, false), &root.join(format!("big/many/f{index}")));
+        }
+        tree
+    };
+    let nested_files = |viewer: &Viewer| {
+        viewer
+            .nested()
+            .iter()
+            .filter(|t| t.tile.name.to_string_lossy().starts_with('f'))
+            .count()
+    };
+    let mut cells = Viewer::new(root, SizeKind::Disk, 1);
+    cells.set_tree_view(true);
+    cells.resize(1200.0, 800.0);
+    cells.finish_scan(tree());
+    let mut pixels = Viewer::new(root, SizeKind::Disk, 1);
+    pixels.set_tree_view(true);
+    pixels.set_pixel_scale(2.0);
+    pixels.resize(1200.0, 800.0);
+    pixels.finish_scan(tree());
+
+    let treemap = pixels.layout.treemap;
+    assert_eq!(f64::from(pixels.layout.cols), (treemap.w * 2.0).floor());
+    assert_eq!(f64::from(pixels.layout.rows), (treemap.h * 2.0).floor());
+    let (few, many) = (nested_files(&cells), nested_files(&pixels));
+    assert!(
+        many > few.max(100),
+        "{few} tiles in cells, {many} in pixels"
+    );
+    for t in pixels.nested() {
+        assert!(
+            t.tile.width >= MIN_TILE_PIXELS && t.tile.height >= MIN_TILE_PIXELS,
+            "{t:?}"
+        );
+    }
+
+    // The smallest tile, a few pixels across, is still what a click there hits.
+    let smallest = (0..pixels.nested().len())
+        .min_by_key(|&index| {
+            let t = &pixels.nested()[index].tile;
+            u32::from(t.width) * u32::from(t.height)
+        })
+        .expect("nested tiles");
+    let t = &pixels.nested()[smallest].tile;
+    let rect = pixels.layout.cells_to_rect(t.x, t.y, t.width, t.height);
+    // Smaller than the least tile the terminal-shaped cells have, 8×3 of them.
+    assert!(rect.w < 8.0 * CELL_W || rect.h < 3.0 * CELL_H, "{rect:?}");
+    assert_eq!(
+        pixels.hit(rect.x + rect.w / 2.0, rect.y + rect.h / 2.0),
+        Hit::Nested(smallest)
+    );
+    assert_eq!(pixels.nested_path(smallest)[..2], ["big", "many"]);
+
+    // Only a folder gives up its label for its entries: a file of the same height keeps it.
+    let short = |file_type| Tile {
+        x: 0,
+        y: 0,
+        width: 200,
+        height: 30,
+        name: "short".into(),
+        size: 1,
+        descendants: None,
+        percentage: 0.1,
+        file_type,
+    };
+    assert!(!pixels.labelled(&short(FileType::Folder)));
+    assert!(pixels.labelled(&short(FileType::File)));
 }

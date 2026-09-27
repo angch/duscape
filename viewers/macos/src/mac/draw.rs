@@ -42,8 +42,8 @@ fn darker((r, g, b): (f64, f64, f64), shade: f64) -> (f64, f64, f64) {
 
 const MARK: (f64, f64, f64) = (1.0, 0.84, 0.04);
 /// A tile's label line: the band `libduscape::tiles::nest` leaves at the top of a folder's
-/// tile, three cells of `state::CELL_H`.
-const TILE_LINE: f64 = 18.0;
+/// tile.
+const TILE_LINE: f64 = duscape_viewer::state::TILE_LABEL;
 /// The monospace size a hex dump starts from, and the least it is shrunk to so a line fits.
 const MONO_SIZE: f64 = 10.5;
 const MONO_MIN: f64 = 5.0;
@@ -259,7 +259,8 @@ fn treemap(viewer: &Viewer, pens: &Pens) {
             // In a flipped view, 90° runs top to bottom: lit from above.
             gradient.drawInRect_angle(ns_rect(rect), 90.0);
         }
-        if rect.w >= 36.0 && rect.h >= 15.0 {
+        // A folder too short for its label band has its entries right under its margin.
+        if rect.w >= 36.0 && rect.h >= 15.0 && viewer.labelled(tile) {
             tile_label(pens, rect, 4.0, tile, &pens.tile_name);
         }
     }
@@ -337,7 +338,7 @@ fn nested(viewer: &Viewer, pens: &Pens) {
             &srgb(darker(tile_color(&t.name, t.file_type, index), shade), 1.0),
         );
         stroke(rect, &edge, 1.0);
-        if rect.w > 30.0 && rect.h >= 15.0 {
+        if rect.w > 30.0 && rect.h >= 15.0 && viewer.labelled(t) {
             tile_label(pens, rect, 3.0, t, &pens.nested_name);
         }
         if viewer.hover_nested == Some(index) {

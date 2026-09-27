@@ -35,12 +35,32 @@ fn calculate_percentage(size: u128, total_size: u128, total_files_in_parent: usi
 /// thousands of entries, relaid out on every batch of a scan.
 #[must_use]
 pub fn largest_in_folder(folder: &Folder, kind: SizeKind, limit: usize) -> Vec<FileMetadata> {
+    largest_in_folder_from(folder, kind, limit, 0.0)
+}
+
+/// [`largest_in_folder`], less the entries whose share of the folder is under `least_share`:
+/// for a layout where those can never get a tile, so that the dust of a folder of tens of
+/// thousands of small files is not named and ranked on every relayout.
+#[must_use]
+pub fn largest_in_folder_from(
+    folder: &Folder,
+    kind: SizeKind,
+    limit: usize,
+    least_share: f64,
+) -> Vec<FileMetadata> {
     let entries_total: u128 = folder.contents.values().map(|entry| entry.size(kind)).sum();
     let total_size = folder.sizes.get(kind).max(entries_total);
+    // An empty folder's entries all share it equally, so none is dropped.
+    let least = if total_size == 0 {
+        0
+    } else {
+        (least_share * total_size as f64) as u128
+    };
     let mut ranked: Vec<(u128, &OsStr, &FileOrFolder)> = folder
         .contents
         .iter()
         .map(|(name, entry)| (entry.size(kind), name, entry))
+        .filter(|&(size, _, _)| size >= least)
         .collect();
     // Largest first, ties by name: the order `files_in_folder` sorts into.
     let by_rank = |a: &(u128, &OsStr, &FileOrFolder), b: &(u128, &OsStr, &FileOrFolder)| {

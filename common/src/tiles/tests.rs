@@ -1,7 +1,7 @@
 use ::std::path::Path;
 
 use crate::model::Folder;
-use crate::tiles::{Area, Board, FileType, files_in_folder};
+use crate::tiles::{Area, Board, FileType, Grid, files_in_folder};
 
 #[test]
 fn board_produces_tiles_for_folder() {
@@ -185,4 +185,36 @@ fn tile_at_finds_the_one_tile_under_each_cell() {
     }
     assert_eq!(board.tile_at(0, 0), None, "the title row is not the board");
     assert_eq!(board.tile_at(200, 200), None, "off the board");
+}
+
+/// In a window's pixels an entry gets a tile once it is a few pixels either way, where a
+/// terminal's 8×3-cell minimum sends it to the "small files" corner.
+#[test]
+fn a_pixel_grid_gives_small_entries_tiles_of_their_own() {
+    let mut root = Folder::new(Path::new("/tmp/example"));
+    // 120 files in 60×40 cells: 20 cells each, under the terminal's 8×3 and over 4×4.
+    for index in 0..120 {
+        root.add_file(std::path::PathBuf::from(format!("small{index}")), 100);
+    }
+    let area = Area {
+        x: 0,
+        y: 0,
+        width: 60,
+        height: 40,
+    };
+    let mut board = Board::new(&root);
+    board.change_area(&area);
+    board.change_files(&root);
+    assert!(board.tiles.is_empty(), "none fits the terminal's cells");
+    assert!(board.unrenderable_tile_coordinates.is_some());
+
+    board.set_grid(Grid::pixels(4));
+    // All but the last strip's, which the squarify leaves thinner.
+    assert!(board.tiles.len() >= 100, "{} tiles", board.tiles.len());
+    for tile in &board.tiles {
+        assert!(tile.width >= 4 && tile.height >= 4, "{tile:?}");
+        // Square cells: no tile is drawn out 2.5 times too wide.
+        let ratio = f64::from(tile.width.max(tile.height)) / f64::from(tile.width.min(tile.height));
+        assert!(ratio < 2.0, "{tile:?}");
+    }
 }

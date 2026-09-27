@@ -1,7 +1,7 @@
 use crate::model::{Folder, SizeKind};
 use crate::tiles::Area;
 use crate::tiles::files_in_folder::FileType;
-use crate::tiles::{FileMetadata, Tile, TreeMap, files_in_folder};
+use crate::tiles::{FileMetadata, Grid, Tile, TreeMap, files_in_folder};
 
 pub struct Board {
     pub tiles: Vec<Tile>,
@@ -15,6 +15,8 @@ pub struct Board {
     listing: Vec<FileMetadata>,
     /// Which size the tiles are drawn by; see [`Self::show`].
     kind: SizeKind,
+    /// The cells the area is in; see [`Self::set_grid`].
+    grid: Grid,
 }
 
 impl Board {
@@ -29,7 +31,19 @@ impl Board {
             previous_indices_and_zoom_level: vec![],
             zoom_level: 0,
             area: Area::default(),
+            grid: Grid::TERMINAL,
         }
+    }
+    /// Lay the tiles out in `grid`'s cells: a terminal's (the default), or a window's pixels.
+    pub fn set_grid(&mut self, grid: Grid) {
+        if self.grid != grid {
+            self.grid = grid;
+            self.fill();
+        }
+    }
+    #[must_use]
+    pub fn grid(&self) -> Grid {
+        self.grid
     }
     /// Draw tiles by the size of `kind` from the next [`Self::change_files`] on.
     pub fn show(&mut self, kind: SizeKind) {
@@ -63,7 +77,7 @@ impl Board {
         }
     }
     fn fill(&mut self) {
-        let mut tree_map = TreeMap::new(&self.area);
+        let mut tree_map = TreeMap::with_grid(&self.area, self.grid);
         tree_map.populate_tiles(self.files.iter().collect());
         self.tiles = tree_map.tiles;
         self.unrenderable_tile_coordinates = tree_map.unrenderable_tile_coordinates;

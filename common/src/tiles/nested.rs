@@ -6,15 +6,17 @@
 
 use ::std::ffi::OsString;
 
-use super::treemap::{MINIMUM_HEIGHT, MINIMUM_WIDTH};
-use super::{Area, FileType, Tile, TreeMap, largest_in_folder};
+use super::{Area, FileType, Grid, Tile, TreeMap, largest_in_folder_from};
 use crate::model::{FileOrFolder, Folder, SizeKind};
 
 /// A tile inside a folder's tile.
 #[derive(Debug, Clone)]
 pub struct NestedTile {
-    /// From the listed folder down to this entry.
-    pub path: Vec<OsString>,
+    /// The nested tile of the folder it is in, by its index in the nesting; `None` for a
+    /// top-level folder's own entries. [`nested_path`] follows these up.
+    pub parent: Option<usize>,
+    /// The board's tile it is inside, by its index in the tiles the nesting was made from.
+    pub top: usize,
     /// Levels inside the top-level tile: 1 for a top-level folder's own entries.
     pub depth: usize,
     /// Its place and what it is, in the board's cells.
@@ -22,10 +24,15 @@ pub struct NestedTile {
 }
 
 /// How far in the nesting goes. What stops it is room: a folder's entries are laid out inside
-/// its tile only while the inside is big enough for two of the squarify's minimum tiles either
-/// way, so the nesting reaches the files wherever there is room to show them, and the tiles
-/// there number at most what the treemap's area holds at the minimum size. The two caps
-/// are guards well beyond that, not the working limit.
+/// its tile only while the inside is big enough for two of the grid's minimum tiles either
+/// way, so the nesting reaches the files wherever there is room to show them — in a window's
+/// pixel grid, down to tiles a few pixels wide — and the tiles there number at most what the
+/// treemap's area holds at the minimum size. The two caps are guards beyond that, not the
+/// working limit.
+///
+/// A folder tile too short for its label and its entries under it still holds them, inside
+/// its margin alone: [`Nesting::labelled`] says which folders have the label rows, so that a
+/// painter labels only those.
 #[derive(Debug, Clone, Copy)]
 pub struct Nesting {
     /// Levels inside a top-level tile, at most.
@@ -36,6 +43,8 @@ pub struct Nesting {
     pub margin: u16,
     /// Tiles in all, at most.
     pub max_tiles: usize,
+    /// The cells, and the least tile: the board's.
+    pub grid: Grid,
 }
 
 impl Default for Nesting {
@@ -45,15 +54,41 @@ impl Default for Nesting {
             label_rows: 3,
             margin: 1,
             max_tiles: 100_000,
+            grid: Grid::TERMINAL,
         }
     }
 }
 
-/// The least a folder's inside must measure, in cells, for its entries to be laid out in it:
-/// two of the squarify's minimum tiles side by side, and two on top of each other. This is
-/// what ends the nesting.
-const NEST_MIN_WIDTH: u16 = 2 * MINIMUM_WIDTH;
-const NEST_MIN_HEIGHT: u16 = 2 * MINIMUM_HEIGHT;
+impl Nesting {
+    /// Whether a folder's tile has its label rows above its entries: room for them, the
+    /// margin and two minimum tiles under them. A shorter one's entries start under the margin.
+    #[must_use]
+    pub fn labelled(&self, tile: &Tile) -> bool {
+        self.has_label_rows(tile.height)
+    }
+
+    fn has_label_rows(&self, height: u16) -> bool {
+        height >= self.label_rows + self.margin + 2 * self.grid.min_height
+    }
+
+    /// Where a folder's entries go in its tile, if it has room for two of the least tile
+    /// either way — what ends the nesting.
+    fn inside(&self, tile: &Area) -> Option<Area> {
+        let width = tile.width.saturating_sub(2 * self.margin);
+        let top = if self.has_label_rows(tile.height) {
+            self.label_rows
+        } else {
+            self.margin
+        };
+        let height = tile.height.saturating_sub(top + self.margin);
+        (width >= 2 * self.grid.min_width && height >= 2 * self.grid.min_height).then(|| Area {
+            x: tile.x + self.margin,
+            y: tile.y + top,
+            width,
+            height,
+        })
+    }
+}
 
 /// The tiles inside `tiles` — the board's, for `folder` — down to `nesting`'s limits, parents
 /// before their children.
@@ -65,89 +100,140 @@ pub fn nest(folder: &Folder, tiles: &[Tile], kind: SizeKind, nesting: &Nesting) 
         .iter()
         .map(|tile| usize::from(tile.width) * usize::from(tile.height))
         .sum();
+    let least = usize::from(nesting.grid.min_width) * usize::from(nesting.grid.min_height);
     let nesting = Nesting {
-        max_tiles: nesting
-            .max_tiles
-            .min(area / (usize::from(MINIMUM_WIDTH) * usize::from(MINIMUM_HEIGHT)) + 1),
+        max_tiles: nesting.max_tiles.min(area / least.max(1) + 1),
         ..*nesting
     };
     let nesting = &nesting;
     let mut out = Vec::new();
-    for tile in tiles {
+    for (top, tile) in tiles.iter().enumerate() {
         if tile.file_type != FileType::Folder {
             continue;
         }
         if let Some(FileOrFolder::Folder(child)) = folder.contents.get(&tile.name) {
-            nest_into(
-                child,
-                tile,
-                vec![tile.name.clone()],
-                1,
-                kind,
-                nesting,
-                &mut out,
-            );
+            let place = Place {
+                cells: cells_of(tile),
+                parent: None,
+                top,
+                depth: 1,
+            };
+            nest_into(child, &place, kind, nesting, &mut out);
         }
     }
     out
 }
 
+/// The names from the listed folder down to the nested tile at `index`: the board's tile it is
+/// in (from `tiles`, what the nesting was made from), then each folder tile it is inside.
+#[must_use]
+pub fn nested_path(nested: &[NestedTile], tiles: &[Tile], index: usize) -> Vec<OsString> {
+    let mut path = Vec::with_capacity(nested[index].depth + 1);
+    let mut at = Some(index);
+    while let Some(index) = at {
+        path.push(nested[index].tile.name.clone());
+        at = nested[index].parent;
+    }
+    path.push(tiles[nested[index].top].name.clone());
+    path.reverse();
+    path
+}
+
+/// Whether the nested tile at `index` is at `path`, as [`nested_path`] gives it, without
+/// making the path.
+#[must_use]
+pub fn nested_path_is(
+    nested: &[NestedTile],
+    tiles: &[Tile],
+    index: usize,
+    path: &[OsString],
+) -> bool {
+    let tile = &nested[index];
+    if path.len() != tile.depth + 1 || tiles[tile.top].name != path[0] {
+        return false;
+    }
+    let mut at = Some(index);
+    for name in path[1..].iter().rev() {
+        let Some(index) = at else {
+            return false;
+        };
+        if nested[index].tile.name != *name {
+            return false;
+        }
+        at = nested[index].parent;
+    }
+    at.is_none()
+}
+
+fn cells_of(tile: &Tile) -> Area {
+    Area {
+        x: tile.x,
+        y: tile.y,
+        width: tile.width,
+        height: tile.height,
+    }
+}
+
+/// A folder tile whose entries are to be nested: its cells, its own nested tile (`None` for a
+/// board's tile), the board's tile it is in, and how deep its entries are.
+struct Place {
+    cells: Area,
+    parent: Option<usize>,
+    top: usize,
+    depth: usize,
+}
+
 fn nest_into(
     folder: &Folder,
-    tile: &Tile,
-    path: Vec<OsString>,
-    depth: usize,
+    place: &Place,
     kind: SizeKind,
     nesting: &Nesting,
     out: &mut Vec<NestedTile>,
 ) {
-    if depth > nesting.max_depth || out.len() >= nesting.max_tiles {
+    if place.depth > nesting.max_depth || out.len() >= nesting.max_tiles {
         return;
     }
-    let width = tile.width.saturating_sub(2 * nesting.margin);
-    let height = tile
-        .height
-        .saturating_sub(nesting.label_rows + nesting.margin);
-    if width < NEST_MIN_WIDTH || height < NEST_MIN_HEIGHT {
+    let Some(inside) = nesting.inside(&place.cells) else {
         return;
-    }
-    let inside = Area {
-        x: tile.x + nesting.margin,
-        y: tile.y + nesting.label_rows,
-        width,
-        height,
     };
     // Only as many entries as the inside has room for at the minimum tile size, plus one so
     // the squarify still sees what follows: a folder of fifty thousand entries is not listed
     // and sorted whole for the dozen that get a tile.
-    let room = (usize::from(width) / usize::from(MINIMUM_WIDTH) + 1)
-        * (usize::from(height) / usize::from(MINIMUM_HEIGHT) + 1)
+    let grid = nesting.grid;
+    let room = (usize::from(inside.width) / usize::from(grid.min_width) + 1)
+        * (usize::from(inside.height) / usize::from(grid.min_height) + 1)
         + 1;
-    let files = largest_in_folder(folder, kind, room);
-    let mut map = TreeMap::new(&inside);
+    // A tile is its entry's share of the inside, and rounding adds less than a cell to either
+    // side, so an entry under (least − 1)² cells can never get one: it is left out.
+    let least_cells =
+        f64::from(grid.min_width.saturating_sub(1)) * f64::from(grid.min_height.saturating_sub(1));
+    let inside_cells = f64::from(inside.width) * f64::from(inside.height);
+    let files = largest_in_folder_from(folder, kind, room, least_cells / inside_cells);
+    let mut map = TreeMap::with_grid(&inside, grid);
     map.populate_tiles(files.iter().collect());
-    let first = out.len();
+    // The folders among them, gone into once all of this level is in `out`: parents first.
+    let mut folders = Vec::new();
     for child in map.tiles {
-        let mut child_path = path.clone();
-        child_path.push(child.name.clone());
+        if child.file_type == FileType::Folder
+            && let Some(FileOrFolder::Folder(entries)) = folder.contents.get(&child.name)
+        {
+            let inner = Place {
+                cells: cells_of(&child),
+                parent: Some(out.len()),
+                top: place.top,
+                depth: place.depth + 1,
+            };
+            folders.push((entries, inner));
+        }
         out.push(NestedTile {
-            path: child_path,
-            depth,
+            parent: place.parent,
+            top: place.top,
+            depth: place.depth,
             tile: child,
         });
     }
-    let last = out.len();
-    for index in first..last {
-        if out[index].tile.file_type != FileType::Folder {
-            continue;
-        }
-        let name = out[index].tile.name.clone();
-        let Some(FileOrFolder::Folder(child)) = folder.contents.get(&name) else {
-            continue;
-        };
-        let tile = out[index].tile.clone();
-        let path = out[index].path.clone();
-        nest_into(child, &tile, path, depth + 1, kind, nesting, out);
+    for (entries, inner) in &folders {
+        nest_into(entries, inner, kind, nesting, out);
     }
 }
 
@@ -155,7 +241,7 @@ fn nest_into(
 mod tests {
     use ::std::path::Path;
 
-    use super::{Nesting, nest};
+    use super::{Nesting, nest, nested_path, nested_path_is};
     use crate::model::SizeKind;
     use crate::scan::EntryMeta;
     use crate::tiles::{Area, Board};
@@ -242,8 +328,14 @@ mod tests {
                 t.tile
             );
         }
-        let c = nested.iter().find(|t| t.tile.name == "c").unwrap();
-        assert_eq!(c.path, ["big", "sub", "c"]);
+        let c = nested.iter().position(|t| t.tile.name == "c").unwrap();
+        let path = nested_path(&nested, &board.tiles, c);
+        assert_eq!(path, ["big", "sub", "c"]);
+        assert!(nested_path_is(&nested, &board.tiles, c, &path));
+        assert!(!nested_path_is(&nested, &board.tiles, c, &path[..2]));
+        let sub = nested.iter().position(|t| t.tile.name == "sub").unwrap();
+        assert_eq!(nested_path(&nested, &board.tiles, sub), ["big", "sub"]);
+        assert!(!nested_path_is(&nested, &board.tiles, sub, &path));
         // Parents come before their children, for painting.
         let sub_at = nested.iter().position(|t| t.tile.name == "sub").unwrap();
         let c_at = nested.iter().position(|t| t.tile.name == "c").unwrap();
@@ -318,5 +410,59 @@ mod tests {
             )
             .is_empty()
         );
+    }
+
+    #[test]
+    fn a_folder_too_short_for_its_label_holds_its_entries_under_its_margin() {
+        use crate::tiles::{Grid, Tile};
+        let tree = tree();
+        let pixels = Nesting {
+            label_rows: 18,
+            margin: 2,
+            grid: Grid::pixels(4),
+            ..Nesting::default()
+        };
+        let folder = tree.get_current_folder();
+        let big = |height: u16| Tile {
+            x: 0,
+            y: 0,
+            width: 200,
+            height,
+            name: "big".into(),
+            size: 1150,
+            descendants: Some(4),
+            percentage: 1.0,
+            file_type: crate::tiles::FileType::Folder,
+        };
+        // Tall enough for the label band: the entries start under it.
+        let tall = [big(120)];
+        assert!(pixels.labelled(&tall[0]));
+        let nested = nest(folder, &tall, SizeKind::Disk, &pixels);
+        assert!(!nested.is_empty());
+        let top = nested
+            .iter()
+            .filter(|t| t.depth == 1)
+            .map(|t| t.tile.y)
+            .min();
+        assert_eq!(top, Some(18));
+        // Too short for it: no label, the entries right under the margin.
+        let short = [big(20)];
+        assert!(!pixels.labelled(&short[0]));
+        let nested = nest(folder, &short, SizeKind::Disk, &pixels);
+        assert!(
+            !nested.is_empty(),
+            "a short folder still shows what is in it"
+        );
+        let top = nested
+            .iter()
+            .filter(|t| t.depth == 1)
+            .map(|t| t.tile.y)
+            .min();
+        assert_eq!(top, Some(2));
+        for t in &nested {
+            assert!(t.tile.y + t.tile.height <= 20 - 2, "{:?}", t.tile);
+        }
+        // Too short for two of the least tile: nothing inside.
+        assert!(nest(folder, &[big(11)], SizeKind::Disk, &pixels).is_empty());
     }
 }

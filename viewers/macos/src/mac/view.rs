@@ -24,7 +24,7 @@ use objc2_app_kit::{
     NSControlStateValueOff, NSControlStateValueOn, NSDragOperation, NSDraggingDestination,
     NSDraggingInfo, NSEvent, NSEventModifierFlags, NSImage, NSMenu, NSMenuItem, NSModalResponseOK,
     NSOpenPanel, NSPasteboard, NSPasteboardTypeFileURL, NSPasteboardTypeString, NSResponder,
-    NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindowDelegate, NSWorkspace,
+    NSScreen, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindowDelegate, NSWorkspace,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSData, NSDictionary, NSFileManager, NSInteger, NSPoint, NSRect,
@@ -102,7 +102,11 @@ define_class!(
         fn set_frame_size(&self, size: NSSize) {
             // SAFETY: the superclass's method, with the argument it declares.
             let _: () = unsafe { msg_send![super(self), setFrameSize: size] };
-            self.with(|viewer| viewer.resize(size.width, size.height));
+            let scale = self.backing_scale();
+            self.with(|viewer| {
+                viewer.set_pixel_scale(scale);
+                viewer.resize(size.width, size.height);
+            });
         }
 
         #[unsafe(method(drawRect:))]
@@ -568,6 +572,17 @@ impl DiskView {
     }
 
     /// Run `change` on the viewer, if there is one and it is free.
+    /// The window's pixels per point: 2 on a Retina screen. Before the view is in a window,
+    /// the main screen's.
+    fn backing_scale(&self) -> f64 {
+        match self.window() {
+            Some(window) => window.backingScaleFactor(),
+            None => {
+                NSScreen::mainScreen(self.mtm()).map_or(1.0, |screen| screen.backingScaleFactor())
+            }
+        }
+    }
+
     fn with<R>(&self, change: impl FnOnce(&mut Viewer) -> R) -> Option<R> {
         let mut viewer = self.ivars().viewer.try_borrow_mut().ok()?;
         viewer.as_deref_mut().map(change)
@@ -707,6 +722,8 @@ impl DiskView {
         let mut viewer = Viewer::new(&root, kind, scan_id);
         viewer.sidebar = sidebar;
         viewer.set_tree_view(true);
+        // The treemap in the screen's pixels: every entry big enough to see gets a tile.
+        viewer.set_pixel_scale(self.backing_scale());
         viewer.enable_rescans(Rescanner::new(
             options,
             Arc::clone(&running),

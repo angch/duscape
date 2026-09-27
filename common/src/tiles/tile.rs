@@ -1,6 +1,6 @@
 use ::std::ffi::OsString;
 
-use crate::tiles::{FileMetadata, FileType, RectFloat};
+use crate::tiles::{Area, FileMetadata, FileType, RectFloat};
 
 #[derive(Clone, Debug)]
 pub struct Tile {
@@ -17,7 +17,10 @@ pub struct Tile {
 
 impl Tile {
     pub fn new(rect: &RectFloat, file_metadata: &FileMetadata) -> Self {
-        let rounded = rect.round();
+        Self::at(&rect.round(), file_metadata)
+    }
+    /// `file_metadata`'s tile over cells already rounded.
+    pub fn at(rounded: &Area, file_metadata: &FileMetadata) -> Self {
         Tile {
             x: rounded.x,
             y: rounded.y,
