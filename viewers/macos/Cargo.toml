@@ -18,7 +18,7 @@ path = "src/main.rs"
 [dependencies]
 libduscape = { workspace = true }
 duscape-scan = { workspace = true }
-duscape-viewer = { path = "../shared", version = "0.2.0" }
+duscape-viewer = { path = "../shared", version = "0.2.1" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

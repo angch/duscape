@@ -409,7 +409,7 @@ dependencies = [
 
 [[package]]
 name = "duscape"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "clap",
  "dua-core",
@@ -432,7 +432,7 @@ dependencies = [
 
 [[package]]
 name = "duscape-linux"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "duscape-scan",
  "duscape-viewer",
@@ -448,7 +448,7 @@ dependencies = [
 
 [[package]]
 name = "duscape-mac"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "dispatch2",
  "duscape-scan",
@@ -462,7 +462,7 @@ dependencies = [
 
 [[package]]
 name = "duscape-scan"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "dua-core",
  "libc",
@@ -472,7 +472,7 @@ dependencies = [
 
 [[package]]
 name = "duscape-viewer"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "duscape-scan",
  "libduscape",
@@ -480,7 +480,7 @@ dependencies = [
 
 [[package]]
 name = "duscape-windows"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "clap",
  "duscape-scan",
@@ -708,7 +708,7 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
 name = "libduscape"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "image",
  "libc",

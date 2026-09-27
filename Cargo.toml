@@ -33,14 +33,14 @@ homepage = "https://github.com/angch/duscape"
 description = "Performance-focused, multi-platform fork of the diskonaut disk-usage navigator"
 repository = "https://github.com/angch/duscape"
 # Own 0.x line: this fork diverged from upstream diskonaut 0.13.0 and versions independently.
-version = "0.2.0"
+version = "0.2.1"
 
 [workspace.dependencies]
 clap = { version = "4", features = ["derive"] }
 dua-core = "4"
 libc = "0.2"
-libduscape = { path = "common", version = "0.2.0" }
-duscape-scan = { path = "scanners", version = "0.2.0" }
+libduscape = { path = "common", version = "0.2.1" }
+duscape-scan = { path = "scanners", version = "0.2.1" }
 windows-sys = "0.59"
 rustix = { version = "1", default-features = false, features = ["std", "process", "fs"] }
 serde = { version = "1", features = ["derive"] }

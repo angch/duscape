@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-27
+
 ### Changed
 
 - `-x` on btrfs keeps to the filesystem and all its subvolumes, instead of stopping at every

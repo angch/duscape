@@ -5,7 +5,7 @@
 **Duscape** is an interactive terminal disk space navigator (TUI) written in Rust. It visualizes
 disk usage via a squarify treemap, supports live scanning, and allows deleting large files in-place.
 
-**Workspace layout** (Rust 2024 edition, version 0.2.0; duscape, a fork of diskonaut renamed after
+**Workspace layout** (Rust 2024 edition, version 0.2.1; duscape, a fork of diskonaut renamed after
 0.2.0 so as not to clash with upstream's command — see README):
 ```
 duscape/
