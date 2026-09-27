@@ -1,5 +1,6 @@
 pub mod area;
 pub mod board;
+pub mod dust;
 
 pub mod files_in_folder;
 pub mod nested;
@@ -12,6 +13,7 @@ pub mod treemap;
 
 pub use area::*;
 pub use board::*;
+pub use dust::*;
 pub use files_in_folder::*;
 pub use nested::*;
 pub use rect_float::*;

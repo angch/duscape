@@ -46,9 +46,10 @@ fn layout_speed() {
             best = best.min(start.elapsed().as_secs_f64());
         }
         eprintln!(
-            "{width}x{height} pt at {scale}x: {} tiles, {} nested, deepest {}, best {:.2} ms",
+            "{width}x{height} pt at {scale}x: {} tiles, {} nested, {} in the corner, deepest {}, best {:.2} ms",
             viewer.board.tiles.len(),
             viewer.nested().len(),
+            viewer.dust().len(),
             viewer.nested().iter().map(|t| t.depth).max().unwrap_or(0),
             best * 1000.0
         );

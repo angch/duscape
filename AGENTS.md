@@ -116,7 +116,14 @@ Six kinds of thread communicate via `mpsc` channels (bounded, except the preview
   `Grid::pixels(min)` (square pixel cells, what the desktop viewers use). A loop over the
   children, linear in them — `largest_after` answers "is any child left big enough" — since a
   window's pixel grid gives tens of thousands; its layouts are the recursive version's exactly
-- `tiles/board.rs` — `Board`: tile selection, zoom stack, navigation
+- `tiles/board.rs` — `Board`: tile selection, zoom stack, navigation; `hidden`, the entries in
+  the "small files" corner (the treemap records them as it lays out, `TreeMap::hidden`)
+- `tiles/dust.rs` — `scatter`: the "small files" corner filled in — its entries laid out again
+  inside it in one-pixel cells with no least tile, as many as it has pixels, largest first and
+  in proportion to each other, so a flat folder of 87k small files shows as specks, not a grey
+  box. The motes have no names and are no targets; `Viewer::dust` colours them (per extension,
+  cached) and every desktop painter fills them in one pass. With no least tile a row's worst
+  ratio is read from its two ends, since the children come largest first
 - `tiles/nested.rs` — `nest`: the treemap nested — the same squarify run inside each folder
   tile (under its label rows, within a margin) on the folder's entries, and theirs in turn,
   down to the files wherever there is room: what ends it is an inside too small for two
@@ -651,8 +658,9 @@ measured and none helped — read the 2026-09-24 section before trying them agai
   with `DUSCAPE_LAYOUT_PATH='E:\' cargo test --release -p duscape-viewer --test layout_speed --
   --ignored --nocapture` (the board and nesting at three window sizes; 2026-09-27 on E:\,
   240k entries: 11k nested tiles laid out in 5 ms at 2560×1400 pt, 1.5x; `C:\Windows`: 26k in
-  24 ms) and, on Windows, `DUSCAPE_PAINT_TIMES` (4k tiles painted in 13–17 ms, what 250 took
-  before the pixel grid)
+  24 ms; the flat 87k-file `C:\ProgramData\Dell\SARemediation\SystemRepair\Snapshots\Backup`:
+  23k tiles and 61k specks in 28 ms) and, on Windows, `DUSCAPE_PAINT_TIMES` (4k tiles painted in
+  13–17 ms, what 250 took before the pixel grid; the 87k-file folder in 13–19 ms)
 - Tile rendering: `viewers/tui/src/ui/grid/` (terminal), `viewers/windows/src/win/paint.rs`,
   `viewers/macos/src/mac/draw.rs` (`treemap`)
 - Adjust `HEIGHT_WIDTH_RATIO`, `MINIMUM_HEIGHT`, `MINIMUM_WIDTH` constants (the terminal's

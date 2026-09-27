@@ -6,6 +6,8 @@ use crate::tiles::{FileMetadata, Grid, Tile, TreeMap, files_in_folder};
 pub struct Board {
     pub tiles: Vec<Tile>,
     pub unrenderable_tile_coordinates: Option<(u16, u16)>,
+    /// The entries that got no tile, by their index in `files`.
+    hidden: Vec<usize>,
     pub selected_index: Option<usize>, // None means nothing is selected
     pub previous_indices_and_zoom_level: Vec<(Option<usize>, usize)>, // Stack of previous stats
     pub zoom_level: usize,
@@ -24,6 +26,7 @@ impl Board {
         Board {
             tiles: vec![],
             unrenderable_tile_coordinates: None,
+            hidden: Vec::new(),
             files: files_in_folder(folder, 0, SizeKind::Disk),
             listing: files_in_folder(folder, 0, SizeKind::Disk),
             kind: SizeKind::Disk,
@@ -63,6 +66,15 @@ impl Board {
     pub fn listing(&self) -> &[FileMetadata] {
         &self.listing
     }
+    /// The entries on the board that got no tile — in the "small files" corner — largest
+    /// first.
+    #[must_use]
+    pub fn hidden(&self) -> Vec<&FileMetadata> {
+        self.hidden
+            .iter()
+            .map(|&index| &self.files[index])
+            .collect()
+    }
     /// Where the selected tile's entry sits in [`Self::listing`].
     pub fn selected_listing_index(&self) -> Option<usize> {
         let selected = &self.currently_selected()?.name;
@@ -81,6 +93,7 @@ impl Board {
         tree_map.populate_tiles(self.files.iter().collect());
         self.tiles = tree_map.tiles;
         self.unrenderable_tile_coordinates = tree_map.unrenderable_tile_coordinates;
+        self.hidden = tree_map.hidden;
     }
     pub fn get_selected_index(&self) -> Option<usize> {
         self.selected_index

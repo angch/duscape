@@ -58,6 +58,10 @@ pub struct TreeMap {
     /// Top-left corner of the "small files" placeholder, which extends to the bottom-right of
     /// the board. `None` when every entry got a tile of its own.
     pub unrenderable_tile_coordinates: Option<(u16, u16)>,
+    /// The children that got no tile, by their index in what was laid out, in order.
+    pub hidden: Vec<usize>,
+    /// Which child each tile is, by the same index.
+    tile_entries: Vec<usize>,
     bounds: Area,
     empty_space: RectFloat,
     total_size: f64,
@@ -73,6 +77,8 @@ impl TreeMap {
         TreeMap {
             tiles: vec![],
             unrenderable_tile_coordinates: None,
+            hidden: Vec::new(),
+            tile_entries: Vec::new(),
             total_size: (empty_space.height * empty_space.width),
             bounds: *bounds,
             empty_space,
@@ -85,10 +91,21 @@ impl TreeMap {
             // the unrenderable files area should always be a rectangle
             // so if due to rounding errors some renderable tile is in
             // this area, we'd better remove it
-            self.tiles.retain(|tile| tile.x < x || tile.y < y);
+            let tiles = ::std::mem::take(&mut self.tiles);
+            let entries = ::std::mem::take(&mut self.tile_entries);
+            for (tile, entry) in tiles.into_iter().zip(entries) {
+                if tile.x < x || tile.y < y {
+                    self.tiles.push(tile);
+                    self.tile_entries.push(entry);
+                } else {
+                    self.hidden.push(entry);
+                }
+            }
+            self.hidden.sort_unstable();
         }
     }
-    fn layoutrow(&mut self, row: &[&FileMetadata]) {
+    /// Lay out `row`, the children from `first` on.
+    fn layoutrow(&mut self, first: usize, row: &[&FileMetadata]) {
         let row_total = row.iter().fold(0.0, |acc, file_metadata| {
             let size = file_metadata.percentage * self.total_size;
             acc + size
@@ -101,7 +118,7 @@ impl TreeMap {
             self.empty_space.y
         };
         let mut length_of_row_second_side = 0.0;
-        for file_metadata in row {
+        for (entry, file_metadata) in (first..).zip(row) {
             let size = file_metadata.percentage * self.total_size;
             let tile_length_first_side = if should_render_horizontally {
                 (size / row_total) * self.empty_space.width
@@ -139,8 +156,10 @@ impl TreeMap {
             let area = rect.round();
             if area.height < self.grid.min_height || area.width < self.grid.min_width {
                 self.add_unrenderable_tile(area.x, area.y);
+                self.hidden.push(entry);
             } else {
-                self.tiles.push(Tile::at(&area, file_metadata))
+                self.tiles.push(Tile::at(&area, file_metadata));
+                self.tile_entries.push(entry);
             }
 
             if tile_length_second_side > length_of_row_second_side {
@@ -178,19 +197,25 @@ impl TreeMap {
         };
     }
 
+    /// The row's worst aspect ratio, `None` if one of it is not renderable; `sum` is its
+    /// children's sizes added in order.
     fn worst_in_renderable_row(
         &self,
         row: &[&FileMetadata],
+        sum: f64,
         length_of_row: f64,
         min_first_side: f64,
         min_second_side: f64,
     ) -> Option<f64> {
-        // None means that at least one item in the row is not renderable, so it should not be
-        // considered
-        let sum = row.iter().fold(0.0, |accum, file_metadata| {
-            let size = file_metadata.percentage * self.total_size;
-            accum + size
-        });
+        // With no least tile every child is renderable, and in a row largest first the worst
+        // ratio is at one end or the other: the rest need not be looked at.
+        let ends;
+        let row = if self.grid.min_width == 0 && self.grid.min_height == 0 && row.len() > 2 {
+            ends = [row[0], row[row.len() - 1]];
+            &ends[..]
+        } else {
+            row
+        };
         let mut worst_aspect_ratio = None;
         for val in row.iter() {
             let size = val.percentage * self.total_size;
@@ -235,6 +260,8 @@ impl TreeMap {
         let min_width = f64::from(self.grid.min_width);
         let min_height = f64::from(self.grid.min_height);
         let mut row: Vec<&FileMetadata> = Vec::new();
+        // The row's sizes added in order, as the layout of it adds them.
+        let mut row_sum = 0.0;
         let mut next = 0;
         // The row's worst ratio, when it is known: after a child is taken the row is the one
         // just measured with it, in the same empty space.
@@ -256,21 +283,34 @@ impl TreeMap {
                 };
 
             let rest = &children[next..];
+            let row_start = next - row.len();
             if rest.is_empty() {
-                self.layoutrow(&row);
+                self.layoutrow(row_start, &row);
                 return;
             }
             if largest_after[next] < min_first_side * min_second_side {
-                self.layoutrow(&row);
-                self.layoutrow(rest);
+                self.layoutrow(row_start, &row);
+                self.layoutrow(next, rest);
                 return;
             }
             let current_row_worst_ratio = row_worst.unwrap_or_else(|| {
-                self.worst_in_renderable_row(&row, length_of_row, min_first_side, min_second_side)
+                self.worst_in_renderable_row(
+                    &row,
+                    row_sum,
+                    length_of_row,
+                    min_first_side,
+                    min_second_side,
+                )
             });
+            let with_child = row_sum + rest[0].percentage * self.total_size;
             row.push(rest[0]);
-            let row_with_child_worst_ratio =
-                self.worst_in_renderable_row(&row, length_of_row, min_first_side, min_second_side);
+            let row_with_child_worst_ratio = self.worst_in_renderable_row(
+                &row,
+                with_child,
+                length_of_row,
+                min_first_side,
+                min_second_side,
+            );
             row.pop();
 
             let take_child = match (current_row_worst_ratio, row_with_child_worst_ratio) {
@@ -289,11 +329,13 @@ impl TreeMap {
             };
             if take_child {
                 row.push(rest[0]);
+                row_sum = with_child;
                 next += 1;
                 row_worst = Some(row_with_child_worst_ratio);
             } else {
-                self.layoutrow(&row);
+                self.layoutrow(row_start, &row);
                 row.clear();
+                row_sum = 0.0;
                 row_worst = None;
             }
         }

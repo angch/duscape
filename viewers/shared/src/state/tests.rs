@@ -1122,3 +1122,54 @@ fn in_pixel_cells_the_nesting_goes_down_to_what_the_screen_can_show() {
     assert!(!pixels.labelled(&short(FileType::Folder)));
     assert!(pixels.labelled(&short(FileType::File)));
 }
+
+/// In pixel cells the "small files" corner is filled in: each entry too small for a tile is a
+/// speck there, inside the corner, and no speck is an entry that has a tile. In the
+/// terminal-shaped cells it stays a plain corner.
+#[test]
+fn the_small_files_corner_is_filled_with_a_speck_for_each_entry_in_pixel_cells() {
+    let root = Path::new(ROOT);
+    let tree = || {
+        let mut tree = FileTree::new(Folder::new(root), root.to_path_buf());
+        tree.add_entry(meta(10_000_000, false), &root.join("huge.bin"));
+        for index in 0..3000 {
+            tree.add_entry(meta(100, false), &root.join(format!("f{index}.txt")));
+        }
+        tree
+    };
+    let mut cells = Viewer::new(root, SizeKind::Disk, 1);
+    cells.resize(1200.0, 800.0);
+    cells.finish_scan(tree());
+    assert!(cells.board.unrenderable_tile_coordinates.is_some());
+    assert!(cells.dust().is_empty());
+
+    let mut pixels = Viewer::new(root, SizeKind::Disk, 1);
+    pixels.set_pixel_scale(1.0);
+    pixels.resize(1200.0, 800.0);
+    pixels.finish_scan(tree());
+    let (sx, sy) = pixels
+        .board
+        .unrenderable_tile_coordinates
+        .expect("3000 files of 100 bytes beside 10 MB do not all get tiles");
+    let hidden = pixels.board.hidden().len();
+    assert_eq!(hidden + pixels.board.tiles.len(), 3001);
+    assert!(
+        pixels.dust().len() > hidden / 2,
+        "{} of {hidden}",
+        pixels.dust().len()
+    );
+    for dust in pixels.dust() {
+        assert!(dust.x >= sx && dust.y >= sy, "{dust:?}");
+        assert!(dust.x + dust.width <= pixels.layout.cols, "{dust:?}");
+        assert!(dust.y + dust.height <= pixels.layout.rows, "{dust:?}");
+    }
+    // A click on a speck is the corner's: they are a picture, not targets.
+    let dust = pixels.dust()[0];
+    let rect = pixels
+        .layout
+        .cells_to_rect(dust.x, dust.y, dust.width, dust.height);
+    assert_eq!(
+        pixels.hit(rect.x + rect.w / 2.0, rect.y + rect.h / 2.0),
+        Hit::SmallFiles
+    );
+}
