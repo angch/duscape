@@ -8,7 +8,7 @@
 use ::std::cell::Cell;
 use ::std::ffi::OsStr;
 use ::std::mem::{size_of, zeroed};
-use ::std::ptr::null_mut;
+use ::std::ptr::{null, null_mut};
 use ::std::time::{Duration, Instant};
 
 use duscape_viewer::state::{
@@ -18,17 +18,17 @@ use duscape_viewer::state::{
 use libduscape::DisplaySize;
 use libduscape::format::without_verbatim_prefix;
 use libduscape::tiles::FileType;
-use libduscape::tiles::{Row, Tile};
+use libduscape::tiles::{Area, Inside, Row, Tile};
 
 use windows_sys::Win32::Foundation::{COLORREF, HWND, RECT, SIZE};
 use windows_sys::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BeginPaint, BitBlt, CLEARTYPE_QUALITY,
     CreateCompatibleDC, CreateDIBSection, CreateFontIndirectW, DEFAULT_CHARSET, DIB_RGB_COLORS,
-    DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_RIGHT, DT_SINGLELINE, DT_VCENTER, DeleteDC,
-    DeleteObject, DrawTextW, EndPaint, FF_DONTCARE, FF_MODERN, FIXED_PITCH, FW_NORMAL, FW_SEMIBOLD,
-    GdiFlush, GetCurrentObject, GetDC, GetTextExtentPoint32W, GetTextMetricsW, HBITMAP, HDC, HFONT,
-    HGDIOBJ, LOGFONTW, OBJ_FONT, PAINTSTRUCT, ReleaseDC, SRCCOPY, SelectObject, SetBkMode,
-    SetDIBitsToDevice, SetTextColor, TEXTMETRICW, TRANSPARENT, VARIABLE_PITCH,
+    DeleteDC, DeleteObject, ETO_CLIPPED, EndPaint, ExtTextOutW, FF_DONTCARE, FF_MODERN,
+    FIXED_PITCH, FW_NORMAL, FW_SEMIBOLD, GdiFlush, GetCurrentObject, GetDC, GetTextExtentExPointW,
+    GetTextExtentPoint32W, GetTextMetricsW, HBITMAP, HDC, HFONT, HGDIOBJ, LOGFONTW, OBJ_FONT,
+    PAINTSTRUCT, ReleaseDC, SRCCOPY, SelectObject, SetBkMode, SetDIBitsToDevice, SetTextAlign,
+    SetTextColor, TA_LEFT, TA_RIGHT, TA_TOP, TEXTMETRICW, TRANSPARENT, VARIABLE_PITCH,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     NONCLIENTMETRICSW, SPI_GETNONCLIENTMETRICS, SystemParametersInfoW,
@@ -333,24 +333,71 @@ impl Canvas {
     }
 
     /// `text` in `rect`, one line, cut short with an ellipsis if it does not fit.
+    /// `text` in `rect`, one line, vertically centred, cut short with an ellipsis if it does
+    /// not fit. Measured once and drawn with `ExtTextOutW`: `DrawTextW`, which did the same,
+    /// laid the line out again for its ellipsis and cost half as much again a label.
     fn text(&self, rect: Rect, text: &str, color: COLORREF, font: HFONT, right: bool) {
-        let wide: Vec<u16> = text.encode_utf16().collect();
-        if wide.is_empty() || rect.w <= 0.0 {
+        let mut wide: Vec<u16> = text.encode_utf16().collect();
+        let area = self.rect(rect);
+        let room = area.right - area.left;
+        if wide.is_empty() || room <= 0 {
             return;
         }
-        let mut area = self.rect(rect);
-        let align = if right { DT_RIGHT } else { DT_LEFT };
         self.gdi.set(true);
-        // SAFETY: `wide` and `area` are alive for the call; the old font is put back.
+        // SAFETY: `wide` and `area` are alive for the calls; the counts are their lengths.
         unsafe {
             self.select(font);
             SetTextColor(self.dc, color);
-            DrawTextW(
+            let len = i32::try_from(wide.len()).unwrap_or(i32::MAX);
+            let (mut fit, mut size) = (0, SIZE { cx: 0, cy: 0 });
+            GetTextExtentExPointW(
                 self.dc,
                 wide.as_ptr(),
-                i32::try_from(wide.len()).unwrap_or(i32::MAX),
-                &mut area,
-                align | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX,
+                len,
+                room,
+                &mut fit,
+                null_mut(),
+                &mut size,
+            );
+            if fit < len {
+                // What fits beside an ellipsis, then the ellipsis, not splitting a pair.
+                const ELLIPSIS: u16 = 0x2026;
+                let mut dots = SIZE { cx: 0, cy: 0 };
+                GetTextExtentPoint32W(self.dc, &ELLIPSIS, 1, &mut dots);
+                let mut keep = 0;
+                let mut ignored = SIZE { cx: 0, cy: 0 };
+                GetTextExtentExPointW(
+                    self.dc,
+                    wide.as_ptr(),
+                    len,
+                    (room - dots.cx).max(0),
+                    &mut keep,
+                    null_mut(),
+                    &mut ignored,
+                );
+                let mut keep = usize::try_from(keep).unwrap_or(0).min(wide.len());
+                if keep > 0 && (0xD800..0xDC00).contains(&wide[keep - 1]) {
+                    keep -= 1;
+                }
+                wide.truncate(keep);
+                wide.push(ELLIPSIS);
+            }
+            let (x, align) = if right {
+                (area.right, TA_RIGHT | TA_TOP)
+            } else {
+                (area.left, TA_LEFT | TA_TOP)
+            };
+            SetTextAlign(self.dc, align);
+            let y = area.top + (area.bottom - area.top - size.cy) / 2;
+            ExtTextOutW(
+                self.dc,
+                x,
+                y,
+                ETO_CLIPPED,
+                &area,
+                wide.as_ptr(),
+                u32::try_from(wide.len()).unwrap_or(u32::MAX),
+                null(),
             );
         }
     }
@@ -394,9 +441,9 @@ fn tile_colorref(name: &OsStr, file_type: FileType, index: usize, shade: f64) ->
 }
 
 /// How long a first paint of a layout may spend before it stops labelling the treemap's
-/// tiles: the labels are GDI text, at some 35 µs each the most of a paint, and a relayout has
-/// had 10 ms of the frame already. The rest come in the second pass's paint, in full.
-const LABEL_DEADLINE: Duration = Duration::from_millis(6);
+/// tiles: the labels are GDI text, the most of a paint, and the relayout has had some 5–7 ms
+/// of the frame already. The rest come in the second pass's paint, in full.
+const LABEL_DEADLINE: Duration = Duration::from_millis(4);
 
 /// The off-screen buffer frames are drawn in: a 32-bit DIB section in a memory DC, kept from
 /// one paint to the next and made again only when the window's size changes. Made fresh each
@@ -541,14 +588,12 @@ fn draw_treemap(canvas: &Canvas, window: &Window, layout: &Layout) {
     for (index, tile) in board.tiles.iter().enumerate() {
         let rect = layout.cells_to_rect(tile.x, tile.y, tile.width, tile.height);
         let marked = viewer.is_marked(&tile.name);
-        canvas.fill(
-            rect,
-            if marked {
-                MARK
-            } else {
-                tile_colorref(&tile.name, tile.file_type, index + board.zoom_level, 1.0)
-            },
-        );
+        let color = if marked {
+            MARK
+        } else {
+            tile_colorref(&tile.name, tile.file_type, index + board.zoom_level, 1.0)
+        };
+        fill_tile(canvas, layout, tile, viewer.board_inside(index), color);
         canvas.frame(rect, BORDER, 1);
         // A folder too short for its label band has its entries right under its margin.
         if rect.w > 40.0 && rect.h > LINE && viewer.labelled(tile) && canvas.label_time() {
@@ -693,6 +738,39 @@ fn draw_list(canvas: &Canvas, window: &Window, list: Rect) {
     }
 }
 
+/// A tile in `color`: whole, or where entries were nested in it only around what they cover,
+/// since they are drawn over the rest.
+fn fill_tile(
+    canvas: &Canvas,
+    layout: &Layout,
+    tile: &Tile,
+    inside: Option<&Inside>,
+    color: COLORREF,
+) {
+    let cells = Area {
+        x: tile.x,
+        y: tile.y,
+        width: tile.width,
+        height: tile.height,
+    };
+    match inside {
+        Some(inside) => {
+            for part in inside.around(&cells) {
+                if part.width > 0 && part.height > 0 {
+                    canvas.fill(
+                        layout.cells_to_rect(part.x, part.y, part.width, part.height),
+                        color,
+                    );
+                }
+            }
+        }
+        None => canvas.fill(
+            layout.cells_to_rect(tile.x, tile.y, tile.width, tile.height),
+            color,
+        ),
+    }
+}
+
 /// The tiles inside the folder tiles — the nesting — parents first, so each level paints
 /// over its parent's body and under the parent's label; a level deeper is a shade darker, and
 /// a label goes on whatever has the room for one.
@@ -705,7 +783,8 @@ fn draw_nested(canvas: &Canvas, window: &Window, layout: &Layout) {
         let rect = layout.cells_to_rect(t.x, t.y, t.width, t.height);
         // Each level in, the colour is a step darker: the nesting reads as depth.
         let shade = 1.0 - 0.12 * nested.depth.min(4) as f64;
-        canvas.fill(rect, tile_colorref(&t.name, t.file_type, index, shade));
+        let color = tile_colorref(&t.name, t.file_type, index, shade);
+        fill_tile(canvas, layout, t, nested.inside.as_ref(), color);
         canvas.frame(rect, BORDER, 1);
         if rect.w > 30.0 && rect.h > LINE && viewer.labelled(t) && canvas.label_time() {
             draw_tile_label(canvas, fonts, rect, pad, t, rgb(235, 235, 235), fonts.label);

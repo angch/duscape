@@ -22,7 +22,7 @@ use duscape_scan::rescan::{Outcome, Rescanner, Rescans};
 use libduscape::format::copied_path;
 use libduscape::model::SizeKind;
 use libduscape::tiles::{
-    Area, Board, Expansion, FileMetadata, FileType, Grid, NestedTile, Nesting, Row, Tile,
+    Area, Board, Expansion, FileMetadata, FileType, Grid, Inside, NestedTile, Nesting, Row, Tile,
 };
 use libduscape::{
     DirSummary, DisplayCount, DisplaySize, FileOrFolder, FileToDelete, FileTree, Folder,
@@ -383,6 +383,9 @@ pub struct Viewer {
     pub hover_row: Option<usize>,
     /// The treemap nested, in the tree view: the tiles inside the board's folder tiles.
     nested: Vec<NestedTile>,
+    /// What each board tile's nested entries cover, by the tile's index; see
+    /// [`Viewer::board_inside`].
+    board_insides: Vec<Option<Inside>>,
     /// The "small files" corner filled in, in pixel cells; see [`Viewer::dust`].
     dust: Vec<Dust>,
     /// Whether what would make a relayout slow may wait for a second pass; see
@@ -460,6 +463,7 @@ impl Viewer {
             cursor: None,
             hover_row: None,
             nested: Vec::new(),
+            board_insides: Vec::new(),
             dust: Vec::new(),
             second_pass: false,
             second_pass_owed: false,
@@ -666,7 +670,7 @@ impl Viewer {
         let mut colors = SpeckColors::default();
         let mut specks = Vec::new();
         self.nested = if self.tree_view {
-            let (nested, complete) = libduscape::tiles::nest_with(
+            let nested = libduscape::tiles::nest_with(
                 self.tree.get_current_folder(),
                 &self.board.tiles,
                 self.tree.shown,
@@ -675,9 +679,11 @@ impl Viewer {
                     specks.push(colors.speck(area, entry.name, entry.file_type, index));
                 },
             );
-            self.nesting_cut = !complete;
-            nested
+            self.nesting_cut = !nested.complete;
+            self.board_insides = nested.tops;
+            nested.tiles
         } else {
+            self.board_insides.clear();
             Vec::new()
         };
         self.dust = specks;
@@ -722,6 +728,14 @@ impl Viewer {
     #[must_use]
     pub fn dust(&self) -> &[Dust] {
         &self.dust
+    }
+
+    /// What the nested entries of the board's tile at `index` cover, if any were laid out in it:
+    /// a painter fills the tile around it ([`Inside::around`]), the entries being drawn over
+    /// the rest.
+    #[must_use]
+    pub fn board_inside(&self, index: usize) -> Option<&Inside> {
+        self.board_insides.get(index)?.as_ref()
     }
 
     /// The tree view's treemap: the tiles inside the board's folder tiles, parents first.

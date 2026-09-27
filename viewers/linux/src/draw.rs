@@ -14,9 +14,9 @@ use crate::canvas::{Canvas, Color, Rgba};
 use crate::font::{Align, Cut, Face, Fonts, Pen};
 use duscape_viewer::menu::Entry;
 use duscape_viewer::state::{
-    EXPANDER, Focus, LIST_PAD, Preview, ROW, ROW_INDENT, Rect, Viewer, tile_color,
+    EXPANDER, Focus, LIST_PAD, Layout, Preview, ROW, ROW_INDENT, Rect, Viewer, tile_color,
 };
-use libduscape::tiles::{FileType, Row, Tile};
+use libduscape::tiles::{Area, FileType, Inside, Row, Tile};
 use libduscape::{DisplayCount, DisplaySize};
 
 pub const WINDOW: Color = (0.13, 0.13, 0.14);
@@ -129,7 +129,7 @@ impl<'a> Pens<'a> {
 
 /// How long a first paint of a layout may spend before it stops labelling the treemap's
 /// tiles, the text being the most of a paint: the rest come in the second pass's, in full.
-const LABEL_DEADLINE: Duration = Duration::from_millis(6);
+const LABEL_DEADLINE: Duration = Duration::from_millis(4);
 
 /// Draw the whole window; `in_full` with every label, else stopping the treemap's labels at
 /// `LABEL_DEADLINE`. Returns the breadcrumbs, for clicks — each one's rectangle and the depth
@@ -263,7 +263,9 @@ fn nested(canvas: &mut Canvas, viewer: &Viewer, pens: &Pens) {
             .inset(0.5, 0.5);
         let shade = 1.0 - 0.12 * nested.depth.min(4) as f64;
         let color = darker(tile_color(&t.name, t.file_type, index), shade);
-        canvas.fill(rect, color, 1.0);
+        for part in around(layout, t, nested.inside.as_ref(), rect) {
+            canvas.fill(part, color, 1.0);
+        }
         canvas.stroke(rect, BLACK, 0.35, 1.0);
         if rect.w > 30.0 && rect.h >= 15.0 && viewer.labelled(t) && pens.label_time() {
             tile_label(canvas, pens, rect, 3.0, t, &pens.nested_name);
@@ -272,6 +274,35 @@ fn nested(canvas: &mut Canvas, viewer: &Viewer, pens: &Pens) {
             canvas.stroke(rect, WHITE, 0.8, 1.0);
         }
     }
+}
+
+/// The parts of a nested tile to fill, in points within `rect` (the tile, inset): the whole of
+/// it, or where entries were nested in it only around what they cover, since they are drawn
+/// over the rest — filled whole, each level painted its parent's area again.
+fn around(layout: &Layout, tile: &Tile, inside: Option<&Inside>, rect: Rect) -> Vec<Rect> {
+    let Some(inside) = inside else {
+        return vec![rect];
+    };
+    let cells = Area {
+        x: tile.x,
+        y: tile.y,
+        width: tile.width,
+        height: tile.height,
+    };
+    inside
+        .around(&cells)
+        .iter()
+        .filter(|part| part.width > 0 && part.height > 0)
+        .map(|part| {
+            let part = layout.cells_to_rect(part.x, part.y, part.width, part.height);
+            let (x, y) = (part.x.max(rect.x), part.y.max(rect.y));
+            let (right, bottom) = (
+                part.right().min(rect.right()),
+                part.bottom().min(rect.bottom()),
+            );
+            Rect::new(x, y, (right - x).max(0.0), (bottom - y).max(0.0))
+        })
+        .collect()
 }
 
 /// A tile's label, `pad` in from the sides, on the line `nest` leaves at the top of a folder's

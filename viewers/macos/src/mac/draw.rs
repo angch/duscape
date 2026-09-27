@@ -18,9 +18,9 @@ use objc2_app_kit::{
 use objc2_foundation::{NSAttributedStringKey, NSDictionary, NSPoint, NSRect, NSSize, NSString};
 
 use duscape_viewer::state::{
-    EXPANDER, Focus, LIST_PAD, Preview, ROW, ROW_INDENT, Rect, Viewer, tile_color,
+    EXPANDER, Focus, LIST_PAD, Layout, Preview, ROW, ROW_INDENT, Rect, Viewer, tile_color,
 };
-use libduscape::tiles::{FileType, Row, Tile};
+use libduscape::tiles::{Area, FileType, Inside, Row, Tile};
 use libduscape::{DisplayCount, DisplaySize};
 
 pub fn ns_rect(rect: Rect) -> NSRect {
@@ -348,10 +348,10 @@ fn nested(viewer: &Viewer, pens: &Pens) {
             .cells_to_rect(t.x, t.y, t.width, t.height)
             .inset(0.5, 0.5);
         let shade = 1.0 - 0.12 * nested.depth.min(4) as f64;
-        fill(
-            rect,
-            &srgb(darker(tile_color(&t.name, t.file_type, index), shade), 1.0),
-        );
+        let color = srgb(darker(tile_color(&t.name, t.file_type, index), shade), 1.0);
+        for part in around(layout, t, nested.inside.as_ref(), rect) {
+            fill(part, &color);
+        }
         stroke(rect, &edge, 1.0);
         if rect.w > 30.0 && rect.h >= 15.0 && viewer.labelled(t) {
             tile_label(pens, rect, 3.0, t, &pens.nested_name);
@@ -364,6 +364,35 @@ fn nested(viewer: &Viewer, pens: &Pens) {
             );
         }
     }
+}
+
+/// The parts of a nested tile to fill, in points within `rect` (the tile, inset): the whole of
+/// it, or where entries were nested in it only around what they cover, since they are drawn
+/// over the rest — filled whole, each level painted its parent's area again.
+fn around(layout: &Layout, tile: &Tile, inside: Option<&Inside>, rect: Rect) -> Vec<Rect> {
+    let Some(inside) = inside else {
+        return vec![rect];
+    };
+    let cells = Area {
+        x: tile.x,
+        y: tile.y,
+        width: tile.width,
+        height: tile.height,
+    };
+    inside
+        .around(&cells)
+        .iter()
+        .filter(|part| part.width > 0 && part.height > 0)
+        .map(|part| {
+            let part = layout.cells_to_rect(part.x, part.y, part.width, part.height);
+            let (x, y) = (part.x.max(rect.x), part.y.max(rect.y));
+            let (right, bottom) = (
+                part.right().min(rect.right()),
+                part.bottom().min(rect.bottom()),
+            );
+            Rect::new(x, y, (right - x).max(0.0), (bottom - y).max(0.0))
+        })
+        .collect()
 }
 
 /// A tile's label, `pad` in from the sides, on the line `nest` leaves at the top of a folder's

@@ -151,10 +151,18 @@ impl Window {
     /// The client area changed: lay the viewer out for it.
     fn on_size(&mut self, hwnd: HWND) {
         let client = client_rect(hwnd);
+        let started = Instant::now();
         self.viewer.resize(
             self.points(client.right - client.left),
             self.points(client.bottom - client.top),
         );
+        if ::std::env::var_os("DUSCAPE_PAINT_TIMES").is_some() {
+            eprintln!(
+                "layout {:.2} ms, second pass owed: {}",
+                started.elapsed().as_secs_f64() * 1000.0,
+                self.viewer.second_pass_owed()
+            );
+        }
         self.changed(hwnd);
     }
 

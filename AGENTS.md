@@ -61,15 +61,18 @@ What every change is held to, adapted to sane practical defaults rather than met
   - the specks of the "small files" corners come with the tiles only while the last complete
     layout with them was inside the budget (`Viewer::defer_to_second_pass`,
     `finish_second_pass`, `second_pass_owed`);
-  - the first paint of a layout stops labelling the treemap's tiles at `LABEL_DEADLINE` (6 ms
+  - the first paint of a layout stops labelling the treemap's tiles at `LABEL_DEADLINE` (4 ms
     into the paint, Windows and Linux); the second pass paints in full, and a layout painted in
     full once stays so (`Viewer::layout_generation`), so labels never come and go on a hover.
-- Where it stands (2026-09-27, 1.5x): at 1600×1000 pt `C:\Windows` lays out in 7.8 ms, then
-  21 for the rest; E:\ 3.7 then 7.4; the flat 87k-file Dell backup 10.5 then 18 (its top
-  level, 87k entries in one board, is not cut). At 2560×1400 each first pass is about 10 ms. A
-  hurried paint of `C:\Windows` takes 10–11 ms, a full one 19 (treemap 13–14 of it: fills 5,
-  labels 8; the list's text 3). Next: the fills' overdraw (every level fills its parent's area
-  again), the board's own first pass for a flat folder, and the list's text.
+- And what is cheap should stay cheap: a folder tile is filled only around what its nested
+  entries cover (`Inside`), not under them — filled whole, each level painted its parent's area
+  again; and text is measured once and drawn with `ExtTextOutW`, not `DrawTextW`, which laid
+  each line out again for its ellipsis.
+- Where it stands (2026-09-27, 1.5x, the Windows window resized about 1400–1850×1000 px): the
+  first frame after a relayout — the layout's first pass and a hurried paint — is 11–14 ms on
+  `C:\Windows` (layout 4.7–5.3, paint 6.4–6.9), E:\ and the 87k-file Dell backup alike; the
+  second pass's full paint is 6–12 ms. Before this round it was 18–21. The flat Dell folder's
+  87k-entry top level is still laid out whole in its first pass (6–8 ms).
 
 ---
 
@@ -181,7 +184,9 @@ out and painting.
   before children and a painter draws in order, and a first pass's deadline
   (`Nesting::deadline`, after the top-level folders' own entries) cuts the deepest levels
   everywhere rather than the last folders whole; `room_cap` bounds one folder's share of a
-  first pass, and `nest_with` says whether either cut. A `NestedTile` knows its
+  first pass, and `nest_with` says whether either cut. What a folder's entries cover — its
+  inside less its corner — is kept as its `Inside` (`NestedTile::inside`, `Nested::tops`,
+  `Viewer::board_inside`), so painters fill a folder only around it. A `NestedTile` knows its
   `parent` and `top` by index, not its path (`nested_path`, `nested_path_is`): paths cloned
   per tile were half the nesting's time
 - `delete.rs` — `remove` (from disk, a link itself never its target) and `refused` (NTFS metadata)
@@ -292,10 +297,13 @@ shared `Viewer`, not in `win/`:
 - `win/paint.rs` — double-buffered in a 32-bit DIB section, by `Viewer::layout`; returns the
   breadcrumbs for clicks. `Canvas::fill`/`frame` write the section's pixels directly (a
   `GdiFlush` first when GDI has drawn since): as `FillRect`/`FrameRect` calls, the nested
-  treemap's thousands of overdrawn tiles cost 30 ms a frame. Text (`DrawTextW`, the font
-  selected only when it changes) and pictures are GDI's. The fonts are the system's message
+  treemap's thousands of overdrawn tiles cost 30 ms a frame; and a folder tile is filled only
+  around what its entries cover (`fill_tile`, `Inside::around`). Text and pictures are GDI's:
+  text measured once (`GetTextExtentExPointW`, its own ellipsis) and drawn with `ExtTextOutW`,
+  the font selected only when it changes — `DrawTextW` cost half as much again. The fonts are the system's message
   font (`SPI_GETNONCLIENTMETRICS`) and a treemap label size that fits the label band whole.
-  `DUSCAPE_PAINT_TIMES=1` prints each frame's time on stderr (redirect it: no console).
+  `DUSCAPE_PAINT_TIMES=1` prints each frame's time, and each resize's layout, on stderr
+  (redirect it: no console).
   The buffer (`BackBuffer`, a DIB section in a memory DC) is kept between paints and made
   again only when the size changes: made fresh, its pages faulted in on every frame.
   A first paint of a layout stops the treemap's labels at `LABEL_DEADLINE`; then

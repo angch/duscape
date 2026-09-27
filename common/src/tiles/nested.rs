@@ -26,6 +26,66 @@ pub struct NestedTile {
     pub depth: usize,
     /// Its place and what it is, in the board's cells.
     pub tile: Tile,
+    /// For a folder whose entries were laid out inside it: what they cover.
+    pub inside: Option<Inside>,
+}
+
+/// What a folder tile's entries cover: all of `area` but `corner`, which is its "small files"
+/// corner or the room its first pass left. A painter need fill only the rest of the tile — its
+/// label band, its margins and the corner — since the entries' tiles are drawn over the
+/// inside: filled whole, each level painted its parent's area again, a dozen times over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Inside {
+    pub area: Area,
+    pub corner: Area,
+}
+
+impl Inside {
+    /// The parts of `tile` its entries leave showing: above, below, left and right of the
+    /// inside, then the corner. Some may be empty.
+    #[must_use]
+    pub fn around(&self, tile: &Area) -> [Area; 5] {
+        let inside = self.area;
+        let right = inside.x + inside.width;
+        let bottom = inside.y + inside.height;
+        [
+            Area {
+                x: tile.x,
+                y: tile.y,
+                width: tile.width,
+                height: inside.y.saturating_sub(tile.y),
+            },
+            Area {
+                x: tile.x,
+                y: bottom,
+                width: tile.width,
+                height: (tile.y + tile.height).saturating_sub(bottom),
+            },
+            Area {
+                x: tile.x,
+                y: inside.y,
+                width: inside.x.saturating_sub(tile.x),
+                height: inside.height,
+            },
+            Area {
+                x: right,
+                y: inside.y,
+                width: (tile.x + tile.width).saturating_sub(right),
+                height: inside.height,
+            },
+            self.corner,
+        ]
+    }
+}
+
+/// A nesting: the tiles, what each board tile's entries cover (by its index, as
+/// [`NestedTile::inside`] for the nested ones), and whether it is complete — `false` when a
+/// first pass's deadline or `room_cap` cut it.
+#[derive(Debug, Default)]
+pub struct Nested {
+    pub tiles: Vec<NestedTile>,
+    pub tops: Vec<Option<Inside>>,
+    pub complete: bool,
 }
 
 /// How far in the nesting goes. What stops it is room: a folder's entries are laid out inside
@@ -116,19 +176,18 @@ impl Nesting {
 /// before their children.
 #[must_use]
 pub fn nest(folder: &Folder, tiles: &[Tile], kind: SizeKind, nesting: &Nesting) -> Vec<NestedTile> {
-    nest_with(folder, tiles, kind, nesting, &mut |_, _, _| {}).0
+    nest_with(folder, tiles, kind, nesting, &mut |_, _, _| {}).tiles
 }
 
 /// [`nest`], handing `speck` each speck of the folders' "small files" corners — where, the
-/// entry it is, and its place among its corner's — when `nesting.dust` is on; and whether it
-/// is complete, `false` when `nesting.deadline` cut it short.
+/// entry it is, and its place among its corner's — when `nesting.dust` is on.
 pub fn nest_with(
     folder: &Folder,
     tiles: &[Tile],
     kind: SizeKind,
     nesting: &Nesting,
     speck: &mut dyn FnMut(Area, &Share, usize),
-) -> (Vec<NestedTile>, bool) {
+) -> Nested {
     // However deep it goes, the nesting holds at most as many tiles as the folder tiles' area
     // holds at the minimum size: the bound on a relayout's and a paint's work is the screen.
     let area: usize = tiles
@@ -141,11 +200,14 @@ pub fn nest_with(
         ..*nesting
     };
     let nesting = &nesting;
-    let mut out = Vec::new();
+    let mut out = Nested {
+        tiles: Vec::new(),
+        tops: vec![None; tiles.len()],
+        complete: true,
+    };
     // A level at a time, across every folder: parents before children still, and a deadline
     // cuts the deepest levels everywhere rather than the last folders whole.
     let mut queue: VecDeque<(&Folder, Place)> = VecDeque::new();
-    let mut complete = true;
     for (top, tile) in tiles.iter().enumerate() {
         if tile.file_type != FileType::Folder {
             continue;
@@ -167,12 +229,13 @@ pub fn nest_with(
                 .deadline
                 .is_some_and(|deadline| Instant::now() >= deadline)
         {
-            return (out, false);
+            out.complete = false;
+            return out;
         }
         let capped = nest_into(folder, &place, kind, nesting, &mut out, &mut queue, speck);
-        complete &= !capped;
+        out.complete &= !capped;
     }
-    (out, complete)
+    out
 }
 
 /// The names from the listed folder down to the nested tile at `index`: the board's tile it is
@@ -241,11 +304,11 @@ fn nest_into<'a>(
     place: &Place,
     kind: SizeKind,
     nesting: &Nesting,
-    out: &mut Vec<NestedTile>,
+    out: &mut Nested,
     queue: &mut VecDeque<(&'a Folder, Place)>,
     speck: &mut dyn FnMut(Area, &Share, usize),
 ) -> bool {
-    if place.depth > nesting.max_depth || out.len() >= nesting.max_tiles {
+    if place.depth > nesting.max_depth || out.tiles.len() >= nesting.max_tiles {
         return false;
     }
     let Some(inside) = nesting.inside(&place.cells) else {
@@ -309,6 +372,17 @@ fn nest_into<'a>(
             speck(mote.area, &hidden[mote.entry], mote.entry);
         }
     }
+    // What the entries cover, for the folder's own tile to be filled around it.
+    if !map.tiles.is_empty() {
+        let covered = Some(Inside {
+            area: inside,
+            corner,
+        });
+        match place.parent {
+            Some(index) => out.tiles[index].inside = covered,
+            None => out.tops[place.top] = covered,
+        }
+    }
     // The folders among them, gone into once this level is in `out`: parents first.
     for child in map.tiles {
         if child.file_type == FileType::Folder
@@ -316,17 +390,18 @@ fn nest_into<'a>(
         {
             let inner = Place {
                 cells: cells_of(&child),
-                parent: Some(out.len()),
+                parent: Some(out.tiles.len()),
                 top: place.top,
                 depth: place.depth + 1,
             };
             queue.push_back((entries, inner));
         }
-        out.push(NestedTile {
+        out.tiles.push(NestedTile {
             parent: place.parent,
             top: place.top,
             depth: place.depth,
             tile: child,
+            inside: None,
         });
     }
     capped
@@ -567,26 +642,28 @@ mod tests {
         let tree = tree();
         let board = board(&tree, 200, 80);
         let folder = tree.get_current_folder();
-        let (whole, complete) = nest_with(
+        let whole = nest_with(
             folder,
             &board.tiles,
             SizeKind::Disk,
             &Nesting::default(),
             &mut |_, _, _| {},
         );
+        let (complete, whole) = (whole.complete, whole.tiles);
         assert!(complete && whole.iter().any(|t| t.depth == 2));
         // Past its deadline: the top-level folders' own entries, and no deeper.
         let late = Nesting {
             deadline: Some(::std::time::Instant::now()),
             ..Nesting::default()
         };
-        let (cut, complete) = nest_with(
+        let cut = nest_with(
             folder,
             &board.tiles,
             SizeKind::Disk,
             &late,
             &mut |_, _, _| {},
         );
+        let (complete, cut) = (cut.complete, cut.tiles);
         assert!(!complete);
         assert!(
             !cut.is_empty() && cut.iter().all(|t| t.depth == 1),
@@ -605,14 +682,62 @@ mod tests {
             room_cap: 1,
             ..Nesting::default()
         };
-        let (few, complete) = nest_with(
+        let few = nest_with(
             folder,
             &board.tiles,
             SizeKind::Disk,
             &capped,
             &mut |_, _, _| {},
         );
+        let (complete, few) = (few.complete, few.tiles);
         assert!(!complete);
         assert!(few.iter().filter(|t| t.depth == 1).count() <= 1, "{few:?}");
+    }
+
+    #[test]
+    fn a_folders_inside_holds_its_entries_and_the_rest_of_it_is_what_to_fill() {
+        use super::nest_with;
+        let tree = tree();
+        let board = board(&tree, 200, 80);
+        let folder = tree.get_current_folder();
+        let nested = nest_with(
+            folder,
+            &board.tiles,
+            SizeKind::Disk,
+            &Nesting::default(),
+            &mut |_, _, _| {},
+        );
+        let big = board.tiles.iter().position(|t| t.name == "big").unwrap();
+        let inside = nested.tops[big].expect("big's entries were laid out in it");
+        let tile = &board.tiles[big];
+        let cells = |t: &crate::tiles::Tile| Area {
+            x: t.x,
+            y: t.y,
+            width: t.width,
+            height: t.height,
+        };
+        let area = |a: &Area| u32::from(a.width) * u32::from(a.height);
+        // The parts to fill and the inside make up the tile, the corner being in the inside.
+        let around: u32 = inside.around(&cells(tile))[..4].iter().map(area).sum();
+        assert_eq!(around + area(&inside.area), area(&cells(tile)));
+        // Its entries lie in the inside, clear of the corner.
+        for t in nested.tiles.iter().filter(|t| t.depth == 1) {
+            let t = &t.tile;
+            assert!(t.x >= inside.area.x && t.x + t.width <= inside.area.x + inside.area.width);
+            assert!(t.y >= inside.area.y && t.y + t.height <= inside.area.y + inside.area.height);
+            let corner = inside.corner;
+            let apart = t.x >= corner.x + corner.width
+                || t.x + t.width <= corner.x
+                || t.y >= corner.y + corner.height
+                || t.y + t.height <= corner.y;
+            assert!(apart || area(&corner) == 0, "{t:?} in {corner:?}");
+        }
+        // A folder with no entries laid out has none.
+        let medium = board
+            .tiles
+            .iter()
+            .position(|t| t.name == "medium.txt")
+            .unwrap();
+        assert_eq!(nested.tops[medium], None);
     }
 }
