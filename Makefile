@@ -47,11 +47,11 @@ coverage:
 test-fs:
 	fixtures/fs/run.sh $(FS)
 
-# Fully static x86_64 binary for any Linux (the release artifact): the terminal viewer and the
-# window in one (`duscape --gui`, and the default from a desktop). Needs musl-gcc
-# (`musl-tools`) for jemalloc; see .github/workflows/deploy.yml.
+# Fully static binary: on Linux, musl with jemalloc (needs musl-gcc); on Windows, MSVC with
+# crt-static (configured in .cargo/config.toml, needing only DLLs that come with Windows).
+STATIC_CMD := $(shell if [ "$$OS" = "Windows_NT" ] || uname -s 2>/dev/null | grep -qE "MINGW|MSYS|CYGWIN"; then echo "cargo build -p duscape --release"; else echo "CC_x86_64_unknown_linux_musl=musl-gcc cargo build -p duscape --release --target x86_64-unknown-linux-musl"; fi)
 static:
-	CC_x86_64_unknown_linux_musl=musl-gcc cargo build -p duscape --release --target x86_64-unknown-linux-musl
+	$(STATIC_CMD)
 
 # The same for aarch64, cross-built with cargo-zigbuild (needs zig). jemalloc's page size is fixed
 # at build time; 64K pages (2^16) also run on 4K and 16K kernels.
@@ -77,11 +77,11 @@ pgo:
 	RUSTFLAGS="-Cprofile-use=$(PGO_DIR)/merged.profdata" cargo build -p duscape --release --target-dir $(PGO_DIR)
 	@echo "built $(PGO_DIR)/release/duscape"
 
-# Windows, cross-built with cargo-zigbuild against the Universal C Runtime: `duscape.exe`, the
-# terminal viewer and the window in one, needing only DLLs that come with Windows 10 and later.
-# (Built on Windows with MSVC, `.cargo/config.toml` links the C runtime in the same way.)
+# Windows: native on Windows (crt-static via .cargo/config.toml), or cross-built with
+# cargo-zigbuild against the Universal C Runtime on other platforms.
+STATIC_WINDOWS_CMD := $(shell if [ "$$OS" = "Windows_NT" ] || uname -s 2>/dev/null | grep -qE "MINGW|MSYS|CYGWIN"; then echo "cargo build -p duscape --release"; else echo "cargo zigbuild -p duscape --release --target x86_64-pc-windows-gnu"; fi)
 static-windows:
-	cargo zigbuild -p duscape --release --target x86_64-pc-windows-gnu
+	$(STATIC_WINDOWS_CMD)
 
 # macOS, on a Mac: `duscape` for both architectures in one file (`target/universal/duscape`),
 # then Duscape.app around it, for Finder — a bare binary opened from Finder runs in Terminal.
