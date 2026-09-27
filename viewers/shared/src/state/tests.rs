@@ -1173,3 +1173,55 @@ fn the_small_files_corner_is_filled_with_a_speck_for_each_entry_in_pixel_cells()
         Hit::SmallFiles
     );
 }
+
+/// A folder tile's own "small files" corner is filled in too: a folder of many small entries
+/// nested inside another shows them as specks inside its tile, not the folder's colour alone.
+#[test]
+fn a_nested_folders_small_files_corner_is_filled_with_specks() {
+    let root = Path::new(ROOT);
+    let mut tree = FileTree::new(Folder::new(root), root.to_path_buf());
+    tree.add_entry(meta(0, true), &root.join("winsxs"));
+    tree.add_entry(meta(2_000_000, false), &root.join("winsxs/big.cab"));
+    for index in 0..3000 {
+        tree.add_entry(meta(0, true), &root.join(format!("winsxs/c{index}")));
+        tree.add_entry(
+            meta(10, false),
+            &root.join(format!("winsxs/c{index}/f.dll")),
+        );
+    }
+    tree.add_entry(meta(1_000_000, false), &root.join("other.bin"));
+    let mut viewer = Viewer::new(root, SizeKind::Disk, 1);
+    viewer.set_tree_view(true);
+    viewer.set_pixel_scale(1.0);
+    viewer.resize(1200.0, 800.0);
+    viewer.finish_scan(tree);
+    let winsxs = viewer
+        .board
+        .tiles
+        .iter()
+        .find(|tile| tile.name == "winsxs")
+        .expect("winsxs has a tile")
+        .clone();
+    let inside: Vec<&Dust> = viewer
+        .dust()
+        .iter()
+        .filter(|dust| {
+            dust.x >= winsxs.x
+                && dust.y >= winsxs.y
+                && dust.x + dust.width <= winsxs.x + winsxs.width
+                && dust.y + dust.height <= winsxs.y + winsxs.height
+        })
+        .collect();
+    assert!(inside.len() > 1000, "{} specks inside winsxs", inside.len());
+    // And none of them lies on one of the folder's tiles.
+    for tile in viewer.nested().iter().filter(|t| t.depth == 1) {
+        let t = &tile.tile;
+        for dust in &inside {
+            let apart = dust.x >= t.x + t.width
+                || dust.x + dust.width <= t.x
+                || dust.y >= t.y + t.height
+                || dust.y + dust.height <= t.y;
+            assert!(apart, "{dust:?} on {t:?}");
+        }
+    }
+}

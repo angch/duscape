@@ -33,7 +33,8 @@ use libduscape::{DirSummary, FileTree, ScanOptions};
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
-    ClientToScreen, GetDC, GetDeviceCaps, InvalidateRect, LOGPIXELSY, ReleaseDC, ScreenToClient,
+    ClientToScreen, CreateBitmap, DeleteObject, GetDC, GetDeviceCaps, InvalidateRect, LOGPIXELSY,
+    ReleaseDC, ScreenToClient,
 };
 use windows_sys::Win32::System::Com::CoTaskMemFree;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -45,15 +46,17 @@ use windows_sys::Win32::UI::Shell::{
     BIF_NEWDIALOGSTYLE, BIF_RETURNONLYFSDIRS, BROWSEINFOW, SHBrowseForFolderW, SHGetPathFromIDListW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CREATESTRUCTW, CS_DBLCLKS, CW_USEDEFAULT, CreatePopupMenu, CreateWindowExW,
-    DefWindowProcW, DestroyMenu, DispatchMessageW, GWLP_USERDATA, GetClientRect, GetMessageW,
-    GetWindowLongPtrW, IDC_ARROW, IDI_APPLICATION, IDYES, KillTimer, LoadCursorW, LoadIconW,
-    MB_ICONERROR, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_YESNO, MF_GRAYED, MF_SEPARATOR,
-    MF_STRING, MSG, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassW, SW_SHOW,
-    SetProcessDPIAware, SetTimer, SetWindowLongPtrW, SetWindowTextW, ShowWindow, TPM_RETURNCMD,
-    TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WM_APP, WM_CHAR, WM_CREATE, WM_DESTROY,
-    WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT,
-    WM_RBUTTONUP, WM_SIZE, WM_TIMER, WM_XBUTTONUP, WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+    AppendMenuW, CREATESTRUCTW, CS_DBLCLKS, CW_USEDEFAULT, CreateIconIndirect, CreatePopupMenu,
+    CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW, GWLP_USERDATA, GetClientRect,
+    GetMessageW, GetSystemMetrics, GetWindowLongPtrW, HICON, ICON_BIG, ICON_SMALL, ICONINFO,
+    IDC_ARROW, IDI_APPLICATION, IDYES, KillTimer, LoadCursorW, LoadIconW, MB_ICONERROR,
+    MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_YESNO, MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG,
+    MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassW, SM_CXICON, SM_CXSMICON, SW_SHOW,
+    SYSTEM_METRICS_INDEX, SendMessageW, SetProcessDPIAware, SetTimer, SetWindowLongPtrW,
+    SetWindowTextW, ShowWindow, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage,
+    WM_APP, WM_CHAR, WM_CREATE, WM_DESTROY, WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
+    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONUP, WM_SETICON, WM_SIZE, WM_TIMER,
+    WM_XBUTTONUP, WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
 
 use crate::cli::Opt;
@@ -816,6 +819,45 @@ fn pick_folder() -> Option<PathBuf> {
     Some(PathBuf::from(OsString::from_wide(&path[..len])))
 }
 
+/// The app's icon (`duscape_viewer::icon`, a treemap) at the size the system metric `metric`
+/// gives — `SM_CXICON` or `SM_CXSMICON`, scaled for the DPI — or `None` if it cannot be made.
+/// Made once a window, and never destroyed: it is the window's for as long as the app runs.
+fn app_icon(metric: SYSTEM_METRICS_INDEX) -> Option<HICON> {
+    // SAFETY: no pointers; a metric the system does not know is 0, handled below.
+    let size = unsafe { GetSystemMetrics(metric) }.clamp(16, 256);
+    let rgba = duscape_viewer::icon::rgba(size as u32);
+    // A 32-bit bitmap is blue, green, red, alpha: straight alpha, as icons take it.
+    let bgra: Vec<u8> = rgba
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .flat_map(|&[r, g, b, a]| [b, g, r, a])
+        .collect();
+    // The mask is unused beside an alpha channel but required: all zero, rows of whole words.
+    let mask = vec![0u8; (size as usize).div_ceil(16) * 2 * size as usize];
+    // SAFETY: each buffer holds the rows its bitmap is created with; the bitmaps are deleted
+    // once the icon, which copies them, is made.
+    unsafe {
+        let color = CreateBitmap(size, size, 1, 32, bgra.as_ptr().cast());
+        let monochrome = CreateBitmap(size, size, 1, 1, mask.as_ptr().cast());
+        let info = ICONINFO {
+            fIcon: 1,
+            xHotspot: 0,
+            yHotspot: 0,
+            hbmMask: monochrome,
+            hbmColor: color,
+        };
+        let icon = if color.is_null() || monochrome.is_null() {
+            null_mut()
+        } else {
+            CreateIconIndirect(&info)
+        };
+        DeleteObject(color as _);
+        DeleteObject(monochrome as _);
+        (!icon.is_null()).then_some(icon)
+    }
+}
+
 /// The screen's DPI over 96: pixels per point.
 fn dpi_scale() -> f64 {
     // SAFETY: the screen DC is released before returning.
@@ -921,7 +963,7 @@ pub fn run_with(folder: Option<PathBuf>, options: ScanOptions, no_elevate: bool)
             cbClsExtra: 0,
             cbWndExtra: 0,
             hInstance: instance,
-            hIcon: LoadIconW(null_mut(), IDI_APPLICATION),
+            hIcon: app_icon(SM_CXICON).unwrap_or_else(|| LoadIconW(null_mut(), IDI_APPLICATION)),
             hCursor: LoadCursorW(null_mut(), IDC_ARROW),
             hbrBackground: null_mut(),
             lpszMenuName: null(),
@@ -947,6 +989,12 @@ pub fn run_with(folder: Option<PathBuf>, options: ScanOptions, no_elevate: bool)
         if hwnd.is_null() {
             drop(Box::from_raw(state));
             return;
+        }
+        // The title bar's and the taskbar's: the class gives the big one only.
+        for (which, metric) in [(ICON_SMALL, SM_CXSMICON), (ICON_BIG, SM_CXICON)] {
+            if let Some(icon) = app_icon(metric) {
+                SendMessageW(hwnd, WM_SETICON, which as WPARAM, icon as LPARAM);
+            }
         }
         // Through the guard like any handler: both re-enter the window procedure.
         run_handler(state, |window| {

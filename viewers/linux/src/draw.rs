@@ -185,11 +185,6 @@ fn treemap(canvas: &mut Canvas, viewer: &Viewer, pens: &Pens) {
             )
             .inset(0.5, 0.5);
         canvas.fill(rect, SMALL_FILES, 1.0);
-        // Its entries, a speck each down to a pixel, in their tiles' colours.
-        for dust in viewer.dust() {
-            let speck = layout.cells_to_rect(dust.x, dust.y, dust.width, dust.height);
-            canvas.fill(speck, dust.color, 1.0);
-        }
         if viewer.dust().is_empty() && rect.w >= 50.0 && rect.h >= 15.0 {
             pens.tile_size.draw(
                 canvas,
@@ -202,6 +197,12 @@ fn treemap(canvas: &mut Canvas, viewer: &Viewer, pens: &Pens) {
                 ),
             );
         }
+    }
+    // The "small files" corners' entries — the board's, and each folder's — a speck each
+    // down to a pixel, in their tiles' colours.
+    for dust in viewer.dust() {
+        let speck = layout.cells_to_rect(dust.x, dust.y, dust.width, dust.height);
+        canvas.fill(speck, dust.color, 1.0);
     }
     let alpha = if viewer.focus == Focus::Treemap {
         1.0

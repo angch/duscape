@@ -206,7 +206,41 @@ impl Layout {
     }
 }
 
-/// One entry of the "small files" corner, in the board's cells, and the colour of its kind.
+/// A speck's colour: a file's is its extension's, worked out once for each, not once a speck.
+#[derive(Default)]
+struct SpeckColors {
+    by_extension: ::std::collections::HashMap<OsString, (f64, f64, f64)>,
+}
+
+impl SpeckColors {
+    fn speck(&mut self, area: Area, name: &OsStr, file_type: FileType, index: usize) -> Dust {
+        let color = if file_type == FileType::Folder {
+            // Darker, as a level deeper would be, so a corner of folders reads against the
+            // folder it is in, which is the same blue.
+            let (r, g, b) = tile_color(name, file_type, index);
+            (r * 0.7, g * 0.7, b * 0.7)
+        } else {
+            let extension = Path::new(name).extension().unwrap_or_default();
+            match self.by_extension.get(extension) {
+                Some(&color) => color,
+                None => {
+                    let color = tile_color(name, file_type, 0);
+                    self.by_extension.insert(extension.to_os_string(), color);
+                    color
+                }
+            }
+        };
+        Dust {
+            x: area.x,
+            y: area.y,
+            width: area.width,
+            height: area.height,
+            color,
+        }
+    }
+}
+
+/// One entry of a "small files" corner, in the board's cells, and the colour of its kind.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Dust {
     pub x: u16,
@@ -474,6 +508,7 @@ impl Viewer {
             label_rows: (TILE_LABEL * scale).ceil() as u16,
             margin: ((TILE_MARGIN * scale).round() as u16).max(1),
             grid,
+            dust: true,
             ..Nesting::default()
         };
         let bounds = self.layout.bounds;
@@ -527,25 +562,31 @@ impl Viewer {
 
     /// The tiles inside the folder tiles, when the tree view is on; none otherwise.
     fn rebuild_nested(&mut self) {
+        self.dust.clear();
+        let mut colors = SpeckColors::default();
+        let mut dust = Vec::new();
         self.nested = if self.tree_view {
-            libduscape::tiles::nest(
+            libduscape::tiles::nest_with(
                 self.tree.get_current_folder(),
                 &self.board.tiles,
                 self.tree.shown,
                 &self.nesting,
+                &mut |area, entry, index| {
+                    dust.push(colors.speck(area, entry.name, entry.file_type, index));
+                },
             )
         } else {
             Vec::new()
         };
+        self.dust = dust;
         // The tiles moved: what was under the pointer is not known until it moves again.
         self.hover_nested = None;
-        self.rebuild_dust();
+        self.board_dust(&mut colors);
     }
 
-    /// The entries in the "small files" corner, each as a speck of its colour there: only in
-    /// pixel cells, where a speck is a pixel or more.
-    fn rebuild_dust(&mut self) {
-        self.dust.clear();
+    /// The entries in the board's "small files" corner, each as a speck of its colour there:
+    /// only in pixel cells, where a speck is a pixel or more.
+    fn board_dust(&mut self, colors: &mut SpeckColors) {
         let (Some(_), Some((sx, sy))) =
             (self.pixel_scale, self.board.unrenderable_tile_coordinates)
         else {
@@ -558,36 +599,20 @@ impl Viewer {
             height: self.layout.rows.saturating_sub(sy),
         };
         let hidden = self.board.hidden();
+        let shares: Vec<f64> = hidden.iter().map(|entry| entry.percentage).collect();
         let offset = self.board.tiles.len() + self.board.zoom_level;
-        // A file's colour is its extension's: worked out once for each, not once a speck.
-        let mut colors: ::std::collections::HashMap<Option<&OsStr>, (f64, f64, f64)> =
-            ::std::collections::HashMap::new();
-        self.dust = libduscape::tiles::scatter(&hidden, &corner)
-            .into_iter()
-            .map(|mote| {
-                let entry = hidden[mote.entry];
-                let color = if entry.file_type == FileType::Folder {
-                    tile_color(&entry.name, entry.file_type, offset + mote.entry)
-                } else {
-                    *colors
-                        .entry(Path::new(&entry.name).extension())
-                        .or_insert_with(|| tile_color(&entry.name, entry.file_type, 0))
-                };
-                Dust {
-                    x: mote.area.x,
-                    y: mote.area.y,
-                    width: mote.area.width,
-                    height: mote.area.height,
-                    color,
-                }
-            })
-            .collect();
+        for mote in libduscape::tiles::scatter(&shares, &corner) {
+            let entry = hidden[mote.entry];
+            let speck = colors.speck(mote.area, &entry.name, entry.file_type, offset + mote.entry);
+            self.dust.push(speck);
+        }
     }
 
-    /// The "small files" corner filled in: every entry too small for a tile, laid out again
-    /// inside the corner down to a pixel each and coloured as its tile would be. A picture
-    /// only — they have no names and are no targets: a click there is the corner's
-    /// ([`Hit::SmallFiles`]). Empty unless the viewer lays out in pixels.
+    /// The "small files" corners filled in — the board's, and each nested folder's — every
+    /// entry too small for a tile laid out again inside its corner down to a pixel each and
+    /// coloured as its tile would be. A picture only — they have no names and are no targets:
+    /// a click on the board's corner is [`Hit::SmallFiles`], on a folder's, the folder's.
+    /// Empty unless the viewer lays out in pixels.
     #[must_use]
     pub fn dust(&self) -> &[Dust] {
         &self.dust

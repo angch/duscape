@@ -104,6 +104,12 @@ impl TreeMap {
             self.hidden.sort_unstable();
         }
     }
+    /// What the children left of the area, in cells: nothing when their shares add up to the
+    /// whole, their siblings' room when some were not given to be laid out.
+    #[must_use]
+    pub fn leftover(&self) -> Area {
+        self.empty_space.round()
+    }
     /// Lay out `row`, the children from `first` on.
     fn layoutrow(&mut self, first: usize, row: &[&FileMetadata]) {
         let row_total = row.iter().fold(0.0, |acc, file_metadata| {

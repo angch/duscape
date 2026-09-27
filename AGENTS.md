@@ -122,8 +122,12 @@ Six kinds of thread communicate via `mpsc` channels (bounded, except the preview
   inside it in one-pixel cells with no least tile, as many as it has pixels, largest first and
   in proportion to each other, so a flat folder of 87k small files shows as specks, not a grey
   box. The motes have no names and are no targets; `Viewer::dust` colours them (per extension,
-  cached) and every desktop painter fills them in one pass. With no least tile a row's worst
-  ratio is read from its two ends, since the children come largest first
+  cached; folders darker, as a level deeper) and every desktop painter fills them in one pass.
+  With no least tile a row's worst ratio is read from its two ends, since the children come
+  largest first. Each nested folder's corner is filled too (`Nesting::dust`, `nest_with`'s
+  `speck`): a folder with one ranks again for as many more entries as the corner has pixels
+  (`largest_shares_from`, names borrowed, not copied), and where the entries too small to rank
+  left their room empty rather than a corner, that room is it (`TreeMap::leftover`)
 - `tiles/nested.rs` — `nest`: the treemap nested — the same squarify run inside each folder
   tile (under its label rows, within a margin) on the folder's entries, and theirs in turn,
   down to the files wherever there is room: what ends it is an inside too small for two
@@ -282,6 +286,14 @@ shared `Viewer`, not in `win/`:
   and hovering one names it (`hover_nested`, cleared by every relayout since the tiles moved). Off by default (`set_tree_view`); all three
   desktop viewers turn it on for every scan, and a viewer that does not draw depth sees the flat
   listing and the flat tiles
+- `icon.rs` — the app's icon, drawn by the treemap: a folder of three files beside five more,
+  squarified at the size asked for (so sharp at every size) in the tiles' colours, round
+  cornered from 24 px; `rgba` for a window system that takes pixels, `png` (stored, not
+  compressed) for one that takes a file's bytes. A placeholder until a drawn one. Windows sets
+  it on the class and with `WM_SETICON` (`win::app_icon`, at `SM_CXICON`/`SM_CXSMICON`); X11
+  as `_NET_WM_ICON` (16–128 px); macOS as the application icon image (Dock, switcher). Not
+  the `.exe`'s own icon in Explorer, which needs a resource compiler the zig cross-build lacks,
+  and not Wayland, which takes an icon from a `.desktop` file
 - `menu.rs` — the context menu every desktop viewer opens on a right-click: `Viewer::
   context_menu(&Platform)` gives its `Entry`s (an `Action`, the words, whether it can be chosen)
   for what is targeted, the counts following the marks; `Platform` says what the viewer adds

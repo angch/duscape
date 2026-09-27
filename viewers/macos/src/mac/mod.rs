@@ -10,13 +10,14 @@ use ::std::path::PathBuf;
 
 use objc2::rc::Retained;
 use objc2::runtime::{NSObjectProtocol, ProtocolObject, Sel};
-use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, sel};
+use objc2::{AnyThread, DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSAutoresizingMaskOptions,
-    NSBackingStoreType, NSEventModifierFlags, NSMenu, NSMenuItem, NSWindow, NSWindowStyleMask,
+    NSBackingStoreType, NSEventModifierFlags, NSImage, NSMenu, NSMenuItem, NSWindow,
+    NSWindowStyleMask,
 };
 use objc2_foundation::{
-    MainThreadMarker, NSNotification, NSObject, NSPoint, NSRect, NSSize, NSString,
+    MainThreadMarker, NSData, NSNotification, NSObject, NSPoint, NSRect, NSSize, NSString,
 };
 
 use libduscape::ScanOptions;
@@ -130,6 +131,12 @@ pub fn run() {
 pub fn run_with(folder: Option<PathBuf>, scan_options: ScanOptions) {
     let mtm = MainThreadMarker::new().expect("AppKit runs on the main thread");
     let app = NSApplication::sharedApplication(mtm);
+    // The app's icon, a treemap, in the Dock and the app switcher while it runs.
+    let icon = NSData::with_bytes(&duscape_viewer::icon::png(512));
+    if let Some(image) = NSImage::initWithData(NSImage::alloc(), &icon) {
+        // SAFETY: an image the app keeps for as long as it runs, set on the main thread.
+        unsafe { app.setApplicationIconImage(Some(&image)) };
+    }
     let delegate = Delegate::new(mtm);
     app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
     app.setMainMenu(Some(&menu_bar(mtm, &app)));

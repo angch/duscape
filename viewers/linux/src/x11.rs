@@ -25,10 +25,25 @@ x11rb::atom_manager! {
         WM_PROTOCOLS,
         WM_DELETE_WINDOW,
         _NET_WM_NAME,
+        _NET_WM_ICON,
         UTF8_STRING,
         CLIPBOARD,
         TARGETS,
     }
+}
+
+/// `_NET_WM_ICON`'s value: for each size its width, its height, then its pixels as
+/// `0xAARRGGBB`, rows top to bottom.
+fn net_wm_icon(sizes: &[u32]) -> Vec<u32> {
+    let mut data = Vec::new();
+    for &size in sizes {
+        data.extend([size, size]);
+        let rgba = duscape_viewer::icon::rgba(size);
+        data.extend(rgba.as_chunks::<4>().0.iter().map(|&[r, g, b, a]| {
+            u32::from(a) << 24 | u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b)
+        }));
+    }
+    data
 }
 
 /// Modifier bits in an event's `state`.
@@ -198,6 +213,15 @@ impl X11 {
             AtomEnum::WM_CLASS,
             AtomEnum::STRING,
             b"duscape-linux\0duscape-linux\0",
+        )
+        .map_err(|error| error.to_string())?;
+        // The app's icon, a treemap, at the sizes window lists and task bars pick from.
+        conn.change_property32(
+            PropMode::REPLACE,
+            window,
+            atoms._NET_WM_ICON,
+            AtomEnum::CARDINAL,
+            &net_wm_icon(&[16, 32, 48, 64, 128]),
         )
         .map_err(|error| error.to_string())?;
         let gc = conn.generate_id().map_err(|error| error.to_string())?;

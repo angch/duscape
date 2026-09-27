@@ -6,7 +6,10 @@
 
 use ::std::ffi::OsString;
 
-use super::{Area, FileType, Grid, Tile, TreeMap, largest_in_folder_from};
+use super::{
+    Area, FileType, Grid, Share, Tile, TreeMap, largest_in_folder_from, largest_shares_from,
+    scatter,
+};
 use crate::model::{FileOrFolder, Folder, SizeKind};
 
 /// A tile inside a folder's tile.
@@ -45,6 +48,11 @@ pub struct Nesting {
     pub max_tiles: usize,
     /// The cells, and the least tile: the board's.
     pub grid: Grid,
+    /// Fill each folder's own "small files" corner with its entries' specks, as the board's
+    /// is filled ([`scatter`]), handing each to [`nest_with`]'s `speck`: in pixel cells, where
+    /// a speck is a pixel. A folder with a corner ranks its entries twice: once for the tiles,
+    /// then as many more as the corner has pixels.
+    pub dust: bool,
 }
 
 impl Default for Nesting {
@@ -55,6 +63,7 @@ impl Default for Nesting {
             margin: 1,
             max_tiles: 100_000,
             grid: Grid::TERMINAL,
+            dust: false,
         }
     }
 }
@@ -94,6 +103,18 @@ impl Nesting {
 /// before their children.
 #[must_use]
 pub fn nest(folder: &Folder, tiles: &[Tile], kind: SizeKind, nesting: &Nesting) -> Vec<NestedTile> {
+    nest_with(folder, tiles, kind, nesting, &mut |_, _, _| {})
+}
+
+/// [`nest`], handing `speck` each speck of the folders' "small files" corners — where, the
+/// entry it is, and its place among its corner's — when `nesting.dust` is on.
+pub fn nest_with(
+    folder: &Folder,
+    tiles: &[Tile],
+    kind: SizeKind,
+    nesting: &Nesting,
+    speck: &mut dyn FnMut(Area, &Share, usize),
+) -> Vec<NestedTile> {
     // However deep it goes, the nesting holds at most as many tiles as the folder tiles' area
     // holds at the minimum size: the bound on a relayout's and a paint's work is the screen.
     let area: usize = tiles
@@ -118,7 +139,7 @@ pub fn nest(folder: &Folder, tiles: &[Tile], kind: SizeKind, nesting: &Nesting) 
                 top,
                 depth: 1,
             };
-            nest_into(child, &place, kind, nesting, &mut out);
+            nest_into(child, &place, kind, nesting, &mut out, speck);
         }
     }
     out
@@ -189,6 +210,7 @@ fn nest_into(
     kind: SizeKind,
     nesting: &Nesting,
     out: &mut Vec<NestedTile>,
+    speck: &mut dyn FnMut(Area, &Share, usize),
 ) {
     if place.depth > nesting.max_depth || out.len() >= nesting.max_tiles {
         return;
@@ -211,6 +233,47 @@ fn nest_into(
     let files = largest_in_folder_from(folder, kind, room, least_cells / inside_cells);
     let mut map = TreeMap::with_grid(&inside, grid);
     map.populate_tiles(files.iter().collect());
+    // The corner: from the first entry given no tile to the far corner, or where there was
+    // none, the room left by the entries too small to be ranked, which lies there too.
+    let corner = match map.unrenderable_tile_coordinates {
+        Some((x, y)) => Area {
+            x,
+            y,
+            width: (inside.x + inside.width).saturating_sub(x),
+            height: (inside.y + inside.height).saturating_sub(y),
+        },
+        None => map.leftover(),
+    };
+    if nesting.dust && corner.width > 0 && corner.height > 0 {
+        // The entries ranked but given no tile, then those too small to be ranked for one:
+        // ranked again, as many more as the corner has pixels, of a pixel or more. The same
+        // order, so the first ranking is the head of the second.
+        let pixels = usize::from(corner.width) * usize::from(corner.height);
+        let more = largest_shares_from(
+            folder,
+            kind,
+            files.len(),
+            files.len() + pixels,
+            1.0 / inside_cells,
+        );
+        let hidden: Vec<Share> = map
+            .hidden
+            .iter()
+            .map(|&index| {
+                let file = &files[index];
+                Share {
+                    name: &file.name,
+                    percentage: file.percentage,
+                    file_type: file.file_type,
+                }
+            })
+            .chain(more)
+            .collect();
+        let shares: Vec<f64> = hidden.iter().map(|share| share.percentage).collect();
+        for mote in scatter(&shares, &corner) {
+            speck(mote.area, &hidden[mote.entry], mote.entry);
+        }
+    }
     // The folders among them, gone into once all of this level is in `out`: parents first.
     let mut folders = Vec::new();
     for child in map.tiles {
@@ -233,7 +296,7 @@ fn nest_into(
         });
     }
     for (entries, inner) in &folders {
-        nest_into(entries, inner, kind, nesting, out);
+        nest_into(entries, inner, kind, nesting, out, speck);
     }
 }
 

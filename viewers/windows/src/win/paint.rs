@@ -484,23 +484,24 @@ fn draw_treemap(canvas: &Canvas, window: &Window, layout: &Layout) {
         );
         canvas.fill(corner, rgb(60, 60, 60));
         canvas.frame(corner, BORDER, 1);
-        // Its entries, a speck each down to a pixel, in their tiles' colours; framed where
-        // there is room for a frame and some colour inside it.
-        for dust in viewer.dust() {
-            let rect = layout.cells_to_rect(dust.x, dust.y, dust.width, dust.height);
-            let (r, g, b) = dust.color;
-            let byte = |value: f64| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
-            canvas.fill(rect, rgb(byte(r), byte(g), byte(b)));
-            if dust.width >= MIN_TILE_PIXELS && dust.height >= MIN_TILE_PIXELS {
-                canvas.frame(rect, BORDER, 1);
-            }
-        }
         // The label only where it fits, and not over the specks: a sliver of a corner is still
         // drawn, as the terminal viewer keeps its `x`, but half a line of text would read as a
         // glitch.
         if viewer.dust().is_empty() && corner.h >= LINE + pad / 2.0 {
             let line = Rect::new(corner.x + pad, corner.y, corner.w - 2.0 * pad, LINE);
             canvas.text(line, "x  small files", DIM, fonts.ui, false);
+        }
+    }
+    // The "small files" corners' entries — the board's, and each folder's — a speck each
+    // down to a pixel, in their tiles' colours; framed where there is room for a frame and
+    // colour inside it, since a framed speck of a few pixels reads as a hollow box.
+    for dust in viewer.dust() {
+        let rect = layout.cells_to_rect(dust.x, dust.y, dust.width, dust.height);
+        let (r, g, b) = dust.color;
+        let byte = |value: f64| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+        canvas.fill(rect, rgb(byte(r), byte(g), byte(b)));
+        if dust.width >= 2 * MIN_TILE_PIXELS && dust.height >= 2 * MIN_TILE_PIXELS {
+            canvas.frame(rect, BORDER, 1);
         }
     }
     if let Some(tile) = board.currently_selected() {

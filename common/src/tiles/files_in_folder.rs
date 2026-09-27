@@ -48,32 +48,7 @@ pub fn largest_in_folder_from(
     limit: usize,
     least_share: f64,
 ) -> Vec<FileMetadata> {
-    let entries_total: u128 = folder.contents.values().map(|entry| entry.size(kind)).sum();
-    let total_size = folder.sizes.get(kind).max(entries_total);
-    // An empty folder's entries all share it equally, so none is dropped.
-    let least = if total_size == 0 {
-        0
-    } else {
-        (least_share * total_size as f64) as u128
-    };
-    let mut ranked: Vec<(u128, &OsStr, &FileOrFolder)> = folder
-        .contents
-        .iter()
-        .map(|(name, entry)| (entry.size(kind), name, entry))
-        .filter(|&(size, _, _)| size >= least)
-        .collect();
-    // Largest first, ties by name: the order `files_in_folder` sorts into.
-    let by_rank = |a: &(u128, &OsStr, &FileOrFolder), b: &(u128, &OsStr, &FileOrFolder)| {
-        b.0.cmp(&a.0).then_with(|| a.1.cmp(b.1))
-    };
-    if limit < ranked.len() {
-        if limit == 0 {
-            return Vec::new();
-        }
-        ranked.select_nth_unstable_by(limit - 1, by_rank);
-        ranked.truncate(limit);
-    }
-    ranked.sort_unstable_by(by_rank);
+    let (ranked, total_size) = rank(folder, kind, limit, least_share);
     ranked
         .into_iter()
         .map(|(size, name, entry)| {
@@ -90,6 +65,76 @@ pub fn largest_in_folder_from(
             }
         })
         .collect()
+}
+
+/// An entry's share of its folder, its name borrowed: for a picture of many entries, where
+/// copying each name would cost more than the rest.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Share<'a> {
+    pub name: &'a OsStr,
+    pub percentage: f64,
+    pub file_type: FileType,
+}
+
+/// [`largest_in_folder_from`]'s entries after the first `skip`, as [`Share`]s.
+#[must_use]
+pub fn largest_shares_from(
+    folder: &Folder,
+    kind: SizeKind,
+    skip: usize,
+    limit: usize,
+    least_share: f64,
+) -> Vec<Share<'_>> {
+    let (ranked, total_size) = rank(folder, kind, limit, least_share);
+    ranked
+        .into_iter()
+        .skip(skip)
+        .map(|(size, name, entry)| Share {
+            name,
+            percentage: calculate_percentage(size, total_size, folder.contents.len()),
+            file_type: match entry {
+                FileOrFolder::Folder(_) => FileType::Folder,
+                FileOrFolder::File(_) => FileType::File,
+            },
+        })
+        .collect()
+}
+
+type Ranked<'a> = (u128, &'a OsStr, &'a FileOrFolder);
+
+/// The `limit` largest entries of `folder` of `least_share` of it or more, largest first and
+/// ties by name, and the size their shares are of.
+fn rank(
+    folder: &Folder,
+    kind: SizeKind,
+    limit: usize,
+    least_share: f64,
+) -> (Vec<Ranked<'_>>, u128) {
+    let entries_total: u128 = folder.contents.values().map(|entry| entry.size(kind)).sum();
+    let total_size = folder.sizes.get(kind).max(entries_total);
+    // An empty folder's entries all share it equally, so none is dropped.
+    let least = if total_size == 0 {
+        0
+    } else {
+        (least_share * total_size as f64) as u128
+    };
+    let mut ranked: Vec<Ranked<'_>> = folder
+        .contents
+        .iter()
+        .map(|(name, entry)| (entry.size(kind), name, entry))
+        .filter(|&(size, _, _)| size >= least)
+        .collect();
+    // Largest first, ties by name: the order `files_in_folder` sorts into.
+    let by_rank = |a: &Ranked<'_>, b: &Ranked<'_>| b.0.cmp(&a.0).then_with(|| a.1.cmp(b.1));
+    if limit < ranked.len() {
+        if limit == 0 {
+            return (Vec::new(), total_size);
+        }
+        ranked.select_nth_unstable_by(limit - 1, by_rank);
+        ranked.truncate(limit);
+    }
+    ranked.sort_unstable_by(by_rank);
+    (ranked, total_size)
 }
 
 /// The entries of `folder`, largest first by the size of `kind`, less the `offset` largest (the

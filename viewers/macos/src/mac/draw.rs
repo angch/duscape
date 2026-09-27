@@ -290,20 +290,6 @@ fn treemap(viewer: &Viewer, pens: &Pens) {
             )
             .inset(0.5, 0.5);
         fill(rect, &srgb((0.30, 0.30, 0.32), 1.0));
-        // Its entries, a speck each down to a pixel, in their tiles' colours: a colour is made
-        // only when it changes, since there can be tens of thousands of them.
-        let mut color: Option<((f64, f64, f64), Retained<NSColor>)> = None;
-        for dust in viewer.dust() {
-            if color.as_ref().is_none_or(|(had, _)| *had != dust.color) {
-                color = Some((dust.color, srgb(dust.color, 1.0)));
-            }
-            if let Some((_, ns)) = &color {
-                fill(
-                    layout.cells_to_rect(dust.x, dust.y, dust.width, dust.height),
-                    ns,
-                );
-            }
-        }
         if viewer.dust().is_empty() && rect.w >= 50.0 && rect.h >= 15.0 {
             pens.tile_size.draw(
                 "small files",
@@ -313,6 +299,21 @@ fn treemap(viewer: &Viewer, pens: &Pens) {
                     rect.w - 8.0,
                     14.0,
                 ),
+            );
+        }
+    }
+    // The "small files" corners' entries — the board's, and each folder's — a speck each
+    // down to a pixel, in their tiles' colours: a colour is made only when it changes, since
+    // there can be tens of thousands of them.
+    let mut color: Option<((f64, f64, f64), Retained<NSColor>)> = None;
+    for dust in viewer.dust() {
+        if color.as_ref().is_none_or(|(had, _)| *had != dust.color) {
+            color = Some((dust.color, srgb(dust.color, 1.0)));
+        }
+        if let Some((_, ns)) = &color {
+            fill(
+                layout.cells_to_rect(dust.x, dust.y, dust.width, dust.height),
+                ns,
             );
         }
     }
