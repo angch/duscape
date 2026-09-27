@@ -475,6 +475,7 @@ name = "duscape-viewer"
 version = "0.2.1"
 dependencies = [
  "duscape-scan",
+ "image",
  "libduscape",
 ]
 

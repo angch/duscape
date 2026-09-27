@@ -26,7 +26,7 @@ use clap::Parser;
 use duscape_scan::rescan::{Outcome, Rescanner};
 use duscape_viewer::menu::{Action, Entry, Platform};
 use duscape_viewer::scan;
-use duscape_viewer::state::{Direction, Hit, Jump, Mods, Preview, ROW, Rect, Viewer};
+use duscape_viewer::state::{DUST_IDLE, Direction, Hit, Jump, Mods, Preview, ROW, Rect, Viewer};
 use libduscape::model::SizeKind;
 use libduscape::preview::{Reader, Ready};
 use libduscape::{DirSummary, FileTree, ScanOptions};
@@ -69,6 +69,8 @@ const WM_APP_MSG: u32 = WM_APP + 1;
 const FLASH_TIMER: usize = 1;
 /// Fires once after a burst of outline batches, to lay the live view out for them.
 const OUTLINE_TIMER: usize = 2;
+/// Fires once input has stopped for `DUST_IDLE` while the specks are owed: the second pass.
+const DUST_TIMER: usize = 3;
 /// How long after a batch the live view is laid out — the elevated scan of a volume sends
 /// dozens of batches a second, and each relayout took 15–25 ms, so laid out per batch the
 /// window answered nothing until the scan ended.
@@ -151,6 +153,13 @@ impl Window {
     /// After anything that may have changed what is shown: ask for the preview of the entry in
     /// hand, retitle, and redraw.
     fn changed(&mut self, hwnd: HWND) {
+        // The specks of the "small files" corners, when the relayout left them for later:
+        // once input has stopped, each change putting it off again.
+        if self.viewer.dust_pending() {
+            let idle = u32::try_from(DUST_IDLE.as_millis()).unwrap_or(u32::MAX);
+            // SAFETY: our own window and timer.
+            unsafe { SetTimer(hwnd, DUST_TIMER, idle, None) };
+        }
         // The picture is prepared at the pixels it will take, so a resize asks for it again.
         if let Some(info) = self.viewer.layout.info {
             let (_, body) = preview_parts(info);
@@ -757,6 +766,12 @@ fn dispatch(window: &mut Window, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
             window.viewer.catch_up();
             window.changed(hwnd);
         }
+        WM_TIMER if wparam == DUST_TIMER => {
+            // SAFETY: our own timer.
+            unsafe { KillTimer(hwnd, DUST_TIMER) };
+            window.viewer.finish_dust();
+            invalidate(hwnd);
+        }
         WM_TIMER if wparam == FLASH_TIMER => {
             if window.viewer.message_left().is_none() {
                 // SAFETY: our own timer.
@@ -938,6 +953,8 @@ pub fn run_with(folder: Option<PathBuf>, options: ScanOptions, no_elevate: bool)
     viewer.set_tree_view(true);
     // The treemap in the screen's pixels: every entry big enough to see gets a tile.
     viewer.set_pixel_scale(scale);
+    // And the specks of its corners in a second pass, when laying them out would be slow.
+    viewer.defer_dust(true);
     let window = Box::new(Window {
         hwnd: 0,
         viewer,

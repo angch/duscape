@@ -15,6 +15,8 @@ pub mod cli;
 pub mod elevate;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod preview;
+#[cfg(test)]
+mod resources_tests;
 #[cfg(windows)]
 mod win;
 

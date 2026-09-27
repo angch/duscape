@@ -44,6 +44,12 @@ const MAX_CELLS: f64 = 4096.0;
 /// in from its sides and bottom, in points.
 pub const TILE_LABEL: f64 = 18.0;
 pub const TILE_MARGIN: f64 = 2.0;
+/// What a relayout may take and still leave a 60 Hz frame room to paint: past it, the specks
+/// of the "small files" corners wait for a second pass ([`Viewer::defer_dust`]).
+pub const LAYOUT_BUDGET: Duration = Duration::from_millis(10);
+/// How long input must have stopped before a viewer runs that second pass
+/// ([`Viewer::finish_dust`]): long enough that a drag of the window's edge is not held up.
+pub const DUST_IDLE: Duration = Duration::from_millis(60);
 /// The breadcrumb bar across the top, and the status bar across the bottom.
 pub const PATH_BAR: f64 = 30.0;
 pub const STATUS_BAR: f64 = 24.0;
@@ -374,6 +380,13 @@ pub struct Viewer {
     nested: Vec<NestedTile>,
     /// The "small files" corner filled in, in pixel cells; see [`Viewer::dust`].
     dust: Vec<Dust>,
+    /// Whether the specks may wait for a second pass when laying them out would be slow;
+    /// see [`Viewer::defer_dust`].
+    defer_dust: bool,
+    /// The specks are owed: the tiles were laid out without them.
+    dust_pending: bool,
+    /// What the last layout with the specks took, the nesting's and theirs.
+    dust_cost: Option<Duration>,
     /// The nested tile under the pointer.
     pub hover_nested: Option<usize>,
     /// The zoom level of each folder above this one, to restore on the way back up.
@@ -436,6 +449,9 @@ impl Viewer {
             hover_row: None,
             nested: Vec::new(),
             dust: Vec::new(),
+            defer_dust: false,
+            dust_pending: false,
+            dust_cost: None,
             hover_nested: None,
             zooms: Vec::new(),
             scanning: true,
@@ -553,6 +569,8 @@ impl Viewer {
 
     /// Lay the folder's entries out again, after the tree or the size shown changed.
     fn refresh(&mut self) {
+        // What the specks cost is not known for what is shown now: tiles first, specks after.
+        self.dust_cost = None;
         self.board.change_files(self.tree.get_current_folder());
         self.rebuild_rows();
         self.rebuild_nested();
@@ -562,26 +580,67 @@ impl Viewer {
 
     /// The tiles inside the folder tiles, when the tree view is on; none otherwise.
     fn rebuild_nested(&mut self) {
+        // The specks inline while that keeps the relayout inside a frame, as it last did —
+        // else the tiles now, and the specks in a second pass when input stops.
+        let pixels = self.pixel_scale.is_some();
+        let inline = !self.defer_dust || self.dust_cost.is_some_and(|cost| cost <= LAYOUT_BUDGET);
+        self.lay_nesting(pixels && inline);
+        self.dust_pending = pixels && !inline;
+        // The tiles moved: what was under the pointer is not known until it moves again.
+        self.hover_nested = None;
+    }
+
+    /// Let the specks of the "small files" corners wait for a second pass when laying them out
+    /// with the tiles would take more than [`LAYOUT_BUDGET`] — as the last layout with them
+    /// did, or before any has been timed. The viewer then calls [`Viewer::finish_dust`] once
+    /// input has stopped for [`DUST_IDLE`], while [`Viewer::dust_pending`] says so: first paint
+    /// and a drag stay fast, and the specks follow. Off, they are always laid out at once.
+    pub fn defer_dust(&mut self, on: bool) {
+        self.defer_dust = on;
+    }
+
+    /// Whether the specks are owed, the tiles having been laid out without them.
+    #[must_use]
+    pub fn dust_pending(&self) -> bool {
+        self.dust_pending
+    }
+
+    /// The second pass: the nesting again with the specks, timed for the next relayout's
+    /// choice. The tiles come out as they were, so what is under the pointer still is.
+    pub fn finish_dust(&mut self) {
+        if std::mem::take(&mut self.dust_pending) {
+            self.lay_nesting(true);
+        }
+    }
+
+    /// The nesting, and with `dust` the corners' specks, the time it took noted.
+    fn lay_nesting(&mut self, dust: bool) {
+        let started = Instant::now();
+        let nesting = Nesting {
+            dust,
+            ..self.nesting
+        };
         self.dust.clear();
         let mut colors = SpeckColors::default();
-        let mut dust = Vec::new();
+        let mut specks = Vec::new();
         self.nested = if self.tree_view {
             libduscape::tiles::nest_with(
                 self.tree.get_current_folder(),
                 &self.board.tiles,
                 self.tree.shown,
-                &self.nesting,
+                &nesting,
                 &mut |area, entry, index| {
-                    dust.push(colors.speck(area, entry.name, entry.file_type, index));
+                    specks.push(colors.speck(area, entry.name, entry.file_type, index));
                 },
             )
         } else {
             Vec::new()
         };
-        self.dust = dust;
-        // The tiles moved: what was under the pointer is not known until it moves again.
-        self.hover_nested = None;
-        self.board_dust(&mut colors);
+        self.dust = specks;
+        if dust {
+            self.board_dust(&mut colors);
+            self.dust_cost = Some(started.elapsed());
+        }
     }
 
     /// The entries in the board's "small files" corner, each as a speck of its colour there:

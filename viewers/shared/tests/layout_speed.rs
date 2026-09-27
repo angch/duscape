@@ -54,4 +54,21 @@ fn layout_speed() {
             best * 1000.0
         );
     }
+    // As a window lays it out: the tiles first when the specks would make it slow, then the
+    // specks in a second pass.
+    viewer.defer_dust(true);
+    for (width, height) in [(1600.0, 1000.0), (2560.0, 1400.0)] {
+        let start = Instant::now();
+        viewer.resize(width + 0.5, height);
+        let first = start.elapsed();
+        let deferred = viewer.dust_pending();
+        let start = Instant::now();
+        viewer.finish_dust();
+        eprintln!(
+            "{width}x{height} pt, specks {}: first pass {:.2} ms, second {:.2} ms",
+            if deferred { "deferred" } else { "inline" },
+            first.as_secs_f64() * 1000.0,
+            start.elapsed().as_secs_f64() * 1000.0
+        );
+    }
 }

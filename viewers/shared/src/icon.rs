@@ -229,9 +229,70 @@ fn crc32(data: &[u8]) -> u32 {
     !crc
 }
 
+/// The sizes the Windows icon file holds: what Explorer and the taskbar pick from, at 100% to
+/// 200% scaling, up to the 256 of a large view.
+pub const ICO_SIZES: [u32; 10] = [16, 20, 24, 32, 40, 48, 64, 96, 128, 256];
+
+/// A `.ico` file of `images`: (size, PNG bytes) each, in order. Windows (from Vista) takes PNG
+/// images in an icon at every size.
+#[must_use]
+pub fn ico(images: &[(u32, Vec<u8>)]) -> Vec<u8> {
+    let mut out = Vec::new();
+    // Reserved, type 1 (icon), count.
+    out.extend_from_slice(&[0, 0, 1, 0]);
+    out.extend_from_slice(&(images.len() as u16).to_le_bytes());
+    let mut offset = 6 + 16 * images.len();
+    for (size, png) in images {
+        // A width or height of 256 is written as 0.
+        let side = if *size >= 256 { 0 } else { *size as u8 };
+        out.extend_from_slice(&[side, side, 0, 0]);
+        // One plane, 32 bits a pixel.
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&32u16.to_le_bytes());
+        out.extend_from_slice(&(png.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(offset as u32).to_le_bytes());
+        offset += png.len();
+    }
+    for (_, png) in images {
+        out.extend_from_slice(png);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{crc32, png, rgba};
+    use super::{ICO_SIZES, crc32, ico, png, rgba};
+
+    /// `viewers/windows/duscape.ico`, which the Windows binaries carry as their own icon (their
+    /// build scripts pack it as a resource), is this module's drawing: the test fails when the
+    /// drawing changed and the file did not. `DUSCAPE_WRITE_ICON=1` writes it.
+    #[test]
+    fn the_icon_file_is_the_one_drawn() {
+        use image::ImageEncoder;
+        use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+        let images: Vec<(u32, Vec<u8>)> = ICO_SIZES
+            .iter()
+            .map(|&size| {
+                let mut png = Vec::new();
+                PngEncoder::new_with_quality(&mut png, CompressionType::Best, FilterType::Adaptive)
+                    .write_image(&rgba(size), size, size, image::ExtendedColorType::Rgba8)
+                    .expect("encoding the icon");
+                (size, png)
+            })
+            .collect();
+        let drawn = ico(&images);
+        let path =
+            ::std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../windows/duscape.ico");
+        if ::std::env::var_os("DUSCAPE_WRITE_ICON").is_some() {
+            ::std::fs::write(&path, &drawn).expect("writing the icon file");
+        }
+        let committed = ::std::fs::read(&path).unwrap_or_default();
+        assert!(
+            committed == drawn,
+            "{} is not the icon drawn: DUSCAPE_WRITE_ICON=1 cargo test -p duscape-viewer              the_icon_file_is_the_one_drawn writes it",
+            path.display()
+        );
+    }
 
     #[test]
     fn it_is_drawn_at_every_size_asked_with_clear_round_corners() {

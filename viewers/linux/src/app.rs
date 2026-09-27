@@ -6,7 +6,7 @@ use ::std::io::Cursor;
 use ::std::path::{Path, PathBuf};
 use ::std::sync::Arc;
 use ::std::sync::atomic::{AtomicBool, Ordering};
-use ::std::sync::mpsc::{Receiver, Sender, channel};
+use ::std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use ::std::time::{Duration, Instant};
 
 use crate::backend::{self, Backend, Button, Input, Mods, keys};
@@ -18,7 +18,7 @@ use duscape_scan::rescan::{Outcome, Rescanner};
 use duscape_viewer::menu::{Action, Entry, Platform};
 use duscape_viewer::preview::{Loaded, Previewer};
 use duscape_viewer::scan;
-use duscape_viewer::state::{Direction, Hit, Jump, Preview, Rect, Viewer, drop_later};
+use duscape_viewer::state::{DUST_IDLE, Direction, Hit, Jump, Preview, Rect, Viewer, drop_later};
 use libduscape::model::SizeKind;
 use libduscape::{DirSummary, DisplayCount, DisplaySize, FileToDelete, FileTree, ScanOptions};
 
@@ -158,6 +158,7 @@ impl App {
         }
         // The treemap in the screen's pixels: every entry big enough to see gets a tile.
         viewer.set_pixel_scale(scale);
+        viewer.defer_dust(true);
         viewer.resize(width, height);
         let mut app = App {
             viewer,
@@ -193,7 +194,25 @@ impl App {
     /// The loop. Returns when the window is closed.
     pub fn run(mut self) -> Result<(), String> {
         self.render()?;
-        while let Ok(msg) = self.rx.recv() {
+        loop {
+            // While the specks of the "small files" corners are owed, the wait is only until
+            // input has stopped: then the second pass, and a frame with them.
+            let msg = if self.viewer.dust_pending() {
+                match self.rx.recv_timeout(DUST_IDLE) {
+                    Ok(msg) => msg,
+                    Err(RecvTimeoutError::Timeout) => {
+                        self.viewer.finish_dust();
+                        self.render()?;
+                        continue;
+                    }
+                    Err(RecvTimeoutError::Disconnected) => break,
+                }
+            } else {
+                match self.rx.recv() {
+                    Ok(msg) => msg,
+                    Err(_) => break,
+                }
+            };
             self.handle(msg);
             // Whatever else has arrived meanwhile, before drawing once for all of it.
             while let Ok(msg) = self.rx.try_recv() {
@@ -630,6 +649,7 @@ impl App {
         viewer.sidebar = sidebar;
         viewer.set_tree_view(true);
         viewer.set_pixel_scale(self.canvas.scale);
+        viewer.defer_dust(true);
         let done = self.tx.clone();
         viewer.enable_rescans(Rescanner::new(
             options,

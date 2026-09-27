@@ -39,6 +39,28 @@ delete changes) goes in `viewers/shared`, so the three desktop viewers behave al
 `Outline`, `Found`) are in `common` because the model consumes them; `duscape-scan` re-exports
 them, so `duscape_scan::X` works for either kind.
 
+### Performance goals (a soft spec)
+
+What every change is held to, adapted to sane practical defaults rather than met to the letter:
+
+- **Fast walkers and fast renderers.** A feature is not done until its cost is measured on a
+  real disk (`--benchmark` for the walk; `tests/layout_speed.rs` and `DUSCAPE_PAINT_TIMES` for
+  the window — "Modifying treemap layout" below) and is small beside the work it sits in.
+- **Fast time to first paint.** Show what is cheap now and refine after: the outline during the
+  scan, the tree when it is done, the second pass over small files (`refine_N`) after the tree
+  is on screen.
+- **About 60 fps while laying out again** (a resize, a folder change, a zoom): a relayout within
+  `LAYOUT_BUDGET` (10 ms) so the paint fits in the frame too.
+- **Adapt, do not just degrade.** A feature found to slow a frame is measured as it runs and put
+  off to a second pass when it would overrun, not dropped: the specks of the "small files"
+  corners are laid out with the tiles while the last layout with them was inside the budget,
+  else after input has stopped for `DUST_IDLE` (`Viewer::defer_dust`, `finish_dust`). Prefer
+  that shape — coarse now, complete after — to a switch the user has to find.
+- Where it stands (2026-09-27, 1.5x, 1600×1000 pt window): E:\ lays out in 4.5 ms then its
+  specks in 7.5; the flat 87k-file Dell backup 7.6 then 16; `C:\Windows` 13 then 21 — its
+  nesting alone is over the budget, and the next to take a second pass. A paint is 13–19 ms,
+  most of it text (GDI `DrawTextW`, ~35 µs a call).
+
 ---
 
 ## Essential Commands
@@ -76,6 +98,13 @@ cargo run --bin duscape -- -a  # apparent size mode
 
 Six kinds of thread communicate via `mpsc` channels (bounded, except the previewer's inbox), plus
 `parallel::SHARDS` tree builders that share nothing:
+
+*Why (the performance goals):* nothing that waits — on the disk, on a decode, on a timer — runs
+on the thread that draws, so the first paint comes while the walk is still going and no frame
+is held up by I/O. The channels are bounded so a fast walker cannot bury the renderer; what is
+sent to main is sized to the screen (the outline), not to the disk. Every desktop viewer keeps
+the same split: a scan thread, a previewer, rescans, and the window's own thread only laying
+out and painting.
 
 | Thread | Role |
 |--------|------|
@@ -253,6 +282,17 @@ shared `Viewer`, not in `win/`:
   selected only when it changes) and pictures are GDI's. The fonts are the system's message
   font (`SPI_GETNONCLIENTMETRICS`) and a treemap label size that fits the label band whole.
   `DUSCAPE_PAINT_TIMES=1` prints each frame's time on stderr (redirect it: no console).
+  `DUST_TIMER` runs the viewer's second pass (`finish_dust`) once input has stopped for
+  `DUST_IDLE`, each change putting it off again
+- `resources.rs` — the binaries' own resources, written without a resource compiler (the zig
+  cross-build has none) and `include!`d by this crate's `build.rs` and the TUI's: the icon
+  (`duscape.ico`, `RT_ICON` a size and the `RT_GROUP_ICON` Explorer reads) as a `.res` file for
+  `link.exe` on MSVC; on GNU one COFF object with a `.rsrc` resource tree, the manifest in it
+  too (a second `.rsrc` object does not link), so `duscape.exe` on GNU does not use
+  `embed-manifest`. `duscape.ico` is `duscape_viewer::icon` at ten sizes, PNG-compressed and
+  checked in; `icon::tests::the_icon_file_is_the_one_drawn` fails when the drawing changed and
+  the file did not (`DUSCAPE_WRITE_ICON=1` writes it). `src/resources_tests.rs` tests the
+  writer on every platform
   The list is drawn as the tree (`Viewer::rows`): each level indented `ROW_INDENT`, a folder's
   expander (`▸`/`▾`) in the `EXPANDER` column before its name, the "% of parent" bar from its
   level's indent. The
@@ -290,10 +330,10 @@ shared `Viewer`, not in `win/`:
   squarified at the size asked for (so sharp at every size) in the tiles' colours, round
   cornered from 24 px; `rgba` for a window system that takes pixels, `png` (stored, not
   compressed) for one that takes a file's bytes. A placeholder until a drawn one. Windows sets
-  it on the class and with `WM_SETICON` (`win::app_icon`, at `SM_CXICON`/`SM_CXSMICON`); X11
-  as `_NET_WM_ICON` (16–128 px); macOS as the application icon image (Dock, switcher). Not
-  the `.exe`'s own icon in Explorer, which needs a resource compiler the zig cross-build lacks,
-  and not Wayland, which takes an icon from a `.desktop` file
+  it on the class and with `WM_SETICON` (`win::app_icon`, at `SM_CXICON`/`SM_CXSMICON`), and
+  the `.exe`s carry it as a resource (`viewers/windows/resources.rs`); X11 as `_NET_WM_ICON`
+  (16–128 px); macOS as the application icon image (Dock, switcher). Not Wayland, which takes
+  an icon from a `.desktop` file
 - `menu.rs` — the context menu every desktop viewer opens on a right-click: `Viewer::
   context_menu(&Platform)` gives its `Entry`s (an `Action`, the words, whether it can be chosen)
   for what is targeted, the counts following the marks; `Platform` says what the viewer adds
@@ -468,7 +508,9 @@ Exiting { app_loaded: bool }
   segment, or a page at a time for one wider than the screen — and slides to the next in `SLIDE`
   (80 ms, eased), so every move finishes within 100 ms. The position is kept *within a segment*
   (`Ticker`), so a legend that changes length (scan done) does not make what is on screen jump.
-  Keys named in it come from `Keybinds`, never literals.
+  Keys named in it come from `Keybinds`, never literals. It ticks at frame rate only while it
+  slides, and twice a rest otherwise (`App::ticker_pace`): 60 fps where something moves, next
+  to nothing when idle.
 - **Colours**: no dark gray (unreadable on black) and no magenta on the light cursor bar; the
   cursor is black on gray, marks black on yellow. `side_panel` tests assert both.
 - **Focus**: the list has it by default (`Focus::List`; `list_cursor: None` means its top row,
@@ -482,18 +524,26 @@ Exiting { app_loaded: bool }
   sorted once per `change_files`; the side panel draws it every frame without re-sorting. Clicks
   are keyed by entry *name*, so a tile and a list row are the same target, and an entry with no
   tile can still be entered or copied.
-- **Render-on-demand**: Render only when an `Instruction` arrives; no continuous loop.
+- **Render-on-demand**: Render only when an `Instruction` arrives; no continuous loop. Every
+  frame is one something asked for, so the frame budget is spent on changes, not on repainting
+  what is there; the desktop viewers likewise paint on a change, and drain what has piled up
+  before painting once for all of it.
 - **Live treemap update**: while scanning, `Board` recomputes tiles from a folder-only *outline*
   (`Outline` → `FileTree::add_summary`) — every folder to `Outline::DEFAULT_DEPTH` with a running
   size, shared blocks counted in full, deeper directories rolled up into the frontier folder above
   them. Files, and folders below the frontier, appear when the finished tree replaces the outline
   (`App::finish_scan`). Keep the outline O(visible): the first version sent every directory and
-  saturated the rendering thread, which back-pressured the dispatcher and slowed the walk.
+  saturated the rendering thread, which back-pressured the dispatcher and slowed the walk. This is
+  the goals' time to first paint: the treemap is up in the first batch, coarse, and filled in as
+  the walk goes; a desktop viewer lays the view out once per burst of batches (`OUTLINE_MS`,
+  `outline_behind`) so a scan never crowds out input.
 - **Parallel build, no shared memory**: each builder owns a tree; correctness rests on
   `HardLinks::charge` being order-independent, so deferring every charge to one final replay gives
   the same per-folder sizes as charging inline. Tested folder-by-folder against the inline tree
   (`model::tests::sharded`). Shard by `SHARD_DEPTH` path components, not the whole path — see
   `docs/scan-performance.md` for why the merge otherwise costs more than the parallelism saves.
+  The point is the goals' fast walker: the build is hidden behind the walk instead of following
+  it, so the scan takes the walk's time and no more.
 - **Two sizes everywhere**: `EntryMeta` carries `size` (on disk) and `apparent` (length); every
   walker fills both. `model::File` stores disk as `u64` plus apparent as an `i32` difference
   (`FileSizes::Far` boxes both when they are ≥ 2 GiB apart), keeping `FileOrFolder` at 16 bytes —
@@ -539,12 +589,17 @@ Exiting { app_loaded: bool }
   one extent per 128 KiB).
 - **Two passes**: the walk probes shared extents only from 64 KiB; smaller files are noted in
   `DirEntries::later` and probed after the tree is shown (see the `refine_N` thread). The
-  benchmark's `refined` stage is walk + second pass, and is what the fixtures measure.
+  benchmark's `refined` stage is walk + second pass, and is what the fixtures measure. This is
+  the pattern the goals ask of every costly feature — coarse now, complete after: the probe costs
+  more than it changes, so it waits until the tree is on screen, the folder in view first. The
+  window's specks of the "small files" corners (`Viewer::defer_dust`) follow it.
 - **Network filesystems**: refused the same way, whatever `-x` says — NFS, SMB, 9p, Ceph, AFS… by
   magic (`linux::filesystem::NETWORK`), and FUSE by its subtype in `/proc/self/mountinfo`, found by
   `stx_mnt_id` (`NETWORK_FUSE`: sshfs, rclone, s3fs…), since FUSE also serves local filesystems.
   macOS skips a mount point without `MNT_LOCAL`. Another machine's files are not this disk's space.
-- **ManuallyDrop on FileTree**: Avoids slow recursive drop on exit.
+- **ManuallyDrop on FileTree**: Avoids slow recursive drop on exit: freeing millions of nodes is
+  work nobody waits for, so quitting is immediate; the TUI leaks a replaced tree, a desktop
+  viewer hands it to `drop_later`'s thread.
 - **Folders know their ledger id**: `Folder::dir` is the folder in `HardLinks`, given when a
   directory's path is first resolved (`HardLinks::child(parent)`, no hashing) and `NONE` until
   then. Deferred sightings carry ids, not paths; a merge renumbers the folders it moves in
@@ -584,7 +639,9 @@ Exiting { app_loaded: bool }
 
 - **Error handling**: `thiserror` derives; `?` propagation; distinct error enums per crate boundary.
 - **Testing**: `#[cfg(test)] mod tests` in same file; temp dirs via helpers; setup → action → assert.
-- **Concurrency**: Named threads; bounded channels; `park_timeout` (100ms) for polling.
+- **Concurrency**: Named threads; bounded channels; `park_timeout` (100ms) for polling. The
+  thread model is what keeps the drawing thread free (see its "Why"), so new slow work gets a
+  thread or a second pass, never a place in a frame.
 - **Exports**: `pub use` re-exports in `mod.rs` files.
 - **No async runtime**: Threads + channels only.
 - **Cross-platform**: Linux, macOS, and Windows supported. Windows consoles report key releases
@@ -643,7 +700,9 @@ cargo test -p libduscape --lib -- --ignored fat32
 ```
 
 ### Changing the scan
-Read `docs/scan-performance.md` first, and `docs/scan-roadmap.md` for what is planned and the
+The walk is the first of the performance goals — the time to first paint starts with it, and
+the whole scan is the walk wherever the build hides behind it — so a change to it is measured,
+not reasoned about. Read `docs/scan-performance.md` first, and `docs/scan-roadmap.md` for what is planned and the
 rules each step follows: measure with `docs/probes/bench-matrix.sh` before and after (it writes
 `docs/benchmarks/<host>-<date>.md`; commit it), totals identical, fixtures green. It records what was measured, what turned out not to
 matter, and how to reproduce the numbers with `--benchmark`. The short version: on Linux the walk
@@ -680,6 +739,11 @@ measured and none helped — read the 2026-09-24 section before trying them agai
 - Entries below the minimum tile size are never dropped: they fold into the "small files" `x`
   marker, whose corner is clamped by `SMALL_FILES_MINIMUM_WIDTH/HEIGHT` so it stays visible even
   when the hidden entries round to zero cells
+- Why the layout's work is bounded by the screen, not the folder (`largest_in_folder` ranks only
+  what can get a tile, `Nesting` caps at what the area holds at the least tile, the corner
+  ranks only as many as it has pixels): the goals' 60 fps relayout has to hold on a folder of a
+  million entries as on one of ten. What the screen cannot show at once becomes a second pass
+  (`Viewer::finish_dust`), not a slower frame
 
 ### Releases
 A `v*` tag runs `deploy.yml`. It builds `duscape-<tag>-<target>.tar.gz` for
@@ -694,6 +758,7 @@ so Finder's way to the window is the bundle. One job then publishes every archiv
 that each create the release race. The repository's Actions permission must allow actions from
 outside it (`actions/checkout`…): set to local actions only, every run fails to start.
 The version is the workspace's (`Cargo.toml`), with the path dependencies' `version` beside it.
+- Build settings are chosen by measured speed first (the performance goals), size second:
 - **`opt-level = "s"`**: the release profile is size-optimised for the viewers' binaries, but
   `"z"` cost the scan 13% and the tree build 30%; `"s"` is as fast as `3` at 2% more size. With
   `lto = true` a per-crate `opt-level` does nothing, the final codegen uses the top level's.
@@ -740,6 +805,10 @@ prints the live figures; `make coverage` the test coverage.
   `viewers/shared` 74.0%, `scanners` 65.4% (its Linux walkers are not compiled there),
   `viewers/windows` 7.1% (GDI and Win32; what it decides is in `viewers/shared`, and tested).
 - **Dependencies and spelling.** `cargo deny check` (licences) and `typos`, in CI.
+- **Speed.** The performance goals at the top are a quality measure like the others: a change
+  that touches the walk, the layout or the paint says what it measured (`--benchmark`,
+  `tests/layout_speed.rs`, `DUSCAPE_PAINT_TIMES`) in its commit, and one that makes a frame
+  slower either finds the time back or moves the new work to a second pass.
 
 ## CI Checks (must pass)
 

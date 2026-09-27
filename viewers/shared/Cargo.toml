@@ -14,3 +14,7 @@ workspace = true
 [dependencies]
 libduscape = { workspace = true }
 duscape-scan = { workspace = true }
+
+[dev-dependencies]
+# To write the Windows icon file compressed (`icon::tests::the_icon_file_is_the_one_drawn`).
+image = { workspace = true }

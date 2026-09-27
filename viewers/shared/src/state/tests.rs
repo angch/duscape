@@ -1225,3 +1225,41 @@ fn a_nested_folders_small_files_corner_is_filled_with_specks() {
         }
     }
 }
+
+/// With the specks deferred, a layout not yet timed with them leaves them for the second pass,
+/// which lays them out; one that was quick enough then lays them out at once.
+#[test]
+fn deferred_specks_come_in_a_second_pass_and_then_inline_once_they_are_quick() {
+    let root = Path::new(ROOT);
+    let mut tree = FileTree::new(Folder::new(root), root.to_path_buf());
+    tree.add_entry(meta(10_000_000, false), &root.join("huge.bin"));
+    for index in 0..500 {
+        tree.add_entry(meta(100, false), &root.join(format!("f{index}.txt")));
+    }
+    let mut viewer = Viewer::new(root, SizeKind::Disk, 1);
+    viewer.set_tree_view(true);
+    viewer.set_pixel_scale(1.0);
+    viewer.defer_dust(true);
+    viewer.resize(1200.0, 800.0);
+    viewer.finish_scan(tree);
+    assert!(viewer.dust_pending(), "not yet timed: the tiles first");
+    assert!(viewer.dust().is_empty());
+    let tiles = viewer.board.tiles.len();
+
+    viewer.finish_dust();
+    assert!(!viewer.dust_pending());
+    assert!(
+        !viewer.dust().is_empty(),
+        "the second pass lays the specks out"
+    );
+    assert_eq!(
+        viewer.board.tiles.len(),
+        tiles,
+        "and leaves the tiles as they were"
+    );
+
+    // A few hundred specks take well under the budget: the next relayout has them at once.
+    viewer.resize(1100.0, 800.0);
+    assert!(!viewer.dust_pending());
+    assert!(!viewer.dust().is_empty());
+}
