@@ -7,5 +7,9 @@ paeth = "paeth"
 # xkb's name for the Again key (`xkb_keycodes`), in the Linux viewer's test keymap.
 AGAI = "AGAI"
 
+[default.extend-identifiers]
+# Win32's `ExtTextOutW` option, in the Windows viewer's painting.
+ETO_CLIPPED = "ETO_CLIPPED"
+
 [files]
 extend-exclude = ["trayd/", "target/", "**/*.snap"]
