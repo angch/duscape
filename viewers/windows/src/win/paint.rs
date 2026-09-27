@@ -6,14 +6,13 @@
 //! other desktop viewers give them (`tile_color`), so a file's kind looks the same everywhere.
 
 use ::std::cell::Cell;
-use ::std::ffi::OsStr;
 use ::std::mem::{size_of, zeroed};
 use ::std::ptr::{null, null_mut};
 
 use duscape_viewer::passes::LabelBudget;
 use duscape_viewer::state::{
     EXPANDER, Focus, LIST_PAD, Layout, MIN_TILE_PIXELS, Preview, ROW, ROW_INDENT, Rect, TILE_LABEL,
-    darker, describe, tile_color,
+    describe,
 };
 use libduscape::DisplaySize;
 use libduscape::format::without_verbatim_prefix;
@@ -246,6 +245,8 @@ struct Canvas {
     gdi: Cell<bool>,
     /// Which of the treemap's tiles this paint has time to label.
     labels: LabelBudget,
+    /// The last font an ellipsis was measured in, and its width there.
+    ellipsis: Cell<(HFONT, i32)>,
     /// The font selected into the DC, so it is selected only when it changes; the DC's own
     /// is put back when the paint ends.
     font: Cell<HFONT>,
@@ -264,6 +265,19 @@ impl Canvas {
             right: self.px(rect.right()),
             bottom: self.px(rect.bottom()),
         }
+    }
+
+    /// The width of "…" in `font`, selected: measured once a font, since every cut label asks.
+    fn ellipsis_width(&self, font: HFONT) -> i32 {
+        let (known, width) = self.ellipsis.get();
+        if known == font {
+            return width;
+        }
+        let mut dots = SIZE { cx: 0, cy: 0 };
+        // SAFETY: `ELLIPSIS` and `dots` are alive for the call, the length is one.
+        unsafe { GetTextExtentPoint32W(self.dc, &ELLIPSIS, 1, &mut dots) };
+        self.ellipsis.set((font, dots.cx));
+        dots.cx
     }
 
     /// Pixels `left..right` × `top..bottom` in `color`, cut to the buffer.
@@ -336,32 +350,22 @@ impl Canvas {
             SetTextColor(self.dc, color);
             let len = i32::try_from(wide.len()).unwrap_or(i32::MAX);
             let (mut fit, mut size) = (0, SIZE { cx: 0, cy: 0 });
+            // Where each character that fits ends, so a cut needs no second measuring.
+            let mut ends = vec![0i32; wide.len()];
             GetTextExtentExPointW(
                 self.dc,
                 wide.as_ptr(),
                 len,
                 room,
                 &mut fit,
-                null_mut(),
+                ends.as_mut_ptr(),
                 &mut size,
             );
             if fit < len {
                 // What fits beside an ellipsis, then the ellipsis, not splitting a pair.
-                const ELLIPSIS: u16 = 0x2026;
-                let mut dots = SIZE { cx: 0, cy: 0 };
-                GetTextExtentPoint32W(self.dc, &ELLIPSIS, 1, &mut dots);
-                let mut keep = 0;
-                let mut ignored = SIZE { cx: 0, cy: 0 };
-                GetTextExtentExPointW(
-                    self.dc,
-                    wide.as_ptr(),
-                    len,
-                    (room - dots.cx).max(0),
-                    &mut keep,
-                    null_mut(),
-                    &mut ignored,
-                );
-                let mut keep = usize::try_from(keep).unwrap_or(0).min(wide.len());
+                let fit = usize::try_from(fit).unwrap_or(0).min(wide.len());
+                let beside = room - self.ellipsis_width(font);
+                let mut keep = ends[..fit].partition_point(|&end| end <= beside);
                 if keep > 0 && (0xD800..0xDC00).contains(&wide[keep - 1]) {
                     keep -= 1;
                 }
@@ -418,15 +422,13 @@ impl Canvas {
     }
 }
 
+/// "…", which a label cut short ends with.
+const ELLIPSIS: u16 = 0x2026;
+
 /// An sRGB colour as GDI takes it.
 fn colorref((r, g, b): (f64, f64, f64)) -> COLORREF {
     let byte = |value: f64| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
     rgb(byte(r), byte(g), byte(b))
-}
-
-/// A tile's colour, `shade` (1.0 as given, less for darker) of what every desktop viewer gives it.
-fn tile_colorref(name: &OsStr, file_type: FileType, index: usize, shade: f64) -> COLORREF {
-    colorref(darker(tile_color(name, file_type, index), shade))
 }
 
 /// The off-screen buffer frames are drawn in: a 32-bit DIB section in a memory DC, kept from
@@ -503,7 +505,12 @@ impl Drop for BackBuffer {
 /// Draw the whole window; `in_full` with every label, else stopping the treemap's labels at
 /// [`LABEL_DEADLINE`](duscape_viewer::passes::LABEL_DEADLINE). Returns the breadcrumbs, in points, for clicks — each one's rectangle and
 /// the depth it goes up to — and whether it was painted in full.
-pub fn paint(window: &Window, hwnd: HWND, in_full: bool) -> (Vec<(Rect, usize)>, bool) {
+pub fn paint(
+    window: &Window,
+    back: &mut Option<BackBuffer>,
+    hwnd: HWND,
+    in_full: bool,
+) -> (Vec<(Rect, usize)>, bool) {
     // SAFETY: BeginPaint/EndPaint bracket the paint; the off-screen buffer is the window's,
     // alive for the paint, and drawn into only here.
     unsafe {
@@ -514,7 +521,6 @@ pub fn paint(window: &Window, hwnd: HWND, in_full: bool) -> (Vec<(Rect, usize)>,
             (client.right - client.left).max(1),
             (client.bottom - client.top).max(1),
         );
-        let mut back = window.back_buffer.borrow_mut();
         if back
             .as_ref()
             .is_none_or(|back| (back.width, back.height) != (width, height))
@@ -538,6 +544,7 @@ pub fn paint(window: &Window, hwnd: HWND, in_full: bool) -> (Vec<(Rect, usize)>,
             // Whatever font the last paint left selected is one of the window's, alive still;
             // not knowing which, the first text selects its own.
             font: Cell::new(null_mut()),
+            ellipsis: Cell::new((null_mut(), 0)),
             labels: LabelBudget::new(in_full),
         };
         let viewer = &window.viewer;
@@ -573,7 +580,7 @@ fn draw_treemap(canvas: &Canvas, window: &Window, layout: &Layout) {
         let color = if marked {
             MARK
         } else {
-            tile_colorref(&tile.name, tile.file_type, index + board.zoom_level, 1.0)
+            colorref(viewer.board_color(index))
         };
         fill_tile(canvas, layout, tile, viewer.board_inside(index), color);
         canvas.frame(rect, BORDER, 1);
@@ -743,9 +750,7 @@ fn draw_nested(canvas: &Canvas, window: &Window, layout: &Layout) {
     for (index, nested) in viewer.nested().iter().enumerate() {
         let t = &nested.tile;
         let rect = layout.cells_to_rect(t.x, t.y, t.width, t.height);
-        // Each level in, the colour is a step darker: the nesting reads as depth.
-        let shade = 1.0 - 0.12 * nested.depth.min(4) as f64;
-        let color = tile_colorref(&t.name, t.file_type, index, shade);
+        let color = colorref(viewer.nested_color(index));
         fill_tile(canvas, layout, t, nested.inside.as_ref(), color);
         canvas.frame(rect, BORDER, 1);
         if rect.w > 30.0 && rect.h > LINE && viewer.labelled(t) && canvas.labels.allows() {
@@ -788,14 +793,16 @@ fn draw_tile_label(
         LABEL_LINE,
     );
     let size = DisplaySize(tile.size as f64).to_string();
-    let size_width = canvas.width(&size, fonts.label);
-    let beside = line.w - size_width - LIST_PAD >= NAME_ROOM;
     let below = !is_dir && rect.h >= LABEL_TOP + 2.0 * LABEL_LINE + pad;
     if below {
         canvas.text(line, &label, ink, font, false);
         let size_line = Rect::new(line.x, rect.bottom() - pad - LABEL_LINE, line.w, LABEL_LINE);
         canvas.text(size_line, &size, ink, fonts.label, true);
-    } else if beside {
+        return;
+    }
+    // Measured only where it may go beside the name.
+    let size_width = canvas.width(&size, fonts.label);
+    if line.w - size_width - LIST_PAD >= NAME_ROOM {
         let name_rect = Rect::new(line.x, line.y, line.w - size_width - LIST_PAD, line.h);
         canvas.text(name_rect, &label, ink, font, false);
         let size_rect = Rect::new(line.right() - size_width, line.y, size_width, line.h);

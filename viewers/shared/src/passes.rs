@@ -15,6 +15,14 @@ use crate::state::Viewer;
 /// The rest come in the second pass's paint, in full.
 pub const LABEL_DEADLINE: Duration = Duration::from_millis(4);
 
+/// `DUSCAPE_PAINT_TIMES`, read once: whether a viewer prints each frame's time, and each
+/// resize's layout, on stderr — how a change is checked to keep the painting fast.
+#[must_use]
+pub fn paint_times() -> bool {
+    static ON: ::std::sync::OnceLock<bool> = ::std::sync::OnceLock::new();
+    *ON.get_or_init(|| ::std::env::var_os("DUSCAPE_PAINT_TIMES").is_some())
+}
+
 /// One paint's labels: all of them, or those it has time for until [`LABEL_DEADLINE`].
 pub struct LabelBudget {
     until: Option<Instant>,

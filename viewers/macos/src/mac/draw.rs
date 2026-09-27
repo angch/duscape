@@ -18,7 +18,7 @@ use objc2_app_kit::{
 use objc2_foundation::{NSAttributedStringKey, NSDictionary, NSPoint, NSRect, NSSize, NSString};
 
 use duscape_viewer::state::{
-    EXPANDER, Focus, LIST_PAD, Preview, ROW, ROW_INDENT, Rect, TILE_LABEL, Viewer, darker, lighter,
+    EXPANDER, Focus, LIST_PAD, Preview, ROW, ROW_INDENT, Rect, TILE_LABEL, Viewer, lighter,
     tile_color,
 };
 use libduscape::tiles::{FileType, Row, Tile};
@@ -237,9 +237,7 @@ fn treemap(viewer: &Viewer, pens: &Pens) {
         let rect = layout
             .cells_to_rect(tile.x, tile.y, tile.width, tile.height)
             .inset(0.5, 0.5);
-        // Tiles run in listing order after the zoomed-away entries, so this is its row's index,
-        // and a folder's tile and its swatch in the list get the same blue.
-        let color = tile_color(&tile.name, tile.file_type, index + viewer.board.zoom_level);
+        let color = viewer.board_color(index);
         if let Some(gradient) = NSGradient::initWithStartingColor_endingColor(
             NSGradient::alloc(),
             &srgb(lighter(color, 0.18), 1.0),
@@ -336,8 +334,7 @@ fn nested(viewer: &Viewer, pens: &Pens) {
         let rect = layout
             .cells_to_rect(t.x, t.y, t.width, t.height)
             .inset(0.5, 0.5);
-        let shade = 1.0 - 0.12 * nested.depth.min(4) as f64;
-        let color = srgb(darker(tile_color(&t.name, t.file_type, index), shade), 1.0);
+        let color = srgb(viewer.nested_color(index), 1.0);
         for part in layout.fill_parts(t, nested.inside.as_ref(), rect) {
             fill(part, &color);
         }

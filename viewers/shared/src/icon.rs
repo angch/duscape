@@ -149,77 +149,24 @@ fn round_corners(pixels: &mut [u8], side: usize, radius: f64) {
     }
 }
 
-/// The icon as a PNG file: for a toolkit that takes an image file's bytes (AppKit's `NSImage`).
-/// Stored, not compressed — an icon is a few kilobytes either way.
+/// The icon as a PNG file: for a toolkit that takes an image file's bytes (AppKit's `NSImage`,
+/// at start-up, so compressed quickly: 512 pixels in a few milliseconds).
 #[must_use]
 pub fn png(size: u32) -> Vec<u8> {
+    encode(size, image::codecs::png::CompressionType::Fast)
+}
+
+/// The icon at `size` as a PNG, compressed by `compression`: [`png`]'s quickly, the Windows
+/// icon file's ([`ico`]) as well as `image` can, since that file is checked in.
+fn encode(size: u32, compression: image::codecs::png::CompressionType) -> Vec<u8> {
+    use image::ImageEncoder;
+    use image::codecs::png::{FilterType, PngEncoder};
     let side = size.clamp(1, 1024);
-    let pixels = rgba(side);
-    // Each row starts with its filter type, 0: none.
-    let row = side as usize * 4;
-    let mut raw = Vec::with_capacity((row + 1) * side as usize);
-    for line in pixels.chunks(row) {
-        raw.push(0);
-        raw.extend_from_slice(line);
-    }
-    let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
-    let mut header = Vec::with_capacity(13);
-    header.extend_from_slice(&side.to_be_bytes());
-    header.extend_from_slice(&side.to_be_bytes());
-    // 8 bits a channel, colour type 6 (RGBA), deflate, adaptive filtering, not interlaced.
-    header.extend_from_slice(&[8, 6, 0, 0, 0]);
-    chunk(&mut out, b"IHDR", &header);
-    chunk(&mut out, b"IDAT", &zlib_stored(&raw));
-    chunk(&mut out, b"IEND", &[]);
-    out
-}
-
-fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
-    out.extend_from_slice(&(data.len() as u32).to_be_bytes());
-    let start = out.len();
-    out.extend_from_slice(kind);
-    out.extend_from_slice(data);
-    let crc = crc32(&out[start..]);
-    out.extend_from_slice(&crc.to_be_bytes());
-}
-
-/// `data` in a zlib stream of stored (uncompressed) deflate blocks.
-fn zlib_stored(data: &[u8]) -> Vec<u8> {
-    let mut out = vec![0x78, 0x01];
-    let mut blocks = data.chunks(0xFFFF).peekable();
-    if blocks.peek().is_none() {
-        out.extend_from_slice(&[1, 0, 0, 0xFF, 0xFF]);
-    }
-    while let Some(block) = blocks.next() {
-        let last = u8::from(blocks.peek().is_none());
-        let len = block.len() as u16;
-        out.push(last);
-        out.extend_from_slice(&len.to_le_bytes());
-        out.extend_from_slice(&(!len).to_le_bytes());
-        out.extend_from_slice(block);
-    }
-    let (mut a, mut b) = (1u32, 0u32);
-    for &byte in data {
-        a = (a + u32::from(byte)) % 65521;
-        b = (b + a) % 65521;
-    }
-    out.extend_from_slice(&((b << 16) | a).to_be_bytes());
-    out
-}
-
-fn crc32(data: &[u8]) -> u32 {
-    let mut crc = !0u32;
-    for &byte in data {
-        crc ^= u32::from(byte);
-        for _ in 0..8 {
-            crc = if crc & 1 != 0 {
-                (crc >> 1) ^ 0xEDB8_8320
-            } else {
-                crc >> 1
-            };
-        }
-    }
-    !crc
+    let mut png = Vec::new();
+    PngEncoder::new_with_quality(&mut png, compression, FilterType::Adaptive)
+        .write_image(&rgba(side), side, side, image::ExtendedColorType::Rgba8)
+        .expect("a PNG of pixels in memory is always written");
+    png
 }
 
 /// The sizes the Windows icon file holds: what Explorer and the taskbar pick from, at 100% to
@@ -254,24 +201,17 @@ pub fn ico(images: &[(u32, Vec<u8>)]) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ICO_SIZES, crc32, ico, png, rgba};
+    use super::{ICO_SIZES, encode, ico, png, rgba};
 
     /// `viewers/windows/duscape.ico`, which the Windows binaries carry as their own icon (their
     /// build scripts pack it as a resource), is this module's drawing: the test fails when the
     /// drawing changed and the file did not. `DUSCAPE_WRITE_ICON=1` writes it.
     #[test]
     fn the_icon_file_is_the_one_drawn() {
-        use image::ImageEncoder;
-        use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+        let best = image::codecs::png::CompressionType::Best;
         let images: Vec<(u32, Vec<u8>)> = ICO_SIZES
             .iter()
-            .map(|&size| {
-                let mut png = Vec::new();
-                PngEncoder::new_with_quality(&mut png, CompressionType::Best, FilterType::Adaptive)
-                    .write_image(&rgba(size), size, size, image::ExtendedColorType::Rgba8)
-                    .expect("encoding the icon");
-                (size, png)
-            })
+            .map(|&size| (size, encode(size, best)))
             .collect();
         let drawn = ico(&images);
         let path =
@@ -310,12 +250,13 @@ mod tests {
     }
 
     #[test]
-    fn the_png_is_well_formed() {
-        assert_eq!(crc32(b"IEND"), 0xAE42_6082);
+    fn the_png_decodes_to_the_pixels_drawn() {
         let file = png(32);
         assert_eq!(&file[..8], b"\x89PNG\r\n\x1a\n");
-        assert_eq!(&file[12..16], b"IHDR");
-        assert_eq!(u32::from_be_bytes(file[16..20].try_into().unwrap()), 32);
-        assert_eq!(&file[file.len() - 8..file.len() - 4], b"IEND");
+        let decoded = image::load_from_memory_with_format(&file, image::ImageFormat::Png)
+            .expect("the icon decodes")
+            .to_rgba8();
+        assert_eq!((decoded.width(), decoded.height()), (32, 32));
+        assert_eq!(decoded.into_raw(), rgba(32));
     }
 }

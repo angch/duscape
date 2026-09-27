@@ -8,10 +8,7 @@ use ::std::collections::VecDeque;
 use ::std::ffi::OsString;
 use ::std::time::Instant;
 
-use super::{
-    Area, FileType, Grid, Share, Tile, TreeMap, largest_in_folder_from, largest_shares_from,
-    scatter,
-};
+use super::{Area, FileType, Grid, Ranking, Share, Tile, TreeMap, scatter};
 use crate::model::{FileOrFolder, Folder, SizeKind};
 
 /// A tile inside a folder's tile.
@@ -112,14 +109,18 @@ pub struct Nesting {
     pub grid: Grid,
     /// Fill each folder's own "small files" corner with its entries' specks, as the board's
     /// is filled ([`scatter`]), handing each to [`nest_with`]'s `speck`: in pixel cells, where
-    /// a speck is a pixel. A folder with a corner ranks its entries twice: once for the tiles,
-    /// then as many more as the corner has pixels.
+    /// a speck is a pixel. A folder with a corner ranks its entries once ([`Ranking`]): the
+    /// tiles' head, then as many more as the corner has pixels.
     pub dust: bool,
     /// When to stop, for a first pass: past it, no folder deeper than the top-level ones'
     /// entries is laid out, and [`nest_with`] says the nesting is not complete. The nesting
     /// goes a level at a time across every folder, so what a deadline cuts is the deepest
     /// levels everywhere, not the last folders whole.
     pub deadline: Option<Instant>,
+    /// When the corners' specks stop, for a first pass: past it the rest wait for the second
+    /// pass, and [`nest_with`] says the nesting is not complete. Earlier than `deadline`, since
+    /// the top-level folders' entries are laid out whatever the time, and after the specks.
+    pub dust_deadline: Option<Instant>,
     /// Entries a folder lays out at most, for a first pass: a folder of tens of thousands (a
     /// Windows component store) otherwise takes a frame's time by itself. Where it cuts,
     /// [`nest_with`] says the nesting is not complete.
@@ -136,6 +137,7 @@ impl Default for Nesting {
             grid: Grid::TERMINAL,
             dust: false,
             deadline: None,
+            dust_deadline: None,
             room_cap: usize::MAX,
         }
     }
@@ -176,17 +178,28 @@ impl Nesting {
 /// before their children.
 #[must_use]
 pub fn nest(folder: &Folder, tiles: &[Tile], kind: SizeKind, nesting: &Nesting) -> Vec<NestedTile> {
-    nest_with(folder, tiles, kind, nesting, &mut |_, _, _| {}).tiles
+    nest_with(folder, tiles, kind, nesting, &mut |_| {}).tiles
 }
 
-/// [`nest`], handing `speck` each speck of the folders' "small files" corners — where, the
-/// entry it is, and its place among its corner's — when `nesting.dust` is on.
+/// One entry of a "small files" corner, laid out in it as a speck ([`scatter`]).
+pub struct Speck<'a> {
+    /// Where, in the board's cells.
+    pub area: Area,
+    pub entry: &'a Share<'a>,
+    /// Its place among its folder's entries, largest first: what a tile's colour goes by.
+    pub rank: usize,
+    /// How deep its folder's entries are: 0 the board's own, 1 a board tile's, and so on.
+    pub depth: usize,
+}
+
+/// [`nest`], handing `speck` each speck of the folders' "small files" corners when
+/// `nesting.dust` is on.
 pub fn nest_with(
     folder: &Folder,
     tiles: &[Tile],
     kind: SizeKind,
     nesting: &Nesting,
-    speck: &mut dyn FnMut(Area, &Share, usize),
+    speck: &mut dyn FnMut(Speck),
 ) -> Nested {
     // However deep it goes, the nesting holds at most as many tiles as the folder tiles' area
     // holds at the minimum size: the bound on a relayout's and a paint's work is the screen.
@@ -297,7 +310,7 @@ fn nest_into<'a>(
     nesting: &Nesting,
     out: &mut Nested,
     queue: &mut VecDeque<(&'a Folder, Place)>,
-    speck: &mut dyn FnMut(Area, &Share, usize),
+    speck: &mut dyn FnMut(Speck),
 ) -> bool {
     if place.depth > nesting.max_depth || out.tiles.len() >= nesting.max_tiles {
         return false;
@@ -319,9 +332,33 @@ fn nest_into<'a>(
     let least_cells =
         f64::from(grid.min_width.saturating_sub(1)) * f64::from(grid.min_height.saturating_sub(1));
     let inside_cells = f64::from(inside.width) * f64::from(inside.height);
-    let files = largest_in_folder_from(folder, kind, room, least_cells / inside_cells);
+    let least_tile = least_cells / inside_cells;
+    // Past a first pass's deadline for them the specks wait too, as the deeper levels do: how
+    // many a corner holds is not known until it is laid out, and grows far faster than the
+    // window (a cache of 256 folders: 5k specks at 1600×1000 points, 119k at 2560×1400).
+    let late = nesting
+        .dust_deadline
+        .is_some_and(|deadline| Instant::now() >= deadline);
+    let specks = nesting.dust && !late;
+    // With the corner's specks, down to a pixel: ranked once for the tiles and the corner.
+    let least_speck = 1.0 / inside_cells;
+    let mut ranking = Ranking::new(
+        folder,
+        kind,
+        if specks {
+            least_speck.min(least_tile)
+        } else {
+            least_tile
+        },
+    );
+    let files = ranking.head(room, least_tile);
     let mut map = TreeMap::with_grid(&inside, grid);
     map.populate_tiles(files.iter().collect());
+    // Only the entries given a tile are named: the rest are specks, or nothing.
+    for index in 0..map.tiles.len() {
+        let entry = map.tile_entries()[index];
+        map.tiles[index].name = ranking.name(entry).to_os_string();
+    }
     // The corner: from the first entry given no tile to the far corner, or where there was
     // none, the room left by the entries too small to be ranked, which lies there too.
     let corner = match map.unrenderable_tile_coordinates {
@@ -333,35 +370,10 @@ fn nest_into<'a>(
         },
         None => map.leftover(),
     };
-    if nesting.dust && corner.width > 0 && corner.height > 0 {
-        // The entries ranked but given no tile, then those too small to be ranked for one:
-        // ranked again, as many more as the corner has pixels, of a pixel or more. The same
-        // order, so the first ranking is the head of the second.
-        let pixels = usize::from(corner.width) * usize::from(corner.height);
-        let more = largest_shares_from(
-            folder,
-            kind,
-            files.len(),
-            files.len() + pixels,
-            1.0 / inside_cells,
-        );
-        let hidden: Vec<Share> = map
-            .hidden
-            .iter()
-            .map(|&index| {
-                let file = &files[index];
-                Share {
-                    name: &file.name,
-                    percentage: file.percentage,
-                    file_type: file.file_type,
-                }
-            })
-            .chain(more)
-            .collect();
-        let shares: Vec<f64> = hidden.iter().map(|share| share.percentage).collect();
-        for mote in scatter(&shares, &corner) {
-            speck(mote.area, &hidden[mote.entry], mote.entry);
-        }
+    if nesting.dust && late && corner.width > 0 && corner.height > 0 {
+        out.complete = false;
+    } else if specks && corner.width > 0 && corner.height > 0 {
+        scatter_folder_corner(&mut ranking, &files, &map, corner, place.depth, speck);
     }
     // What the entries cover, for the folder's own tile to be filled around it.
     if !map.tiles.is_empty() {
@@ -396,6 +408,43 @@ fn nest_into<'a>(
         });
     }
     capped
+}
+
+/// A folder's corner filled in: the entries `map` ranked but gave no tile, then those too small
+/// for one — as many more as the corner has pixels, of a pixel or more, from the same
+/// `ranking` — each handed to `speck` where [`scatter`] lays it.
+fn scatter_folder_corner(
+    ranking: &mut Ranking,
+    files: &[super::FileMetadata],
+    map: &TreeMap,
+    corner: Area,
+    depth: usize,
+    speck: &mut dyn FnMut(Speck),
+) {
+    let pixels = usize::from(corner.width) * usize::from(corner.height);
+    let more = ranking.shares(files.len(), files.len() + pixels);
+    let hidden: Vec<Share> = map
+        .hidden
+        .iter()
+        .map(|&index| {
+            let file = &files[index];
+            Share {
+                name: ranking.name(index),
+                percentage: file.percentage,
+                file_type: file.file_type,
+            }
+        })
+        .chain(more)
+        .collect();
+    let shares: Vec<f64> = hidden.iter().map(|share| share.percentage).collect();
+    for mote in scatter(&shares, &corner) {
+        speck(Speck {
+            area: mote.area,
+            entry: &hidden[mote.entry],
+            rank: map.tiles.len() + mote.entry,
+            depth,
+        });
+    }
 }
 
 #[cfg(test)]
@@ -531,6 +580,74 @@ mod tests {
             let top = largest_in_folder(folder, SizeKind::Disk, limit);
             assert_eq!(top, whole[..limit.min(whole.len())], "limit {limit}");
         }
+        // Ranked a piece at a time — the tiles' head, then a corner's more — it is the same
+        // order as ranked whole.
+        for head in 0..=6 {
+            for more in 0..=6 {
+                let mut ranking = crate::tiles::Ranking::new(folder, SizeKind::Disk, 0.0);
+                let files = ranking.head(head, 0.0);
+                assert_eq!(files.len(), head.min(whole.len()));
+                let shares = ranking.shares(files.len(), files.len() + more);
+                let got: Vec<_> = (0..files.len())
+                    .map(|index| ranking.name(index))
+                    .chain(shares.iter().map(|share| share.name))
+                    .collect();
+                let want: Vec<_> = whole
+                    .iter()
+                    .take(head + more)
+                    .map(|f| f.name.as_os_str())
+                    .collect();
+                assert_eq!(got, want, "head {head}, then {more}");
+            }
+        }
+    }
+
+    #[test]
+    fn past_the_deadline_the_corners_specks_wait_for_the_second_pass() {
+        use super::nest_with;
+        use crate::tiles::Grid;
+        // `many/`: one large file and a thousand small ones, which only a corner can show.
+        let root = Path::new("/r");
+        let mut tree = FileTree::new(Folder::new(root), root.to_path_buf());
+        tree.add_entry(meta(0, true), &root.join("many"));
+        tree.add_entry(meta(1_000_000, false), &root.join("many/large"));
+        for index in 0..1000 {
+            tree.add_entry(meta(10, false), &root.join(format!("many/small{index}")));
+        }
+        tree.add_entry(meta(1_000, false), &root.join("other"));
+        let folder = tree.get_current_folder();
+        let grid = Grid::pixels(4);
+        let mut board = Board::new(folder);
+        board.set_grid(grid);
+        board.change_area(&Area {
+            x: 0,
+            y: 0,
+            width: 400,
+            height: 300,
+        });
+        board.change_files(folder);
+        let nesting = Nesting {
+            grid,
+            label_rows: 0,
+            margin: 1,
+            dust: true,
+            ..Nesting::default()
+        };
+        let mut specks = 0;
+        let whole = nest_with(folder, &board.tiles, SizeKind::Disk, &nesting, &mut |_| {
+            specks += 1;
+        });
+        assert!(whole.complete && specks > 0, "{specks} specks");
+        let late = Nesting {
+            dust_deadline: Some(::std::time::Instant::now()),
+            ..nesting
+        };
+        let mut late_specks = 0;
+        let cut = nest_with(folder, &board.tiles, SizeKind::Disk, &late, &mut |_| {
+            late_specks += 1;
+        });
+        assert!(!cut.complete, "the specks are owed");
+        assert_eq!(late_specks, 0);
     }
 
     #[test]
@@ -638,7 +755,7 @@ mod tests {
             &board.tiles,
             SizeKind::Disk,
             &Nesting::default(),
-            &mut |_, _, _| {},
+            &mut |_| {},
         );
         let (complete, whole) = (whole.complete, whole.tiles);
         assert!(complete && whole.iter().any(|t| t.depth == 2));
@@ -647,13 +764,7 @@ mod tests {
             deadline: Some(::std::time::Instant::now()),
             ..Nesting::default()
         };
-        let cut = nest_with(
-            folder,
-            &board.tiles,
-            SizeKind::Disk,
-            &late,
-            &mut |_, _, _| {},
-        );
+        let cut = nest_with(folder, &board.tiles, SizeKind::Disk, &late, &mut |_| {});
         let (complete, cut) = (cut.complete, cut.tiles);
         assert!(!complete);
         assert!(
@@ -673,13 +784,7 @@ mod tests {
             room_cap: 1,
             ..Nesting::default()
         };
-        let few = nest_with(
-            folder,
-            &board.tiles,
-            SizeKind::Disk,
-            &capped,
-            &mut |_, _, _| {},
-        );
+        let few = nest_with(folder, &board.tiles, SizeKind::Disk, &capped, &mut |_| {});
         let (complete, few) = (few.complete, few.tiles);
         assert!(!complete);
         assert!(few.iter().filter(|t| t.depth == 1).count() <= 1, "{few:?}");
@@ -696,7 +801,7 @@ mod tests {
             &board.tiles,
             SizeKind::Disk,
             &Nesting::default(),
-            &mut |_, _, _| {},
+            &mut |_| {},
         );
         let big = board.tiles.iter().position(|t| t.name == "big").unwrap();
         let inside = nested.tops[big].expect("big's entries were laid out in it");

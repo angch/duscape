@@ -59,9 +59,11 @@ What every change is held to, adapted to sane practical defaults rather than met
     is the deepest levels that wait, and lays out no more than `FIRST_PASS_ROOM` (1000) of any
     one folder's entries (`Nesting::deadline`, `room_cap`);
   - the specks of the "small files" corners come with the tiles only while the last complete
-    layout with them, scaled by area to this one, would be inside the budget — maximised, a
-    layout timed at a smaller size said yes, and a first frame took 33 ms
-    (`Viewer::defer_to_second_pass`, `finish_second_pass`, `second_pass_owed`);
+    layout with them, scaled by area to this one, would be inside the budget, and even then
+    stop at half of it (`Nesting::dust_deadline`): a corner's specks grow far faster than the
+    window (a cache of 256 folders: 5k at 1600×1000 points, 119k at 2560×1400), and before
+    both a maximised first frame took 33 ms, now 7 (`Viewer::defer_to_second_pass`,
+    `finish_second_pass`, `second_pass_owed`);
   - the first paint of a layout stops labelling the treemap's tiles at
     `passes::LABEL_DEADLINE` (4 ms into the paint, Windows and Linux); the second pass paints
     in full, and a layout painted in full once stays so (`passes::Paints`, by
@@ -171,12 +173,17 @@ out and painting.
 - `tiles/dust.rs` — `scatter`: the "small files" corner filled in — its entries laid out again
   inside it in one-pixel cells with no least tile, as many as it has pixels, largest first and
   in proportion to each other, so a flat folder of 87k small files shows as specks, not a grey
-  box. The motes have no names and are no targets; `Viewer::dust` colours them (per extension,
-  cached; folders darker, as a level deeper) and every desktop painter fills them in one pass.
-  Each nested folder's corner is filled too (`Nesting::dust`, `nest_with`'s
-  `speck`): a folder with one ranks again for as many more entries as the corner has pixels
-  (`largest_shares_from`, names borrowed, not copied), and where the entries too small to rank
-  left their room empty rather than a corner, that room is it (`TreeMap::leftover`)
+  box. The motes have no names and are no targets; `Viewer::dust` colours them by the rule
+  their tiles would have (`entry_color`: `tile_color` by rank, `depth_shade` darker a level
+  in; a file's extension looked up once) and every desktop painter fills them in one pass.
+  Each corner comes as a `Speck` (where, the entry, its rank, its depth): the board's from
+  `Board::scatter_corner`, each nested folder's from `nest_with`'s `speck` (`Nesting::dust`).
+  A folder is ranked once for its tiles and its corner (`Ranking`: one pass over the folder,
+  ranked only as far as asked, names borrowed and copied only for the tiles laid out), and
+  where the entries too small to rank left their room empty rather than a corner, that room
+  is it (`TreeMap::leftover`). In a first pass the specks stop at `Nesting::dust_deadline`,
+  half the relayout's budget, and the rest are the second pass's: how many a corner holds is
+  not known until it is laid out
 - `tiles/nested.rs` — `nest`: the treemap nested — the same squarify run inside each folder
   tile (under its label rows, within a margin) on the folder's entries, and theirs in turn,
   down to the files wherever there is room: what ends it is an inside too small for two
@@ -321,11 +328,13 @@ shared `Viewer`, not in `win/`:
   `GdiFlush` first when GDI has drawn since): as `FillRect`/`FrameRect` calls, the nested
   treemap's thousands of overdrawn tiles cost 30 ms a frame; and a folder tile is filled only
   around what its entries cover (`fill_tile`, `Layout::fill_parts`). Text and pictures are GDI's:
-  text measured once (`GetTextExtentExPointW`, its own ellipsis) and drawn with `ExtTextOutW`,
+  text measured once (`GetTextExtentExPointW`, whose partial extents say where to cut for the
+  ellipsis, measured once a font) and drawn with `ExtTextOutW`,
   the font selected only when it changes — `DrawTextW` cost half as much again. The fonts are the system's message
   font (`SPI_GETNONCLIENTMETRICS`) and a treemap label size that fits the label band whole.
-  `DUSCAPE_PAINT_TIMES=1` prints each frame's time, and each resize's layout, on stderr
-  (redirect it: no console).
+  `DUSCAPE_PAINT_TIMES=1` (`passes::paint_times`, the Linux window's too) prints each frame's
+  time, and each resize's layout, on stderr (redirect it: no console). `paint` takes the back
+  buffer out of the `Window` for the frame, no `RefCell`.
   The buffer (`BackBuffer`, a DIB section in a memory DC) is kept between paints and made
   again only when the size changes: made fresh, its pages faulted in on every frame.
   A first paint of a layout stops the treemap's labels at `passes::LABEL_DEADLINE`; then
@@ -377,8 +386,9 @@ shared `Viewer`, not in `win/`:
   listing and the flat tiles
 - `icon.rs` — the app's icon, drawn by the treemap: a folder of three files beside five more,
   squarified at the size asked for (so sharp at every size) in the tiles' colours, round
-  cornered from 24 px; `rgba` for a window system that takes pixels, `png` (stored, not
-  compressed) for one that takes a file's bytes. A placeholder until a drawn one. Windows sets
+  cornered from 24 px; `rgba` for a window system that takes pixels, `png` for one that takes
+  a file's bytes (`image`'s encoder, fast: 512 px in 4.5 ms at macOS's start-up; the checked-in
+  `.ico` holds its best-compressed images). A placeholder until a drawn one. Windows sets
   it on the class and with `WM_SETICON` (`win::app_icon`, at `SM_CXICON`/`SM_CXSMICON`), and
   the `.exe`s carry it as a resource (`viewers/windows/resources.rs`); X11 as `_NET_WM_ICON`
   (16–128 px); macOS as the application icon image (Dock, switcher). Not Wayland, which takes
@@ -441,7 +451,9 @@ shared `Viewer`, not in `win/`:
   before one redraw — outline batches are absorbed as they come and laid out once for the lot
   (`outline_behind`); keys and mouse → `Viewer` calls like `mac/view.rs`'s (a click on an
   expander toggles before `click`, the wheel over the treemap zooms, the back button goes up); `Dialog` for asking
-  before a removal; the title bar's buttons, drag and double-click → the backend.
+  before a removal; the title bar's buttons, drag and double-click → the backend. The second
+  pass (`Paints::second_pass`) runs once nothing has changed on screen for `IDLE`, a message
+  that changes nothing not putting it off, as the Windows timer is put off by each change.
   `DUSCAPE_SNAPSHOT=out.png` writes the frame after the scan and quits — how the drawing was
   checked here: X11 on an `Xvfb` (which `x11rb` reaches over TCP, `-listen tcp -ac`, since it
   does not do abstract sockets) with `xdotool` for keys and clicks; Wayland on a headless

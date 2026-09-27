@@ -1,7 +1,7 @@
 use crate::model::{Folder, SizeKind};
 use crate::tiles::Area;
 use crate::tiles::files_in_folder::FileType;
-use crate::tiles::{FileMetadata, Grid, Tile, TreeMap, files_in_folder};
+use crate::tiles::{FileMetadata, Grid, Share, Speck, Tile, TreeMap, files_in_folder, scatter};
 
 pub struct Board {
     pub tiles: Vec<Tile>,
@@ -70,6 +70,40 @@ impl Board {
             .iter()
             .map(|&index| &self.files[index])
             .collect()
+    }
+    /// The entries in the "small files" corner laid out in it as specks ([`scatter`]), each
+    /// handed to `speck`: in a pixel grid, where a speck is a pixel or more.
+    pub fn scatter_corner(&self, speck: &mut dyn FnMut(Speck)) {
+        let Some((x, y)) = self.unrenderable_tile_coordinates else {
+            return;
+        };
+        let corner = Area {
+            x,
+            y,
+            width: (self.area.x + self.area.width).saturating_sub(x),
+            height: (self.area.y + self.area.height).saturating_sub(y),
+        };
+        let hidden: Vec<Share> = self
+            .hidden
+            .iter()
+            .map(|&index| {
+                let file = &self.files[index];
+                Share {
+                    name: &file.name,
+                    percentage: file.percentage,
+                    file_type: file.file_type,
+                }
+            })
+            .collect();
+        let shares: Vec<f64> = hidden.iter().map(|share| share.percentage).collect();
+        for mote in scatter(&shares, &corner) {
+            speck(Speck {
+                area: mote.area,
+                entry: &hidden[mote.entry],
+                rank: self.zoom_level + self.tiles.len() + mote.entry,
+                depth: 0,
+            });
+        }
     }
     /// Where the selected tile's entry sits in [`Self::listing`].
     pub fn selected_listing_index(&self) -> Option<usize> {

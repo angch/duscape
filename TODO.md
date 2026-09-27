@@ -188,6 +188,49 @@ To automate another item, add steps and `expect` lines to `smoke.sh`.
       permissions of its own. Check that a bundled launch ignores Launch Services' `-psn_`
       argument (handled in `mac/mod.rs`, `options`).
 
+## The quality round of 2026-09-27: check on Windows and macOS
+
+Done and checked on Linux (X11 under Xvfb: pixel-identical snapshots where nothing was meant to
+change, `layout_speed`, `DUSCAPE_PAINT_TIMES`), compiled and linted for the other two, not run
+there. See the commits "a quality pass over the nesting round" and the one after it.
+
+### Windows (`duscape-windows`)
+
+- [ ] **Cut labels.** `Canvas::text` now cuts from the partial extents of its one
+      `GetTextExtentExPointW` and measures "…" once a font (`ellipsis_width`), where it measured
+      the ellipsis and the string again for every cut label. Long names in the list and on tiles
+      end in "…" exactly as before, a name with an emoji is not cut inside its surrogate pair, and
+      `DUSCAPE_PAINT_TIMES=1` shows the first paint of a relayout no slower (it was 6.4–6.9 ms on
+      `C:\Windows` at 1.5x).
+- [ ] **The back buffer** is taken out of the `Window` for each paint instead of borrowed from a
+      `RefCell`: resize by dragging an edge (the frame's own loop paints re-entrantly), maximise,
+      minimise and restore; every frame paints, none flickers.
+- [ ] **Focus is derived** (`Viewer::focus()`): narrow the window until the list goes, widen it,
+      and ↓ moves in the list again; minimise and restore, and the list still has the keyboard;
+      Tab while the list is hidden does nothing visible.
+- [ ] **Speck colours** follow their tiles' rule (`entry_color`): specks in a nested folder's
+      corner are as dark as the tiles beside them, and the board's own corner's folders are no
+      longer darkened. Compare with a screenshot from before on a folder of many small files.
+- [ ] **Fills** go through `Layout::fill_parts` (clipped to the tile): at 125% and 150% no
+      one-pixel gap or seam between a folder's fill and its nested tiles.
+
+### macOS (`duscape-mac`), for the session that takes it on
+
+- [ ] **Not done: the second pass.** The window never calls `defer_to_second_pass` and has no
+      label deadline: every resize lays out the whole nesting and every speck (30 ms on a folder of
+      256 folders at 2560×1400) and labels every tile. Use `duscape_viewer::passes` as Linux and
+      Windows do (`Paints`, `LabelBudget`) with an `IDLE` timer that each change puts off, and
+      draw specks in batches (`NSRectFillList` by colour, or a bitmap made once a layout) rather
+      than one `fillRect` each.
+- [ ] **The app icon** is now a compressed PNG from the `image` crate (`icon::png`, 8 KB at
+      512 px, was 1 MB stored): the Dock and the switcher show it as before.
+- [ ] **Drawing** now takes its colours from `Viewer::board_color`/`nested_color` and its fills
+      from `Layout::fill_parts`: `DUSCAPE_MAC_SNAPSHOT=out.png` looks as before bar the specks'
+      depth shading, and `tests/smoke.sh` passes (it reads `focus`, now `Viewer::focus()`).
+- [ ] **Board tiles stay filled whole**, like Linux's: filled only around their nested entries,
+      the half-point gaps between those showed the window's background and the treemap read dark
+      (tried on Linux, reverted). If macOS wants the saving, fill the gaps with the parent's colour.
+
 ## Windows viewer (`duscape-windows`): tiles are probably the wrong shape
 
 The treemap (`common/src/tiles/treemap.rs`, `HEIGHT_WIDTH_RATIO = 2.5`) lays tiles out in cells it

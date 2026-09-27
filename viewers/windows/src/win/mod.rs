@@ -25,7 +25,7 @@ use ::std::time::Instant;
 use clap::Parser;
 use duscape_scan::rescan::{Outcome, Rescanner};
 use duscape_viewer::menu::{Action, Entry, Platform};
-use duscape_viewer::passes::Paints;
+use duscape_viewer::passes::{Paints, paint_times};
 use duscape_viewer::scan;
 use duscape_viewer::state::{Direction, Hit, IDLE, Jump, Mods, Preview, ROW, Rect, Viewer};
 use libduscape::model::SizeKind;
@@ -117,7 +117,7 @@ struct Window {
     crumbs: Vec<(Rect, usize)>,
     fonts: paint::Fonts,
     /// The frame's off-screen buffer, kept between paints (`paint::BackBuffer`).
-    back_buffer: RefCell<Option<paint::BackBuffer>>,
+    back_buffer: Option<paint::BackBuffer>,
     /// Outline batches have come in since the view was last laid out; `OUTLINE_TIMER` is set.
     outline_behind: bool,
     /// Which layout was last painted in full, and so whether a paint may hurry.
@@ -739,7 +739,10 @@ fn dispatch(window: &mut Window, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
         WM_PAINT => {
             let started = Instant::now();
             let in_full = window.paints.in_full(&window.viewer);
-            let (crumbs, complete) = paint::paint(window, hwnd, in_full);
+            // Taken out for the paint, which reads the rest of the window, and put back.
+            let mut back = window.back_buffer.take();
+            let (crumbs, complete) = paint::paint(window, &mut back, hwnd, in_full);
+            window.back_buffer = back;
             window.crumbs = crumbs;
             window.paints.painted(&window.viewer, complete);
             if !complete {
@@ -854,12 +857,6 @@ fn pick_folder() -> Option<PathBuf> {
 
 /// Run the second pass once input has stopped for `IDLE`: the timer is set again by each
 /// change, so a drag or a stream of keys puts it off until it ends.
-/// `DUSCAPE_PAINT_TIMES`, read once: each frame's time, and each resize's layout, on stderr.
-fn paint_times() -> bool {
-    static ON: ::std::sync::OnceLock<bool> = ::std::sync::OnceLock::new();
-    *ON.get_or_init(|| ::std::env::var_os("DUSCAPE_PAINT_TIMES").is_some())
-}
-
 fn second_pass_after_idle(hwnd: HWND) {
     let idle = u32::try_from(IDLE.as_millis()).unwrap_or(u32::MAX);
     // SAFETY: our own window and timer.
@@ -997,7 +994,7 @@ pub fn run_with(folder: Option<PathBuf>, options: ScanOptions, no_elevate: bool)
         picture: None,
         crumbs: Vec::new(),
         fonts: paint::Fonts::new(scale),
-        back_buffer: RefCell::new(None),
+        back_buffer: None,
         outline_behind: false,
         paints: Paints::default(),
     });

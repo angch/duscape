@@ -13,7 +13,7 @@ use crate::font::{Align, Cut, Face, Fonts, Pen};
 use duscape_viewer::menu::Entry;
 use duscape_viewer::passes::LabelBudget;
 use duscape_viewer::state::{
-    EXPANDER, Focus, LIST_PAD, Preview, ROW, ROW_INDENT, Rect, TILE_LABEL, Viewer, darker, lighter,
+    EXPANDER, Focus, LIST_PAD, Preview, ROW, ROW_INDENT, Rect, TILE_LABEL, Viewer, lighter,
     tile_color,
 };
 use libduscape::tiles::{FileType, Row, Tile};
@@ -147,9 +147,10 @@ fn treemap(canvas: &mut Canvas, viewer: &Viewer, pens: &Pens) {
         let rect = layout
             .cells_to_rect(tile.x, tile.y, tile.width, tile.height)
             .inset(0.5, 0.5);
-        // Tiles run in listing order after the zoomed-away entries, so this is its row's index,
-        // and a folder's tile and its swatch in the list get the same blue.
-        let color = tile_color(&tile.name, tile.file_type, index + viewer.board.zoom_level);
+        let color = viewer.board_color(index);
+        // Whole, unlike the nested tiles: the gaps between the nested tiles, inset half a
+        // point each, show the lit tile they are in; filled only around them, they showed the
+        // window's background and the treemap read dark.
         canvas.gradient(rect, lighter(color, 0.18), color);
         // A folder too short for its label band has its entries right under its margin.
         if rect.w >= 36.0 && rect.h >= 15.0 && viewer.labelled(tile) && pens.labels.allows() {
@@ -230,8 +231,7 @@ fn nested(canvas: &mut Canvas, viewer: &Viewer, pens: &Pens) {
         let rect = layout
             .cells_to_rect(t.x, t.y, t.width, t.height)
             .inset(0.5, 0.5);
-        let shade = 1.0 - 0.12 * nested.depth.min(4) as f64;
-        let color = darker(tile_color(&t.name, t.file_type, index), shade);
+        let color = viewer.nested_color(index);
         for part in layout.fill_parts(t, nested.inside.as_ref(), rect) {
             canvas.fill(part, color, 1.0);
         }

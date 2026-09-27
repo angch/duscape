@@ -22,7 +22,8 @@ use duscape_scan::rescan::{Outcome, Rescanner, Rescans};
 use libduscape::format::copied_path;
 use libduscape::model::SizeKind;
 use libduscape::tiles::{
-    Area, Board, Expansion, FileMetadata, FileType, Grid, Inside, NestedTile, Nesting, Row, Tile,
+    Area, Board, Expansion, FileMetadata, FileType, Grid, Inside, NestedTile, Nesting, Row, Speck,
+    Tile,
 };
 use libduscape::{
     DirSummary, DisplayCount, DisplaySize, FileOrFolder, FileToDelete, FileTree, Folder,
@@ -245,34 +246,35 @@ impl Layout {
     }
 }
 
-/// A speck's colour: a file's is its extension's, worked out once for each, not once a speck.
+/// A speck's colour, by the rule a tile of its entry would have ([`entry_color`]); a file's
+/// extension's worked out once for each, not once a speck.
 #[derive(Default)]
 struct SpeckColors {
     by_extension: ::std::collections::HashMap<OsString, (f64, f64, f64)>,
 }
 
 impl SpeckColors {
-    fn speck(&mut self, area: Area, name: &OsStr, file_type: FileType, index: usize) -> Dust {
-        let color = if file_type == FileType::Folder {
-            // Darker, as a level deeper would be, so a corner of folders reads against the
-            // folder it is in, which is the same blue.
-            darker(tile_color(name, file_type, index), 0.7)
+    fn dust(&mut self, speck: &Speck) -> Dust {
+        let entry = speck.entry;
+        let color = if entry.file_type == FileType::Folder {
+            entry_color(entry.name, entry.file_type, speck.rank, speck.depth)
         } else {
-            let extension = Path::new(name).extension().unwrap_or_default();
-            match self.by_extension.get(extension) {
+            let extension = Path::new(entry.name).extension().unwrap_or_default();
+            let base = match self.by_extension.get(extension) {
                 Some(&color) => color,
                 None => {
-                    let color = tile_color(name, file_type, 0);
+                    let color = tile_color(entry.name, entry.file_type, 0);
                     self.by_extension.insert(extension.to_os_string(), color);
                     color
                 }
-            }
+            };
+            darker(base, depth_shade(speck.depth))
         };
         Dust {
-            x: area.x,
-            y: area.y,
-            width: area.width,
-            height: area.height,
+            x: speck.area.x,
+            y: speck.area.y,
+            width: speck.area.width,
+            height: speck.area.height,
             color,
         }
     }
@@ -683,9 +685,13 @@ impl Viewer {
     /// Returns whether it is complete: not cut at `deadline`.
     fn lay_nesting(&mut self, dust: bool, deadline: Option<Instant>, started: Instant) -> bool {
         self.layout_generation += 1;
+        // The specks have half the relayout's time: the top-level folders' entries come
+        // whatever the time, so the tiles still to lay out when the specks stop need the rest.
+        let dust_deadline = deadline.map(|deadline| deadline - LAYOUT_BUDGET / 2);
         let nesting = Nesting {
             dust,
             deadline,
+            dust_deadline,
             // A first pass lays out no more of a folder than a frame has time for.
             room_cap: if deadline.is_some() {
                 FIRST_PASS_ROOM
@@ -705,9 +711,7 @@ impl Viewer {
                 &self.board.tiles,
                 self.tree.shown,
                 &nesting,
-                &mut |area, entry, index| {
-                    specks.push(colors.speck(area, entry.name, entry.file_type, index));
-                },
+                &mut |speck| specks.push(colors.dust(&speck)),
             );
             complete = nested.complete;
             self.board_insides = nested.tops;
@@ -717,36 +721,19 @@ impl Viewer {
             Vec::new()
         };
         self.dust = specks;
-        if dust {
-            self.board_dust(&mut colors);
+        if dust && dust_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            // Past the deadline the board's corner waits for the second pass, as the folders'.
+            complete = false;
+        } else if dust {
+            // The board's own corner, in pixel cells only, where a speck is a pixel or more.
+            self.board
+                .scatter_corner(&mut |speck| self.dust.push(colors.dust(&speck)));
             // A cut layout's time is not the whole one's.
             if complete {
                 self.dust_cost = Some((started.elapsed(), self.cells()));
             }
         }
         complete
-    }
-
-    /// The entries in the board's "small files" corner, each as a speck of its colour there
-    /// (asked only in pixel cells, where a speck is a pixel or more).
-    fn board_dust(&mut self, colors: &mut SpeckColors) {
-        let Some((sx, sy)) = self.board.unrenderable_tile_coordinates else {
-            return;
-        };
-        let corner = Area {
-            x: sx,
-            y: sy,
-            width: self.layout.cols.saturating_sub(sx),
-            height: self.layout.rows.saturating_sub(sy),
-        };
-        let hidden = self.board.hidden();
-        let shares: Vec<f64> = hidden.iter().map(|entry| entry.percentage).collect();
-        let offset = self.board.tiles.len() + self.board.zoom_level;
-        for mote in libduscape::tiles::scatter(&shares, &corner) {
-            let entry = hidden[mote.entry];
-            let speck = colors.speck(mote.area, &entry.name, entry.file_type, offset + mote.entry);
-            self.dust.push(speck);
-        }
     }
 
     /// The "small files" corners filled in — the board's, and each nested folder's — every
@@ -757,6 +744,26 @@ impl Viewer {
     #[must_use]
     pub fn dust(&self) -> &[Dust] {
         &self.dust
+    }
+
+    /// The colour of the board's tile at `index`, for every painter alike: by its place in the
+    /// folder, the zoom counted, so a folder's tile and its swatch in the list agree.
+    #[must_use]
+    pub fn board_color(&self, index: usize) -> (f64, f64, f64) {
+        let tile = &self.board.tiles[index];
+        entry_color(&tile.name, tile.file_type, index + self.board.zoom_level, 0)
+    }
+
+    /// The colour of the nested tile at `index`: a step darker a level in ([`depth_shade`]).
+    #[must_use]
+    pub fn nested_color(&self, index: usize) -> (f64, f64, f64) {
+        let nested = &self.nested[index];
+        entry_color(
+            &nested.tile.name,
+            nested.tile.file_type,
+            index,
+            nested.depth,
+        )
     }
 
     /// What the nested entries of the board's tile at `index` cover, if any were laid out in it:
@@ -1962,6 +1969,25 @@ pub fn lighter((r, g, b): (f64, f64, f64), by: f64) -> (f64, f64, f64) {
 #[must_use]
 pub fn darker((r, g, b): (f64, f64, f64), shade: f64) -> (f64, f64, f64) {
     (r * shade, g * shade, b * shade)
+}
+
+/// How much darker an entry `depth` levels into the nesting is than on the board: a step a
+/// level, to four, so the nesting reads as depth.
+#[must_use]
+pub fn depth_shade(depth: usize) -> f64 {
+    1.0 - 0.12 * depth.min(4) as f64
+}
+
+/// The colour of an entry's tile — or its speck — `depth` levels into the nesting (0 the
+/// board's), `index` its place: [`tile_color`], [`depth_shade`] darker.
+#[must_use]
+pub fn entry_color(
+    name: &OsStr,
+    file_type: FileType,
+    index: usize,
+    depth: usize,
+) -> (f64, f64, f64) {
+    darker(tile_color(name, file_type, index), depth_shade(depth))
 }
 
 /// A tile's colour, as sRGB components: folders in blues, files by their extension — so files

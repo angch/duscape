@@ -16,7 +16,7 @@ use crate::font::Fonts;
 use crate::trash;
 use duscape_scan::rescan::{Outcome, Rescanner};
 use duscape_viewer::menu::{Action, Entry, Platform};
-use duscape_viewer::passes::Paints;
+use duscape_viewer::passes::{Paints, paint_times};
 use duscape_viewer::preview::{Loaded, Previewer};
 use duscape_viewer::scan;
 use duscape_viewer::state::{Direction, Hit, IDLE, Jump, Preview, Rect, Viewer, drop_later};
@@ -198,11 +198,16 @@ impl App {
     /// The loop. Returns when the window is closed.
     pub fn run(mut self) -> Result<(), String> {
         self.render()?;
+        // When what is shown last changed: the second pass waits for `IDLE` after it, as the
+        // other windows' timers do, each change putting it off again — not each message, since
+        // one that changes nothing is no reason to wait longer.
+        let mut changed_at = Instant::now();
         loop {
-            // While the specks of the "small files" corners are owed, the wait is only until
-            // input has stopped: then the second pass, and a frame with them.
+            // While the second pass is owed, the wait is only until changes have stopped: then
+            // the second pass, and a frame with it in full.
             let msg = if self.paints.owed(&self.viewer) {
-                match self.rx.recv_timeout(IDLE) {
+                let wait = IDLE.saturating_sub(changed_at.elapsed());
+                match self.rx.recv_timeout(wait) {
                     Ok(msg) => msg,
                     Err(RecvTimeoutError::Timeout) => {
                         self.paints.second_pass(&mut self.viewer);
@@ -230,6 +235,7 @@ impl App {
                 break;
             }
             if self.dirty {
+                changed_at = Instant::now();
                 self.render()?;
             }
         }
@@ -237,8 +243,21 @@ impl App {
         Ok(())
     }
 
+    /// A frame's time and what it drew, on stderr (`DUSCAPE_PAINT_TIMES`).
+    fn report_paint(&self, started: Instant, complete: bool) {
+        eprintln!(
+            "paint {:.2} ms, {} tiles, {} nested, {} specks{}",
+            started.elapsed().as_secs_f64() * 1000.0,
+            self.viewer.board.tiles.len(),
+            self.viewer.nested().len(),
+            self.viewer.dust().len(),
+            if complete { "" } else { ", labels cut" }
+        );
+    }
+
     fn render(&mut self) -> Result<(), String> {
         self.dirty = false;
+        let started = Instant::now();
         let (crumbs, complete) = draw::frame(
             &mut self.canvas,
             &self.fonts,
@@ -249,6 +268,9 @@ impl App {
         );
         self.crumbs = crumbs;
         self.paints.painted(&self.viewer, complete);
+        if paint_times() {
+            self.report_paint(started, complete);
+        }
         let bounds = self.viewer.layout.bounds;
         self.popup_rows = match &self.popup {
             Some(popup) => {
@@ -416,7 +438,15 @@ impl App {
                     self.canvas.resize(w, h);
                 }
                 self.viewer.set_pixel_scale(scale);
+                let started = Instant::now();
                 self.viewer.resize(width, height);
+                if paint_times() {
+                    eprintln!(
+                        "layout {:.2} ms, second pass owed: {}",
+                        started.elapsed().as_secs_f64() * 1000.0,
+                        self.viewer.second_pass_owed()
+                    );
+                }
                 self.dirty = true;
             }
             Input::Decorated(decorated) => {
