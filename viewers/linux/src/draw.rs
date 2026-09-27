@@ -5,8 +5,10 @@
 //! Chrome is dark, like the treemap's background, and the same everywhere: there is no desktop
 //! theme to follow without a toolkit. Tiles use `state::tile_color`.
 
+use ::std::cell::Cell;
 use ::std::ffi::OsStr;
 use ::std::path::{MAIN_SEPARATOR, Path};
+use ::std::time::{Duration, Instant};
 
 use crate::canvas::{Canvas, Color, Rgba};
 use crate::font::{Align, Cut, Face, Fonts, Pen};
@@ -73,6 +75,9 @@ struct Pens<'a> {
     row_selected_right: Pen<'a>,
     mono: Pen<'a>,
     center: Pen<'a>,
+    /// When a first paint stops labelling tiles, and whether it has.
+    labels_until: Option<Instant>,
+    labels_skipped: Cell<bool>,
 }
 
 impl<'a> Pens<'a> {
@@ -104,21 +109,43 @@ impl<'a> Pens<'a> {
             row_selected_right: pen(&fonts.sans, 11.5, WHITE, right, tail),
             mono: pen(&fonts.mono, 10.5, LABEL, left, tail),
             center: pen(&fonts.sans, 13.0, SECONDARY, Align::Center, tail),
+            labels_until: None,
+            labels_skipped: Cell::new(false),
+        }
+    }
+
+    /// Whether a tile may still be labelled: not once a first paint's deadline has passed,
+    /// which it notes so the second pass paints them.
+    fn label_time(&self) -> bool {
+        match self.labels_until {
+            Some(until) if Instant::now() >= until => {
+                self.labels_skipped.set(true);
+                false
+            }
+            _ => true,
         }
     }
 }
 
-/// Draw the whole window. Returns the breadcrumbs, for clicks: each one's rectangle and the
-/// depth it goes up to.
+/// How long a first paint of a layout may spend before it stops labelling the treemap's
+/// tiles, the text being the most of a paint: the rest come in the second pass's, in full.
+const LABEL_DEADLINE: Duration = Duration::from_millis(6);
+
+/// Draw the whole window; `in_full` with every label, else stopping the treemap's labels at
+/// `LABEL_DEADLINE`. Returns the breadcrumbs, for clicks — each one's rectangle and the depth
+/// it goes up to — and whether it was drawn in full.
 pub fn frame(
     canvas: &mut Canvas,
     fonts: &Fonts,
     viewer: &Viewer,
     picture: Option<&Rgba>,
     focused: bool,
-) -> Vec<(Rect, usize)> {
+    in_full: bool,
+) -> (Vec<(Rect, usize)>, bool) {
+    let started = Instant::now();
     canvas.clear(WINDOW);
-    let pens = Pens::new(fonts);
+    let mut pens = Pens::new(fonts);
+    pens.labels_until = (!in_full).then(|| started + LABEL_DEADLINE);
     treemap(canvas, viewer, &pens);
     if let Some(list) = viewer.layout.list {
         let line = Rect::new(list.right(), list.y, 1.0, viewer.layout.treemap.h);
@@ -129,7 +156,8 @@ pub fn frame(
         details(canvas, viewer, info, picture, &pens);
     }
     status(canvas, viewer, &pens);
-    path_bar(canvas, viewer, &pens)
+    let crumbs = path_bar(canvas, viewer, &pens);
+    (crumbs, !pens.labels_skipped.get())
 }
 
 fn treemap(canvas: &mut Canvas, viewer: &Viewer, pens: &Pens) {
@@ -155,7 +183,7 @@ fn treemap(canvas: &mut Canvas, viewer: &Viewer, pens: &Pens) {
         let color = tile_color(&tile.name, tile.file_type, index + viewer.board.zoom_level);
         canvas.gradient(rect, lighter(color, 0.18), color);
         // A folder too short for its label band has its entries right under its margin.
-        if rect.w >= 36.0 && rect.h >= 15.0 && viewer.labelled(tile) {
+        if rect.w >= 36.0 && rect.h >= 15.0 && viewer.labelled(tile) && pens.label_time() {
             tile_label(canvas, pens, rect, 4.0, tile, &pens.tile_name);
         }
     }
@@ -237,7 +265,7 @@ fn nested(canvas: &mut Canvas, viewer: &Viewer, pens: &Pens) {
         let color = darker(tile_color(&t.name, t.file_type, index), shade);
         canvas.fill(rect, color, 1.0);
         canvas.stroke(rect, BLACK, 0.35, 1.0);
-        if rect.w > 30.0 && rect.h >= 15.0 && viewer.labelled(t) {
+        if rect.w > 30.0 && rect.h >= 15.0 && viewer.labelled(t) && pens.label_time() {
             tile_label(canvas, pens, rect, 3.0, t, &pens.nested_name);
         }
         if viewer.hover_nested == Some(index) {

@@ -1239,15 +1239,15 @@ fn deferred_specks_come_in_a_second_pass_and_then_inline_once_they_are_quick() {
     let mut viewer = Viewer::new(root, SizeKind::Disk, 1);
     viewer.set_tree_view(true);
     viewer.set_pixel_scale(1.0);
-    viewer.defer_dust(true);
+    viewer.defer_to_second_pass(true);
     viewer.resize(1200.0, 800.0);
     viewer.finish_scan(tree);
-    assert!(viewer.dust_pending(), "not yet timed: the tiles first");
+    assert!(viewer.second_pass_owed(), "not yet timed: the tiles first");
     assert!(viewer.dust().is_empty());
     let tiles = viewer.board.tiles.len();
 
-    viewer.finish_dust();
-    assert!(!viewer.dust_pending());
+    viewer.finish_second_pass();
+    assert!(!viewer.second_pass_owed());
     assert!(
         !viewer.dust().is_empty(),
         "the second pass lays the specks out"
@@ -1260,6 +1260,59 @@ fn deferred_specks_come_in_a_second_pass_and_then_inline_once_they_are_quick() {
 
     // A few hundred specks take well under the budget: the next relayout has them at once.
     viewer.resize(1100.0, 800.0);
-    assert!(!viewer.dust_pending());
+    assert!(!viewer.second_pass_owed());
     assert!(!viewer.dust().is_empty());
+}
+
+/// A first pass cut at its deadline owes the second, which lays the nesting out as a single
+/// pass without a deadline would.
+#[test]
+fn the_second_pass_completes_a_nesting_the_first_cut_short() {
+    let root = Path::new(ROOT);
+    let tree = || {
+        let mut tree = FileTree::new(Folder::new(root), root.to_path_buf());
+        for a in 0..6 {
+            for b in 0..6 {
+                for c in 0..4 {
+                    let path = format!("d{a}/e{b}/f{c}.bin");
+                    tree.add_entry(
+                        meta(1_000 + (a * 36 + b * 6 + c) as u64, false),
+                        &root.join(path),
+                    );
+                }
+            }
+        }
+        tree
+    };
+    let mut whole = Viewer::new(root, SizeKind::Disk, 1);
+    whole.set_tree_view(true);
+    whole.set_pixel_scale(1.0);
+    whole.resize(1200.0, 800.0);
+    whole.finish_scan(tree());
+
+    let mut passes = Viewer::new(root, SizeKind::Disk, 1);
+    passes.set_tree_view(true);
+    passes.set_pixel_scale(1.0);
+    passes.defer_to_second_pass(true);
+    passes.resize(1200.0, 800.0);
+    passes.finish_scan(tree());
+    // Not yet timed with the specks, so they wait at least.
+    assert!(passes.second_pass_owed());
+    let before = passes.layout_generation();
+    passes.finish_second_pass();
+    assert!(!passes.second_pass_owed());
+    assert_ne!(
+        passes.layout_generation(),
+        before,
+        "a new layout to paint in full"
+    );
+    let names = |viewer: &Viewer| {
+        let mut names: Vec<Vec<OsString>> = (0..viewer.nested().len())
+            .map(|index| viewer.nested_path(index))
+            .collect();
+        names.sort();
+        names
+    };
+    assert_eq!(names(&passes), names(&whole));
+    assert_eq!(passes.dust().len(), whole.dust().len());
 }

@@ -4,7 +4,9 @@
 //! corner are what they were; the nesting is drawn inside them, and a nested tile can be
 //! pointed at.
 
+use ::std::collections::VecDeque;
 use ::std::ffi::OsString;
+use ::std::time::Instant;
 
 use super::{
     Area, FileType, Grid, Share, Tile, TreeMap, largest_in_folder_from, largest_shares_from,
@@ -53,6 +55,15 @@ pub struct Nesting {
     /// a speck is a pixel. A folder with a corner ranks its entries twice: once for the tiles,
     /// then as many more as the corner has pixels.
     pub dust: bool,
+    /// When to stop, for a first pass: past it, no folder deeper than the top-level ones'
+    /// entries is laid out, and [`nest_with`] says the nesting is not complete. The nesting
+    /// goes a level at a time across every folder, so what a deadline cuts is the deepest
+    /// levels everywhere, not the last folders whole.
+    pub deadline: Option<Instant>,
+    /// Entries a folder lays out at most, for a first pass: a folder of tens of thousands (a
+    /// Windows component store) otherwise takes a frame's time by itself. Where it cuts,
+    /// [`nest_with`] says the nesting is not complete.
+    pub room_cap: usize,
 }
 
 impl Default for Nesting {
@@ -64,6 +75,8 @@ impl Default for Nesting {
             max_tiles: 100_000,
             grid: Grid::TERMINAL,
             dust: false,
+            deadline: None,
+            room_cap: usize::MAX,
         }
     }
 }
@@ -103,18 +116,19 @@ impl Nesting {
 /// before their children.
 #[must_use]
 pub fn nest(folder: &Folder, tiles: &[Tile], kind: SizeKind, nesting: &Nesting) -> Vec<NestedTile> {
-    nest_with(folder, tiles, kind, nesting, &mut |_, _, _| {})
+    nest_with(folder, tiles, kind, nesting, &mut |_, _, _| {}).0
 }
 
 /// [`nest`], handing `speck` each speck of the folders' "small files" corners — where, the
-/// entry it is, and its place among its corner's — when `nesting.dust` is on.
+/// entry it is, and its place among its corner's — when `nesting.dust` is on; and whether it
+/// is complete, `false` when `nesting.deadline` cut it short.
 pub fn nest_with(
     folder: &Folder,
     tiles: &[Tile],
     kind: SizeKind,
     nesting: &Nesting,
     speck: &mut dyn FnMut(Area, &Share, usize),
-) -> Vec<NestedTile> {
+) -> (Vec<NestedTile>, bool) {
     // However deep it goes, the nesting holds at most as many tiles as the folder tiles' area
     // holds at the minimum size: the bound on a relayout's and a paint's work is the screen.
     let area: usize = tiles
@@ -128,6 +142,10 @@ pub fn nest_with(
     };
     let nesting = &nesting;
     let mut out = Vec::new();
+    // A level at a time, across every folder: parents before children still, and a deadline
+    // cuts the deepest levels everywhere rather than the last folders whole.
+    let mut queue: VecDeque<(&Folder, Place)> = VecDeque::new();
+    let mut complete = true;
     for (top, tile) in tiles.iter().enumerate() {
         if tile.file_type != FileType::Folder {
             continue;
@@ -139,10 +157,22 @@ pub fn nest_with(
                 top,
                 depth: 1,
             };
-            nest_into(child, &place, kind, nesting, &mut out, speck);
+            queue.push_back((&**child, place));
         }
     }
-    out
+    while let Some((folder, place)) = queue.pop_front() {
+        // The top-level folders' own entries always: a first pass shows every folder's.
+        if place.depth > 1
+            && nesting
+                .deadline
+                .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            return (out, false);
+        }
+        let capped = nest_into(folder, &place, kind, nesting, &mut out, &mut queue, speck);
+        complete &= !capped;
+    }
+    (out, complete)
 }
 
 /// The names from the listed folder down to the nested tile at `index`: the board's tile it is
@@ -204,19 +234,22 @@ struct Place {
     depth: usize,
 }
 
-fn nest_into(
-    folder: &Folder,
+/// Lay `folder`'s entries out in its tile at `place`, into `out`, and queue its folders'.
+/// Returns whether `nesting.room_cap` left some of them out.
+fn nest_into<'a>(
+    folder: &'a Folder,
     place: &Place,
     kind: SizeKind,
     nesting: &Nesting,
     out: &mut Vec<NestedTile>,
+    queue: &mut VecDeque<(&'a Folder, Place)>,
     speck: &mut dyn FnMut(Area, &Share, usize),
-) {
+) -> bool {
     if place.depth > nesting.max_depth || out.len() >= nesting.max_tiles {
-        return;
+        return false;
     }
     let Some(inside) = nesting.inside(&place.cells) else {
-        return;
+        return false;
     };
     // Only as many entries as the inside has room for at the minimum tile size, plus one so
     // the squarify still sees what follows: a folder of fifty thousand entries is not listed
@@ -225,6 +258,8 @@ fn nest_into(
     let room = (usize::from(inside.width) / usize::from(grid.min_width) + 1)
         * (usize::from(inside.height) / usize::from(grid.min_height) + 1)
         + 1;
+    let capped = room > nesting.room_cap && folder.contents.len() > nesting.room_cap;
+    let room = room.min(nesting.room_cap);
     // A tile is its entry's share of the inside, and rounding adds less than a cell to either
     // side, so an entry under (least − 1)² cells can never get one: it is left out.
     let least_cells =
@@ -274,8 +309,7 @@ fn nest_into(
             speck(mote.area, &hidden[mote.entry], mote.entry);
         }
     }
-    // The folders among them, gone into once all of this level is in `out`: parents first.
-    let mut folders = Vec::new();
+    // The folders among them, gone into once this level is in `out`: parents first.
     for child in map.tiles {
         if child.file_type == FileType::Folder
             && let Some(FileOrFolder::Folder(entries)) = folder.contents.get(&child.name)
@@ -286,7 +320,7 @@ fn nest_into(
                 top: place.top,
                 depth: place.depth + 1,
             };
-            folders.push((entries, inner));
+            queue.push_back((entries, inner));
         }
         out.push(NestedTile {
             parent: place.parent,
@@ -295,9 +329,7 @@ fn nest_into(
             tile: child,
         });
     }
-    for (entries, inner) in &folders {
-        nest_into(entries, inner, kind, nesting, out, speck);
-    }
+    capped
 }
 
 #[cfg(test)]
@@ -527,5 +559,60 @@ mod tests {
         }
         // Too short for two of the least tile: nothing inside.
         assert!(nest(folder, &[big(11)], SizeKind::Disk, &pixels).is_empty());
+    }
+
+    #[test]
+    fn a_deadline_cuts_the_deepest_levels_and_a_cap_the_largest_folders() {
+        use super::nest_with;
+        let tree = tree();
+        let board = board(&tree, 200, 80);
+        let folder = tree.get_current_folder();
+        let (whole, complete) = nest_with(
+            folder,
+            &board.tiles,
+            SizeKind::Disk,
+            &Nesting::default(),
+            &mut |_, _, _| {},
+        );
+        assert!(complete && whole.iter().any(|t| t.depth == 2));
+        // Past its deadline: the top-level folders' own entries, and no deeper.
+        let late = Nesting {
+            deadline: Some(::std::time::Instant::now()),
+            ..Nesting::default()
+        };
+        let (cut, complete) = nest_with(
+            folder,
+            &board.tiles,
+            SizeKind::Disk,
+            &late,
+            &mut |_, _, _| {},
+        );
+        assert!(!complete);
+        assert!(
+            !cut.is_empty() && cut.iter().all(|t| t.depth == 1),
+            "{cut:?}"
+        );
+        // The same tiles as the whole nesting's first level: a level at a time, parents first.
+        let first: Vec<_> = whole
+            .iter()
+            .filter(|t| t.depth == 1)
+            .map(|t| &t.tile.name)
+            .collect();
+        let cut_names: Vec<_> = cut.iter().map(|t| &t.tile.name).collect();
+        assert_eq!(first, cut_names);
+        // A cap under a folder's entries leaves some out, and says so.
+        let capped = Nesting {
+            room_cap: 1,
+            ..Nesting::default()
+        };
+        let (few, complete) = nest_with(
+            folder,
+            &board.tiles,
+            SizeKind::Disk,
+            &capped,
+            &mut |_, _, _| {},
+        );
+        assert!(!complete);
+        assert!(few.iter().filter(|t| t.depth == 1).count() <= 1, "{few:?}");
     }
 }

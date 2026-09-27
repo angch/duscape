@@ -9,6 +9,7 @@ use ::std::cell::Cell;
 use ::std::ffi::OsStr;
 use ::std::mem::{size_of, zeroed};
 use ::std::ptr::null_mut;
+use ::std::time::{Duration, Instant};
 
 use duscape_viewer::state::{
     EXPANDER, Focus, LIST_PAD, Layout, MIN_TILE_PIXELS, Preview, ROW, ROW_INDENT, Rect, TILE_LABEL,
@@ -25,8 +26,8 @@ use windows_sys::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, CreateFontIndirectW, DEFAULT_CHARSET, DIB_RGB_COLORS,
     DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_RIGHT, DT_SINGLELINE, DT_VCENTER, DeleteDC,
     DeleteObject, DrawTextW, EndPaint, FF_DONTCARE, FF_MODERN, FIXED_PITCH, FW_NORMAL, FW_SEMIBOLD,
-    GdiFlush, GetCurrentObject, GetDC, GetTextExtentPoint32W, GetTextMetricsW, HDC, HFONT,
-    LOGFONTW, OBJ_FONT, PAINTSTRUCT, ReleaseDC, SRCCOPY, SelectObject, SetBkMode,
+    GdiFlush, GetCurrentObject, GetDC, GetTextExtentPoint32W, GetTextMetricsW, HBITMAP, HDC, HFONT,
+    HGDIOBJ, LOGFONTW, OBJ_FONT, PAINTSTRUCT, ReleaseDC, SRCCOPY, SelectObject, SetBkMode,
     SetDIBitsToDevice, SetTextColor, TEXTMETRICW, TRANSPARENT, VARIABLE_PITCH,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -243,6 +244,9 @@ struct Canvas {
     height: i32,
     /// GDI has drawn since the pixels were last written: its batch is flushed first.
     gdi: Cell<bool>,
+    /// When a first paint stops labelling tiles, and whether it has.
+    labels_until: Option<Instant>,
+    labels_skipped: Cell<bool>,
     /// The font selected into the DC, so it is selected only when it changes; the DC's own
     /// is put back when the paint ends.
     font: Cell<HFONT>,
@@ -260,6 +264,18 @@ impl Canvas {
             top: self.px(rect.y),
             right: self.px(rect.right()),
             bottom: self.px(rect.bottom()),
+        }
+    }
+
+    /// Whether a tile may still be labelled: not once a first paint's deadline has passed,
+    /// which it notes so the second pass paints them.
+    fn label_time(&self) -> bool {
+        match self.labels_until {
+            Some(until) if Instant::now() >= until => {
+                self.labels_skipped.set(true);
+                false
+            }
+            _ => true,
         }
     }
 
@@ -377,11 +393,89 @@ fn tile_colorref(name: &OsStr, file_type: FileType, index: usize, shade: f64) ->
     rgb(byte(r), byte(g), byte(b))
 }
 
-/// Draw the whole window. Returns the breadcrumbs, in points, for clicks: each one's rectangle
-/// and the depth it goes up to.
-pub fn paint(window: &Window, hwnd: HWND) -> Vec<(Rect, usize)> {
-    // SAFETY: BeginPaint/EndPaint bracket the paint; the off-screen DC and bitmap are made and
-    // freed here, with what was selected into them put back first.
+/// How long a first paint of a layout may spend before it stops labelling the treemap's
+/// tiles: the labels are GDI text, at some 35 µs each the most of a paint, and a relayout has
+/// had 10 ms of the frame already. The rest come in the second pass's paint, in full.
+const LABEL_DEADLINE: Duration = Duration::from_millis(6);
+
+/// The off-screen buffer frames are drawn in: a 32-bit DIB section in a memory DC, kept from
+/// one paint to the next and made again only when the window's size changes. Made fresh each
+/// paint, its 7 MB were allocated, faulted in page by page on the first fill, and unmapped
+/// again: some 5 ms of every frame.
+pub struct BackBuffer {
+    dc: HDC,
+    bitmap: HBITMAP,
+    /// What was selected into the DC before the bitmap, put back before it is deleted.
+    old_bitmap: HGDIOBJ,
+    /// The DC's own font, put back likewise.
+    first_font: HGDIOBJ,
+    pixels: *mut u32,
+    width: i32,
+    height: i32,
+}
+
+impl BackBuffer {
+    /// One `width` × `height` for `screen`, or `None` if GDI will not make it.
+    fn new(screen: HDC, width: i32, height: i32) -> Option<Self> {
+        // SAFETY: the header describes a top-down 32-bit bitmap of the size asked; what is
+        // made is deleted again if the rest cannot be.
+        unsafe {
+            let dc = CreateCompatibleDC(screen);
+            if dc.is_null() {
+                return None;
+            }
+            let mut info: BITMAPINFO = ::std::mem::zeroed();
+            info.bmiHeader = BITMAPINFOHEADER {
+                biSize: size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: width,
+                biHeight: -height,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB,
+                ..::std::mem::zeroed()
+            };
+            let mut bits = null_mut();
+            let bitmap = CreateDIBSection(screen, &info, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
+            if bitmap.is_null() || bits.is_null() {
+                DeleteDC(dc);
+                return None;
+            }
+            let old_bitmap = SelectObject(dc, bitmap as _);
+            SetBkMode(dc, TRANSPARENT as i32);
+            let first_font = GetCurrentObject(dc, OBJ_FONT as u32);
+            Some(BackBuffer {
+                dc,
+                bitmap,
+                old_bitmap,
+                first_font,
+                pixels: bits.cast(),
+                width,
+                height,
+            })
+        }
+    }
+}
+
+impl Drop for BackBuffer {
+    fn drop(&mut self) {
+        // SAFETY: made by `new`; what was selected into the DC is put back before the DC and
+        // the bitmap are deleted, once each.
+        unsafe {
+            SelectObject(self.dc, self.first_font);
+            SelectObject(self.dc, self.old_bitmap);
+            DeleteObject(self.bitmap as _);
+            DeleteDC(self.dc);
+        }
+    }
+}
+
+/// Draw the whole window; `in_full` with every label, else stopping the treemap's labels at
+/// `LABEL_DEADLINE`. Returns the breadcrumbs, in points, for clicks — each one's rectangle and
+/// the depth it goes up to — and whether it was painted in full.
+pub fn paint(window: &Window, hwnd: HWND, in_full: bool) -> (Vec<(Rect, usize)>, bool) {
+    let started = Instant::now();
+    // SAFETY: BeginPaint/EndPaint bracket the paint; the off-screen buffer is the window's,
+    // alive for the paint, and drawn into only here.
     unsafe {
         let mut ps: PAINTSTRUCT = ::std::mem::zeroed();
         let screen = BeginPaint(hwnd, &mut ps);
@@ -390,36 +484,33 @@ pub fn paint(window: &Window, hwnd: HWND) -> Vec<(Rect, usize)> {
             (client.right - client.left).max(1),
             (client.bottom - client.top).max(1),
         );
-        let dc = CreateCompatibleDC(screen);
-        let mut info: BITMAPINFO = ::std::mem::zeroed();
-        info.bmiHeader = BITMAPINFOHEADER {
-            biSize: size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: width,
-            biHeight: -height,
-            biPlanes: 1,
-            biBitCount: 32,
-            biCompression: BI_RGB,
-            ..::std::mem::zeroed()
-        };
-        let mut bits = null_mut();
-        let bitmap = CreateDIBSection(screen, &info, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
-        if bitmap.is_null() || bits.is_null() {
-            DeleteDC(dc);
-            EndPaint(hwnd, &ps);
-            return Vec::new();
+        let mut back = window.back_buffer.borrow_mut();
+        if back
+            .as_ref()
+            .is_none_or(|back| (back.width, back.height) != (width, height))
+        {
+            // The old one goes first: two of them at once is twice the memory for a moment.
+            *back = None;
+            *back = BackBuffer::new(screen, width, height);
         }
-        let old_bitmap = SelectObject(dc, bitmap as _);
-        SetBkMode(dc, TRANSPARENT as i32);
+        let Some(back) = back.as_ref() else {
+            EndPaint(hwnd, &ps);
+            return (Vec::new(), true);
+        };
+        let dc = back.dc;
         let canvas = Canvas {
             dc,
             scale: window.scale,
-            pixels: bits.cast(),
+            pixels: back.pixels,
             width,
             height,
             gdi: Cell::new(false),
+            // Whatever font the last paint left selected is one of the window's, alive still;
+            // not knowing which, the first text selects its own.
             font: Cell::new(null_mut()),
+            labels_until: (!in_full).then(|| started + LABEL_DEADLINE),
+            labels_skipped: Cell::new(false),
         };
-        let first_font = GetCurrentObject(dc, OBJ_FONT as u32);
         let viewer = &window.viewer;
         let layout = &viewer.layout;
 
@@ -436,12 +527,8 @@ pub fn paint(window: &Window, hwnd: HWND) -> Vec<(Rect, usize)> {
 
         GdiFlush();
         BitBlt(screen, 0, 0, width, height, dc, 0, 0, SRCCOPY);
-        SelectObject(dc, first_font);
-        SelectObject(dc, old_bitmap);
-        DeleteObject(bitmap as _);
-        DeleteDC(dc);
         EndPaint(hwnd, &ps);
-        crumbs
+        (crumbs, !canvas.labels_skipped.get())
     }
 }
 
@@ -464,7 +551,7 @@ fn draw_treemap(canvas: &Canvas, window: &Window, layout: &Layout) {
         );
         canvas.frame(rect, BORDER, 1);
         // A folder too short for its label band has its entries right under its margin.
-        if rect.w > 40.0 && rect.h > LINE && viewer.labelled(tile) {
+        if rect.w > 40.0 && rect.h > LINE && viewer.labelled(tile) && canvas.label_time() {
             let ink = if marked { INK } else { rgb(240, 240, 240) };
             draw_tile_label(canvas, fonts, rect, pad, tile, ink, fonts.label_bold);
         }
@@ -620,7 +707,7 @@ fn draw_nested(canvas: &Canvas, window: &Window, layout: &Layout) {
         let shade = 1.0 - 0.12 * nested.depth.min(4) as f64;
         canvas.fill(rect, tile_colorref(&t.name, t.file_type, index, shade));
         canvas.frame(rect, BORDER, 1);
-        if rect.w > 30.0 && rect.h > LINE && viewer.labelled(t) {
+        if rect.w > 30.0 && rect.h > LINE && viewer.labelled(t) && canvas.label_time() {
             draw_tile_label(canvas, fonts, rect, pad, t, rgb(235, 235, 235), fonts.label);
         }
         if viewer.hover_nested == Some(index) {

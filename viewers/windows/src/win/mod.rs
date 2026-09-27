@@ -26,7 +26,7 @@ use clap::Parser;
 use duscape_scan::rescan::{Outcome, Rescanner};
 use duscape_viewer::menu::{Action, Entry, Platform};
 use duscape_viewer::scan;
-use duscape_viewer::state::{DUST_IDLE, Direction, Hit, Jump, Mods, Preview, ROW, Rect, Viewer};
+use duscape_viewer::state::{Direction, Hit, IDLE, Jump, Mods, Preview, ROW, Rect, Viewer};
 use libduscape::model::SizeKind;
 use libduscape::preview::{Reader, Ready};
 use libduscape::{DirSummary, FileTree, ScanOptions};
@@ -69,8 +69,9 @@ const WM_APP_MSG: u32 = WM_APP + 1;
 const FLASH_TIMER: usize = 1;
 /// Fires once after a burst of outline batches, to lay the live view out for them.
 const OUTLINE_TIMER: usize = 2;
-/// Fires once input has stopped for `DUST_IDLE` while the specks are owed: the second pass.
-const DUST_TIMER: usize = 3;
+/// Fires once input has stopped for `IDLE` while the second pass is owed — the viewer's
+/// (the deeper nesting, the specks), or a paint's (the labels a first paint had no time for).
+const SECOND_PASS_TIMER: usize = 3;
 /// How long after a batch the live view is laid out — the elevated scan of a volume sends
 /// dozens of batches a second, and each relayout took 15–25 ms, so laid out per batch the
 /// window answered nothing until the scan ended.
@@ -114,8 +115,15 @@ struct Window {
     /// The breadcrumbs as last painted, in points, each with the depth it goes up to.
     crumbs: Vec<(Rect, usize)>,
     fonts: paint::Fonts,
+    /// The frame's off-screen buffer, kept between paints (`paint::BackBuffer`).
+    back_buffer: RefCell<Option<paint::BackBuffer>>,
     /// Outline batches have come in since the view was last laid out; `OUTLINE_TIMER` is set.
     outline_behind: bool,
+    /// The layout (`Viewer::layout_generation`) last painted in full, labels and all: until the
+    /// one on show has been, a paint may stop labelling at its deadline.
+    painted_in_full: u64,
+    /// The next paint is the second pass's: in full, whatever it takes.
+    paint_in_full: bool,
 }
 
 /// The preview panel's caption line and, under it, the area for the picture or text: in points.
@@ -153,12 +161,10 @@ impl Window {
     /// After anything that may have changed what is shown: ask for the preview of the entry in
     /// hand, retitle, and redraw.
     fn changed(&mut self, hwnd: HWND) {
-        // The specks of the "small files" corners, when the relayout left them for later:
-        // once input has stopped, each change putting it off again.
-        if self.viewer.dust_pending() {
-            let idle = u32::try_from(DUST_IDLE.as_millis()).unwrap_or(u32::MAX);
-            // SAFETY: our own window and timer.
-            unsafe { SetTimer(hwnd, DUST_TIMER, idle, None) };
+        // What the relayout left for later: once input has stopped, each change putting it
+        // off again.
+        if self.viewer.second_pass_owed() {
+            second_pass_after_idle(hwnd);
         }
         // The picture is prepared at the pixels it will take, so a resize asks for it again.
         if let Some(info) = self.viewer.layout.info {
@@ -726,7 +732,18 @@ fn dispatch(window: &mut Window, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
         WM_SIZE => window.on_size(hwnd),
         WM_PAINT => {
             let started = Instant::now();
-            window.crumbs = paint::paint(window, hwnd);
+            let generation = window.viewer.layout_generation();
+            // A layout painted in full once is painted in full again (a hover, a mark), so
+            // its labels never come and go; a new one's first paint may stop at its deadline.
+            let in_full =
+                ::std::mem::take(&mut window.paint_in_full) || window.painted_in_full == generation;
+            let (crumbs, complete) = paint::paint(window, hwnd, in_full);
+            window.crumbs = crumbs;
+            if complete {
+                window.painted_in_full = generation;
+            } else {
+                second_pass_after_idle(hwnd);
+            }
             // How long a frame takes, on stderr (redirect it: the window has no console), to
             // check that a change keeps the painting fast.
             if ::std::env::var_os("DUSCAPE_PAINT_TIMES").is_some() {
@@ -766,10 +783,11 @@ fn dispatch(window: &mut Window, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
             window.viewer.catch_up();
             window.changed(hwnd);
         }
-        WM_TIMER if wparam == DUST_TIMER => {
+        WM_TIMER if wparam == SECOND_PASS_TIMER => {
             // SAFETY: our own timer.
-            unsafe { KillTimer(hwnd, DUST_TIMER) };
-            window.viewer.finish_dust();
+            unsafe { KillTimer(hwnd, SECOND_PASS_TIMER) };
+            window.viewer.finish_second_pass();
+            window.paint_in_full = true;
             invalidate(hwnd);
         }
         WM_TIMER if wparam == FLASH_TIMER => {
@@ -832,6 +850,14 @@ fn pick_folder() -> Option<PathBuf> {
     }
     let len = path.iter().position(|&c| c == 0).unwrap_or(path.len());
     Some(PathBuf::from(OsString::from_wide(&path[..len])))
+}
+
+/// Run the second pass once input has stopped for `IDLE`: the timer is set again by each
+/// change, so a drag or a stream of keys puts it off until it ends.
+fn second_pass_after_idle(hwnd: HWND) {
+    let idle = u32::try_from(IDLE.as_millis()).unwrap_or(u32::MAX);
+    // SAFETY: our own window and timer.
+    unsafe { SetTimer(hwnd, SECOND_PASS_TIMER, idle, None) };
 }
 
 /// The app's icon (`duscape_viewer::icon`, a treemap) at the size the system metric `metric`
@@ -954,7 +980,7 @@ pub fn run_with(folder: Option<PathBuf>, options: ScanOptions, no_elevate: bool)
     // The treemap in the screen's pixels: every entry big enough to see gets a tile.
     viewer.set_pixel_scale(scale);
     // And the specks of its corners in a second pass, when laying them out would be slow.
-    viewer.defer_dust(true);
+    viewer.defer_to_second_pass(true);
     let window = Box::new(Window {
         hwnd: 0,
         viewer,
@@ -965,7 +991,10 @@ pub fn run_with(folder: Option<PathBuf>, options: ScanOptions, no_elevate: bool)
         picture: None,
         crumbs: Vec::new(),
         fonts: paint::Fonts::new(scale),
+        back_buffer: RefCell::new(None),
         outline_behind: false,
+        painted_in_full: 0,
+        paint_in_full: false,
     });
     let state = Box::into_raw(window);
 

@@ -52,14 +52,24 @@ What every change is held to, adapted to sane practical defaults rather than met
 - **About 60 fps while laying out again** (a resize, a folder change, a zoom): a relayout within
   `LAYOUT_BUDGET` (10 ms) so the paint fits in the frame too.
 - **Adapt, do not just degrade.** A feature found to slow a frame is measured as it runs and put
-  off to a second pass when it would overrun, not dropped: the specks of the "small files"
-  corners are laid out with the tiles while the last layout with them was inside the budget,
-  else after input has stopped for `DUST_IDLE` (`Viewer::defer_dust`, `finish_dust`). Prefer
-  that shape — coarse now, complete after — to a switch the user has to find.
-- Where it stands (2026-09-27, 1.5x, 1600×1000 pt window): E:\ lays out in 4.5 ms then its
-  specks in 7.5; the flat 87k-file Dell backup 7.6 then 16; `C:\Windows` 13 then 21 — its
-  nesting alone is over the budget, and the next to take a second pass. A paint is 13–19 ms,
-  most of it text (GDI `DrawTextW`, ~35 µs a call).
+  off to a second pass when it would overrun, not dropped; the second pass runs once input has
+  stopped for `IDLE` (60 ms), each change putting it off again. Prefer that shape — coarse now,
+  complete after — to a switch the user has to find. What does it now:
+  - the nesting stops at the relayout's deadline, a level at a time across every folder so it
+    is the deepest levels that wait, and lays out no more than `FIRST_PASS_ROOM` (1000) of any
+    one folder's entries (`Nesting::deadline`, `room_cap`);
+  - the specks of the "small files" corners come with the tiles only while the last complete
+    layout with them was inside the budget (`Viewer::defer_to_second_pass`,
+    `finish_second_pass`, `second_pass_owed`);
+  - the first paint of a layout stops labelling the treemap's tiles at `LABEL_DEADLINE` (6 ms
+    into the paint, Windows and Linux); the second pass paints in full, and a layout painted in
+    full once stays so (`Viewer::layout_generation`), so labels never come and go on a hover.
+- Where it stands (2026-09-27, 1.5x): at 1600×1000 pt `C:\Windows` lays out in 7.8 ms, then
+  21 for the rest; E:\ 3.7 then 7.4; the flat 87k-file Dell backup 10.5 then 18 (its top
+  level, 87k entries in one board, is not cut). At 2560×1400 each first pass is about 10 ms. A
+  hurried paint of `C:\Windows` takes 10–11 ms, a full one 19 (treemap 13–14 of it: fills 5,
+  labels 8; the list's text 3). Next: the fills' overdraw (every level fills its parent's area
+  again), the board's own first pass for a flat folder, and the list's text.
 
 ---
 
@@ -167,7 +177,11 @@ out and painting.
   a painter labels only those. Each folder is listed by `largest_in_folder_from`, only as many
   entries as its inside has room for and none under (least − 1)² cells (which can never round
   to a tile), so a folder of fifty thousand entries is not named and sorted whole on every
-  relayout; parents before children, so a painter draws in order. A `NestedTile` knows its
+  relayout; a level at a time across every folder (a queue, breadth first), so parents come
+  before children and a painter draws in order, and a first pass's deadline
+  (`Nesting::deadline`, after the top-level folders' own entries) cuts the deepest levels
+  everywhere rather than the last folders whole; `room_cap` bounds one folder's share of a
+  first pass, and `nest_with` says whether either cut. A `NestedTile` knows its
   `parent` and `top` by index, not its path (`nested_path`, `nested_path_is`): paths cloned
   per tile were half the nesting's time
 - `delete.rs` — `remove` (from disk, a link itself never its target) and `refused` (NTFS metadata)
@@ -282,8 +296,12 @@ shared `Viewer`, not in `win/`:
   selected only when it changes) and pictures are GDI's. The fonts are the system's message
   font (`SPI_GETNONCLIENTMETRICS`) and a treemap label size that fits the label band whole.
   `DUSCAPE_PAINT_TIMES=1` prints each frame's time on stderr (redirect it: no console).
-  `DUST_TIMER` runs the viewer's second pass (`finish_dust`) once input has stopped for
-  `DUST_IDLE`, each change putting it off again
+  The buffer (`BackBuffer`, a DIB section in a memory DC) is kept between paints and made
+  again only when the size changes: made fresh, its pages faulted in on every frame.
+  A first paint of a layout stops the treemap's labels at `LABEL_DEADLINE`; then
+  `SECOND_PASS_TIMER` (set by each change and by a paint that stopped, so it fires once input
+  has stopped for `IDLE`) runs the viewer's second pass and paints in full. `painted_in_full`
+  is the layout generation last painted so, and later paints of it are full too
 - `resources.rs` — the binaries' own resources, written without a resource compiler (the zig
   cross-build has none) and `include!`d by this crate's `build.rs` and the TUI's: the icon
   (`duscape.ico`, `RT_ICON` a size and the `RT_GROUP_ICON` Explorer reads) as a `.res` file for
@@ -592,7 +610,8 @@ Exiting { app_loaded: bool }
   benchmark's `refined` stage is walk + second pass, and is what the fixtures measure. This is
   the pattern the goals ask of every costly feature — coarse now, complete after: the probe costs
   more than it changes, so it waits until the tree is on screen, the folder in view first. The
-  window's specks of the "small files" corners (`Viewer::defer_dust`) follow it.
+  window's deeper nesting, its specks and its first paint's labels
+  (`Viewer::defer_to_second_pass`, `LABEL_DEADLINE`) follow it.
 - **Network filesystems**: refused the same way, whatever `-x` says — NFS, SMB, 9p, Ceph, AFS… by
   magic (`linux::filesystem::NETWORK`), and FUSE by its subtype in `/proc/self/mountinfo`, found by
   `stx_mnt_id` (`NETWORK_FUSE`: sshfs, rclone, s3fs…), since FUSE also serves local filesystems.
@@ -743,7 +762,7 @@ measured and none helped — read the 2026-09-24 section before trying them agai
   what can get a tile, `Nesting` caps at what the area holds at the least tile, the corner
   ranks only as many as it has pixels): the goals' 60 fps relayout has to hold on a folder of a
   million entries as on one of ten. What the screen cannot show at once becomes a second pass
-  (`Viewer::finish_dust`), not a slower frame
+  (`Viewer::finish_second_pass`), not a slower frame
 
 ### Releases
 A `v*` tag runs `deploy.yml`. It builds `duscape-<tag>-<target>.tar.gz` for

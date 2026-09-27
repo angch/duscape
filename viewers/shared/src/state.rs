@@ -44,12 +44,17 @@ const MAX_CELLS: f64 = 4096.0;
 /// in from its sides and bottom, in points.
 pub const TILE_LABEL: f64 = 18.0;
 pub const TILE_MARGIN: f64 = 2.0;
-/// What a relayout may take and still leave a 60 Hz frame room to paint: past it, the specks
-/// of the "small files" corners wait for a second pass ([`Viewer::defer_dust`]).
+/// What a relayout may take and still leave a 60 Hz frame room to paint: past it, the deeper
+/// nesting and the specks of the "small files" corners wait for a second pass
+/// ([`Viewer::defer_to_second_pass`]).
 pub const LAYOUT_BUDGET: Duration = Duration::from_millis(10);
 /// How long input must have stopped before a viewer runs that second pass
-/// ([`Viewer::finish_dust`]): long enough that a drag of the window's edge is not held up.
-pub const DUST_IDLE: Duration = Duration::from_millis(60);
+/// ([`Viewer::finish_second_pass`]), and paints in full what a first paint left out: long
+/// enough that a drag of the window's edge is not held up.
+pub const IDLE: Duration = Duration::from_millis(60);
+/// Entries a folder lays out at most in a first pass: the largest, so it is the smallest that
+/// wait. A Windows component store (27k entries) took 10–16 ms alone laid out whole.
+pub const FIRST_PASS_ROOM: usize = 1000;
 /// The breadcrumb bar across the top, and the status bar across the bottom.
 pub const PATH_BAR: f64 = 30.0;
 pub const STATUS_BAR: f64 = 24.0;
@@ -380,13 +385,20 @@ pub struct Viewer {
     nested: Vec<NestedTile>,
     /// The "small files" corner filled in, in pixel cells; see [`Viewer::dust`].
     dust: Vec<Dust>,
-    /// Whether the specks may wait for a second pass when laying them out would be slow;
-    /// see [`Viewer::defer_dust`].
-    defer_dust: bool,
-    /// The specks are owed: the tiles were laid out without them.
-    dust_pending: bool,
-    /// What the last layout with the specks took, the nesting's and theirs.
+    /// Whether what would make a relayout slow may wait for a second pass; see
+    /// [`Viewer::defer_to_second_pass`].
+    second_pass: bool,
+    /// The second pass is owed: the first stopped at its deadline, or left the specks out.
+    second_pass_owed: bool,
+    /// The last nesting stopped at its deadline.
+    nesting_cut: bool,
+    /// What the last complete layout with the specks took, the nesting's and theirs.
     dust_cost: Option<Duration>,
+    /// When the relayout under way began: the first pass's deadline counts from it.
+    layout_started: Option<Instant>,
+    /// Counts the nestings laid out, so a viewer can tell a paint of a new layout from another
+    /// of the same one ([`Viewer::layout_generation`]).
+    layout_generation: u64,
     /// The nested tile under the pointer.
     pub hover_nested: Option<usize>,
     /// The zoom level of each folder above this one, to restore on the way back up.
@@ -449,9 +461,12 @@ impl Viewer {
             hover_row: None,
             nested: Vec::new(),
             dust: Vec::new(),
-            defer_dust: false,
-            dust_pending: false,
+            second_pass: false,
+            second_pass_owed: false,
+            nesting_cut: false,
             dust_cost: None,
+            layout_started: None,
+            layout_generation: 0,
             hover_nested: None,
             zooms: Vec::new(),
             scanning: true,
@@ -540,6 +555,7 @@ impl Viewer {
     }
 
     pub fn resize(&mut self, width: f64, height: f64) {
+        self.layout_started = Some(Instant::now());
         self.layout = Layout::with_cells(
             width,
             height,
@@ -569,6 +585,7 @@ impl Viewer {
 
     /// Lay the folder's entries out again, after the tree or the size shown changed.
     fn refresh(&mut self) {
+        self.layout_started = Some(Instant::now());
         // What the specks cost is not known for what is shown now: tiles first, specks after.
         self.dust_cost = None;
         self.board.change_files(self.tree.get_current_folder());
@@ -580,51 +597,76 @@ impl Viewer {
 
     /// The tiles inside the folder tiles, when the tree view is on; none otherwise.
     fn rebuild_nested(&mut self) {
-        // The specks inline while that keeps the relayout inside a frame, as it last did —
-        // else the tiles now, and the specks in a second pass when input stops.
+        let started = self.layout_started.take().unwrap_or_else(Instant::now);
         let pixels = self.pixel_scale.is_some();
-        let inline = !self.defer_dust || self.dust_cost.is_some_and(|cost| cost <= LAYOUT_BUDGET);
-        self.lay_nesting(pixels && inline);
-        self.dust_pending = pixels && !inline;
+        if self.second_pass && pixels {
+            // The first pass: the nesting until the relayout's deadline, level by level, and
+            // the specks only if the last complete layout with them kept inside the budget.
+            // What it leaves out is the second pass's, once input has stopped.
+            let dust = self.dust_cost.is_some_and(|cost| cost <= LAYOUT_BUDGET);
+            self.lay_nesting(dust, Some(started + LAYOUT_BUDGET));
+            self.second_pass_owed = !dust || self.nesting_cut;
+        } else {
+            self.lay_nesting(pixels, None);
+            self.second_pass_owed = false;
+        }
         // The tiles moved: what was under the pointer is not known until it moves again.
         self.hover_nested = None;
     }
 
-    /// Let the specks of the "small files" corners wait for a second pass when laying them out
-    /// with the tiles would take more than [`LAYOUT_BUDGET`] — as the last layout with them
-    /// did, or before any has been timed. The viewer then calls [`Viewer::finish_dust`] once
-    /// input has stopped for [`DUST_IDLE`], while [`Viewer::dust_pending`] says so: first paint
-    /// and a drag stay fast, and the specks follow. Off, they are always laid out at once.
-    pub fn defer_dust(&mut self, on: bool) {
-        self.defer_dust = on;
+    /// Let what would make a relayout overrun [`LAYOUT_BUDGET`] wait for a second pass: the
+    /// nesting stops at the deadline, a level at a time so it is the deepest levels that
+    /// wait, and the specks of the "small files" corners wait unless the last layout with them
+    /// was quick (or none has been timed, for what is shown now). The viewer then calls
+    /// [`Viewer::finish_second_pass`] once input has stopped for [`IDLE`], while
+    /// [`Viewer::second_pass_owed`] says so: first paint and a drag stay fast, and the rest
+    /// follows. Off, the nesting is laid out whole at once, the specks with it.
+    pub fn defer_to_second_pass(&mut self, on: bool) {
+        self.second_pass = on;
     }
 
-    /// Whether the specks are owed, the tiles having been laid out without them.
+    /// Whether the second pass is owed: the first stopped at its deadline, or left the specks.
     #[must_use]
-    pub fn dust_pending(&self) -> bool {
-        self.dust_pending
+    pub fn second_pass_owed(&self) -> bool {
+        self.second_pass_owed
     }
 
-    /// The second pass: the nesting again with the specks, timed for the next relayout's
-    /// choice. The tiles come out as they were, so what is under the pointer still is.
-    pub fn finish_dust(&mut self) {
-        if std::mem::take(&mut self.dust_pending) {
-            self.lay_nesting(true);
+    /// The second pass: the nesting again, whole, with the specks, timed for the next
+    /// relayout's choice. The tiles a first pass laid out come out as they were.
+    pub fn finish_second_pass(&mut self) {
+        if std::mem::take(&mut self.second_pass_owed) {
+            self.lay_nesting(true, None);
         }
     }
 
+    /// Which nesting is on show: it changes with every relayout and second pass, so a viewer
+    /// that paints a first time in a hurry knows when it has painted this one in full.
+    #[must_use]
+    pub fn layout_generation(&self) -> u64 {
+        self.layout_generation
+    }
+
     /// The nesting, and with `dust` the corners' specks, the time it took noted.
-    fn lay_nesting(&mut self, dust: bool) {
+    fn lay_nesting(&mut self, dust: bool, deadline: Option<Instant>) {
         let started = Instant::now();
+        self.layout_generation += 1;
+        self.nesting_cut = false;
         let nesting = Nesting {
             dust,
+            deadline,
+            // A first pass lays out no more of a folder than a frame has time for.
+            room_cap: if deadline.is_some() {
+                FIRST_PASS_ROOM
+            } else {
+                usize::MAX
+            },
             ..self.nesting
         };
         self.dust.clear();
         let mut colors = SpeckColors::default();
         let mut specks = Vec::new();
         self.nested = if self.tree_view {
-            libduscape::tiles::nest_with(
+            let (nested, complete) = libduscape::tiles::nest_with(
                 self.tree.get_current_folder(),
                 &self.board.tiles,
                 self.tree.shown,
@@ -632,14 +674,19 @@ impl Viewer {
                 &mut |area, entry, index| {
                     specks.push(colors.speck(area, entry.name, entry.file_type, index));
                 },
-            )
+            );
+            self.nesting_cut = !complete;
+            nested
         } else {
             Vec::new()
         };
         self.dust = specks;
         if dust {
             self.board_dust(&mut colors);
-            self.dust_cost = Some(started.elapsed());
+            // A cut layout's time is not the whole one's.
+            if !self.nesting_cut {
+                self.dust_cost = Some(started.elapsed());
+            }
         }
     }
 
