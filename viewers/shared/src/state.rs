@@ -546,8 +546,11 @@ impl Viewer {
             dust: true,
             ..Nesting::default()
         };
+        // Not laid out yet, it waits for the first `resize`.
         let bounds = self.layout.bounds;
-        self.resize(bounds.w, bounds.h);
+        if bounds.w > 0.0 && bounds.h > 0.0 {
+            self.resize(bounds.w, bounds.h);
+        }
     }
 
     /// Whether a tile may be labelled: a file always, where its label fits; a folder when it
@@ -574,7 +577,9 @@ impl Viewer {
             height: self.layout.rows,
         });
         self.rebuild_nested();
-        if self.layout.list.is_none() {
+        // A window with no room for the list gives the keyboard to the treemap; one of no size
+        // at all (not shown yet, minimised) has no room for either, and leaves it where it is.
+        if self.layout.list.is_none() && width > 0.0 && height > 0.0 {
             self.focus = Focus::Treemap;
         }
         self.sync_board();

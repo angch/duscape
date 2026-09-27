@@ -227,6 +227,25 @@ fn arrows_move_through_the_list_and_cross_to_the_treemap() {
 }
 
 #[test]
+fn a_window_of_no_size_leaves_the_keyboard_where_it_is() {
+    // Every desktop viewer says its scale before its window has a size.
+    let dir = on_disk("scale_before_size");
+    let mut viewer = Viewer::new(&dir, SizeKind::Apparent, 1);
+    viewer.set_pixel_scale(1.5);
+    viewer.resize(1200.0, 800.0);
+    assert_eq!(viewer.focus, Focus::List);
+    viewer.set_pixel_scale(2.0);
+    assert_eq!(viewer.focus, Focus::List, "a new scale keeps the focus");
+    // Minimised, Windows says the window is 0×0.
+    viewer.resize(0.0, 0.0);
+    viewer.resize(1200.0, 800.0);
+    assert_eq!(viewer.focus, Focus::List, "minimised and restored");
+    // Too narrow for the list, the treemap takes the keyboard, as before.
+    viewer.resize(300.0, 800.0);
+    assert_eq!(viewer.focus, Focus::Treemap);
+}
+
+#[test]
 fn jumps_go_to_the_ends_of_the_list() {
     let mut viewer = viewer();
     viewer.jump(Jump::End, false);

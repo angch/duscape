@@ -331,7 +331,8 @@ shared `Viewer`, not in `win/`:
 - `state.rs` — `Viewer`: everything the window shows and how it answers input — `Layout` (points;
   tiles in 2.4×6 pt cells, the treemap's 2.5 ratio, until the viewer says its pixels per point
   with `set_pixel_scale`: then one-pixel square cells, `Grid::pixels(MIN_TILE_PIXELS)`, and the
-  nesting's `TILE_LABEL` band and `TILE_MARGIN` kept in points; every desktop viewer does),
+  nesting's `TILE_LABEL` band and `TILE_MARGIN` kept in points; every desktop viewer does,
+  before its first `resize`, which the scale waits for),
   the entry in hand kept by *name* so a
   relayout cannot move it, marks, navigation, zoom, delete (`delete`, `delete_prompt`, and
   `removed` for a Trash), rescans (through `duscape_scan::rescan::Rescans`), the status bar's
@@ -544,8 +545,9 @@ Exiting { app_loaded: bool }
 - **Focus**: the list has it by default (`Focus::List`; `list_cursor: None` means its top row,
   and while the list has focus `render` syncs the treemap's selection to it). `App::focus` says
   which panel the keyboard drives; it follows the last click, Tab,
-  and Left off the treemap's left edge, and is always `Treemap` while the panel is hidden. The
-  list's cursor is kept by *name* (the listing re-sorts during a scan); moving it selects the
+  and Left off the treemap's left edge, and is always `Treemap` while the panel is hidden —
+  though a desktop viewer laid out at no size (not shown yet, minimised) leaves it where it
+  is, or the list would never get it back. The list's cursor is kept by *name* (the listing re-sorts during a scan); moving it selects the
   entry's tile, or nothing if it has none. Enter, Esc and delete go through `selected_entry`, so
   an entry without a tile can still be acted on.
 - **One listing, two views**: `Board::listing` is the folder's entries, largest first, unzoomed,
