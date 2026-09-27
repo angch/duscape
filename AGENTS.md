@@ -219,7 +219,9 @@ out and painting.
 - `lib.rs` — `scan_directories()`: per-directory batches, the seam every walker plugs into;
   `parallel::build_tree()`: the app's tree build — shard by path prefix, merge, replay;
   `walk_would_enter`, `thread_count`, `scan_into_tree`, the `dua-core` `fallback`
-- `macos.rs` — macOS walker on `getattrlistbulk(2)` (see `docs/scan-performance.md`)
+- `macos.rs` — macOS walker on `getattrlistbulk(2)` (see `docs/scan-performance.md`). It knows
+  nothing of Linux filesystems, by choice: `linux/` and `ext4.rs` are Linux-only, and an ext4 or
+  btrfs USB drive on a Mac is walked through its driver like any folder (`docs/features.md`)
 - `ext4.rs` — as root on ext4, the walk read from the block device: directory blocks and inodes
   swept in device order a generation at a time, every run advised before any is read, parsed and
   batched on several threads; one `DirEntries` per directory like any walker. Declines up front
