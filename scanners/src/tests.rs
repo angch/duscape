@@ -509,7 +509,7 @@ mod linux_walker {
     /// Off btrfs nothing is a read-only subvolume: the question gets `ENOTTY`, and the answer is no.
     #[test]
     fn nothing_off_btrfs_is_a_snapshot() {
-        use crate::linux::btrfs_subvolume::{is_read_only, path_is_read_only};
+        use crate::linux::btrfs::subvolume::{is_read_only, path_is_read_only};
         let root = temp_scan_dir("not_a_snapshot");
         create_dir_all(root.join("dir")).expect("mkdir");
         let dir = ::rustix::fs::open(
@@ -544,7 +544,8 @@ mod linux_walker {
             let path = root.join(name);
             let flags = AtFlags::SYMLINK_NOFOLLOW | AtFlags::NO_AUTOMOUNT;
             let want = statx(CWD, &path, flags, StatxFlags::BASIC_STATS).expect("statx");
-            let got = crate::linux::statx_from_stat(&statat(CWD, &path, flags).expect("fstatat"));
+            let got =
+                crate::linux::stat::statx_from_stat(&statat(CWD, &path, flags).expect("fstatat"));
             assert_eq!(
                 (
                     got.stx_mode,
@@ -864,8 +865,9 @@ mod linux_walker {
         assert_eq!(at.get(Path::new("/srv")), None);
 
         // `fstatat`'s answer carries no mount attributes, so the table decides.
-        let old =
-            crate::linux::statx_from_stat(&statat(CWD, "/", AtFlags::empty()).expect("stat /"));
+        let old = crate::linux::stat::statx_from_stat(
+            &statat(CWD, "/", AtFlags::empty()).expect("stat /"),
+        );
         assert_eq!(mount_of(&old, || Some(22)), (true, 22));
         assert_eq!(mount_of(&old, || None), (false, 0));
         // Where `statx` says, it is believed, and the table is not asked.
@@ -883,7 +885,7 @@ mod linux_walker {
     /// btrfs file-extent items, as `BTRFS_IOC_TREE_SEARCH_V2` returns them: what each occupies.
     #[test]
     fn btrfs_extent_items_are_summed_as_stored() {
-        use crate::linux::btrfs_extents::parse;
+        use crate::linux::btrfs::extents::parse;
         // header: transid, objectid, offset, type, len; then the item.
         fn item(offset: u64, extent: &[u8]) -> Vec<u8> {
             let mut out = Vec::new();

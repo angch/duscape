@@ -227,25 +227,37 @@ out and painting.
   open); a mount point inside, or a directory of a shape it does not read, goes to the kernel
   walker whole; rescans and `--no-device-read` never use it. `--bench-stage ext4-raw` is the inode
   survey alone. Last seconds of writes may be missing: it reads the device's page cache
-- `linux.rs` — Linux walker on `getdents64`/`statx`, own thread pool; also the `FS_IOC_FIEMAP`
-  reflink probe. `dua-core` is only the fallback for other platforms and the benchmark baseline.
-  Every `statx` goes through its own `statx`, which on `ENOSYS` (a kernel before 4.11 — Synology
-  DSM's 4.4) or a seccomp `EPERM` answers with `fstatat` in `statx`'s shape (`statx_from_stat`)
-  and stays on it (`NO_STATX`): basic fields only, no attributes or mount id. Those the kernel
-  gives only from 5.8 (`STATX_ATTR_MOUNT_ROOT`, `stx_mnt_id`), and before it `mount_of` takes
-  both from the mount table (`Shared::mounted_at`, `mounts::points`: the last mount at a point
-  shows), so bind-mount duplicates are still found; `mount_at` likewise. `DUSCAPE_NO_STATX=1`
-  makes a scan read as a pre-4.11 kernel would — the fixtures run their totals and mount layouts
-  that way too — and `strace -e inject=statx:error=ENOSYS` reproduces such a kernel from outside.
-  A read-only btrfs snapshot inside the scan is left empty unless `ScanOptions::snapshots`
-  (`--snapshots`): every subvolume has a device of its own, so one is always a crossing, onto
-  btrfs (`filesystem::Kind::btrfs`), at a root numbered 256 — only there does
-  `btrfs_subvolume::is_read_only` open it and ask `BTRFS_IOC_SUBVOL_GETFLAGS` (no privilege
-  needed), never off btrfs, where opening an automount point would mount it; `walk_would_enter`
-  says the same for a rescan and for the ext4 device reader's mount points, the scan's own root
-  excepted. Synology keeps a share's snapshots under
-  its `#snapshot`, one an hour, and walking them walked the share once each.
-  `environment` is what `--issues` says about the machine
+- `linux.rs` — Linux walker on `getdents64`/`statx`, own thread pool: the walk itself (`Job`,
+  `inspect`, `read_directory`, `walk_linux`); what it asks along the way is in `linux/`, one file
+  each. `dua-core` is only the fallback for other platforms and the benchmark baseline.
+  - `linux/stat.rs` — every `statx` goes through its own `statx`, which on `ENOSYS` (a kernel
+    before 4.11 — Synology DSM's 4.4) or a seccomp `EPERM` answers with `fstatat` in `statx`'s
+    shape (`statx_from_stat`) and stays on it (`NO_STATX`): basic fields only, no attributes or
+    mount id. Those the kernel gives only from 5.8 (`STATX_ATTR_MOUNT_ROOT`, `stx_mnt_id`), and
+    before it `mount_of` takes both from the mount table (`Shared::mounted_at`,
+    `mounts::points`: the last mount at a point shows), so bind-mount duplicates are still
+    found; `mount_at` likewise. `DUSCAPE_NO_STATX=1` makes a scan read as a pre-4.11 kernel
+    would — the fixtures run their totals and mount layouts that way too — and
+    `strace -e inject=statx:error=ENOSYS` reproduces such a kernel from outside
+  - `linux/mounts.rs` — `/proc/self/mountinfo` (`read`, `parse`, `points`), bind mounts reached
+    elsewhere (`reached_elsewhere`), `mount_of`
+  - `linux/filesystem.rs` — `classify`: one `statfs` per mount crossed says pseudo, network
+    (FUSE by its subtype), reflinks, ext, btrfs, and whether compressed sizes can be read
+  - `linux/crossing.rs` — the rules at a mount point that a rescan must keep too:
+    `walk_would_enter`, `-x`'s boundary (`same_filesystem`), mount loops (`loops_back`)
+  - `linux/btrfs.rs` — btrfs's own ioctls: the filesystem's UUID (`fsid`, `BTRFS_IOC_FS_INFO`),
+    compressed sizes (`btrfs/extents.rs`, `BTRFS_IOC_TREE_SEARCH_V2`), read-only subvolumes
+    (`btrfs/subvolume.rs`, `BTRFS_IOC_SUBVOL_GETFLAGS`, no privilege needed). A read-only btrfs
+    snapshot inside the scan is left empty unless `ScanOptions::snapshots` (`--snapshots`):
+    `snapshot_left_out`, which the walk and `walk_would_enter` (a rescan, and the ext4 device
+    reader's mount points, the scan's own root excepted) both ask. Every subvolume has a device
+    of its own, so one is always a crossing, onto btrfs (`filesystem::Kind::btrfs`), at a root
+    numbered 256 — only there is the directory opened to ask, never off btrfs, where opening an
+    automount point would mount it. Synology keeps a share's snapshots under its `#snapshot`,
+    one an hour, and walking them walked the share once each
+  - `linux/reflink.rs` — the `FS_IOC_FIEMAP` reflink probe; `linux/dirblocks.rs` — directory
+    blocks read ahead through the device; `linux/environment.rs` — what `--issues` says about
+    the machine
 - `ntfs.rs` — NTFS file-record parser: sizes `$MFT` and the other metadata files the Windows
   walker adds at a volume root when elevated (records fetched with `FSCTL_GET_NTFS_FILE_RECORD`).
   Platform-independent so its tests run on Linux CI
@@ -610,7 +622,7 @@ Exiting { app_loaded: bool }
 - **Bind mounts**: a mount root (`STATX_ATTR_MOUNT_ROOT`) is looked up in `/proc/self/mountinfo`
   by `stx_mnt_id` (`linux::mounts`); if an earlier mount of the same device shows the same
   directory at a path inside the scan — checked by device and inode — the mount is left empty.
-- **btrfs compression (root only)**: `linux::btrfs_extents::on_disk` reads a file's
+- **btrfs compression (root only)**: `linux::btrfs::extents::on_disk` reads a file's
   `EXTENT_DATA` items with `BTRFS_IOC_TREE_SEARCH_V2` on the directory fd (tree 0 = its
   subvolume) and sums what they occupy; it replaces `stx_blocks` as the disk size. Gated by
   `filesystem::Compressed` (decided per mount: `Maybe` if the superblock options say `compress`,
@@ -875,7 +887,7 @@ Regenerated by hand from `wc -l` when this file is touched; `make quality` print
 | `common/src/tiles/treemap.rs` | ~300 lines — squarify, in a `Grid` |
 | `common/src/model/files/file_tree.rs` | ~590 lines — folder tree, hard-link accounting, the build profile |
 | `scanners/src/lib.rs` | ~770 lines — walker selection, parallel build, fallback, `environment` |
-| `scanners/src/linux.rs` | ~1700 lines — Linux `getdents64`/`statx` walker, inode order, block prefetch, the `fstatat` fallback |
+| `scanners/src/linux.rs` | ~700 lines — Linux `getdents64`/`statx` walker, inode order; `linux/` ~1150 more: mounts, filesystems, btrfs, reflinks, block prefetch, the `fstatat` fallback |
 | `scanners/src/macos.rs` | ~830 lines — macOS `getattrlistbulk` walker |
 | `scanners/src/windows.rs` | ~920 lines — Windows bulk-listing walker |
 | `viewers/tui/src/bench/mod.rs` | ~470 lines — `--benchmark` harness |
