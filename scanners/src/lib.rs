@@ -511,7 +511,7 @@ mod fallback {
     }
 }
 
-/// Workers for the walker the app actually uses: `--threads`, else [`default_scan_threads`].
+/// Workers for the walker the app actually uses: `--threads`, else `default_scan_threads`.
 pub fn thread_count(options: ScanOptions) -> usize {
     if let Some(threads) = options.threads {
         return threads.max(1);

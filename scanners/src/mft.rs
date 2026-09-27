@@ -21,7 +21,7 @@
 //! or not NTFS — makes this decline before it has said anything, and the kernel walk takes over.
 //!
 //! The parsing and the tree are plain byte handling and run on every platform, with tests;
-//! only [`walk_mft`] touches a volume.
+//! only `walk_mft` touches a volume.
 
 use ::std::ffi::OsString;
 use ::std::path::Path;
@@ -353,7 +353,7 @@ impl Catalog {
     }
 
     /// Hand on every directory under `root_record` — at `root` — breadth-first, in batches of
-    /// about [`SEND_BATCH`] entries, until `send` says the consumer has gone.
+    /// about `SEND_BATCH` entries, until `send` says the consumer has gone.
     pub fn emit(
         mut self,
         root_record: u32,

@@ -4,7 +4,7 @@
 //! the viewer asks — the UAC prompt — and starts itself again elevated, the same arguments plus
 //! `--no-elevate` so the new process never asks in turn; declined, it scans as it is.
 //!
-//! The decision and the command line are plain and tested everywhere; only [`relaunch`] calls
+//! The decision and the command line are plain and tested everywhere; only `relaunch` calls
 //! the shell.
 
 use ::std::ffi::OsString;

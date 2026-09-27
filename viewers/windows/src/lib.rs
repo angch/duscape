@@ -3,7 +3,7 @@
 //! The scan comes from `duscape-scan` and the tree, the treemap, deletion, previews and the
 //! clipboard from `libduscape` — the code the terminal viewer runs. What the window shows and
 //! how it answers input is `duscape_viewer::state::Viewer`, shared with the macOS and Linux
-//! viewers and tested on every platform; [`preview`] prepares a picture for GDI; `win` is the
+//! viewers and tested on every platform; `preview` prepares a picture for GDI; `win` is the
 //! window, drawing with GDI and turning input into `Viewer` calls. It is built on `windows-sys`
 //! rather than a GUI framework, to keep the executable small. `docs/features.md` compares the
 //! viewers.
