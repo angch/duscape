@@ -25,6 +25,7 @@ use ::std::time::Instant;
 use clap::Parser;
 use duscape_scan::rescan::{Outcome, Rescanner};
 use duscape_viewer::menu::{Action, Entry, Platform};
+use duscape_viewer::passes::Paints;
 use duscape_viewer::scan;
 use duscape_viewer::state::{Direction, Hit, IDLE, Jump, Mods, Preview, ROW, Rect, Viewer};
 use libduscape::model::SizeKind;
@@ -119,11 +120,8 @@ struct Window {
     back_buffer: RefCell<Option<paint::BackBuffer>>,
     /// Outline batches have come in since the view was last laid out; `OUTLINE_TIMER` is set.
     outline_behind: bool,
-    /// The layout (`Viewer::layout_generation`) last painted in full, labels and all: until the
-    /// one on show has been, a paint may stop labelling at its deadline.
-    painted_in_full: u64,
-    /// The next paint is the second pass's: in full, whatever it takes.
-    paint_in_full: bool,
+    /// Which layout was last painted in full, and so whether a paint may hurry.
+    paints: Paints,
 }
 
 /// The preview panel's caption line and, under it, the area for the picture or text: in points.
@@ -156,7 +154,7 @@ impl Window {
             self.points(client.right - client.left),
             self.points(client.bottom - client.top),
         );
-        if ::std::env::var_os("DUSCAPE_PAINT_TIMES").is_some() {
+        if paint_times() {
             eprintln!(
                 "layout {:.2} ms, second pass owed: {}",
                 started.elapsed().as_secs_f64() * 1000.0,
@@ -740,21 +738,16 @@ fn dispatch(window: &mut Window, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
         WM_SIZE => window.on_size(hwnd),
         WM_PAINT => {
             let started = Instant::now();
-            let generation = window.viewer.layout_generation();
-            // A layout painted in full once is painted in full again (a hover, a mark), so
-            // its labels never come and go; a new one's first paint may stop at its deadline.
-            let in_full =
-                ::std::mem::take(&mut window.paint_in_full) || window.painted_in_full == generation;
+            let in_full = window.paints.in_full(&window.viewer);
             let (crumbs, complete) = paint::paint(window, hwnd, in_full);
             window.crumbs = crumbs;
-            if complete {
-                window.painted_in_full = generation;
-            } else {
+            window.paints.painted(&window.viewer, complete);
+            if !complete {
                 second_pass_after_idle(hwnd);
             }
             // How long a frame takes, on stderr (redirect it: the window has no console), to
             // check that a change keeps the painting fast.
-            if ::std::env::var_os("DUSCAPE_PAINT_TIMES").is_some() {
+            if paint_times() {
                 eprintln!(
                     "paint {:.2} ms, {} tiles, {} nested",
                     started.elapsed().as_secs_f64() * 1000.0,
@@ -794,8 +787,7 @@ fn dispatch(window: &mut Window, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
         WM_TIMER if wparam == SECOND_PASS_TIMER => {
             // SAFETY: our own timer.
             unsafe { KillTimer(hwnd, SECOND_PASS_TIMER) };
-            window.viewer.finish_second_pass();
-            window.paint_in_full = true;
+            window.paints.second_pass(&mut window.viewer);
             invalidate(hwnd);
         }
         WM_TIMER if wparam == FLASH_TIMER => {
@@ -862,6 +854,12 @@ fn pick_folder() -> Option<PathBuf> {
 
 /// Run the second pass once input has stopped for `IDLE`: the timer is set again by each
 /// change, so a drag or a stream of keys puts it off until it ends.
+/// `DUSCAPE_PAINT_TIMES`, read once: each frame's time, and each resize's layout, on stderr.
+fn paint_times() -> bool {
+    static ON: ::std::sync::OnceLock<bool> = ::std::sync::OnceLock::new();
+    *ON.get_or_init(|| ::std::env::var_os("DUSCAPE_PAINT_TIMES").is_some())
+}
+
 fn second_pass_after_idle(hwnd: HWND) {
     let idle = u32::try_from(IDLE.as_millis()).unwrap_or(u32::MAX);
     // SAFETY: our own window and timer.
@@ -1001,8 +999,7 @@ pub fn run_with(folder: Option<PathBuf>, options: ScanOptions, no_elevate: bool)
         fonts: paint::Fonts::new(scale),
         back_buffer: RefCell::new(None),
         outline_behind: false,
-        painted_in_full: 0,
-        paint_in_full: false,
+        paints: Paints::default(),
     });
     let state = Box::into_raw(window);
 

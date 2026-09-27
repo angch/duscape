@@ -214,7 +214,7 @@ pub fn nest_with(
         }
         if let Some(FileOrFolder::Folder(child)) = folder.contents.get(&tile.name) {
             let place = Place {
-                cells: cells_of(tile),
+                cells: tile.area(),
                 parent: None,
                 top,
                 depth: 1,
@@ -277,15 +277,6 @@ pub fn nested_path_is(
         at = nested[index].parent;
     }
     at.is_none()
-}
-
-fn cells_of(tile: &Tile) -> Area {
-    Area {
-        x: tile.x,
-        y: tile.y,
-        width: tile.width,
-        height: tile.height,
-    }
 }
 
 /// A folder tile whose entries are to be nested: its cells, its own nested tile (`None` for a
@@ -389,7 +380,7 @@ fn nest_into<'a>(
             && let Some(FileOrFolder::Folder(entries)) = folder.contents.get(&child.name)
         {
             let inner = Place {
-                cells: cells_of(&child),
+                cells: child.area(),
                 parent: Some(out.tiles.len()),
                 top: place.top,
                 depth: place.depth + 1,
@@ -710,16 +701,10 @@ mod tests {
         let big = board.tiles.iter().position(|t| t.name == "big").unwrap();
         let inside = nested.tops[big].expect("big's entries were laid out in it");
         let tile = &board.tiles[big];
-        let cells = |t: &crate::tiles::Tile| Area {
-            x: t.x,
-            y: t.y,
-            width: t.width,
-            height: t.height,
-        };
         let area = |a: &Area| u32::from(a.width) * u32::from(a.height);
         // The parts to fill and the inside make up the tile, the corner being in the inside.
-        let around: u32 = inside.around(&cells(tile))[..4].iter().map(area).sum();
-        assert_eq!(around + area(&inside.area), area(&cells(tile)));
+        let around: u32 = inside.around(&tile.area())[..4].iter().map(area).sum();
+        assert_eq!(around + area(&inside.area), area(&tile.area()));
         // Its entries lie in the inside, clear of the corner.
         for t in nested.tiles.iter().filter(|t| t.depth == 1) {
             let t = &t.tile;

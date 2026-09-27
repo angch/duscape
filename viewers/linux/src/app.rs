@@ -16,6 +16,7 @@ use crate::font::Fonts;
 use crate::trash;
 use duscape_scan::rescan::{Outcome, Rescanner};
 use duscape_viewer::menu::{Action, Entry, Platform};
+use duscape_viewer::passes::Paints;
 use duscape_viewer::preview::{Loaded, Previewer};
 use duscape_viewer::scan;
 use duscape_viewer::state::{Direction, Hit, IDLE, Jump, Preview, Rect, Viewer, drop_later};
@@ -95,13 +96,8 @@ fn key_hint(action: Action) -> Option<&'static str> {
 }
 
 pub struct App {
-    /// The layout (`Viewer::layout_generation`) last drawn in full, labels and all: until the
-    /// one on show has been, a frame may stop labelling at its deadline.
-    drawn_in_full: u64,
-    /// The next frame is the second pass's: in full, whatever it takes.
-    draw_in_full: bool,
-    /// A frame stopped labelling at its deadline: the second pass owes the rest.
-    labels_owed: bool,
+    /// Which layout was last drawn in full, and so whether a frame may hurry.
+    paints: Paints,
     backend: Box<dyn Backend>,
     canvas: Canvas,
     fonts: Fonts,
@@ -188,9 +184,7 @@ impl App {
             last_click: None,
             focused: true,
             dirty: true,
-            drawn_in_full: 0,
-            draw_in_full: false,
-            labels_owed: false,
+            paints: Paints::default(),
             outline_behind: false,
             quit: false,
             title: String::new(),
@@ -207,12 +201,11 @@ impl App {
         loop {
             // While the specks of the "small files" corners are owed, the wait is only until
             // input has stopped: then the second pass, and a frame with them.
-            let msg = if self.viewer.second_pass_owed() || self.labels_owed {
+            let msg = if self.paints.owed(&self.viewer) {
                 match self.rx.recv_timeout(IDLE) {
                     Ok(msg) => msg,
                     Err(RecvTimeoutError::Timeout) => {
-                        self.viewer.finish_second_pass();
-                        self.draw_in_full = true;
+                        self.paints.second_pass(&mut self.viewer);
                         self.render()?;
                         continue;
                     }
@@ -246,23 +239,16 @@ impl App {
 
     fn render(&mut self) -> Result<(), String> {
         self.dirty = false;
-        // A layout drawn in full once is drawn in full again, so its labels never come and
-        // go; a new one's first frame may stop labelling at its deadline.
-        let generation = self.viewer.layout_generation();
-        let in_full = ::std::mem::take(&mut self.draw_in_full) || self.drawn_in_full == generation;
         let (crumbs, complete) = draw::frame(
             &mut self.canvas,
             &self.fonts,
             &self.viewer,
             self.picture.as_ref(),
             self.focused,
-            in_full,
+            self.paints.in_full(&self.viewer),
         );
         self.crumbs = crumbs;
-        self.labels_owed = !complete;
-        if complete {
-            self.drawn_in_full = generation;
-        }
+        self.paints.painted(&self.viewer, complete);
         let bounds = self.viewer.layout.bounds;
         self.popup_rows = match &self.popup {
             Some(popup) => {

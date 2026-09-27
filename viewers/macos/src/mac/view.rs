@@ -571,7 +571,6 @@ impl DiskView {
         view
     }
 
-    /// Run `change` on the viewer, if there is one and it is free.
     /// The window's pixels per point: 2 on a Retina screen. Before the view is in a window,
     /// the main screen's.
     fn backing_scale(&self) -> f64 {
@@ -583,6 +582,7 @@ impl DiskView {
         }
     }
 
+    /// Run `change` on the viewer, if there is one and it is free.
     fn with<R>(&self, change: impl FnOnce(&mut Viewer) -> R) -> Option<R> {
         let mut viewer = self.ivars().viewer.try_borrow_mut().ok()?;
         viewer.as_deref_mut().map(change)
@@ -927,7 +927,7 @@ impl DiskView {
             ("rows", rows.join(" | ")),
             ("cursor", cursor),
             ("marked", lossy(&viewer.marked)),
-            ("focus", format!("{:?}", viewer.focus)),
+            ("focus", format!("{:?}", viewer.focus())),
             ("zoom", viewer.board.zoom_level.to_string()),
             ("apparent", viewer.showing_apparent().to_string()),
             ("sidebar", viewer.sidebar.to_string()),

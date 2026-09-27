@@ -208,7 +208,7 @@ fn the_entry_in_hand_survives_a_resize() {
 #[test]
 fn arrows_move_through_the_list_and_cross_to_the_treemap() {
     let mut viewer = viewer();
-    assert_eq!(viewer.focus, Focus::List);
+    assert_eq!(viewer.focus(), Focus::List);
     viewer.arrow(Direction::Down, false);
     assert_eq!(selected(&viewer).as_deref(), Some("medium.txt"));
     viewer.arrow(Direction::Up, false);
@@ -219,30 +219,38 @@ fn arrows_move_through_the_list_and_cross_to_the_treemap() {
         "stops at the top"
     );
     viewer.arrow(Direction::Right, false);
-    assert_eq!(viewer.focus, Focus::Treemap);
+    assert_eq!(viewer.focus(), Focus::Treemap);
     // `big` is the leftmost tile, so ← goes back to the list and keeps it in hand.
     viewer.arrow(Direction::Left, false);
-    assert_eq!(viewer.focus, Focus::List);
+    assert_eq!(viewer.focus(), Focus::List);
     assert_eq!(selected(&viewer).as_deref(), Some("big"));
 }
 
 #[test]
-fn a_window_of_no_size_leaves_the_keyboard_where_it_is() {
+fn the_keyboard_goes_back_to_the_list_when_it_has_room_again() {
     // Every desktop viewer says its scale before its window has a size.
     let dir = on_disk("scale_before_size");
     let mut viewer = Viewer::new(&dir, SizeKind::Apparent, 1);
     viewer.set_pixel_scale(1.5);
     viewer.resize(1200.0, 800.0);
-    assert_eq!(viewer.focus, Focus::List);
+    assert_eq!(viewer.focus(), Focus::List);
     viewer.set_pixel_scale(2.0);
-    assert_eq!(viewer.focus, Focus::List, "a new scale keeps the focus");
+    viewer.resize(1200.0, 800.0);
+    assert_eq!(viewer.focus(), Focus::List, "a new scale keeps the focus");
     // Minimised, Windows says the window is 0×0.
     viewer.resize(0.0, 0.0);
     viewer.resize(1200.0, 800.0);
-    assert_eq!(viewer.focus, Focus::List, "minimised and restored");
-    // Too narrow for the list, the treemap takes the keyboard, as before.
+    assert_eq!(viewer.focus(), Focus::List, "minimised and restored");
+    // Too narrow for the list, the treemap has the keyboard; widened, the list again.
     viewer.resize(300.0, 800.0);
-    assert_eq!(viewer.focus, Focus::Treemap);
+    assert_eq!(viewer.focus(), Focus::Treemap);
+    viewer.resize(1200.0, 800.0);
+    assert_eq!(viewer.focus(), Focus::List, "narrowed and widened");
+    // Given to the treemap, it stays there.
+    viewer.toggle_focus();
+    viewer.resize(300.0, 800.0);
+    viewer.resize(1200.0, 800.0);
+    assert_eq!(viewer.focus(), Focus::Treemap);
 }
 
 #[test]
@@ -720,7 +728,7 @@ fn without_the_tree_view_the_rows_are_the_flat_listing() {
     let mut viewer = viewer();
     assert_eq!(rows_of(&viewer), names(&viewer));
     viewer.arrow(Direction::Right, false);
-    assert_eq!(viewer.focus, Focus::Treemap, "→ crosses to the treemap");
+    assert_eq!(viewer.focus(), Focus::Treemap, "→ crosses to the treemap");
     viewer.focus = Focus::List;
     viewer.arrow(Direction::Left, false);
     assert_eq!(rows_of(&viewer), ["big", "medium.txt", "small", "tiny.bin"]);
@@ -744,7 +752,7 @@ fn a_folder_opens_in_place_and_the_arrows_walk_into_it() {
         ["big/", "  a", "  b", "medium.txt", "small", "tiny.bin"]
     );
     assert_eq!(cursor_of(&viewer).as_deref(), Some("big"), "stays in hand");
-    assert_eq!(viewer.focus, Focus::List);
+    assert_eq!(viewer.focus(), Focus::List);
     viewer.arrow(Direction::Right, false);
     assert_eq!(cursor_of(&viewer).as_deref(), Some("a"));
     assert_eq!(
@@ -770,7 +778,7 @@ fn a_folder_opens_in_place_and_the_arrows_walk_into_it() {
     // → on a file still crosses to the treemap.
     viewer.jump(Jump::End, false);
     viewer.arrow(Direction::Right, false);
-    assert_eq!(viewer.focus, Focus::Treemap);
+    assert_eq!(viewer.focus(), Focus::Treemap);
 }
 
 /// A nested row is acted on where it is: previewed, copied, entered, deleted.

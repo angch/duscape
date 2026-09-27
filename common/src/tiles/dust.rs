@@ -29,14 +29,13 @@ pub fn scatter(shares: &[f64], corner: &Area) -> Vec<Mote> {
     if shares.is_empty() || total <= 0.0 {
         return Vec::new();
     }
-    // Stand-ins with no name to copy, and their index where the size would be: the layout
-    // needs only the shares, and gives the index back on each tile.
+    // Stand-ins with no name to copy: the layout needs only the shares, and says which
+    // each tile is.
     let shares: Vec<FileMetadata> = shares
         .iter()
-        .enumerate()
-        .map(|(index, &share)| FileMetadata {
+        .map(|&share| FileMetadata {
             name: OsString::new(),
-            size: index as u128,
+            size: 0,
             descendants: None,
             percentage: share / total,
             file_type: FileType::File,
@@ -56,15 +55,11 @@ pub fn scatter(shares: &[f64], corner: &Area) -> Vec<Mote> {
     map.populate_tiles(shares.iter().collect());
     map.tiles
         .iter()
-        .filter(|tile| tile.width > 0 && tile.height > 0)
-        .map(|tile| Mote {
-            area: Area {
-                x: tile.x,
-                y: tile.y,
-                width: tile.width,
-                height: tile.height,
-            },
-            entry: tile.size as usize,
+        .zip(map.tile_entries())
+        .filter(|(tile, _)| tile.width > 0 && tile.height > 0)
+        .map(|(tile, &entry)| Mote {
+            area: tile.area(),
+            entry,
         })
         .collect()
 }
@@ -74,14 +69,10 @@ mod tests {
     use super::{Mote, scatter};
     use crate::tiles::Area;
 
-    fn entry(percentage: f64) -> f64 {
-        percentage
-    }
-
     #[test]
     fn every_entry_with_a_pixel_to_its_name_gets_one_inside_the_corner() {
         // A thousand equal entries, 1% of the folder between them, in 50×40 pixels: two each.
-        let entries: Vec<f64> = (0..1000).map(|_| entry(0.00001)).collect();
+        let entries: Vec<f64> = (0..1000).map(|_| 0.00001).collect();
         let refs = &entries;
         let corner = Area {
             x: 100,
@@ -103,7 +94,7 @@ mod tests {
 
     #[test]
     fn more_entries_than_pixels_lays_out_no_more_than_the_pixels() {
-        let entries: Vec<f64> = (0..5000).map(|_| entry(0.0001)).collect();
+        let entries: Vec<f64> = (0..5000).map(|_| 0.0001).collect();
         let refs = &entries;
         let corner = Area {
             x: 0,
@@ -117,8 +108,8 @@ mod tests {
         assert!(motes.iter().all(|mote| mote.entry < 200));
         assert!(scatter(refs, &Area::default()).is_empty());
         // Empty files take no room and are left out, whatever is around them.
-        let mut with_empty: Vec<f64> = (0..10).map(|_| entry(0.01)).collect();
-        with_empty.extend((0..10).map(|_| entry(0.0)));
+        let mut with_empty: Vec<f64> = (0..10).map(|_| 0.01).collect();
+        with_empty.extend((0..10).map(|_| 0.0));
         let motes = scatter(&with_empty, &corner);
         assert!(!motes.is_empty() && motes.iter().all(|mote| mote.entry < 10));
         assert!(scatter(&[], &corner).is_empty());

@@ -59,11 +59,13 @@ What every change is held to, adapted to sane practical defaults rather than met
     is the deepest levels that wait, and lays out no more than `FIRST_PASS_ROOM` (1000) of any
     one folder's entries (`Nesting::deadline`, `room_cap`);
   - the specks of the "small files" corners come with the tiles only while the last complete
-    layout with them was inside the budget (`Viewer::defer_to_second_pass`,
-    `finish_second_pass`, `second_pass_owed`);
-  - the first paint of a layout stops labelling the treemap's tiles at `LABEL_DEADLINE` (4 ms
-    into the paint, Windows and Linux); the second pass paints in full, and a layout painted in
-    full once stays so (`Viewer::layout_generation`), so labels never come and go on a hover.
+    layout with them, scaled by area to this one, would be inside the budget — maximised, a
+    layout timed at a smaller size said yes, and a first frame took 33 ms
+    (`Viewer::defer_to_second_pass`, `finish_second_pass`, `second_pass_owed`);
+  - the first paint of a layout stops labelling the treemap's tiles at
+    `passes::LABEL_DEADLINE` (4 ms into the paint, Windows and Linux); the second pass paints
+    in full, and a layout painted in full once stays so (`passes::Paints`, by
+    `Viewer::layout_generation`), so labels never come and go on a hover.
 - And what is cheap should stay cheap: a folder tile is filled only around what its nested
   entries cover (`Inside`), not under them — filled whole, each level painted its parent's area
   again; and text is measured once and drawn with `ExtTextOutW`, not `DrawTextW`, which laid
@@ -159,7 +161,11 @@ out and painting.
   `HEIGHT_WIDTH_RATIO = 2.5`, an 8×3 least tile; the TUI, and the DOS port's reference) or
   `Grid::pixels(min)` (square pixel cells, what the desktop viewers use). A loop over the
   children, linear in them — `largest_after` answers "is any child left big enough" — since a
-  window's pixel grid gives tens of thousands; its layouts are the recursive version's exactly
+  window's pixel grid gives tens of thousands; its layouts are the recursive version's exactly.
+  A step reads only its row's two ends (`worst_in_renderable_row`): in a row every child has
+  the same second side and a first in proportion to its size, so with the children largest
+  first what renders and the worst ratio are decided there — read whole, a pixel grid's rows
+  of thousands made each step cost the row (a flat 87k-file board, 13.5 → 5.9 ms)
 - `tiles/board.rs` — `Board`: tile selection, zoom stack, navigation; `hidden`, the entries in
   the "small files" corner (the treemap records them as it lays out, `TreeMap::hidden`)
 - `tiles/dust.rs` — `scatter`: the "small files" corner filled in — its entries laid out again
@@ -167,8 +173,7 @@ out and painting.
   in proportion to each other, so a flat folder of 87k small files shows as specks, not a grey
   box. The motes have no names and are no targets; `Viewer::dust` colours them (per extension,
   cached; folders darker, as a level deeper) and every desktop painter fills them in one pass.
-  With no least tile a row's worst ratio is read from its two ends, since the children come
-  largest first. Each nested folder's corner is filled too (`Nesting::dust`, `nest_with`'s
+  Each nested folder's corner is filled too (`Nesting::dust`, `nest_with`'s
   `speck`): a folder with one ranks again for as many more entries as the corner has pixels
   (`largest_shares_from`, names borrowed, not copied), and where the entries too small to rank
   left their room empty rather than a corner, that room is it (`TreeMap::leftover`)
@@ -188,7 +193,8 @@ out and painting.
   everywhere rather than the last folders whole; `room_cap` bounds one folder's share of a
   first pass, and `nest_with` says whether either cut. What a folder's entries cover — its
   inside less its corner — is kept as its `Inside` (`NestedTile::inside`, `Nested::tops`,
-  `Viewer::board_inside`), so painters fill a folder only around it. A `NestedTile` knows its
+  `Viewer::board_inside`), so painters fill a folder only around it (`Layout::fill_parts`, the
+  parts to fill in points, one helper for every painter). A `NestedTile` knows its
   `parent` and `top` by index, not its path (`nested_path`, `nested_path_is`): paths cloned
   per tile were half the nesting's time
 - `delete.rs` — `remove` (from disk, a link itself never its target) and `refused` (NTFS metadata)
@@ -314,7 +320,7 @@ shared `Viewer`, not in `win/`:
   breadcrumbs for clicks. `Canvas::fill`/`frame` write the section's pixels directly (a
   `GdiFlush` first when GDI has drawn since): as `FillRect`/`FrameRect` calls, the nested
   treemap's thousands of overdrawn tiles cost 30 ms a frame; and a folder tile is filled only
-  around what its entries cover (`fill_tile`, `Inside::around`). Text and pictures are GDI's:
+  around what its entries cover (`fill_tile`, `Layout::fill_parts`). Text and pictures are GDI's:
   text measured once (`GetTextExtentExPointW`, its own ellipsis) and drawn with `ExtTextOutW`,
   the font selected only when it changes — `DrawTextW` cost half as much again. The fonts are the system's message
   font (`SPI_GETNONCLIENTMETRICS`) and a treemap label size that fits the label band whole.
@@ -322,10 +328,10 @@ shared `Viewer`, not in `win/`:
   (redirect it: no console).
   The buffer (`BackBuffer`, a DIB section in a memory DC) is kept between paints and made
   again only when the size changes: made fresh, its pages faulted in on every frame.
-  A first paint of a layout stops the treemap's labels at `LABEL_DEADLINE`; then
+  A first paint of a layout stops the treemap's labels at `passes::LABEL_DEADLINE`; then
   `SECOND_PASS_TIMER` (set by each change and by a paint that stopped, so it fires once input
-  has stopped for `IDLE`) runs the viewer's second pass and paints in full. `painted_in_full`
-  is the layout generation last painted so, and later paints of it are full too
+  has stopped for `IDLE`) runs `Paints::second_pass` and paints in full; `Paints` says which
+  paints are in full, as it does for the Linux viewer
 - `resources.rs` — the binaries' own resources, written without a resource compiler (the zig
   cross-build has none) and `include!`d by this crate's `build.rs` and the TUI's: the icon
   (`duscape.ico`, `RT_ICON` a size and the `RT_GROUP_ICON` Explorer reads) as a `.res` file for
@@ -346,7 +352,7 @@ shared `Viewer`, not in `win/`:
   tiles in 2.4×6 pt cells, the treemap's 2.5 ratio, until the viewer says its pixels per point
   with `set_pixel_scale`: then one-pixel square cells, `Grid::pixels(MIN_TILE_PIXELS)`, and the
   nesting's `TILE_LABEL` band and `TILE_MARGIN` kept in points; every desktop viewer does,
-  before its first `resize`, which the scale waits for),
+  and the scale is taken at the `resize` it calls with it),
   the entry in hand kept by *name* so a
   relayout cannot move it, marks, navigation, zoom, delete (`delete`, `delete_prompt`, and
   `removed` for a Trash), rescans (through `duscape_scan::rescan::Rescans`), the status bar's
@@ -377,6 +383,10 @@ shared `Viewer`, not in `win/`:
   the `.exe`s carry it as a resource (`viewers/windows/resources.rs`); X11 as `_NET_WM_ICON`
   (16–128 px); macOS as the application icon image (Dock, switcher). Not Wayland, which takes
   an icon from a `.desktop` file
+- `passes.rs` — a layout's paints, first in a hurry and then in full, for every viewer:
+  `LABEL_DEADLINE` and `LabelBudget` (which tiles a paint has time to label), `Paints` (which
+  layout was painted in full, whether a second pass is owed, and `second_pass`, what a viewer
+  runs once input has stopped for `IDLE`). A viewer only draws, and wakes after `IDLE`
 - `menu.rs` — the context menu every desktop viewer opens on a right-click: `Viewer::
   context_menu(&Platform)` gives its `Entry`s (an `Action`, the words, whether it can be chosen)
   for what is targeted, the counts following the marks; `Platform` says what the viewer adds
@@ -559,9 +569,10 @@ Exiting { app_loaded: bool }
 - **Focus**: the list has it by default (`Focus::List`; `list_cursor: None` means its top row,
   and while the list has focus `render` syncs the treemap's selection to it). `App::focus` says
   which panel the keyboard drives; it follows the last click, Tab,
-  and Left off the treemap's left edge, and is always `Treemap` while the panel is hidden —
-  though a desktop viewer laid out at no size (not shown yet, minimised) leaves it where it
-  is, or the list would never get it back. The list's cursor is kept by *name* (the listing re-sorts during a scan); moving it selects the
+  and Left off the treemap's left edge, and is always `Treemap` while the panel is hidden. In
+  the desktop viewers that is derived, not set (`Viewer::focus()`: the panel last chosen,
+  the treemap while the layout has no list), so a window narrowed and widened again, or
+  minimised, gives the list back. The list's cursor is kept by *name* (the listing re-sorts during a scan); moving it selects the
   entry's tile, or nothing if it has none. Enter, Esc and delete go through `selected_entry`, so
   an entry without a tile can still be acted on.
 - **One listing, two views**: `Board::listing` is the folder's entries, largest first, unzoomed,

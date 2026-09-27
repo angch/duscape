@@ -9,16 +9,16 @@ use ::std::cell::Cell;
 use ::std::ffi::OsStr;
 use ::std::mem::{size_of, zeroed};
 use ::std::ptr::{null, null_mut};
-use ::std::time::{Duration, Instant};
 
+use duscape_viewer::passes::LabelBudget;
 use duscape_viewer::state::{
     EXPANDER, Focus, LIST_PAD, Layout, MIN_TILE_PIXELS, Preview, ROW, ROW_INDENT, Rect, TILE_LABEL,
-    describe, tile_color,
+    darker, describe, tile_color,
 };
 use libduscape::DisplaySize;
 use libduscape::format::without_verbatim_prefix;
 use libduscape::tiles::FileType;
-use libduscape::tiles::{Area, Inside, Row, Tile};
+use libduscape::tiles::{Inside, Row, Tile};
 
 use windows_sys::Win32::Foundation::{COLORREF, HWND, RECT, SIZE};
 use windows_sys::Win32::Graphics::Gdi::{
@@ -244,9 +244,8 @@ struct Canvas {
     height: i32,
     /// GDI has drawn since the pixels were last written: its batch is flushed first.
     gdi: Cell<bool>,
-    /// When a first paint stops labelling tiles, and whether it has.
-    labels_until: Option<Instant>,
-    labels_skipped: Cell<bool>,
+    /// Which of the treemap's tiles this paint has time to label.
+    labels: LabelBudget,
     /// The font selected into the DC, so it is selected only when it changes; the DC's own
     /// is put back when the paint ends.
     font: Cell<HFONT>,
@@ -264,18 +263,6 @@ impl Canvas {
             top: self.px(rect.y),
             right: self.px(rect.right()),
             bottom: self.px(rect.bottom()),
-        }
-    }
-
-    /// Whether a tile may still be labelled: not once a first paint's deadline has passed,
-    /// which it notes so the second pass paints them.
-    fn label_time(&self) -> bool {
-        match self.labels_until {
-            Some(until) if Instant::now() >= until => {
-                self.labels_skipped.set(true);
-                false
-            }
-            _ => true,
         }
     }
 
@@ -332,7 +319,6 @@ impl Canvas {
         }
     }
 
-    /// `text` in `rect`, one line, cut short with an ellipsis if it does not fit.
     /// `text` in `rect`, one line, vertically centred, cut short with an ellipsis if it does
     /// not fit. Measured once and drawn with `ExtTextOutW`: `DrawTextW`, which did the same,
     /// laid the line out again for its ellipsis and cost half as much again a label.
@@ -432,18 +418,16 @@ impl Canvas {
     }
 }
 
-/// The colour the shared viewers give a tile, as GDI takes it.
-/// A tile's colour, `shade` (1.0 as given, less for darker) of what every desktop viewer gives it.
-fn tile_colorref(name: &OsStr, file_type: FileType, index: usize, shade: f64) -> COLORREF {
-    let (r, g, b) = tile_color(name, file_type, index);
-    let byte = |value: f64| ((value * shade).clamp(0.0, 1.0) * 255.0).round() as u8;
+/// An sRGB colour as GDI takes it.
+fn colorref((r, g, b): (f64, f64, f64)) -> COLORREF {
+    let byte = |value: f64| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
     rgb(byte(r), byte(g), byte(b))
 }
 
-/// How long a first paint of a layout may spend before it stops labelling the treemap's
-/// tiles: the labels are GDI text, the most of a paint, and the relayout has had some 5–7 ms
-/// of the frame already. The rest come in the second pass's paint, in full.
-const LABEL_DEADLINE: Duration = Duration::from_millis(4);
+/// A tile's colour, `shade` (1.0 as given, less for darker) of what every desktop viewer gives it.
+fn tile_colorref(name: &OsStr, file_type: FileType, index: usize, shade: f64) -> COLORREF {
+    colorref(darker(tile_color(name, file_type, index), shade))
+}
 
 /// The off-screen buffer frames are drawn in: a 32-bit DIB section in a memory DC, kept from
 /// one paint to the next and made again only when the window's size changes. Made fresh each
@@ -517,10 +501,9 @@ impl Drop for BackBuffer {
 }
 
 /// Draw the whole window; `in_full` with every label, else stopping the treemap's labels at
-/// `LABEL_DEADLINE`. Returns the breadcrumbs, in points, for clicks — each one's rectangle and
+/// [`LABEL_DEADLINE`](duscape_viewer::passes::LABEL_DEADLINE). Returns the breadcrumbs, in points, for clicks — each one's rectangle and
 /// the depth it goes up to — and whether it was painted in full.
 pub fn paint(window: &Window, hwnd: HWND, in_full: bool) -> (Vec<(Rect, usize)>, bool) {
-    let started = Instant::now();
     // SAFETY: BeginPaint/EndPaint bracket the paint; the off-screen buffer is the window's,
     // alive for the paint, and drawn into only here.
     unsafe {
@@ -555,8 +538,7 @@ pub fn paint(window: &Window, hwnd: HWND, in_full: bool) -> (Vec<(Rect, usize)>,
             // Whatever font the last paint left selected is one of the window's, alive still;
             // not knowing which, the first text selects its own.
             font: Cell::new(null_mut()),
-            labels_until: (!in_full).then(|| started + LABEL_DEADLINE),
-            labels_skipped: Cell::new(false),
+            labels: LabelBudget::new(in_full),
         };
         let viewer = &window.viewer;
         let layout = &viewer.layout;
@@ -575,7 +557,7 @@ pub fn paint(window: &Window, hwnd: HWND, in_full: bool) -> (Vec<(Rect, usize)>,
         GdiFlush();
         BitBlt(screen, 0, 0, width, height, dc, 0, 0, SRCCOPY);
         EndPaint(hwnd, &ps);
-        (crumbs, !canvas.labels_skipped.get())
+        (crumbs, canvas.labels.complete())
     }
 }
 
@@ -596,7 +578,7 @@ fn draw_treemap(canvas: &Canvas, window: &Window, layout: &Layout) {
         fill_tile(canvas, layout, tile, viewer.board_inside(index), color);
         canvas.frame(rect, BORDER, 1);
         // A folder too short for its label band has its entries right under its margin.
-        if rect.w > 40.0 && rect.h > LINE && viewer.labelled(tile) && canvas.label_time() {
+        if rect.w > 40.0 && rect.h > LINE && viewer.labelled(tile) && canvas.labels.allows() {
             let ink = if marked { INK } else { rgb(240, 240, 240) };
             draw_tile_label(canvas, fonts, rect, pad, tile, ink, fonts.label_bold);
         }
@@ -629,9 +611,7 @@ fn draw_treemap(canvas: &Canvas, window: &Window, layout: &Layout) {
     // colour inside it, since a framed speck of a few pixels reads as a hollow box.
     for dust in viewer.dust() {
         let rect = layout.cells_to_rect(dust.x, dust.y, dust.width, dust.height);
-        let (r, g, b) = dust.color;
-        let byte = |value: f64| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
-        canvas.fill(rect, rgb(byte(r), byte(g), byte(b)));
+        canvas.fill(rect, colorref(dust.color));
         if dust.width >= 2 * MIN_TILE_PIXELS && dust.height >= 2 * MIN_TILE_PIXELS {
             canvas.frame(rect, BORDER, 1);
         }
@@ -666,7 +646,7 @@ fn draw_treemap(canvas: &Canvas, window: &Window, layout: &Layout) {
         );
         canvas.text(line, words, DIM, fonts.ui, false);
     }
-    if viewer.focus == Focus::Treemap && layout.list.is_some() {
+    if viewer.focus() == Focus::Treemap && layout.list.is_some() {
         canvas.frame(layout.treemap, ACCENT, 1);
     }
 }
@@ -733,7 +713,7 @@ fn draw_list(canvas: &Canvas, window: &Window, list: Rect) {
         };
         canvas.text(line, words, DIM, fonts.ui, false);
     }
-    if viewer.focus == Focus::List {
+    if viewer.focus() == Focus::List {
         canvas.frame(list, ACCENT, 1);
     }
 }
@@ -747,27 +727,9 @@ fn fill_tile(
     inside: Option<&Inside>,
     color: COLORREF,
 ) {
-    let cells = Area {
-        x: tile.x,
-        y: tile.y,
-        width: tile.width,
-        height: tile.height,
-    };
-    match inside {
-        Some(inside) => {
-            for part in inside.around(&cells) {
-                if part.width > 0 && part.height > 0 {
-                    canvas.fill(
-                        layout.cells_to_rect(part.x, part.y, part.width, part.height),
-                        color,
-                    );
-                }
-            }
-        }
-        None => canvas.fill(
-            layout.cells_to_rect(tile.x, tile.y, tile.width, tile.height),
-            color,
-        ),
+    let whole = layout.cells_to_rect(tile.x, tile.y, tile.width, tile.height);
+    for part in layout.fill_parts(tile, inside, whole) {
+        canvas.fill(part, color);
     }
 }
 
@@ -786,7 +748,7 @@ fn draw_nested(canvas: &Canvas, window: &Window, layout: &Layout) {
         let color = tile_colorref(&t.name, t.file_type, index, shade);
         fill_tile(canvas, layout, t, nested.inside.as_ref(), color);
         canvas.frame(rect, BORDER, 1);
-        if rect.w > 30.0 && rect.h > LINE && viewer.labelled(t) && canvas.label_time() {
+        if rect.w > 30.0 && rect.h > LINE && viewer.labelled(t) && canvas.labels.allows() {
             draw_tile_label(canvas, fonts, rect, pad, t, rgb(235, 235, 235), fonts.label);
         }
         if viewer.hover_nested == Some(index) {

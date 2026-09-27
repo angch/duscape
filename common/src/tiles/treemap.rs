@@ -104,6 +104,11 @@ impl TreeMap {
             self.hidden.sort_unstable();
         }
     }
+    /// Which child each of `tiles` is, by its index in what was laid out.
+    #[must_use]
+    pub fn tile_entries(&self) -> &[usize] {
+        &self.tile_entries
+    }
     /// What the children left of the area, in cells: nothing when their shares add up to the
     /// whole, their siblings' room when some were not given to be laid out.
     #[must_use]
@@ -213,10 +218,12 @@ impl TreeMap {
         min_first_side: f64,
         min_second_side: f64,
     ) -> Option<f64> {
-        // With no least tile every child is renderable, and in a row largest first the worst
-        // ratio is at one end or the other: the rest need not be looked at.
+        // In a row every child has the same second side (the row's sum over its length) and a
+        // first side in proportion to its size, so with the children largest first both what
+        // renders and the worst ratio are decided at one end or the other: the rest need not be
+        // looked at, where on a pixel grid a row of thousands made each step cost the row.
         let ends;
-        let row = if self.grid.min_width == 0 && self.grid.min_height == 0 && row.len() > 2 {
+        let row = if row.len() > 2 {
             ends = [row[0], row[row.len() - 1]];
             &ends[..]
         } else {
@@ -265,8 +272,9 @@ impl TreeMap {
         let ratio = self.grid.ratio;
         let min_width = f64::from(self.grid.min_width);
         let min_height = f64::from(self.grid.min_height);
-        let mut row: Vec<&FileMetadata> = Vec::new();
-        // The row's sizes added in order, as the layout of it adds them.
+        // The row is `children[row_start..next]`; its sizes added in order, as the layout of it
+        // adds them.
+        let mut row_start = 0;
         let mut row_sum = 0.0;
         let mut next = 0;
         // The row's worst ratio, when it is known: after a child is taken the row is the one
@@ -288,20 +296,19 @@ impl TreeMap {
                     )
                 };
 
-            let rest = &children[next..];
-            let row_start = next - row.len();
+            let (row, rest) = (&children[row_start..next], &children[next..]);
             if rest.is_empty() {
-                self.layoutrow(row_start, &row);
+                self.layoutrow(row_start, row);
                 return;
             }
             if largest_after[next] < min_first_side * min_second_side {
-                self.layoutrow(row_start, &row);
+                self.layoutrow(row_start, row);
                 self.layoutrow(next, rest);
                 return;
             }
             let current_row_worst_ratio = row_worst.unwrap_or_else(|| {
                 self.worst_in_renderable_row(
-                    &row,
+                    row,
                     row_sum,
                     length_of_row,
                     min_first_side,
@@ -309,15 +316,13 @@ impl TreeMap {
                 )
             });
             let with_child = row_sum + rest[0].percentage * self.total_size;
-            row.push(rest[0]);
             let row_with_child_worst_ratio = self.worst_in_renderable_row(
-                &row,
+                &children[row_start..=next],
                 with_child,
                 length_of_row,
                 min_first_side,
                 min_second_side,
             );
-            row.pop();
 
             let take_child = match (current_row_worst_ratio, row_with_child_worst_ratio) {
                 // Renderable children are somewhere, but not the way the row is now nor with
@@ -334,13 +339,12 @@ impl TreeMap {
                 (Some(current_ratio), Some(next_ratio)) => current_ratio < next_ratio,
             };
             if take_child {
-                row.push(rest[0]);
                 row_sum = with_child;
                 next += 1;
                 row_worst = Some(row_with_child_worst_ratio);
             } else {
-                self.layoutrow(row_start, &row);
-                row.clear();
+                self.layoutrow(row_start, row);
+                row_start = next;
                 row_sum = 0.0;
                 row_worst = None;
             }

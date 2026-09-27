@@ -44,10 +44,6 @@ impl Board {
             self.fill();
         }
     }
-    #[must_use]
-    pub fn grid(&self) -> Grid {
-        self.grid
-    }
     /// Draw tiles by the size of `kind` from the next [`Self::change_files`] on.
     pub fn show(&mut self, kind: SizeKind) {
         self.kind = kind;

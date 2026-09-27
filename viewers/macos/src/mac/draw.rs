@@ -18,9 +18,10 @@ use objc2_app_kit::{
 use objc2_foundation::{NSAttributedStringKey, NSDictionary, NSPoint, NSRect, NSSize, NSString};
 
 use duscape_viewer::state::{
-    EXPANDER, Focus, LIST_PAD, Layout, Preview, ROW, ROW_INDENT, Rect, Viewer, tile_color,
+    EXPANDER, Focus, LIST_PAD, Preview, ROW, ROW_INDENT, Rect, TILE_LABEL, Viewer, darker, lighter,
+    tile_color,
 };
-use libduscape::tiles::{Area, FileType, Inside, Row, Tile};
+use libduscape::tiles::{FileType, Row, Tile};
 use libduscape::{DisplayCount, DisplaySize};
 
 pub fn ns_rect(rect: Rect) -> NSRect {
@@ -31,19 +32,7 @@ fn srgb((r, g, b): (f64, f64, f64), alpha: f64) -> Retained<NSColor> {
     NSColor::colorWithSRGBRed_green_blue_alpha(r, g, b, alpha)
 }
 
-fn lighter((r, g, b): (f64, f64, f64), by: f64) -> (f64, f64, f64) {
-    (r + (1.0 - r) * by, g + (1.0 - g) * by, b + (1.0 - b) * by)
-}
-
-/// `shade` of a colour: 1.0 as it is, less for darker.
-fn darker((r, g, b): (f64, f64, f64), shade: f64) -> (f64, f64, f64) {
-    (r * shade, g * shade, b * shade)
-}
-
 const MARK: (f64, f64, f64) = (1.0, 0.84, 0.04);
-/// A tile's label line: the band `libduscape::tiles::nest` leaves at the top of a folder's
-/// tile.
-const TILE_LINE: f64 = duscape_viewer::state::TILE_LABEL;
 /// The monospace size a hex dump starts from, and the least it is shrunk to so a line fits.
 const MONO_SIZE: f64 = 10.5;
 const MONO_MIN: f64 = 5.0;
@@ -317,7 +306,7 @@ fn treemap(viewer: &Viewer, pens: &Pens) {
             );
         }
     }
-    let alpha = if viewer.focus == Focus::Treemap {
+    let alpha = if viewer.focus() == Focus::Treemap {
         1.0
     } else {
         0.7
@@ -349,7 +338,7 @@ fn nested(viewer: &Viewer, pens: &Pens) {
             .inset(0.5, 0.5);
         let shade = 1.0 - 0.12 * nested.depth.min(4) as f64;
         let color = srgb(darker(tile_color(&t.name, t.file_type, index), shade), 1.0);
-        for part in around(layout, t, nested.inside.as_ref(), rect) {
+        for part in layout.fill_parts(t, nested.inside.as_ref(), rect) {
             fill(part, &color);
         }
         stroke(rect, &edge, 1.0);
@@ -364,35 +353,6 @@ fn nested(viewer: &Viewer, pens: &Pens) {
             );
         }
     }
-}
-
-/// The parts of a nested tile to fill, in points within `rect` (the tile, inset): the whole of
-/// it, or where entries were nested in it only around what they cover, since they are drawn
-/// over the rest — filled whole, each level painted its parent's area again.
-fn around(layout: &Layout, tile: &Tile, inside: Option<&Inside>, rect: Rect) -> Vec<Rect> {
-    let Some(inside) = inside else {
-        return vec![rect];
-    };
-    let cells = Area {
-        x: tile.x,
-        y: tile.y,
-        width: tile.width,
-        height: tile.height,
-    };
-    inside
-        .around(&cells)
-        .iter()
-        .filter(|part| part.width > 0 && part.height > 0)
-        .map(|part| {
-            let part = layout.cells_to_rect(part.x, part.y, part.width, part.height);
-            let (x, y) = (part.x.max(rect.x), part.y.max(rect.y));
-            let (right, bottom) = (
-                part.right().min(rect.right()),
-                part.bottom().min(rect.bottom()),
-            );
-            Rect::new(x, y, (right - x).max(0.0), (bottom - y).max(0.0))
-        })
-        .collect()
 }
 
 /// A tile's label, `pad` in from the sides, on the line `nest` leaves at the top of a folder's
@@ -413,13 +373,13 @@ fn tile_label(pens: &Pens, rect: Rect, pad: f64, tile: &Tile, name: &Pen) {
     let line_h = 15.0_f64.min(rect.h);
     let line = Rect::new(
         rect.x + pad,
-        rect.y + ((TILE_LINE.min(rect.h) - line_h) / 2.0).max(0.0),
+        rect.y + ((TILE_LABEL.min(rect.h) - line_h) / 2.0).max(0.0),
         rect.w - 2.0 * pad,
         line_h,
     );
     let size = DisplaySize(tile.size as f64).to_string();
     let size_w = pens.tile_size_right.width(&size) + 1.0;
-    if !is_dir && rect.h >= 2.0 * TILE_LINE + pad {
+    if !is_dir && rect.h >= 2.0 * TILE_LABEL + pad {
         name.draw(&label, line);
         let below = Rect::new(line.x, rect.bottom() - pad - 14.0, line.w, 14.0);
         pens.tile_size_right.draw(&size, below);
@@ -451,7 +411,7 @@ fn rows(viewer: &Viewer, list: Rect, key_window: bool, pens: &Pens) {
         );
         return;
     }
-    let emphasised = key_window && viewer.focus == Focus::List;
+    let emphasised = key_window && viewer.focus() == Focus::List;
     let cursor = viewer.cursor_row();
     let top = viewer.list_top.min(rows.len());
     // A top-level row's colour follows its place in the listing, as its tile's does.

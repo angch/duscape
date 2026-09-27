@@ -33,6 +33,16 @@ impl Tile {
             file_type: file_metadata.file_type,
         }
     }
+    /// The cells it covers.
+    #[must_use]
+    pub fn area(&self) -> Area {
+        Area {
+            x: self.x,
+            y: self.y,
+            width: self.width,
+            height: self.height,
+        }
+    }
     pub fn is_directly_right_of(&self, other: &Tile) -> bool {
         self.x == other.x + other.width
     }

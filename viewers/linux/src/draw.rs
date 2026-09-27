@@ -5,18 +5,18 @@
 //! Chrome is dark, like the treemap's background, and the same everywhere: there is no desktop
 //! theme to follow without a toolkit. Tiles use `state::tile_color`.
 
-use ::std::cell::Cell;
 use ::std::ffi::OsStr;
 use ::std::path::{MAIN_SEPARATOR, Path};
-use ::std::time::{Duration, Instant};
 
 use crate::canvas::{Canvas, Color, Rgba};
 use crate::font::{Align, Cut, Face, Fonts, Pen};
 use duscape_viewer::menu::Entry;
+use duscape_viewer::passes::LabelBudget;
 use duscape_viewer::state::{
-    EXPANDER, Focus, LIST_PAD, Layout, Preview, ROW, ROW_INDENT, Rect, Viewer, tile_color,
+    EXPANDER, Focus, LIST_PAD, Preview, ROW, ROW_INDENT, Rect, TILE_LABEL, Viewer, darker, lighter,
+    tile_color,
 };
-use libduscape::tiles::{Area, FileType, Inside, Row, Tile};
+use libduscape::tiles::{FileType, Row, Tile};
 use libduscape::{DisplayCount, DisplaySize};
 
 pub const WINDOW: Color = (0.13, 0.13, 0.14);
@@ -31,21 +31,9 @@ const SMALL_FILES: Color = (0.30, 0.30, 0.32);
 const MARK: Color = (1.0, 0.84, 0.04);
 const WHITE: Color = (1.0, 1.0, 1.0);
 const BLACK: Color = (0.0, 0.0, 0.0);
-/// A tile's label line: the band `libduscape::tiles::nest` leaves at the top of a folder's
-/// tile.
-const TILE_LINE: f64 = duscape_viewer::state::TILE_LABEL;
 /// The monospace size a hex dump starts from, and the least it is shrunk to so a line fits.
 const MONO_SIZE: f64 = 10.5;
 const MONO_MIN: f64 = 5.0;
-
-fn lighter((r, g, b): Color, by: f64) -> Color {
-    (r + (1.0 - r) * by, g + (1.0 - g) * by, b + (1.0 - b) * by)
-}
-
-/// `shade` of a colour: 1.0 as it is, less for darker.
-fn darker((r, g, b): Color, shade: f64) -> Color {
-    (r * shade, g * shade, b * shade)
-}
 
 fn pen(face: &Face, size: f64, color: Color, align: Align, cut: Cut) -> Pen<'_> {
     Pen {
@@ -75,9 +63,8 @@ struct Pens<'a> {
     row_selected_right: Pen<'a>,
     mono: Pen<'a>,
     center: Pen<'a>,
-    /// When a first paint stops labelling tiles, and whether it has.
-    labels_until: Option<Instant>,
-    labels_skipped: Cell<bool>,
+    /// Which of the treemap's tiles this frame has time to label.
+    labels: LabelBudget,
 }
 
 impl<'a> Pens<'a> {
@@ -109,31 +96,14 @@ impl<'a> Pens<'a> {
             row_selected_right: pen(&fonts.sans, 11.5, WHITE, right, tail),
             mono: pen(&fonts.mono, 10.5, LABEL, left, tail),
             center: pen(&fonts.sans, 13.0, SECONDARY, Align::Center, tail),
-            labels_until: None,
-            labels_skipped: Cell::new(false),
-        }
-    }
-
-    /// Whether a tile may still be labelled: not once a first paint's deadline has passed,
-    /// which it notes so the second pass paints them.
-    fn label_time(&self) -> bool {
-        match self.labels_until {
-            Some(until) if Instant::now() >= until => {
-                self.labels_skipped.set(true);
-                false
-            }
-            _ => true,
+            labels: LabelBudget::new(true),
         }
     }
 }
 
-/// How long a first paint of a layout may spend before it stops labelling the treemap's
-/// tiles, the text being the most of a paint: the rest come in the second pass's, in full.
-const LABEL_DEADLINE: Duration = Duration::from_millis(4);
-
 /// Draw the whole window; `in_full` with every label, else stopping the treemap's labels at
-/// `LABEL_DEADLINE`. Returns the breadcrumbs, for clicks — each one's rectangle and the depth
-/// it goes up to — and whether it was drawn in full.
+/// [`duscape_viewer::passes::LABEL_DEADLINE`]. Returns the breadcrumbs, for clicks — each
+/// one's rectangle and the depth it goes up to — and whether it was drawn in full.
 pub fn frame(
     canvas: &mut Canvas,
     fonts: &Fonts,
@@ -142,10 +112,9 @@ pub fn frame(
     focused: bool,
     in_full: bool,
 ) -> (Vec<(Rect, usize)>, bool) {
-    let started = Instant::now();
     canvas.clear(WINDOW);
     let mut pens = Pens::new(fonts);
-    pens.labels_until = (!in_full).then(|| started + LABEL_DEADLINE);
+    pens.labels = LabelBudget::new(in_full);
     treemap(canvas, viewer, &pens);
     if let Some(list) = viewer.layout.list {
         let line = Rect::new(list.right(), list.y, 1.0, viewer.layout.treemap.h);
@@ -157,7 +126,7 @@ pub fn frame(
     }
     status(canvas, viewer, &pens);
     let crumbs = path_bar(canvas, viewer, &pens);
-    (crumbs, !pens.labels_skipped.get())
+    (crumbs, pens.labels.complete())
 }
 
 fn treemap(canvas: &mut Canvas, viewer: &Viewer, pens: &Pens) {
@@ -183,7 +152,7 @@ fn treemap(canvas: &mut Canvas, viewer: &Viewer, pens: &Pens) {
         let color = tile_color(&tile.name, tile.file_type, index + viewer.board.zoom_level);
         canvas.gradient(rect, lighter(color, 0.18), color);
         // A folder too short for its label band has its entries right under its margin.
-        if rect.w >= 36.0 && rect.h >= 15.0 && viewer.labelled(tile) && pens.label_time() {
+        if rect.w >= 36.0 && rect.h >= 15.0 && viewer.labelled(tile) && pens.labels.allows() {
             tile_label(canvas, pens, rect, 4.0, tile, &pens.tile_name);
         }
     }
@@ -232,7 +201,7 @@ fn treemap(canvas: &mut Canvas, viewer: &Viewer, pens: &Pens) {
         let speck = layout.cells_to_rect(dust.x, dust.y, dust.width, dust.height);
         canvas.fill(speck, dust.color, 1.0);
     }
-    let alpha = if viewer.focus == Focus::Treemap {
+    let alpha = if viewer.focus() == Focus::Treemap {
         1.0
     } else {
         0.7
@@ -263,46 +232,17 @@ fn nested(canvas: &mut Canvas, viewer: &Viewer, pens: &Pens) {
             .inset(0.5, 0.5);
         let shade = 1.0 - 0.12 * nested.depth.min(4) as f64;
         let color = darker(tile_color(&t.name, t.file_type, index), shade);
-        for part in around(layout, t, nested.inside.as_ref(), rect) {
+        for part in layout.fill_parts(t, nested.inside.as_ref(), rect) {
             canvas.fill(part, color, 1.0);
         }
         canvas.stroke(rect, BLACK, 0.35, 1.0);
-        if rect.w > 30.0 && rect.h >= 15.0 && viewer.labelled(t) && pens.label_time() {
+        if rect.w > 30.0 && rect.h >= 15.0 && viewer.labelled(t) && pens.labels.allows() {
             tile_label(canvas, pens, rect, 3.0, t, &pens.nested_name);
         }
         if viewer.hover_nested == Some(index) {
             canvas.stroke(rect, WHITE, 0.8, 1.0);
         }
     }
-}
-
-/// The parts of a nested tile to fill, in points within `rect` (the tile, inset): the whole of
-/// it, or where entries were nested in it only around what they cover, since they are drawn
-/// over the rest — filled whole, each level painted its parent's area again.
-fn around(layout: &Layout, tile: &Tile, inside: Option<&Inside>, rect: Rect) -> Vec<Rect> {
-    let Some(inside) = inside else {
-        return vec![rect];
-    };
-    let cells = Area {
-        x: tile.x,
-        y: tile.y,
-        width: tile.width,
-        height: tile.height,
-    };
-    inside
-        .around(&cells)
-        .iter()
-        .filter(|part| part.width > 0 && part.height > 0)
-        .map(|part| {
-            let part = layout.cells_to_rect(part.x, part.y, part.width, part.height);
-            let (x, y) = (part.x.max(rect.x), part.y.max(rect.y));
-            let (right, bottom) = (
-                part.right().min(rect.right()),
-                part.bottom().min(rect.bottom()),
-            );
-            Rect::new(x, y, (right - x).max(0.0), (bottom - y).max(0.0))
-        })
-        .collect()
 }
 
 /// A tile's label, `pad` in from the sides, on the line `nest` leaves at the top of a folder's
@@ -323,11 +263,11 @@ fn tile_label(canvas: &mut Canvas, pens: &Pens, rect: Rect, pad: f64, tile: &Til
         rect.x + pad,
         rect.y,
         rect.w - 2.0 * pad,
-        TILE_LINE.min(rect.h),
+        TILE_LABEL.min(rect.h),
     );
     let size = DisplaySize(tile.size as f64).to_string();
     let size_w = pens.tile_size_right.width(canvas, &size) + 1.0;
-    if !is_dir && rect.h >= 2.0 * TILE_LINE + pad {
+    if !is_dir && rect.h >= 2.0 * TILE_LABEL + pad {
         name.draw(canvas, &label, line);
         let below = Rect::new(line.x, rect.bottom() - pad - 14.0, line.w, 14.0);
         pens.tile_size_right.draw(canvas, &size, below);
@@ -358,7 +298,7 @@ fn rows(canvas: &mut Canvas, viewer: &Viewer, list: Rect, focused: bool, pens: &
         );
         return;
     }
-    let emphasised = focused && viewer.focus == Focus::List;
+    let emphasised = focused && viewer.focus() == Focus::List;
     let cursor = viewer.cursor_row();
     let top = viewer.list_top.min(rows.len());
     // A top-level row's colour follows its place in the listing, as its tile's does.

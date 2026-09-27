@@ -198,6 +198,34 @@ impl Layout {
         )
     }
 
+    /// The parts of `tile` to fill, in points within `clip` (the tile, or it inset): the whole
+    /// of it, or where entries were laid out in it (`inside`) only around what they cover,
+    /// since they are drawn over the rest — filled whole, each level painted its parent's
+    /// area again.
+    pub fn fill_parts(
+        &self,
+        tile: &Tile,
+        inside: Option<&Inside>,
+        clip: Rect,
+    ) -> impl Iterator<Item = Rect> + '_ {
+        let parts = inside.map(|inside| inside.around(&tile.area()));
+        let whole = parts.is_none().then_some(clip);
+        parts
+            .into_iter()
+            .flatten()
+            .filter(|part| part.width > 0 && part.height > 0)
+            .map(move |part| {
+                let part = self.cells_to_rect(part.x, part.y, part.width, part.height);
+                let (x, y) = (part.x.max(clip.x), part.y.max(clip.y));
+                let (right, bottom) = (
+                    part.right().min(clip.right()),
+                    part.bottom().min(clip.bottom()),
+                );
+                Rect::new(x, y, (right - x).max(0.0), (bottom - y).max(0.0))
+            })
+            .chain(whole)
+    }
+
     /// The layout cell under a point in the treemap.
     pub fn cell_at(&self, x: f64, y: f64) -> Option<(u16, u16)> {
         if !self.treemap.contains(x, y) {
@@ -228,8 +256,7 @@ impl SpeckColors {
         let color = if file_type == FileType::Folder {
             // Darker, as a level deeper would be, so a corner of folders reads against the
             // folder it is in, which is the same blue.
-            let (r, g, b) = tile_color(name, file_type, index);
-            (r * 0.7, g * 0.7, b * 0.7)
+            darker(tile_color(name, file_type, index), 0.7)
         } else {
             let extension = Path::new(name).extension().unwrap_or_default();
             match self.by_extension.get(extension) {
@@ -346,7 +373,8 @@ pub struct Viewer {
     pixel_scale: Option<f64>,
     /// How the folder tiles hold their entries, in the board's cells.
     nesting: Nesting,
-    pub focus: Focus,
+    /// The panel the keyboard was last given to; [`Viewer::focus`] is the one it drives.
+    focus: Focus,
     /// The entry in hand, by name, so that it stays in hand when the tiles are laid out again —
     /// a resize, a zoom, or new sizes arriving during a scan. Both panels show it.
     pub selected: Option<OsString>,
@@ -393,12 +421,9 @@ pub struct Viewer {
     second_pass: bool,
     /// The second pass is owed: the first stopped at its deadline, or left the specks out.
     second_pass_owed: bool,
-    /// The last nesting stopped at its deadline.
-    nesting_cut: bool,
-    /// What the last complete layout with the specks took, the nesting's and theirs.
-    dust_cost: Option<Duration>,
-    /// When the relayout under way began: the first pass's deadline counts from it.
-    layout_started: Option<Instant>,
+    /// What the last complete layout with the specks took — from the relayout's start where
+    /// there was one — and over how many cells.
+    dust_cost: Option<(Duration, u32)>,
     /// Counts the nestings laid out, so a viewer can tell a paint of a new layout from another
     /// of the same one ([`Viewer::layout_generation`]).
     layout_generation: u64,
@@ -467,9 +492,7 @@ impl Viewer {
             dust: Vec::new(),
             second_pass: false,
             second_pass_owed: false,
-            nesting_cut: false,
             dust_cost: None,
-            layout_started: None,
             layout_generation: 0,
             hover_nested: None,
             zooms: Vec::new(),
@@ -496,7 +519,7 @@ impl Viewer {
             self.expansion.clear();
             self.rebuild_rows();
         }
-        self.rebuild_nested();
+        self.rebuild_nested(Instant::now());
         self.sync_board();
     }
 
@@ -526,7 +549,9 @@ impl Viewer {
 
     /// Lay the treemap out in the screen's pixels, `scale` of them to a point: every entry
     /// that would be `MIN_TILE_PIXELS` either way gets a tile, and the nesting goes as deep
-    /// as those reach, with the label band and margins kept at their size in points.
+    /// as those reach, with the label band and margins kept at their size in points. Taken at
+    /// the next [`Viewer::resize`], which a viewer calls with it: the window's size in points
+    /// changes with the scale.
     pub fn set_pixel_scale(&mut self, scale: f64) {
         let scale = if scale.is_finite() && scale > 0.0 {
             scale
@@ -546,11 +571,6 @@ impl Viewer {
             dust: true,
             ..Nesting::default()
         };
-        // Not laid out yet, it waits for the first `resize`.
-        let bounds = self.layout.bounds;
-        if bounds.w > 0.0 && bounds.h > 0.0 {
-            self.resize(bounds.w, bounds.h);
-        }
     }
 
     /// Whether a tile may be labelled: a file always, where its label fits; a folder when it
@@ -562,7 +582,7 @@ impl Viewer {
     }
 
     pub fn resize(&mut self, width: f64, height: f64) {
-        self.layout_started = Some(Instant::now());
+        let started = Instant::now();
         self.layout = Layout::with_cells(
             width,
             height,
@@ -576,12 +596,7 @@ impl Viewer {
             width: self.layout.cols,
             height: self.layout.rows,
         });
-        self.rebuild_nested();
-        // A window with no room for the list gives the keyboard to the treemap; one of no size
-        // at all (not shown yet, minimised) has no room for either, and leaves it where it is.
-        if self.layout.list.is_none() && width > 0.0 && height > 0.0 {
-            self.focus = Focus::Treemap;
-        }
+        self.rebuild_nested(started);
         self.sync_board();
         self.scroll_to_selected();
     }
@@ -594,29 +609,33 @@ impl Viewer {
 
     /// Lay the folder's entries out again, after the tree or the size shown changed.
     fn refresh(&mut self) {
-        self.layout_started = Some(Instant::now());
+        let started = Instant::now();
         // What the specks cost is not known for what is shown now: tiles first, specks after.
         self.dust_cost = None;
         self.board.change_files(self.tree.get_current_folder());
         self.rebuild_rows();
-        self.rebuild_nested();
+        self.rebuild_nested(started);
         self.sync_board();
         self.clamp_list_top();
     }
 
-    /// The tiles inside the folder tiles, when the tree view is on; none otherwise.
-    fn rebuild_nested(&mut self) {
-        let started = self.layout_started.take().unwrap_or_else(Instant::now);
+    /// The tiles inside the folder tiles, when the tree view is on; none otherwise. `started`
+    /// is when the relayout began: the first pass's deadline counts from it.
+    fn rebuild_nested(&mut self, started: Instant) {
         let pixels = self.pixel_scale.is_some();
         if self.second_pass && pixels {
             // The first pass: the nesting until the relayout's deadline, level by level, and
-            // the specks only if the last complete layout with them kept inside the budget.
-            // What it leaves out is the second pass's, once input has stopped.
-            let dust = self.dust_cost.is_some_and(|cost| cost <= LAYOUT_BUDGET);
-            self.lay_nesting(dust, Some(started + LAYOUT_BUDGET));
-            self.second_pass_owed = !dust || self.nesting_cut;
+            // the specks only if the last complete layout with them, scaled to this one's
+            // cells, would keep inside the budget. What it leaves out is the second pass's,
+            // once input has stopped.
+            let cells = self.cells();
+            let dust = self.dust_cost.is_some_and(|(cost, then)| {
+                cost.mul_f64(f64::from(cells) / f64::from(then.max(1))) <= LAYOUT_BUDGET
+            });
+            let complete = self.lay_nesting(dust, Some(started + LAYOUT_BUDGET), started);
+            self.second_pass_owed = !dust || !complete;
         } else {
-            self.lay_nesting(pixels, None);
+            self.lay_nesting(pixels, None, started);
             self.second_pass_owed = false;
         }
         // The tiles moved: what was under the pointer is not known until it moves again.
@@ -644,7 +663,7 @@ impl Viewer {
     /// relayout's choice. The tiles a first pass laid out come out as they were.
     pub fn finish_second_pass(&mut self) {
         if std::mem::take(&mut self.second_pass_owed) {
-            self.lay_nesting(true, None);
+            self.lay_nesting(true, None, Instant::now());
         }
     }
 
@@ -655,11 +674,15 @@ impl Viewer {
         self.layout_generation
     }
 
-    /// The nesting, and with `dust` the corners' specks, the time it took noted.
-    fn lay_nesting(&mut self, dust: bool, deadline: Option<Instant>) {
-        let started = Instant::now();
+    /// The treemap's cells: what a layout's time is in proportion to.
+    fn cells(&self) -> u32 {
+        u32::from(self.layout.cols) * u32::from(self.layout.rows)
+    }
+
+    /// The nesting, and with `dust` the corners' specks, the time since `started` noted.
+    /// Returns whether it is complete: not cut at `deadline`.
+    fn lay_nesting(&mut self, dust: bool, deadline: Option<Instant>, started: Instant) -> bool {
         self.layout_generation += 1;
-        self.nesting_cut = false;
         let nesting = Nesting {
             dust,
             deadline,
@@ -671,9 +694,11 @@ impl Viewer {
             },
             ..self.nesting
         };
-        self.dust.clear();
         let mut colors = SpeckColors::default();
-        let mut specks = Vec::new();
+        // The last layout's, for its room: a relayout makes about as many.
+        let mut specks = ::std::mem::take(&mut self.dust);
+        specks.clear();
+        let mut complete = true;
         self.nested = if self.tree_view {
             let nested = libduscape::tiles::nest_with(
                 self.tree.get_current_folder(),
@@ -684,7 +709,7 @@ impl Viewer {
                     specks.push(colors.speck(area, entry.name, entry.file_type, index));
                 },
             );
-            self.nesting_cut = !nested.complete;
+            complete = nested.complete;
             self.board_insides = nested.tops;
             nested.tiles
         } else {
@@ -695,18 +720,17 @@ impl Viewer {
         if dust {
             self.board_dust(&mut colors);
             // A cut layout's time is not the whole one's.
-            if !self.nesting_cut {
-                self.dust_cost = Some(started.elapsed());
+            if complete {
+                self.dust_cost = Some((started.elapsed(), self.cells()));
             }
         }
+        complete
     }
 
-    /// The entries in the board's "small files" corner, each as a speck of its colour there:
-    /// only in pixel cells, where a speck is a pixel or more.
+    /// The entries in the board's "small files" corner, each as a speck of its colour there
+    /// (asked only in pixel cells, where a speck is a pixel or more).
     fn board_dust(&mut self, colors: &mut SpeckColors) {
-        let (Some(_), Some((sx, sy))) =
-            (self.pixel_scale, self.board.unrenderable_tile_coordinates)
-        else {
+        let Some((sx, sy)) = self.board.unrenderable_tile_coordinates else {
             return;
         };
         let corner = Area {
@@ -1014,7 +1038,7 @@ impl Viewer {
     /// from the anchor) and → crosses to the treemap. In the treemap the tile beside it in that
     /// direction is taken; ← off its left edge crosses to the list.
     pub fn arrow(&mut self, direction: Direction, extend: bool) {
-        match (self.focus, direction) {
+        match (self.focus(), direction) {
             (Focus::List, Direction::Up | Direction::Down) => {
                 let delta = if direction == Direction::Up { -1 } else { 1 };
                 let next = match self.cursor_row() {
@@ -1160,11 +1184,21 @@ impl Viewer {
         self.copy_marked();
     }
 
+    /// The panel the keyboard drives: the one it was last given to, but always the treemap
+    /// while the layout has no room for the list — and the list again when it has.
+    #[must_use]
+    pub fn focus(&self) -> Focus {
+        if self.layout.list.is_some() {
+            self.focus
+        } else {
+            Focus::Treemap
+        }
+    }
+
     pub fn toggle_focus(&mut self) {
-        self.focus = match self.focus {
+        self.focus = match self.focus() {
             Focus::List => Focus::Treemap,
-            Focus::Treemap if self.layout.list.is_some() => Focus::List,
-            Focus::Treemap => Focus::Treemap,
+            Focus::Treemap => Focus::List,
         };
     }
 
@@ -1425,20 +1459,23 @@ impl Viewer {
     }
 
     pub fn zoom_in(&mut self) {
+        let started = Instant::now();
         self.board.zoom_in(self.tree.get_current_folder());
-        self.rebuild_nested();
+        self.rebuild_nested(started);
         self.sync_board();
     }
 
     pub fn zoom_out(&mut self) {
+        let started = Instant::now();
         self.board.zoom_out(self.tree.get_current_folder());
-        self.rebuild_nested();
+        self.rebuild_nested(started);
         self.sync_board();
     }
 
     pub fn reset_zoom(&mut self) {
+        let started = Instant::now();
         self.board.reset_zoom(self.tree.get_current_folder());
-        self.rebuild_nested();
+        self.rebuild_nested(started);
         self.sync_board();
     }
 
@@ -1913,6 +1950,18 @@ pub fn drop_later<T: Send + 'static>(value: T) {
     let _ = ::std::thread::Builder::new()
         .name("dropper".to_string())
         .spawn(move || drop(value));
+}
+
+/// A colour `by` of the way to white.
+#[must_use]
+pub fn lighter((r, g, b): (f64, f64, f64), by: f64) -> (f64, f64, f64) {
+    (r + (1.0 - r) * by, g + (1.0 - g) * by, b + (1.0 - b) * by)
+}
+
+/// `shade` of a colour: 1.0 as it is, less for darker.
+#[must_use]
+pub fn darker((r, g, b): (f64, f64, f64), shade: f64) -> (f64, f64, f64) {
+    (r * shade, g * shade, b * shade)
 }
 
 /// A tile's colour, as sRGB components: folders in blues, files by their extension — so files

@@ -7,7 +7,7 @@ use ::std::ffi::OsStr;
 
 use libduscape::tiles::{Area, FileMetadata, FileType, Grid, TreeMap};
 
-use crate::state::tile_color;
+use crate::state::{darker, tile_color};
 
 /// The entries drawn: (name, share, is a folder). The names only choose the colours.
 const TOP: [(&str, f64, bool); 6] = [
@@ -38,7 +38,7 @@ pub fn rgba(size: u32) -> Vec<u8> {
     };
     canvas.fill(0, 0, edge, edge, dark);
     let tiles = layout(
-        &TOP.map(|(name, share, folder)| (name, share, folder)),
+        &TOP,
         Area {
             x: gap,
             y: gap,
@@ -70,8 +70,7 @@ pub fn rgba(size: u32) -> Vec<u8> {
             };
             let inner = layout(&INSIDE.map(|(name, share)| (name, share, false)), inside);
             for (tile, name, _) in &inner {
-                let color = tile_color(OsStr::new(name), FileType::File, 0);
-                let color = (color.0 * 0.85, color.1 * 0.85, color.2 * 0.85);
+                let color = darker(tile_color(OsStr::new(name), FileType::File, 0), 0.85);
                 canvas.fill(
                     tile.x,
                     tile.y,
@@ -92,10 +91,9 @@ pub fn rgba(size: u32) -> Vec<u8> {
 fn layout(entries: &[(&'static str, f64, bool)], area: Area) -> Vec<(Area, &'static str, bool)> {
     let files: Vec<FileMetadata> = entries
         .iter()
-        .enumerate()
-        .map(|(index, &(_, share, _))| FileMetadata {
+        .map(|&(_, share, _)| FileMetadata {
             name: ::std::ffi::OsString::new(),
-            size: index as u128,
+            size: 0,
             descendants: None,
             percentage: share,
             file_type: FileType::File,
@@ -105,15 +103,10 @@ fn layout(entries: &[(&'static str, f64, bool)], area: Area) -> Vec<(Area, &'sta
     map.populate_tiles(files.iter().collect());
     map.tiles
         .iter()
-        .map(|tile| {
-            let (name, _, folder) = entries[tile.size as usize];
-            let cells = Area {
-                x: tile.x,
-                y: tile.y,
-                width: tile.width,
-                height: tile.height,
-            };
-            (cells, name, folder)
+        .zip(map.tile_entries())
+        .map(|(tile, &entry)| {
+            let (name, _, folder) = entries[entry];
+            (tile.area(), name, folder)
         })
         .collect()
 }
