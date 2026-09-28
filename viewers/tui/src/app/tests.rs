@@ -1837,7 +1837,7 @@ fn the_small_files_corner_is_a_plain_box_marked_with_a_square() {
         app.board.unrenderable_tile_coordinates.is_some(),
         "a corner:\n{screen}"
     );
-    assert!(screen.contains('□'), "marked:\n{screen}");
+    assert!(screen.contains('▫'), "marked:\n{screen}");
     assert!(!screen.contains("small files"), "not named:\n{screen}");
     assert!(
         !screen.contains("(x = Small files)"),

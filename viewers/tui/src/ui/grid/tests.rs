@@ -225,3 +225,13 @@ fn a_highlighted_file_folder_or_nesting_folder_is_framed_alike() {
         }
     }
 }
+
+/// The corner's mark is one cell wide, as ratatui counts it and as terminals draw it: a
+/// character East Asian "ambiguous" width (`□`) is two cells in many of them.
+#[test]
+fn the_small_files_mark_is_one_cell_wide() {
+    use ::unicode_width::UnicodeWidthStr;
+    assert_eq!(super::SMALL_FILE.width(), 1);
+    assert_eq!(super::SMALL_FILE.width_cjk(), 1, "not ambiguous width");
+    assert_eq!("□".width_cjk(), 2, "what the check catches");
+}

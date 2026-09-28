@@ -840,7 +840,8 @@ measured and none helped — read the 2026-09-24 section before trying them agai
 - Adjust `HEIGHT_WIDTH_RATIO`, `MINIMUM_HEIGHT`, `MINIMUM_WIDTH` constants (the terminal's
   `Grid`), or `MIN_TILE_PIXELS` in `viewers/shared` (the windows')
 - Entries below the minimum tile size are never dropped: they fold into the "small files"
-  corner (in the terminal a box filled with `□`s in the terminal's own colours, drawn over
+  corner (in the terminal a box filled with `▫`s — not `□`, which many terminals draw two cells
+  wide — in the terminal's own colours, drawn over
   what is there, since it can lie over the last tile's cells), clamped by
   `SMALL_FILES_MINIMUM_WIDTH/HEIGHT` so it stays visible even when the hidden entries round to
   zero cells

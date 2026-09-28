@@ -9,13 +9,18 @@ use crate::ui::grid::{
 };
 use libduscape::tiles::{Area, Nested, Nesting, Tile};
 
-/// The "small files" corner: a box filled with `□`s in the terminal's own colours, one a
+/// The mark filling the "small files" corner: a small box one cell wide in every terminal.
+/// `□` is East Asian "ambiguous" width, drawn two cells wide by many terminals, which pushed
+/// the rest of the row out; `▫` is "neutral", and shown as text, not an emoji, unless asked.
+pub(crate) const SMALL_FILE: &str = "▫";
+
+/// The "small files" corner: a box filled with [`SMALL_FILE`]s in the terminal's own colours, one a
 /// cell. Drawn over what is there: pulled in from the edge to stay visible, the corner can lie
 /// over the last tile's cells.
 fn draw_small_files_rect_on_grid(buf: &mut Buffer, rect: Rect) {
     for x in rect.x + 1..rect.x + rect.width {
         for y in rect.y + 1..rect.y + rect.height {
-            buf[(x, y)].set_symbol("□").set_style(Style::reset());
+            buf[(x, y)].set_symbol(SMALL_FILE).set_style(Style::reset());
         }
     }
     draw_rect_on_grid(buf, (rect.x, rect.y), (rect.width, rect.height));
