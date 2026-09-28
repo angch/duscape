@@ -243,7 +243,11 @@ fn treemap(viewer: &Viewer, pens: &Pens) {
             gradient.drawInRect_angle(ns_rect(rect), 90.0);
         }
         // A folder too short for its label band has its entries right under its margin.
-        if rect.w >= 36.0 && rect.h >= 15.0 && viewer.labelled(tile) {
+        if rect.w >= 36.0
+            && rect.h >= 15.0
+            && viewer.labelled(tile)
+            && (!viewer.animating() || slide_labels())
+        {
             tile_label(pens, rect, 4.0, tile, &pens.tile_name);
         }
     }
@@ -335,7 +339,11 @@ fn nested(viewer: &Viewer, pens: &Pens) {
             fill(part, &color);
         }
         stroke(rect, &edge, 1.0);
-        if rect.w > 30.0 && rect.h >= 15.0 && viewer.labelled(t) {
+        if rect.w > 30.0
+            && rect.h >= 15.0
+            && viewer.labelled(t)
+            && (!viewer.animating() || slide_labels())
+        {
             tile_label(pens, rect, 3.0, t, &pens.nested_name);
         }
         if viewer.hover_nested == Some(index) {
@@ -753,4 +761,11 @@ fn abbreviate_home(path: &Path) -> String {
         };
     }
     path.display().to_string()
+}
+
+/// Whether tiles are labelled while they slide (`DUSCAPE_SLIDE_LABELS`): off, a slide paints in
+/// 7 ms rather than 11 on `~`, but during a scan the tiles slide almost all the time.
+fn slide_labels() -> bool {
+    static ON: ::std::sync::OnceLock<bool> = ::std::sync::OnceLock::new();
+    *ON.get_or_init(|| ::std::env::var_os("DUSCAPE_SLIDE_LABELS").is_some())
 }

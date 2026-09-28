@@ -22,8 +22,8 @@ use duscape_scan::rescan::{Outcome, Rescanner, Rescans};
 use libduscape::format::copied_path;
 use libduscape::model::SizeKind;
 use libduscape::tiles::{
-    Area, Board, Expansion, FileMetadata, FileType, Grid, Inside, NestedTile, Nesting, Row, Speck,
-    Tile,
+    Area, Board, Expansion, FileMetadata, FileType, Grid, Inside, NestedTile, Nesting, Plans, Row,
+    Speck, Tile, nest_steady, nest_with,
 };
 use libduscape::{
     DirSummary, DisplayCount, DisplaySize, FileOrFolder, FileToDelete, FileTree, Folder,
@@ -416,6 +416,20 @@ pub struct Viewer {
     /// What each board tile's nested entries cover, by the tile's index; see
     /// [`Viewer::board_inside`].
     board_insides: Vec<Option<Inside>>,
+    /// How the nesting's folders were cut, for a relayout with new sizes to keep; emptied by
+    /// any other.
+    plans: Plans,
+    /// The folder the plans were made in: a delete or a rescan can leave the view in another.
+    plans_for: Vec<OsString>,
+    /// Whether new sizes keep the layout's rows ([`Viewer::set_steady`]), and whether the
+    /// relayout under way is one that does: the finished tree's follows the outline's plans
+    /// though the scan is over.
+    steady: bool,
+    following: bool,
+    /// Whether tiles slide to a new layout of new sizes ([`Viewer::set_animation`]), and the
+    /// slide under way.
+    animation: bool,
+    tween: Option<tween::Tween>,
     /// The "small files" corner filled in, in pixel cells; see [`Viewer::dust`].
     dust: Vec<Dust>,
     /// Whether what would make a relayout slow may wait for a second pass; see
@@ -491,6 +505,12 @@ impl Viewer {
             hover_row: None,
             nested: Vec::new(),
             board_insides: Vec::new(),
+            plans: Plans::default(),
+            plans_for: Vec::new(),
+            steady: true,
+            following: false,
+            animation: false,
+            tween: None,
             dust: Vec::new(),
             second_pass: false,
             second_pass_owed: false,
@@ -584,6 +604,7 @@ impl Viewer {
     }
 
     pub fn resize(&mut self, width: f64, height: f64) {
+        self.end_tween();
         let started = Instant::now();
         self.layout = Layout::with_cells(
             width,
@@ -598,6 +619,7 @@ impl Viewer {
             width: self.layout.cols,
             height: self.layout.rows,
         });
+        self.plans.clear();
         self.rebuild_nested(started);
         self.sync_board();
         self.scroll_to_selected();
@@ -611,14 +633,46 @@ impl Viewer {
 
     /// Lay the folder's entries out again, after the tree or the size shown changed.
     fn refresh(&mut self) {
+        self.plans.clear();
+        self.relayout(false);
+    }
+
+    /// [`Viewer::refresh`] for new sizes in the same view — the outline, the finished tree, a
+    /// delete, a rescan: the tiles keep their rows where they still fit, and grow and shrink in
+    /// place rather than being cut again.
+    fn refresh_steady(&mut self) {
+        if self.steady {
+            self.relayout(true);
+        } else {
+            self.refresh();
+        }
+    }
+
+    /// Whether new sizes in the same view keep the layout's rows (on by default): off, every
+    /// outline batch squarifies afresh, as before — for comparing the two.
+    pub fn set_steady(&mut self, on: bool) {
+        self.steady = on;
+    }
+
+    fn relayout(&mut self, steady: bool) {
+        let from = if steady { self.tween_from() } else { None };
+        self.end_tween();
+        self.following = steady;
         let started = Instant::now();
         // What the specks cost is not known for what is shown now: tiles first, specks after.
         self.dust_cost = None;
-        self.board.change_files(self.tree.get_current_folder());
+        if steady {
+            self.board
+                .change_files_steady(self.tree.get_current_folder());
+        } else {
+            self.board.change_files(self.tree.get_current_folder());
+        }
         self.rebuild_rows();
         self.rebuild_nested(started);
         self.sync_board();
         self.clamp_list_top();
+        self.following = false;
+        self.tween_to(from);
     }
 
     /// The tiles inside the folder tiles, when the tree view is on; none otherwise. `started`
@@ -665,6 +719,7 @@ impl Viewer {
     /// relayout's choice. The tiles a first pass laid out come out as they were.
     pub fn finish_second_pass(&mut self) {
         if std::mem::take(&mut self.second_pass_owed) {
+            self.end_tween();
             self.lay_nesting(true, None, Instant::now());
         }
     }
@@ -706,14 +761,31 @@ impl Viewer {
         specks.clear();
         let mut complete = true;
         self.nested = if self.tree_view {
-            let nested = libduscape::tiles::nest_with(
-                self.tree.get_current_folder(),
-                &self.board.tiles,
-                self.tree.shown,
-                &nesting,
-                &mut |speck| specks.push(colors.dust(&speck)),
-            );
+            // Plans are kept only where the next layout may be a steady one: a relayout keying
+            // every tile costs a quarter again.
+            let folder = self.tree.get_current_folder();
+            let board = &self.board.tiles;
+            let mut speck = |speck: Speck| specks.push(colors.dust(&speck));
+            if self.plans_for != self.tree.current_folder_names {
+                self.plans.clear();
+                self.plans_for.clone_from(&self.tree.current_folder_names);
+            }
+            let keep = self.steady && (self.scanning || self.animation || self.following);
+            let nested = if keep {
+                let shown = self.tree.shown;
+                nest_steady(
+                    folder,
+                    board,
+                    shown,
+                    &nesting,
+                    &mut speck,
+                    Some(&self.plans),
+                )
+            } else {
+                nest_with(folder, board, self.tree.shown, &nesting, &mut speck)
+            };
             complete = nested.complete;
+            self.plans = nested.plans;
             self.board_insides = nested.tops;
             nested.tiles
         } else {
@@ -966,7 +1038,7 @@ impl Viewer {
 
     /// Lay the view out for what the outline holds by now.
     pub fn catch_up(&mut self) {
-        self.refresh();
+        self.refresh_steady();
     }
 
     /// The finished tree takes the outline's place, keeping the user where they are.
@@ -982,7 +1054,7 @@ impl Viewer {
             self.zooms.truncate(self.tree.current_folder_names.len());
             self.board.reset_zoom_index();
         }
-        self.refresh();
+        self.refresh_steady();
         if self.selected.is_none() {
             self.select_first();
         }
@@ -1638,7 +1710,7 @@ impl Viewer {
         }
         self.clear_marks();
         self.leave_vanished_folders();
-        self.refresh();
+        self.refresh_steady();
         // The row in hand went with them: the row now where it was — its neighbour, or with a
         // folder re-sorted by what it lost, whatever came down to there — is put in hand.
         let gone = had.is_some_and(|had| !self.rows.iter().any(|row| row.path == had));
@@ -1741,7 +1813,7 @@ impl Viewer {
             self.leave_vanished_folders();
             // The file in hand may have changed on disk too.
             self.preview_for = None;
-            self.refresh();
+            self.refresh_steady();
             if self.selected.is_none() {
                 self.select_first();
             }
@@ -2039,3 +2111,5 @@ fn hsl(hue: f64, saturation: f64, lightness: f64) -> (f64, f64, f64) {
 
 #[cfg(test)]
 mod tests;
+mod tween;
+pub use tween::TWEEN;

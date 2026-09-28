@@ -4,11 +4,13 @@
 //! corner are what they were; the nesting is drawn inside them, and a nested tile can be
 //! pointed at.
 
-use ::std::collections::VecDeque;
-use ::std::ffi::OsString;
+use ::std::collections::{HashMap, VecDeque};
+use ::std::ffi::{OsStr, OsString};
+use ::std::hash::BuildHasher;
 use ::std::time::Instant;
 
-use super::{Area, FileType, Grid, Ranking, Share, Tile, TreeMap, scatter};
+use super::{Area, FileType, Grid, Plan, Ranking, Share, Tile, TreeMap, scatter};
+use crate::model::files::hash::FastBuildHasher;
 use crate::model::{FileOrFolder, Folder, SizeKind};
 
 /// A tile inside a folder's tile.
@@ -83,6 +85,19 @@ pub struct Nested {
     pub tiles: Vec<NestedTile>,
     pub tops: Vec<Option<Inside>>,
     pub complete: bool,
+    /// How each folder's inside was cut, by the folder's path ([`path_key`]): for the next
+    /// layout of the same folders with new sizes to keep ([`nest_steady`]).
+    pub plans: Plans,
+}
+
+/// Each nested folder's [`Plan`], by [`path_key`].
+pub type Plans = HashMap<u64, Plan, FastBuildHasher>;
+
+/// A key for the folder or file `name` in the folder keyed `parent` (0 for the listed folder):
+/// the same entry has the same key from layout to layout.
+#[must_use]
+pub fn path_key(hasher: &FastBuildHasher, parent: u64, name: &OsStr) -> u64 {
+    hasher.hash_one((parent, name))
 }
 
 /// How far in the nesting goes. What stops it is room: a folder's entries are laid out inside
@@ -201,6 +216,34 @@ pub fn nest_with(
     nesting: &Nesting,
     speck: &mut dyn FnMut(Speck),
 ) -> Nested {
+    nest_layout(folder, tiles, kind, nesting, speck, None, false)
+}
+
+/// [`nest_with`], keeping each folder's rows from `plans`, the last nesting's, where they still
+/// fit ([`TreeMap::populate_steady`]): for the same folders with new sizes, so the nested tiles
+/// grow and shrink in place.
+pub fn nest_steady(
+    folder: &Folder,
+    tiles: &[Tile],
+    kind: SizeKind,
+    nesting: &Nesting,
+    speck: &mut dyn FnMut(Speck),
+    plans: Option<&Plans>,
+) -> Nested {
+    nest_layout(folder, tiles, kind, nesting, speck, plans, true)
+}
+
+/// The nesting, keeping `plans`' rows, and noting its own when `record`: keying every tile
+/// costs a quarter again on a relayout, so only a viewer that will lay out again steadily does.
+fn nest_layout(
+    folder: &Folder,
+    tiles: &[Tile],
+    kind: SizeKind,
+    nesting: &Nesting,
+    speck: &mut dyn FnMut(Speck),
+    plans: Option<&Plans>,
+    record: bool,
+) -> Nested {
     // However deep it goes, the nesting holds at most as many tiles as the folder tiles' area
     // holds at the minimum size: the bound on a relayout's and a paint's work is the screen.
     let area: usize = tiles
@@ -217,6 +260,14 @@ pub fn nest_with(
         tiles: Vec::new(),
         tops: vec![None; tiles.len()],
         complete: true,
+        plans: Plans::default(),
+    };
+    let hasher = FastBuildHasher::default();
+    let steady = Steady {
+        kind,
+        hasher,
+        plans,
+        record,
     };
     // A level at a time, across every folder: parents before children still, and a deadline
     // cuts the deepest levels everywhere rather than the last folders whole.
@@ -231,6 +282,7 @@ pub fn nest_with(
                 parent: None,
                 top,
                 depth: 1,
+                key: path_key(&hasher, 0, &tile.name),
             };
             queue.push_back((&**child, place));
         }
@@ -245,7 +297,9 @@ pub fn nest_with(
             out.complete = false;
             return out;
         }
-        let capped = nest_into(folder, &place, kind, nesting, &mut out, &mut queue, speck);
+        let capped = nest_into(
+            folder, &place, nesting, &steady, &mut out, &mut queue, speck,
+        );
         out.complete &= !capped;
     }
     out
@@ -299,6 +353,16 @@ struct Place {
     parent: Option<usize>,
     top: usize,
     depth: usize,
+    /// The folder's [`path_key`].
+    key: u64,
+}
+
+/// Which size the tiles go by, and what a steady nesting keys and keeps by.
+struct Steady<'a> {
+    kind: SizeKind,
+    hasher: FastBuildHasher,
+    plans: Option<&'a Plans>,
+    record: bool,
 }
 
 /// Lay `folder`'s entries out in its tile at `place`, into `out`, and queue its folders'.
@@ -306,8 +370,8 @@ struct Place {
 fn nest_into<'a>(
     folder: &'a Folder,
     place: &Place,
-    kind: SizeKind,
     nesting: &Nesting,
+    steady: &Steady,
     out: &mut Nested,
     queue: &mut VecDeque<(&'a Folder, Place)>,
     speck: &mut dyn FnMut(Speck),
@@ -344,7 +408,7 @@ fn nest_into<'a>(
     let least_speck = 1.0 / inside_cells;
     let mut ranking = Ranking::new(
         folder,
-        kind,
+        steady.kind,
         if specks {
             least_speck.min(least_tile)
         } else {
@@ -353,7 +417,16 @@ fn nest_into<'a>(
     );
     let files = ranking.head(room, least_tile);
     let mut map = TreeMap::with_grid(&inside, grid);
-    map.populate_tiles(files.iter().collect());
+    if steady.record {
+        let plan = map.populate_steady(
+            files.iter().collect(),
+            &mut |entry| path_key(&steady.hasher, place.key, ranking.name(entry)),
+            steady.plans.and_then(|plans| plans.get(&place.key)),
+        );
+        out.plans.insert(place.key, plan);
+    } else {
+        map.populate_tiles(files.iter().collect());
+    }
     // Only the entries given a tile are named: the rest are specks, or nothing.
     for index in 0..map.tiles.len() {
         let entry = map.tile_entries()[index];
@@ -396,6 +469,7 @@ fn nest_into<'a>(
                 parent: Some(out.tiles.len()),
                 top: place.top,
                 depth: place.depth + 1,
+                key: path_key(&steady.hasher, place.key, &child.name),
             };
             queue.push_back((entries, inner));
         }

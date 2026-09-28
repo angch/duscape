@@ -218,3 +218,112 @@ fn a_pixel_grid_gives_small_entries_tiles_of_their_own() {
         assert!(ratio < 2.0, "{tile:?}");
     }
 }
+
+fn folder_of(files: &[(&str, u64)]) -> Folder {
+    let mut root = Folder::new(Path::new("/tmp/example"));
+    for &(name, size) in files {
+        root.add_file(name.into(), size.into());
+    }
+    root
+}
+
+fn places(tiles: &[crate::tiles::Tile]) -> Vec<(std::ffi::OsString, u16, u16, u16, u16)> {
+    tiles
+        .iter()
+        .map(|tile| (tile.name.clone(), tile.x, tile.y, tile.width, tile.height))
+        .collect()
+}
+
+fn board_over(root: &Folder) -> Board {
+    let mut board = Board::new(root);
+    board.set_grid(Grid::pixels(4));
+    board.change_area(&Area {
+        x: 0,
+        y: 0,
+        width: 400,
+        height: 300,
+    });
+    board.change_files(root);
+    board
+}
+
+fn tile_named<'a>(board: &'a Board, name: &str) -> &'a crate::tiles::Tile {
+    board
+        .tiles
+        .iter()
+        .find(|tile| tile.name == name)
+        .expect("a tile")
+}
+
+#[test]
+fn a_steady_layout_of_the_same_sizes_is_the_fresh_one() {
+    let root = folder_of(&[("a", 500), ("b", 300), ("c", 200), ("d", 120), ("e", 80)]);
+    let mut board = board_over(&root);
+    let fresh = places(&board.tiles);
+    board.change_files_steady(&root);
+    assert_eq!(places(&board.tiles), fresh);
+}
+
+#[test]
+fn a_folder_overtaking_another_keeps_its_place() {
+    let before = [("a", 500), ("b", 450), ("c", 200), ("d", 120), ("e", 80)];
+    let after = [("a", 500), ("b", 560), ("c", 200), ("d", 120), ("e", 80)];
+    let mut board = board_over(&folder_of(&before));
+    let a = tile_named(&board, "a").clone();
+    let b = tile_named(&board, "b").clone();
+    board.change_files_steady(&folder_of(&after));
+    // Where squarify afresh puts the new largest first, the steady layout leaves `a` where it
+    // was: `b` grows in its own place.
+    assert_eq!(
+        (tile_named(&board, "a").x, tile_named(&board, "a").y),
+        (a.x, a.y)
+    );
+    let grown = tile_named(&board, "b");
+    assert!(
+        u32::from(grown.width) * u32::from(grown.height) > u32::from(b.width) * u32::from(b.height)
+    );
+    let fresh = board_over(&folder_of(&after));
+    assert_eq!(
+        (tile_named(&fresh, "b").x, tile_named(&fresh, "b").y),
+        (0, 0)
+    );
+}
+
+#[test]
+fn a_steady_layout_places_new_entries_and_overlaps_nothing() {
+    let mut board = board_over(&folder_of(&[("a", 500), ("b", 300), ("c", 200)]));
+    board.change_files_steady(&folder_of(&[
+        ("a", 520),
+        ("b", 300),
+        ("c", 210),
+        ("new", 40),
+    ]));
+    let names: Vec<_> = board.tiles.iter().map(|tile| tile.name.clone()).collect();
+    assert_eq!(names.len() + board.hidden().len(), 4, "{names:?}");
+    for (i, one) in board.tiles.iter().enumerate() {
+        assert!(
+            one.x + one.width <= 400 && one.y + one.height <= 300,
+            "{one:?}"
+        );
+        for other in &board.tiles[i + 1..] {
+            let apart = one.x + one.width <= other.x
+                || other.x + other.width <= one.x
+                || one.y + one.height <= other.y
+                || other.y + other.height <= one.y;
+            assert!(apart, "{one:?} overlaps {other:?}");
+        }
+    }
+}
+
+#[test]
+fn a_steady_layout_gone_thin_is_laid_out_afresh() {
+    let mut board = board_over(&folder_of(&[
+        ("a", 100),
+        ("b", 100),
+        ("c", 100),
+        ("d", 100),
+    ]));
+    let after = folder_of(&[("a", 100), ("b", 100), ("c", 100), ("d", 5000)]);
+    board.change_files_steady(&after);
+    assert_eq!(places(&board.tiles), places(&board_over(&after).tiles));
+}

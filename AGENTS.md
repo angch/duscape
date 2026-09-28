@@ -169,7 +169,14 @@ out and painting.
   A step reads only its row's two ends (`worst_in_renderable_row`): in a row every child has
   the same second side and a first in proportion to its size, so with the children largest
   first what renders and the worst ratio are decided there — read whole, a pixel grid's rows
-  of thousands made each step cost the row (a flat 87k-file board, 13.5 → 5.9 ms)
+  of thousands made each step cost the row (a flat 87k-file board, 13.5 → 5.9 ms); and steady
+  (`TreeMap::populate_steady`, `Board::change_files_steady`, `nest_steady`): a relayout of the
+  same folder with new sizes keeps the last layout's rows by name (`Plan`), so while a scan
+  runs a folder overtaking another grows in place instead of recutting the tiles after it; it
+  lays out afresh when a tile would be thinner than 1:5, new entries take a quarter of the
+  area, or a planned entry is too small for a tile after three tries without it.
+  `viewers/shared/tests/layout_stability.rs` measures it (on `~`: 8% of tiles jumping per
+  relayout → 2%, 14% of the area at the scan's end → 2%)
 - `tiles/board.rs` — `Board`: tile selection, zoom stack, navigation; `hidden`, the entries in
   the "small files" corner (the treemap records them as it lays out, `TreeMap::hidden`)
 - `tiles/dust.rs` — `scatter`: the "small files" corner filled in — its entries laid out again
@@ -388,6 +395,12 @@ shared `Viewer`, not in `win/`:
   and hovering one names it (`hover_nested`, cleared by every relayout since the tiles moved). Off by default (`set_tree_view`); all three
   desktop viewers turn it on for every scan, and a viewer that does not draw depth sees the flat
   listing and the flat tiles
+- `state/tween.rs` — tiles sliding (`TWEEN`, 200 ms, keyed by path) from one steady layout to
+  the next: `set_animation` turns it on, and a viewer that does calls `animate` once a frame
+  while `animating`. Off by default; only the macOS window drives it (`DUSCAPE_ANIMATE=1`,
+  labels while sliding with `DUSCAPE_SLIDE_LABELS=1`). Folders are painted whole while sliding
+  (their insides taken off) and the second pass snaps the slide to its end, which is why the
+  Windows and Linux windows, whose second pass runs after `IDLE`, do not drive it yet
 - `icon.rs` — the app's icon, drawn by the treemap: a folder of three files beside five more,
   squarified at the size asked for (so sharp at every size) in the tiles' colours, round
   cornered from 24 px; `rgba` for a window system that takes pixels, `png` for one that takes

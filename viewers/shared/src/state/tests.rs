@@ -1396,3 +1396,65 @@ fn the_second_pass_completes_a_nesting_the_first_cut_short() {
     assert_eq!(names(&passes), names(&whole));
     assert_eq!(passes.dust().len(), whole.dust().len());
 }
+
+/// `viewer()`'s folder with `big/a` at `a` bytes.
+fn tree_with(a: u64) -> FileTree {
+    let root = Path::new(ROOT);
+    let mut tree = FileTree::new(Folder::new(root), root.to_path_buf());
+    for (path, size, is_dir) in [
+        ("big", 0, true),
+        ("big/a", a, false),
+        ("big/b", 300, false),
+        ("medium.txt", 400, false),
+        ("small", 0, true),
+        ("small/c", 100, false),
+        ("tiny.bin", 50, false),
+    ] {
+        tree.add_entry(meta(size, is_dir), &root.join(path));
+    }
+    tree
+}
+
+#[test]
+fn tiles_slide_to_a_new_layout_and_end_exactly_there() {
+    let mut sliding = viewer();
+    sliding.set_tree_view(true);
+    sliding.set_animation(true);
+    sliding.finish_scan(tree_with(100));
+    assert!(sliding.animating());
+    let mut still = viewer();
+    still.set_tree_view(true);
+    still.finish_scan(tree_with(100));
+    assert!(!still.animating());
+    // Part way, the board is neither layout; at the end it is the new one exactly.
+    let start = Instant::now();
+    assert!(sliding.animate(start + TWEEN / 2));
+    assert!(!sliding.animate(start + TWEEN * 2));
+    assert!(!sliding.animating());
+    let board = |viewer: &Viewer| -> Vec<_> {
+        viewer
+            .board
+            .tiles
+            .iter()
+            .map(|t| (t.name.clone(), t.x, t.y, t.width, t.height))
+            .collect()
+    };
+    assert_eq!(board(&sliding), board(&still));
+    let places = |viewer: &Viewer| -> Vec<_> {
+        viewer
+            .nested()
+            .iter()
+            .map(|n| {
+                (
+                    n.tile.name.clone(),
+                    n.tile.x,
+                    n.tile.y,
+                    n.tile.width,
+                    n.tile.height,
+                    n.inside,
+                )
+            })
+            .collect()
+    };
+    assert_eq!(places(&sliding), places(&still));
+}

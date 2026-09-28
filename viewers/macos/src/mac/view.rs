@@ -118,12 +118,23 @@ define_class!(
             let image = self.ivars().image.borrow();
             let key_window = self.window().is_some_and(|window| window.isKeyWindow());
             let bounds = self.bounds();
+            let painted = ::std::time::Instant::now();
             let crumbs = draw(&Frame {
                 viewer: viewer.as_deref(),
                 image: image.as_deref(),
                 key_window,
                 bounds: Rect::new(0.0, 0.0, bounds.size.width, bounds.size.height),
             });
+            if duscape_viewer::passes::paint_times()
+                && let Some(viewer) = viewer.as_deref()
+            {
+                eprintln!(
+                    "paint {:.2} ms, {} tiles{}",
+                    painted.elapsed().as_secs_f64() * 1000.0,
+                    viewer.board.tiles.len() + viewer.nested().len(),
+                    if viewer.animating() { ", sliding" } else { "" }
+                );
+            }
             *self.ivars().crumbs.borrow_mut() = crumbs;
         }
 
@@ -511,6 +522,28 @@ thread_local! {
     static VIEW: OnceCell<Retained<DiskView>> = const { OnceCell::new() };
 }
 
+/// Whether the frame thread is running, and whether a frame is waiting on the main queue.
+static FRAMES: AtomicBool = AtomicBool::new(false);
+static FRAME_QUEUED: AtomicBool = AtomicBool::new(false);
+
+/// A frame every 16 ms while the tiles slide: a thread of its own sleeps between them, and no
+/// more than one waits on the main queue.
+fn start_frames() {
+    if FRAMES.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let _ = ::std::thread::Builder::new()
+        .name("frames".to_string())
+        .spawn(|| {
+            while FRAMES.load(Ordering::Acquire) {
+                ::std::thread::sleep(::std::time::Duration::from_millis(16));
+                if !FRAME_QUEUED.swap(true, Ordering::AcqRel) {
+                    on_main(|view| view.frame());
+                }
+            }
+        });
+}
+
 /// Run `work` on the main thread with the view. Should the viewer be borrowed at that moment,
 /// it goes back on the queue rather than be lost.
 pub fn on_main(work: impl FnOnce(&DiskView) + Send + 'static) {
@@ -617,7 +650,21 @@ impl DiskView {
         } else if viewer.preview == Preview::None {
             self.ivars().image.replace(None);
         }
+        let animating = viewer.animating();
         drop(slot);
+        if animating {
+            start_frames();
+        }
+        self.setNeedsDisplay(true);
+    }
+
+    /// A frame of the tiles' slide.
+    fn frame(&self) {
+        FRAME_QUEUED.store(false, Ordering::Release);
+        let going = self.with(|viewer| viewer.animate(::std::time::Instant::now()));
+        if going != Some(true) {
+            FRAMES.store(false, Ordering::Release);
+        }
         self.setNeedsDisplay(true);
     }
 
@@ -722,6 +769,10 @@ impl DiskView {
         let mut viewer = Viewer::new(&root, kind, scan_id);
         viewer.sidebar = sidebar;
         viewer.set_tree_view(true);
+        // Tiles slide to each new layout (`DUSCAPE_ANIMATE`, off by default); the steady
+        // layout keeps them in their rows as sizes change (`DUSCAPE_NO_STEADY` turns it off).
+        viewer.set_animation(::std::env::var_os("DUSCAPE_ANIMATE").is_some());
+        viewer.set_steady(::std::env::var_os("DUSCAPE_NO_STEADY").is_none());
         // The treemap in the screen's pixels: every entry big enough to see gets a tile.
         viewer.set_pixel_scale(self.backing_scale());
         viewer.enable_rescans(Rescanner::new(
@@ -771,6 +822,9 @@ impl DiskView {
             return;
         }
         self.update(|viewer| viewer.finish_scan(tree));
+        if duscape_viewer::passes::paint_times() {
+            self.with(|viewer| eprintln!("scan done: {}", viewer.subtitle()));
+        }
         if super::script::run_from_environment() {
             return;
         }

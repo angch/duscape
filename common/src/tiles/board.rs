@@ -1,7 +1,12 @@
+use ::std::hash::BuildHasher;
+
+use crate::model::files::hash::FastBuildHasher;
 use crate::model::{Folder, SizeKind};
 use crate::tiles::Area;
 use crate::tiles::files_in_folder::FileType;
-use crate::tiles::{FileMetadata, Grid, Share, Speck, Tile, TreeMap, files_in_folder, scatter};
+use crate::tiles::{
+    FileMetadata, Grid, Plan, Share, Speck, Tile, TreeMap, files_in_folder, scatter,
+};
 
 pub struct Board {
     pub tiles: Vec<Tile>,
@@ -22,6 +27,8 @@ pub struct Board {
     /// Counts the layouts: what a viewer keeps derived from the tiles (a nesting) is stale
     /// when it has moved on.
     generation: u64,
+    /// How the last layout cut the area, for [`Self::change_files_steady`] to keep.
+    plan: Plan,
 }
 
 impl Board {
@@ -39,6 +46,7 @@ impl Board {
             area: Area::default(),
             grid: Grid::TERMINAL,
             generation: 0,
+            plan: Plan::default(),
         }
     }
     /// Lay the tiles out in `grid`'s cells: a terminal's (the default), or a window's pixels.
@@ -53,13 +61,24 @@ impl Board {
         self.kind = kind;
     }
     pub fn change_files(&mut self, folder: &Folder) {
+        self.relist(folder);
+        self.fill();
+    }
+    /// [`Self::change_files`] for the same folder with new sizes (a scan's outline, the
+    /// finished tree, a rescan): the last layout's rows are kept where they still fit
+    /// ([`TreeMap::populate_steady`]), so the tiles grow and shrink in place.
+    pub fn change_files_steady(&mut self, folder: &Folder) {
+        self.relist(folder);
+        let plan = ::std::mem::take(&mut self.plan);
+        self.lay_out(Some(&plan));
+    }
+    fn relist(&mut self, folder: &Folder) {
         self.listing = files_in_folder(folder, 0, self.kind);
         self.files = if self.zoom_level == 0 {
             self.listing.clone()
         } else {
             files_in_folder(folder, self.zoom_level, self.kind)
         };
-        self.fill();
     }
     /// Every entry of the folder on the board, largest first, including those the zoom leaves
     /// off it and those too small for a tile of their own.
@@ -128,9 +147,18 @@ impl Board {
         self.generation
     }
     fn fill(&mut self) {
+        self.lay_out(None);
+    }
+    fn lay_out(&mut self, plan: Option<&Plan>) {
         self.generation += 1;
         let mut tree_map = TreeMap::with_grid(&self.area, self.grid);
-        tree_map.populate_tiles(self.files.iter().collect());
+        let hasher = FastBuildHasher::default();
+        let files = &self.files;
+        self.plan = tree_map.populate_steady(
+            files.iter().collect(),
+            &mut |index| hasher.hash_one(&files[index].name),
+            plan,
+        );
         self.tiles = tree_map.tiles;
         self.unrenderable_tile_coordinates = tree_map.unrenderable_tile_coordinates;
         self.hidden = tree_map.hidden;

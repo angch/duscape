@@ -1,3 +1,6 @@
+use ::std::collections::HashMap;
+
+use crate::model::files::hash::FastBuildHasher;
 use crate::tiles::{Area, FileMetadata, RectFloat, Tile};
 
 const HEIGHT_WIDTH_RATIO: f64 = 2.5;
@@ -53,6 +56,50 @@ impl Default for Grid {
     }
 }
 
+/// How a layout cut its area into rows, for the next layout of the same folder to keep: each
+/// row's entries by key, in order, and which way the row ran. See
+/// [`TreeMap::populate_steady`].
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Plan {
+    rows: Vec<(bool, Vec<u64>)>,
+}
+
+impl Plan {
+    /// How many entries it placed.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.rows.iter().map(|(_, keys)| keys.len()).sum()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+}
+
+/// A steady layout's shapes are kept while every tile is at least this square: squarify
+/// makes them better than 1:3 and a steady one drifts, so past 1:4 it lays out afresh.
+const STEADY_WORST_RATIO: f64 = 0.2;
+/// Nor while entries the plan did not have take more than this share of the area.
+const STEADY_NEW_SHARE: f64 = 0.25;
+
+/// What became of each steady layout's plan, for `tests/layout_stability.rs` to report: kept,
+/// dropped for new entries, for an entry too small for a tile, for a shape. Relaxed counters,
+/// a few a relayout.
+pub static STEADY_OUTCOMES: [::std::sync::atomic::AtomicUsize; 4] =
+    [const { ::std::sync::atomic::AtomicUsize::new(0) }; 4];
+fn note(outcome: usize) {
+    STEADY_OUTCOMES[outcome].fetch_add(1, ::std::sync::atomic::Ordering::Relaxed);
+}
+
+/// What came of following a plan.
+enum Followed {
+    Yes,
+    No,
+    /// Not with these entries in it: too small now for a tile.
+    Without(Vec<u64>),
+}
+
 pub struct TreeMap {
     pub tiles: Vec<Tile>,
     /// Top-left corner of the "small files" placeholder, which extends to the bottom-right of
@@ -62,6 +109,8 @@ pub struct TreeMap {
     pub hidden: Vec<usize>,
     /// Which child each tile is, by the same index.
     tile_entries: Vec<usize>,
+    /// The rows laid out, each's direction and the children in it given a tile.
+    rows: Vec<(bool, Vec<usize>)>,
     bounds: Area,
     empty_space: RectFloat,
     total_size: f64,
@@ -79,6 +128,7 @@ impl TreeMap {
             unrenderable_tile_coordinates: None,
             hidden: Vec::new(),
             tile_entries: Vec::new(),
+            rows: Vec::new(),
             total_size: (empty_space.height * empty_space.width),
             bounds: *bounds,
             empty_space,
@@ -87,6 +137,10 @@ impl TreeMap {
     }
     pub fn populate_tiles(&mut self, children: Vec<&FileMetadata>) {
         self.squarify(&children);
+        self.finish_corner();
+    }
+
+    fn finish_corner(&mut self) {
         if let Some((x, y)) = self.unrenderable_tile_coordinates {
             // the unrenderable files area should always be a rectangle
             // so if due to rounding errors some renderable tile is in
@@ -104,6 +158,150 @@ impl TreeMap {
             self.hidden.sort_unstable();
         }
     }
+    /// [`Self::populate_tiles`], keeping the rows of `plan`, the last layout of the same folder
+    /// in the same area, where they still make good tiles: as the sizes change the tiles grow
+    /// and shrink in place rather than being cut again, so a folder overtaking another does not
+    /// send the tiles after it across the board. Entries the plan did not have are laid out
+    /// after its rows, in what they leave. The plan is dropped, and the children squarified
+    /// afresh, when a tile would be worse than [`STEADY_WORST_RATIO`], a planned entry would
+    /// get no tile, or the new entries take more than [`STEADY_NEW_SHARE`]. `key` names child
+    /// `i` for the plan, stably across layouts (its name's hash). Returns this layout's plan.
+    pub fn populate_steady(
+        &mut self,
+        children: Vec<&FileMetadata>,
+        key: &mut dyn FnMut(usize) -> u64,
+        plan: Option<&Plan>,
+    ) -> Plan {
+        let fresh = TreeMap::with_grid(&self.bounds, self.grid);
+        if let Some(plan) = plan.filter(|plan| !plan.is_empty()) {
+            let mut plan = plan.clone();
+            // A planned entry grown too small for a tile is taken out of its row and laid out
+            // with the new ones, and the plan tried again: a few times, then afresh.
+            for _ in 0..3 {
+                match self.follow(&children, key, &plan) {
+                    Followed::Yes => return self.plan(key),
+                    Followed::No => break,
+                    Followed::Without(keys) => {
+                        for (_, row) in &mut plan.rows {
+                            row.retain(|key| !keys.contains(key));
+                        }
+                        plan.rows.retain(|(_, row)| !row.is_empty());
+                        *self = TreeMap::with_grid(&self.bounds, self.grid);
+                    }
+                }
+            }
+        }
+        *self = fresh;
+        self.populate_tiles(children);
+        self.plan(key)
+    }
+
+    /// Lay `children` out by `plan`'s rows; `false` when it would not do (see
+    /// [`Self::populate_steady`]), leaving `self` to be thrown away.
+    fn follow(
+        &mut self,
+        children: &[&FileMetadata],
+        key: &mut dyn FnMut(usize) -> u64,
+        plan: &Plan,
+    ) -> Followed {
+        // Where each planned key sits: its row, its place in the row.
+        let mut wanted: HashMap<u64, (usize, usize), FastBuildHasher> =
+            HashMap::with_capacity_and_hasher(plan.len(), FastBuildHasher::default());
+        for (row, (_, keys)) in plan.rows.iter().enumerate() {
+            for (place, &key) in keys.iter().enumerate() {
+                wanted.insert(key, (row, place));
+            }
+        }
+        // The children are largest first and the planned ones had tiles, so they come early:
+        // once every one is found the rest are new, and need no key.
+        let mut rows: Vec<Vec<(usize, usize)>> = vec![Vec::new(); plan.rows.len()];
+        let mut found = 0;
+        let mut rest = Vec::new();
+        let mut rest_share = 0.0;
+        for (index, child) in children.iter().enumerate() {
+            let at = if found < wanted.len() {
+                wanted.get(&key(index)).copied()
+            } else {
+                None
+            };
+            match at {
+                Some((row, place)) => {
+                    rows[row].push((place, index));
+                    found += 1;
+                }
+                None => {
+                    rest.push(index);
+                    rest_share += child.percentage;
+                }
+            }
+        }
+        if rest_share > STEADY_NEW_SHARE {
+            note(1);
+            return Followed::No;
+        }
+        for (row, (horizontal, _)) in rows.iter_mut().zip(&plan.rows) {
+            if row.is_empty() {
+                continue;
+            }
+            row.sort_unstable();
+            let entries: Vec<usize> = row.iter().map(|&(_, index)| index).collect();
+            let files: Vec<&FileMetadata> = entries.iter().map(|&index| children[index]).collect();
+            self.lay_row(&entries, &files, Some(*horizontal));
+        }
+        if !self.hidden.is_empty() {
+            // A planned entry too small now for a tile: the corner would open mid-board.
+            note(2);
+            return Followed::Without(self.hidden.iter().map(|&entry| key(entry)).collect());
+        }
+        if !self.steady_shapes() {
+            note(3);
+            return Followed::No;
+        }
+        note(0);
+        if !rest.is_empty() {
+            let files: Vec<&FileMetadata> = rest.iter().map(|&index| children[index]).collect();
+            let (first_new, hidden, rows) = (self.tiles.len(), self.hidden.len(), self.rows.len());
+            self.squarify(&files);
+            // `squarify` numbered them in `files`: back to `children`'s indices.
+            for entry in &mut self.tile_entries[first_new..] {
+                *entry = rest[*entry];
+            }
+            for entry in &mut self.hidden[hidden..] {
+                *entry = rest[*entry];
+            }
+            for (_, row) in &mut self.rows[rows..] {
+                for entry in row {
+                    *entry = rest[*entry];
+                }
+            }
+        }
+        self.finish_corner();
+        Followed::Yes
+    }
+
+    /// Whether every tile is at least [`STEADY_WORST_RATIO`] square, in the grid's shape.
+    fn steady_shapes(&self) -> bool {
+        self.tiles.iter().all(|tile| {
+            let width = f64::from(tile.width);
+            let height = f64::from(tile.height) * self.grid.ratio;
+            width.min(height) >= width.max(height) * STEADY_WORST_RATIO
+        })
+    }
+
+    /// This layout as a plan: its rows, by `key`.
+    fn plan(&self, key: &mut dyn FnMut(usize) -> u64) -> Plan {
+        Plan {
+            rows: self
+                .rows
+                .iter()
+                .filter(|(_, row)| !row.is_empty())
+                .map(|(horizontal, row)| {
+                    (*horizontal, row.iter().map(|&entry| key(entry)).collect())
+                })
+                .collect(),
+        }
+    }
+
     /// Which child each of `tiles` is, by its index in what was laid out.
     #[must_use]
     pub fn tile_entries(&self) -> &[usize] {
@@ -117,19 +315,27 @@ impl TreeMap {
     }
     /// Lay out `row`, the children from `first` on.
     fn layoutrow(&mut self, first: usize, row: &[&FileMetadata]) {
+        let entries: Vec<usize> = (first..first + row.len()).collect();
+        self.lay_row(&entries, row, None);
+    }
+
+    /// Lay out `row`, children `entries`, along the empty space's shorter side, or across it
+    /// if `horizontal` says so (a plan's row, kept the way it ran).
+    fn lay_row(&mut self, entries: &[usize], row: &[&FileMetadata], horizontal: Option<bool>) {
         let row_total = row.iter().fold(0.0, |acc, file_metadata| {
             let size = file_metadata.percentage * self.total_size;
             acc + size
         });
-        let should_render_horizontally =
-            self.empty_space.width <= self.empty_space.height * self.grid.ratio;
+        let should_render_horizontally = horizontal
+            .unwrap_or(self.empty_space.width <= self.empty_space.height * self.grid.ratio);
+        let mut laid = Vec::new();
         let mut progress_in_row = if should_render_horizontally {
             self.empty_space.x
         } else {
             self.empty_space.y
         };
         let mut length_of_row_second_side = 0.0;
-        for (entry, file_metadata) in (first..).zip(row) {
+        for (&entry, file_metadata) in entries.iter().zip(row) {
             let size = file_metadata.percentage * self.total_size;
             let tile_length_first_side = if should_render_horizontally {
                 (size / row_total) * self.empty_space.width
@@ -171,6 +377,7 @@ impl TreeMap {
             } else {
                 self.tiles.push(Tile::at(&area, file_metadata));
                 self.tile_entries.push(entry);
+                laid.push(entry);
             }
 
             if tile_length_second_side > length_of_row_second_side {
@@ -178,6 +385,9 @@ impl TreeMap {
             }
         }
 
+        if !laid.is_empty() {
+            self.rows.push((should_render_horizontally, laid));
+        }
         if should_render_horizontally {
             self.empty_space.height -= length_of_row_second_side;
             self.empty_space.y += length_of_row_second_side;
