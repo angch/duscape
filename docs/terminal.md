@@ -16,8 +16,9 @@ after that on whichever you last clicked. `Tab` switches;
 `←` off the treemap's left edge moves into the list, and `→` from the list moves back. In the
 list, `↑`/`↓` (`k`/`j`) walk every entry in size order, tiles or not, `PgUp`/`PgDn`/`Home`/`End`
 jump, and `Enter`, `Esc` and `d` act on the highlighted row. In the treemap the arrows move
-between tiles as before. The panel with the keyboard has the solid highlight; the other still
-marks the same entry, more quietly.
+between tiles as before. The panel with the keyboard has the solid highlight, the same in both:
+white on blue for a folder, black on gray for a file; the other panel marks the same entry more
+quietly, in white, bold and underlined.
 
 To pick several entries, `Ctrl`+click them — in the list or on the treemap; a second
 `Ctrl`+click takes one out — or hold `Shift` and press `↑`/`↓` in the list to mark a run of
@@ -35,9 +36,17 @@ Some terminals keep `Ctrl`+click for a context menu of their own; `Shift`+arrows
 them.
 
 The row for the selected tile is highlighted and kept in view. Entries without a tile of their
-own — too small, and folded into the "small files" corner, or left off by the zoom — are listed dimmed, and
-are often most of a folder: in a build cache of 30,000 small files the list is the only way to
-see them. Rows take the same clicks as tiles: select, double-click to open, right-click to copy.
+own — too small, and folded into the "small files" corner (the box of `▫`s), or left off by the
+zoom — are listed dimmed, and are often most of a folder: in a build cache of 30,000 small files
+the list is the only way to see them. Rows take the same clicks as tiles: select, double-click
+to open, right-click to copy.
+
+The treemap is nested: a folder's tile is headed by its name and size, and holds its entries'
+tiles in a box of their own inside its border, and theirs in turn, while there is room for two
+of the smallest tiles (8×3 cells) either way. A highlighted folder holding its entries has only
+its header row filled and its border in the highlight's colours, so what is inside stays
+readable. Clicks and the arrows still pick the tiles of the folder shown, not those nested in
+them.
 
 Below the list is a preview of the file in hand, 16:9 in shape (worked out from the terminal's
 cell size in pixels, where it reports one) and never more than half the panel. A text file shows

@@ -8,6 +8,12 @@ private = { ignore = true }
 
 [advisories]
 db-urls = ["https://github.com/rustsec/advisory-db"]
+ignore = [
+    # ttf-parser is unmaintained, with no upgrade: it is fontdue's, the Linux window's glyph
+    # rasteriser, reading the system's own fonts. Not a vulnerability; moving off it means
+    # replacing fontdue (skrifa is the named successor).
+    { id = "RUSTSEC-2026-0192", reason = "unmaintained, not vulnerable; fontdue has no alternative release" },
+]
 
 [bans]
 multiple-versions = "warn"
