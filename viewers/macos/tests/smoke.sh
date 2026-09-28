@@ -7,8 +7,10 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/../../.."
-cargo build -q -p duscape-mac
-app="$PWD/target/debug/duscape-mac"
+# The release build: linked to no framework, it loads AppKit itself (`mac/appkit.rs`), which is
+# what ships; the debug build's linker keeps AppKit in its load commands.
+cargo build -q --release -p duscape-mac
+app="$PWD/target/release/duscape-mac"
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/duscape-mac-smoke.XXXXXX")"
 trap 'rm -rf "$work"' EXIT

@@ -11,9 +11,8 @@ use objc2::AnyThread;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_app_kit::{
-    NSBezierPath, NSColor, NSFont, NSFontAttributeName, NSFontWeightMedium, NSFontWeightRegular,
-    NSFontWeightSemibold, NSForegroundColorAttributeName, NSGradient, NSImage, NSLineBreakMode,
-    NSMutableParagraphStyle, NSParagraphStyleAttributeName, NSStringDrawing, NSTextAlignment,
+    NSBezierPath, NSColor, NSFont, NSGradient, NSImage, NSLineBreakMode, NSMutableParagraphStyle,
+    NSStringDrawing, NSTextAlignment,
 };
 use objc2_foundation::{NSAttributedStringKey, NSDictionary, NSPoint, NSRect, NSSize, NSString};
 
@@ -23,6 +22,8 @@ use duscape_viewer::state::{
 };
 use libduscape::tiles::{FileType, Row, Tile};
 use libduscape::{DisplayCount, DisplaySize};
+
+use super::appkit;
 
 pub fn ns_rect(rect: Rect) -> NSRect {
     NSRect::new(NSPoint::new(rect.x, rect.y), NSSize::new(rect.w, rect.h))
@@ -63,14 +64,12 @@ impl Pen {
         let style = NSMutableParagraphStyle::new();
         style.setAlignment(align);
         style.setLineBreakMode(cut);
-        // SAFETY: the keys are AppKit's own attribute names, each with a value of its type.
-        let keys = unsafe {
-            [
-                NSFontAttributeName,
-                NSForegroundColorAttributeName,
-                NSParagraphStyleAttributeName,
-            ]
-        };
+        // The keys are AppKit's own attribute names, each with a value of its type.
+        let keys = [
+            appkit::font_attribute(),
+            appkit::foreground_color_attribute(),
+            appkit::paragraph_style_attribute(),
+        ];
         let values: [&AnyObject; 3] = [font, color, &style];
         Pen(NSDictionary::from_slices(&keys, &values))
     }
@@ -119,14 +118,11 @@ impl Pens {
             NSLineBreakMode::ByTruncatingMiddle,
         );
         let (left, right) = (NSTextAlignment::Left, NSTextAlignment::Right);
-        // SAFETY: reading AppKit's font weight constants.
-        let (regular, medium, semibold) = unsafe {
-            (
-                NSFontWeightRegular,
-                NSFontWeightMedium,
-                NSFontWeightSemibold,
-            )
-        };
+        let (regular, medium, semibold) = (
+            appkit::font_weight_regular(),
+            appkit::font_weight_medium(),
+            appkit::font_weight_semibold(),
+        );
         let body = system(12.0, regular);
         let small = system(11.0, regular);
         let white = NSColor::whiteColor();
@@ -609,10 +605,8 @@ fn hex(body: Rect, info: &[String], dump: &[String], pens: &Pens) {
     rounded(body, 6.0, &NSColor::textBackgroundColor());
     let text = body.inset(8.0, 6.0);
     let mono = |size: f64| {
-        // SAFETY: reading AppKit's font weight constant.
-        let regular = unsafe { NSFontWeightRegular };
         Pen::new(
-            &NSFont::monospacedSystemFontOfSize_weight(size, regular),
+            &NSFont::monospacedSystemFontOfSize_weight(size, appkit::font_weight_regular()),
             &NSColor::labelColor(),
             NSTextAlignment::Left,
             NSLineBreakMode::ByClipping,

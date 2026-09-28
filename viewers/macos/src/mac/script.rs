@@ -34,11 +34,10 @@ use ::std::time::Duration;
 
 use dispatch2::DispatchQueue;
 use objc2::{MainThreadMarker, MainThreadOnly};
-use objc2_app_kit::{
-    NSApplication, NSEvent, NSEventModifierFlags, NSEventType, NSPasteboard, NSPasteboardTypeString,
-};
+use objc2_app_kit::{NSApplication, NSEvent, NSEventModifierFlags, NSEventType, NSPasteboard};
 use objc2_foundation::{NSPoint, NSString};
 
+use super::appkit;
 use super::view::{DiskView, on_main};
 
 /// How long each step is given before the next: long enough for a redraw, a preview, or an
@@ -322,9 +321,8 @@ fn perform(view: &DiskView, step: Step) {
             }
         }
         Step::Clipboard(path) => {
-            // SAFETY: reading AppKit's pasteboard type constant.
             let text = NSPasteboard::generalPasteboard()
-                .stringForType(unsafe { NSPasteboardTypeString })
+                .stringForType(appkit::pasteboard_type_string())
                 .map(|text| text.to_string())
                 .unwrap_or_default();
             if let Err(error) = ::std::fs::write(&path, text) {

@@ -1,6 +1,7 @@
 //! AppKit: the application, its menus and its window. The window's contents are one view,
 //! [`view::DiskView`], drawn by [`draw`].
 
+mod appkit;
 mod draw;
 mod script;
 mod view;
@@ -129,6 +130,8 @@ pub fn run() {
 
 /// The app on `folder` (else it asks for one), scanning with `scan_options`.
 pub fn run_with(folder: Option<PathBuf>, scan_options: ScanOptions) {
+    // Before any class is asked for: the binaries link no framework (see `appkit`).
+    appkit::load();
     let mtm = MainThreadMarker::new().expect("AppKit runs on the main thread");
     let app = NSApplication::sharedApplication(mtm);
     // The app's icon, a treemap, in the Dock and the app switcher while it runs.

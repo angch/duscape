@@ -467,6 +467,15 @@ shared `Viewer`, not in `win/`:
   The `Viewer` is in a `RefCell`; never hold a borrow across a modal (`NSAlert::runModal`, the
   open panel), which runs the event loop inside the call. `DUSCAPE_MAC_SNAPSHOT=out.png` writes
   the view to a PNG after the scan and quits — how to look at the drawing without screen access
+- `mac/appkit.rs` — AppKit loaded when the window starts, not when `duscape` does: both
+  binaries link with `-dead_strip_dylibs` (`build.rs`) and name no framework symbol, since objc2
+  finds classes by name, so `load` (first in `run_with`) `dlopen`s AppKit and QuickLookUI and
+  AppKit's data constants (attribute names, pasteboard types, font weights) are read by `dlsym`.
+  Linked, the terminal viewer loaded fifteen frameworks at every start (cold: 0.41 s to
+  `--version`, now 0.07). Take a new AppKit constant through it, never by its `objc2-app-kit`
+  static, or the frameworks come back: `otool -L target/release/duscape` lists libSystem and
+  libobjc alone. The debug build keeps AppKit in its load commands anyway, so `smoke.sh` runs
+  the release
 - `mac/script.rs` — `DUSCAPE_MAC_SCRIPT`: synthetic keys, clicks and menu choices posted to the
   app's own event queue, and `state` dumps to assert on. `tests/smoke.sh` runs one on a fixture;
   run it after changing the viewer (macOS, logged-in session, no permissions needed)

@@ -453,6 +453,7 @@ dependencies = [
  "dispatch2",
  "duscape-scan",
  "duscape-viewer",
+ "libc",
  "libduscape",
  "objc2",
  "objc2-app-kit",

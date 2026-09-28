@@ -23,8 +23,8 @@ use objc2_app_kit::{
     NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSApplication, NSBitmapImageFileType,
     NSControlStateValueOff, NSControlStateValueOn, NSDragOperation, NSDraggingDestination,
     NSDraggingInfo, NSEvent, NSEventModifierFlags, NSImage, NSMenu, NSMenuItem, NSModalResponseOK,
-    NSOpenPanel, NSPasteboard, NSPasteboardTypeFileURL, NSPasteboardTypeString, NSResponder,
-    NSScreen, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindowDelegate, NSWorkspace,
+    NSOpenPanel, NSPasteboard, NSResponder, NSScreen, NSTrackingArea, NSTrackingAreaOptions,
+    NSView, NSWindowDelegate, NSWorkspace,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSData, NSDictionary, NSFileManager, NSInteger, NSPoint, NSRect,
@@ -34,6 +34,7 @@ use objc2_quick_look_ui::{
     QLPreviewItem, QLPreviewPanel, QLPreviewPanelDataSource, QLPreviewPanelDelegate,
 };
 
+use super::appkit;
 use super::draw::{Frame, draw};
 use duscape_scan::rescan::{Outcome, Rescanner};
 use duscape_viewer::menu::{Action, Entry, Platform};
@@ -556,8 +557,7 @@ impl DiskView {
             )
         };
         view.addTrackingArea(&area);
-        // SAFETY: reading AppKit's pasteboard type constant.
-        let file_url = unsafe { NSPasteboardTypeFileURL };
+        let file_url = appkit::pasteboard_type_file_url();
         view.registerForDraggedTypes(&NSArray::from_slice(&[file_url]));
         VIEW.with(|cell| {
             let _ = cell.set(view.clone());
@@ -1248,8 +1248,7 @@ fn trash(path: &Path) -> Result<(), String> {
 /// The folder being dragged over the window, if it is one folder.
 fn dropped_folder(sender: &ProtocolObject<dyn NSDraggingInfo>) -> Option<PathBuf> {
     let pasteboard = sender.draggingPasteboard();
-    // SAFETY: reading AppKit's pasteboard type constant.
-    let url = pasteboard.stringForType(unsafe { NSPasteboardTypeFileURL })?;
+    let url = pasteboard.stringForType(appkit::pasteboard_type_file_url())?;
     let url = NSURL::URLWithString(&url)?;
     let path = url.to_file_path()?;
     path.is_dir().then_some(path)
@@ -1308,6 +1307,5 @@ fn context_menu(mtm: MainThreadMarker, entries: &[Entry]) -> Retained<NSMenu> {
 fn put_on_pasteboard(text: &str) -> bool {
     let pasteboard = NSPasteboard::generalPasteboard();
     pasteboard.clearContents();
-    // SAFETY: reading AppKit's pasteboard type constant.
-    pasteboard.setString_forType(&NSString::from_str(text), unsafe { NSPasteboardTypeString })
+    pasteboard.setString_forType(&NSString::from_str(text), appkit::pasteboard_type_string())
 }
