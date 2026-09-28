@@ -137,3 +137,47 @@ fn a_folder_too_short_for_its_header_leaves_no_colour_on_its_entries_borders() {
         }
     }
 }
+
+#[test]
+fn a_highlighted_file_folder_or_nesting_folder_is_framed_alike() {
+    use ::std::path::Path;
+    use libduscape::Folder;
+    use libduscape::model::SizeKind;
+    use libduscape::tiles::nest_with;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::widgets::Widget;
+
+    let mut root = Folder::new(Path::new("/tmp/example"));
+    root.add_file("holds/a".into(), 600);
+    root.add_file("holds/b".into(), 400);
+    root.add_file("empty/x".into(), 1);
+    root.add_file("file.txt".into(), 500);
+    // A folder with room for its entries, a folder too small for them, and a file.
+    let place = |name: &str, file_type, x, width, height| Tile {
+        x,
+        y: 0,
+        width,
+        height,
+        name: OsString::from(name),
+        ..sample_tile(file_type, width)
+    };
+    let tiles = [
+        place("holds", FileType::Folder, 0, 40, 14),
+        place("empty", FileType::Folder, 40, 12, 5),
+        place("file.txt", FileType::File, 52, 12, 5),
+    ];
+    let nesting = crate::ui::display::NESTING;
+    let nested = nest_with(&root, &tiles, SizeKind::Disk, &nesting, &mut |_| {});
+    assert!(nested.tops[0].is_some() && nested.tops[1].is_none());
+    for (index, colour) in [(0, Color::Blue), (1, Color::Blue), (2, Color::Gray)] {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 70, 16));
+        super::RectangleGrid::new(&tiles, None, Some(index))
+            .nested(&nested, &nesting)
+            .render(Rect::new(0, 0, 70, 16), &mut buf);
+        let t = &tiles[index];
+        for (x, y) in [(t.x, t.y), (t.x + t.width, t.y + t.height), (t.x, t.y + 2)] {
+            assert_eq!(buf[(x, y)].fg, colour, "{:?}'s border at {x},{y}", t.name);
+        }
+    }
+}

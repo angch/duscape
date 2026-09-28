@@ -134,7 +134,8 @@ impl<'a> RectangleGrid<'a> {
 
 impl<'a> Widget for RectangleGrid<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        // Selected or marked folders holding their entries, framed once those are drawn.
+        // Every selected or marked tile, framed in its colour once all else is drawn: the same
+        // look for a file, a folder, and a folder holding its entries (filled only around them).
         let mut framed = Vec::new();
         if self.rectangles.is_empty() {
             draw_empty_folder(buf, area);
@@ -161,11 +162,11 @@ impl<'a> Widget for RectangleGrid<'a> {
                     if nesting.labelled(tile) {
                         draw_folder_header_on_grid(buf, tile, selected, marked);
                     }
-                    if selected || marked {
-                        framed.push((tile, selected, marked));
-                    }
                 } else {
                     draw_tile_text_on_grid(buf, tile, selected, marked);
+                }
+                if selected || marked {
+                    framed.push((tile, selected, marked));
                 }
                 draw_rect_on_grid(buf, (tile.x, tile.y), (tile.width, tile.height));
             }

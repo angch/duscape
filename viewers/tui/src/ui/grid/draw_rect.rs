@@ -205,8 +205,9 @@ pub fn draw_folder_header_on_grid(buf: &mut Buffer, tile: &Tile, selected: bool,
     }
 }
 
-/// `tile`'s border in the colour of its highlight, bold, leaving what is inside it as drawn: a
-/// selected or marked folder whose entries are nested in it.
+/// `tile`'s border in the colour of its highlight, bold, leaving what is inside it as drawn:
+/// every selected or marked tile, so a file, a folder and a folder holding its entries (filled
+/// only in its header row) read as highlighted alike.
 pub fn frame_on_grid(buf: &mut Buffer, tile: &Tile, selected: bool, marked: bool) {
     let Some(color) = tile_style(tile, selected, marked)
         .0
