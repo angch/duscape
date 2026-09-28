@@ -2537,7 +2537,10 @@ glibc builds keep the system allocator. jemalloc is C, so building the release n
 filtered out, and debug builds need `-fno-sanitize=undefined`: zig's default UBSan traps inside
 jemalloc and the tests die with SIGILL.
 
-aarch64 is cross-built with `cargo zigbuild` (which handles both of those itself). jemalloc fixes
+aarch64 is cross-built with `cargo zigbuild` (which handles both of those itself), and so is
+x86_64 on a Mac, which has no `musl-gcc`. There jemalloc's `configure` archives with the first
+`ar` on the PATH, Apple's, which leaves ELF objects out: the archive is an empty symbol table and
+the link fails on `_rjem_malloc`. The Makefile passes `AR='zig ar'` on macOS. jemalloc fixes
 its page size at build time, and aarch64 kernels run 4K, 16K (Asahi) or 64K pages (some RHEL). A
 4K build aborts on the larger two, so the release sets `JEMALLOC_SYS_WITH_LG_PAGE=16`. The binary
 and all tests were run under `qemu-aarch64`, which uses the host's 4K pages. The 64K setting has

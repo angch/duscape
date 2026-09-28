@@ -48,15 +48,19 @@ test-fs:
 	fixtures/fs/run.sh $(FS)
 
 # Fully static binary: on Linux, musl with jemalloc (needs musl-gcc); on Windows, MSVC with
-# crt-static (configured in .cargo/config.toml, needing only DLLs that come with Windows).
-STATIC_CMD := $(shell if [ "$$OS" = "Windows_NT" ] || uname -s 2>/dev/null | grep -qE "MINGW|MSYS|CYGWIN"; then echo "cargo build -p duscape --release"; else echo "CC_x86_64_unknown_linux_musl=musl-gcc cargo build -p duscape --release --target x86_64-unknown-linux-musl"; fi)
+# crt-static (configured in .cargo/config.toml, needing only DLLs that come with Windows); on
+# macOS, which has no musl-gcc, the Linux binary cross-built with cargo-zigbuild (needs zig).
+# jemalloc's configure archives with the first `ar` on the PATH, and on macOS that is Apple's,
+# which skips ELF objects: the archive came out empty and the link failed on `_rjem_malloc`.
+ZIG_AR := $(shell if [ "$$(uname -s 2>/dev/null)" = Darwin ]; then echo "AR='zig ar'"; fi)
+STATIC_CMD := $(shell if [ "$$OS" = "Windows_NT" ] || uname -s 2>/dev/null | grep -qE "MINGW|MSYS|CYGWIN"; then echo "cargo build -p duscape --release"; elif [ "$$(uname -s)" = Darwin ]; then echo "$(ZIG_AR) cargo zigbuild -p duscape --release --target x86_64-unknown-linux-musl"; else echo "CC_x86_64_unknown_linux_musl=musl-gcc cargo build -p duscape --release --target x86_64-unknown-linux-musl"; fi)
 static:
 	$(STATIC_CMD)
 
 # The same for aarch64, cross-built with cargo-zigbuild (needs zig). jemalloc's page size is fixed
 # at build time; 64K pages (2^16) also run on 4K and 16K kernels.
 static-aarch64:
-	JEMALLOC_SYS_WITH_LG_PAGE=16 cargo zigbuild -p duscape --release --target aarch64-unknown-linux-musl
+	$(ZIG_AR) JEMALLOC_SYS_WITH_LG_PAGE=16 cargo zigbuild -p duscape --release --target aarch64-unknown-linux-musl
 
 # A profile-guided build of the terminal viewer: instrument, scan PGO_TRAIN (this directory by
 # default; a big real tree trains it better) through every benchmark stage, then rebuild with the

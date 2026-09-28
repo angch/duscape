@@ -98,6 +98,8 @@ a recipe is written once. `.\make -n <target>` prints what it would run.
 **Static release binaries** (what `deploy.yml` ships; see "Releases" below):
 ```bash
 make static           # x86_64-unknown-linux-musl, needs musl-gcc (apt install musl-tools);
+                      #   on macOS by cargo-zigbuild, jemalloc archived with `zig ar` (Apple's
+                      #   `ar` drops ELF objects, and the link fails on `_rjem_malloc`);
                       #   on Windows the native MSVC build, crt-static by .cargo/config.toml
 make static-aarch64   # aarch64-unknown-linux-musl, needs zig + cargo-zigbuild
 make static-windows   # x86_64-pc-windows-gnu by cargo-zigbuild; on Windows the native build

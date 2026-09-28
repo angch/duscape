@@ -11,6 +11,13 @@ cd "$(dirname "$0")/../../.."
 # what ships; the debug build's linker keeps AppKit in its load commands.
 cargo build -q --release -p duscape-mac
 app="$PWD/target/release/duscape-mac"
+# An AppKit constant taken from `objc2-app-kit` rather than through `appkit.rs` links AppKit
+# again, and every `duscape` start with it (0.35 s cold): say so before anything else.
+if otool -L "$app" | grep -q '\.framework/'; then
+    echo "FAIL $app links a framework (take AppKit's constants through mac/appkit.rs):" >&2
+    otool -L "$app" | grep '\.framework/' >&2
+    exit 1
+fi
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/duscape-mac-smoke.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
