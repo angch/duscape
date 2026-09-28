@@ -185,12 +185,12 @@ pub fn draw_folder_header_on_grid(buf: &mut Buffer, tile: &Tile, selected: bool,
     let (background_style, first_line_style, second_line_style) =
         tile_style(tile, selected, marked);
     if let Some(background_style) = background_style {
-        // The whole folder, so its entries are drawn over its colour: the selection reads as
-        // the folder and everything in it.
+        // The header row only: filled whole, the folder's colour hid every entry inside it.
+        // Its border takes the colour too ([`frame_on_grid`]), once the entries are drawn.
         for x in tile.x + 1..tile.x + tile.width {
-            for y in tile.y + 1..tile.y + tile.height {
-                buf[(x, y)].set_symbol("█").set_style(background_style);
-            }
+            buf[(x, tile.y + 1)]
+                .set_symbol("█")
+                .set_style(background_style);
         }
     }
     let room = usize::from(tile.width.saturating_sub(2));
@@ -202,6 +202,29 @@ pub fn draw_folder_header_on_grid(buf: &mut Buffer, tile: &Tile, selected: bool,
     if name_width + 2 + size_width <= room {
         let x = tile.x + 1 + (room - size_width) as u16;
         buf.set_string(x, y, &size, second_line_style);
+    }
+}
+
+/// `tile`'s border in the colour of its highlight, bold, leaving what is inside it as drawn: a
+/// selected or marked folder whose entries are nested in it.
+pub fn frame_on_grid(buf: &mut Buffer, tile: &Tile, selected: bool, marked: bool) {
+    let Some(color) = tile_style(tile, selected, marked)
+        .0
+        .and_then(|style| style.fg)
+    else {
+        return;
+    };
+    let (right, bottom) = (tile.x + tile.width, tile.y + tile.height);
+    let mut frame = |x: u16, y: u16| {
+        buf[(x, y)].set_fg(color).modifier.insert(Modifier::BOLD);
+    };
+    for x in tile.x..=right {
+        frame(x, tile.y);
+        frame(x, bottom);
+    }
+    for y in tile.y + 1..bottom {
+        frame(tile.x, y);
+        frame(right, y);
     }
 }
 

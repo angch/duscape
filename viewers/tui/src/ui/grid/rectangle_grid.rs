@@ -4,7 +4,9 @@ use ::ratatui::style::{Color, Style};
 use ::ratatui::widgets::Widget;
 use ::std::ffi::OsString;
 
-use crate::ui::grid::{draw_folder_header_on_grid, draw_rect_on_grid, draw_tile_text_on_grid};
+use crate::ui::grid::{
+    draw_folder_header_on_grid, draw_rect_on_grid, draw_tile_text_on_grid, frame_on_grid,
+};
 use libduscape::tiles::{Area, Nested, Tile};
 
 fn draw_small_files_rect_on_grid(buf: &mut Buffer, rect: Rect) {
@@ -128,6 +130,8 @@ impl<'a> RectangleGrid<'a> {
 
 impl<'a> Widget for RectangleGrid<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        // Selected or marked folders holding their entries, framed once those are drawn.
+        let mut framed = Vec::new();
         if self.rectangles.is_empty() {
             draw_empty_folder(buf, area);
         } else {
@@ -151,6 +155,9 @@ impl<'a> Widget for RectangleGrid<'a> {
                     .is_some_and(|nested| nested.tops.get(index).is_some_and(Option::is_some));
                 if holds {
                     draw_folder_header_on_grid(buf, tile, selected, marked);
+                    if selected || marked {
+                        framed.push((tile, selected, marked));
+                    }
                 } else {
                     draw_tile_text_on_grid(buf, tile, selected, marked);
                 }
@@ -171,6 +178,9 @@ impl<'a> Widget for RectangleGrid<'a> {
                 height,
             };
             draw_small_files_rect_on_grid(buf, small_files_rect);
+        }
+        for (tile, selected, marked) in framed {
+            frame_on_grid(buf, tile, selected, marked);
         }
     }
 }

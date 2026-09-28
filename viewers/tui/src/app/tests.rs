@@ -1784,6 +1784,23 @@ fn folders_show_their_entries_nested_inside_them() {
     ] {
         assert!(screen.contains(name), "{name} is drawn:\n{screen}");
     }
+    // `big/`, in hand, is highlighted by its header row and border: what is inside stays drawn.
+    let line = |name: &str| {
+        screen
+            .lines()
+            .find(|line| line.contains(name))
+            .expect("drawn")
+    };
+    assert!(
+        line("big/ (+").contains('█'),
+        "its header is highlighted:\n{screen}"
+    );
+    for name in ["inner/", "alpha.dat", "gamma.dat"] {
+        assert!(
+            !line(name).contains('█'),
+            "{name} is not covered:\n{screen}"
+        );
+    }
     // Each level is a block of its own inside its folder's border, not cut from it.
     assert!(
         screen.contains("│┌"),

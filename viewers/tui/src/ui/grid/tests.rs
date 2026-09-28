@@ -70,3 +70,30 @@ fn unselected_folder_name_is_blue_bold() {
     let (_, first, _) = tile_style(&tile, false, false);
     assert_eq!(first.fg, Some(Color::Blue));
 }
+
+#[test]
+fn a_highlighted_folder_is_framed_in_its_colour_and_its_inside_left_alone() {
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::style::Modifier;
+
+    let tile = sample_tile(FileType::Folder, 20);
+    let mut buf = Buffer::empty(Rect::new(0, 0, 30, 15));
+    super::draw_rect_on_grid(&mut buf, (0, 0), (tile.width, tile.height));
+    buf[(5, 5)].set_symbol("x");
+    super::frame_on_grid(&mut buf, &tile, true, false);
+    for (x, y) in [(0, 0), (10, 0), (20, 10), (0, 5), (20, 5)] {
+        let cell = &buf[(x, y)];
+        assert_eq!(cell.fg, Color::Blue, "border cell {x},{y}");
+        assert!(cell.modifier.contains(Modifier::BOLD));
+    }
+    assert_eq!(
+        buf[(5, 5)].fg,
+        Color::Reset,
+        "the inside keeps its own colours"
+    );
+    assert_eq!(buf[(5, 5)].symbol(), "x");
+    let marked = sample_tile(FileType::Folder, 20);
+    super::frame_on_grid(&mut buf, &marked, false, true);
+    assert_eq!(buf[(0, 0)].fg, Color::Yellow, "a mark frames in yellow");
+}
