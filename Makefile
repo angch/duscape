@@ -6,8 +6,10 @@ build:
 run:
 	cargo run --bin duscape
 
+# The one `duscape` for this platform: the terminal viewer with the platform's window in it
+# (`front.rs` picks), from the lock file the release is built from.
 install:
-	cargo install --path viewers/tui
+	cargo install --locked --path viewers/tui --bin duscape
 
 test:
 	cargo test --workspace
