@@ -1784,5 +1784,11 @@ fn folders_show_their_entries_nested_inside_them() {
     ] {
         assert!(screen.contains(name), "{name} is drawn:\n{screen}");
     }
+    // Each level is a block of its own inside its folder's border, not cut from it.
+    assert!(
+        screen.contains("│┌"),
+        "an inner block's corner beside its folder's border:\n{screen}"
+    );
+    assert!(screen.contains("┐│"), "and its other corner:\n{screen}");
     let _ = fs::remove_dir_all(&dir);
 }

@@ -145,12 +145,12 @@ where
 }
 
 /// The nesting in character cells: a folder's name on the row under its top border, and its
-/// entries' tiles from the row after, their borders on the folder's own (no margin), so a
-/// folder reads as a box split into its entries.
+/// entries' tiles from the row after as a block of their own inside the folder's border (a
+/// margin of one cell), so each level reads as a box within a box.
 const NESTING: Nesting = Nesting {
     max_depth: 64,
     label_rows: 2,
-    margin: 0,
+    margin: 1,
     max_tiles: 100_000,
     grid: Grid::TERMINAL,
     dust: false,
