@@ -396,6 +396,18 @@ def layout_matches_the_rust_treemap():
                 f.truncate(size)
             sizes[name] = size
         cases.append(sizes)
+    # Empty files beside others: a row of nothing but them is laid out as nothing, where it is,
+    # not at the board's corner (0 / 0, the whole board "small files" and no tile).
+    for mixed in ([100_000, 0, 0], [5000, 3000, 0, 0, 0]):
+        folder = os.path.join(WORK, "layout", f"C{len(cases):02}")
+        os.makedirs(folder)
+        sizes = {}
+        for i, size in enumerate(mixed):
+            name = f"f{i:03}.bin"
+            with open(os.path.join(folder, name), "wb") as f:
+                f.truncate(size)
+            sizes[name] = size
+        cases.append(sizes)
     runs = [(f"-a {DOS_WORK}\\LAYOUT\\C{case:02}", keys)
             for keys in ("", "s") for case in range(len(cases))]
     shots = screens(runs)

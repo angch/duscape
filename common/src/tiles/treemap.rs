@@ -8,7 +8,7 @@ pub(crate) const MINIMUM_HEIGHT: u16 = 3;
 pub(crate) const MINIMUM_WIDTH: u16 = 8;
 
 /// The least the "small files" placeholder may occupy, so that hidden entries always leave a
-/// visible trace: a border plus at least one row of one or two `x` cells inside it.
+/// visible trace: a border plus at least one row of one or two cells inside it.
 const SMALL_FILES_MINIMUM_HEIGHT: u16 = 3;
 const SMALL_FILES_MINIMUM_WIDTH: u16 = 4;
 
@@ -78,7 +78,7 @@ impl Plan {
 }
 
 /// A steady layout's shapes are kept while every tile is at least this square: squarify
-/// makes them better than 1:3 and a steady one drifts, so past 1:4 it lays out afresh.
+/// makes them better than 1:3 and a steady one drifts, so past 1:5 it lays out afresh.
 const STEADY_WORST_RATIO: f64 = 0.2;
 /// Nor while entries the plan did not have take more than this share of the area.
 const STEADY_NEW_SHARE: f64 = 0.25;
@@ -337,15 +337,27 @@ impl TreeMap {
         let mut length_of_row_second_side = 0.0;
         for (&entry, file_metadata) in entries.iter().zip(row) {
             let size = file_metadata.percentage * self.total_size;
-            let tile_length_first_side = if should_render_horizontally {
-                (size / row_total) * self.empty_space.width
+            // A row of nothing but empty entries (a share of 0 each) is laid out as nothing, where
+            // it is: 0 / 0 made its place NaN, which rounds to the board's corner, and the "small
+            // files" corner grew from there over every tile.
+            let share = if row_total > 0.0 {
+                size / row_total
             } else {
-                (size / row_total) * self.empty_space.height
+                0.0
+            };
+            let tile_length_first_side = if should_render_horizontally {
+                share * self.empty_space.width
+            } else {
+                share * self.empty_space.height
             };
 
             // we take the highest of length_of_row_second_side and length_candidate so the row will always
             // have the same width, even if it means fudging the calculation a little
-            let length_candidate = size / tile_length_first_side;
+            let length_candidate = if tile_length_first_side > 0.0 {
+                size / tile_length_first_side
+            } else {
+                0.0
+            };
             let tile_length_second_side = if length_of_row_second_side > length_candidate {
                 length_of_row_second_side
             } else {

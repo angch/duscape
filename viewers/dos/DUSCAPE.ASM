@@ -1879,7 +1879,18 @@ layoutrow:
         mov     bx,[l_a]
 .l:     call    area_of
         push    bx
-        mov     si,f_area               ; first = size / total × (width or height)
+        ; a row of nothing but empty entries is laid out as nothing, where it is: 0 / 0 is NaN,
+        ; which rounds to the board's corner and grew the small-files marker over every tile
+        cmp     byte [l_total+F_C],FC_ZERO
+        jne     .share
+        mov     bx,l_first
+        xor     ax,ax
+        call    f_from_u16
+        mov     bx,f_t2
+        xor     ax,ax
+        call    f_from_u16
+        jmp     .other
+.share: mov     si,f_area               ; first = size / total × (width or height)
         mov     di,l_total
         mov     bx,l_first
         call    f_div
@@ -1893,7 +1904,7 @@ layoutrow:
         mov     di,l_first
         mov     bx,f_t2
         call    f_div
-        mov     si,l_second             ; the larger of it and the row's so far
+.other: mov     si,l_second             ; the larger of it and the row's so far
         mov     di,f_t2
         call    f_cmp
         cmp     al,F_GREATER

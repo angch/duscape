@@ -327,3 +327,34 @@ fn a_steady_layout_gone_thin_is_laid_out_afresh() {
     board.change_files_steady(&after);
     assert_eq!(places(&board.tiles), places(&board_over(&after).tiles));
 }
+
+#[test]
+fn empty_files_beside_a_large_one_leave_it_its_tile() {
+    // Empty files are common (lock files, `.gitkeep`): their share is 0, and a row of nothing
+    // but them divided 0 by 0 — a NaN place, rounded to the board's corner, which made the
+    // "small files" corner the whole board and hid every tile.
+    for grid in [Grid::TERMINAL, Grid::pixels(4)] {
+        let root = folder_of(&[("big", 100), ("empty1", 0), ("empty2", 0)]);
+        let mut board = Board::new(&root);
+        board.set_grid(grid);
+        board.change_area(&Area {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 24,
+        });
+        board.change_files(&root);
+        assert_eq!(
+            places(&board.tiles).len(),
+            1,
+            "{grid:?}: big keeps its tile"
+        );
+        let (x, y) = board
+            .unrenderable_tile_coordinates
+            .expect("a corner for the empty files");
+        assert!(
+            x > 0 || y > 0,
+            "{grid:?}: the corner is not the whole board"
+        );
+    }
+}
