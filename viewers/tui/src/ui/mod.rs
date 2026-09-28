@@ -1,6 +1,7 @@
 mod bottom_line;
 mod display;
 mod grid;
+pub mod highlight;
 mod modals;
 pub mod side_panel;
 mod term_too_small;

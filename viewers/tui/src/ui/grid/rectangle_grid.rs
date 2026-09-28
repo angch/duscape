@@ -9,28 +9,16 @@ use crate::ui::grid::{
 };
 use libduscape::tiles::{Area, Nested, Nesting, Tile};
 
-/// The "small files" corner: a plain box in the terminal's own colours, named where the name
-/// fits ("small files", else "small"), empty where not. Its inside is cleared first: pulled in
-/// from the edge to stay visible, the corner can lie over the last tile's cells.
+/// The "small files" corner: a box filled with `□`s in the terminal's own colours, one a
+/// cell. Drawn over what is there: pulled in from the edge to stay visible, the corner can lie
+/// over the last tile's cells.
 fn draw_small_files_rect_on_grid(buf: &mut Buffer, rect: Rect) {
     for x in rect.x + 1..rect.x + rect.width {
         for y in rect.y + 1..rect.y + rect.height {
-            buf[(x, y)].set_symbol(" ").set_style(Style::reset());
+            buf[(x, y)].set_symbol("□").set_style(Style::reset());
         }
     }
     draw_rect_on_grid(buf, (rect.x, rect.y), (rect.width, rect.height));
-    let room = rect.width.saturating_sub(1);
-    let Some(name) = ["small files", "small"]
-        .into_iter()
-        .find(|name| name.len() as u16 <= room.saturating_sub(2))
-    else {
-        return;
-    };
-    if rect.height < 2 {
-        return;
-    }
-    let x = rect.x + 1 + (room - name.len() as u16) / 2;
-    buf.set_string(x, rect.y + rect.height / 2, name, Style::default());
 }
 
 fn draw_empty_folder(buf: &mut Buffer, area: Rect) {
@@ -76,10 +64,10 @@ fn draw_nested(buf: &mut Buffer, nested: &Nested, nesting: &Nesting) {
             // A folder too short for its header row has its entries right under its border:
             // a header there would be drawn over, and leave its colour on their borders.
             if nesting.labelled(&tile.tile) {
-                draw_folder_header_on_grid(buf, &tile.tile, false, false);
+                draw_folder_header_on_grid(buf, &tile.tile, false, false, false);
             }
         } else {
-            draw_tile_text_on_grid(buf, &tile.tile, false, false);
+            draw_tile_text_on_grid(buf, &tile.tile, false, false, false);
         }
         let t = &tile.tile;
         draw_rect_on_grid(buf, (t.x, t.y), (t.width, t.height));
@@ -116,6 +104,9 @@ pub struct RectangleGrid<'a> {
     selected_rect_index: Option<usize>,
     /// Names of the entries in a multi-selection, drawn marked.
     marked: &'a [OsString],
+    /// Whether the treemap has the keyboard: the tile in hand is a bar in its colour, else only
+    /// marked out, as the list's row is ([`crate::ui::highlight::highlight`]).
+    focused: bool,
     /// The tiles inside the folder tiles, drawn in them, and the nesting that laid them out.
     nested: Option<(&'a Nested, &'a Nesting)>,
 }
@@ -131,8 +122,14 @@ impl<'a> RectangleGrid<'a> {
             small_files_coordinates,
             selected_rect_index,
             marked: &[],
+            focused: true,
             nested: None,
         }
+    }
+    /// Whether the treemap has the keyboard (it does unless told).
+    pub fn focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
+        self
     }
     /// Draw `nested`, the nesting of these tiles by `nesting`, inside them.
     pub fn nested(mut self, nested: &'a Nested, nesting: &'a Nesting) -> Self {
@@ -173,10 +170,10 @@ impl<'a> Widget for RectangleGrid<'a> {
                     .filter(|(nested, _)| nested.tops.get(index).is_some_and(Option::is_some));
                 if let Some((_, nesting)) = holds {
                     if nesting.labelled(tile) {
-                        draw_folder_header_on_grid(buf, tile, selected, marked);
+                        draw_folder_header_on_grid(buf, tile, selected, marked, self.focused);
                     }
                 } else {
-                    draw_tile_text_on_grid(buf, tile, selected, marked);
+                    draw_tile_text_on_grid(buf, tile, selected, marked, self.focused);
                 }
                 if selected || marked {
                     framed.push((tile, selected, marked));
@@ -200,7 +197,7 @@ impl<'a> Widget for RectangleGrid<'a> {
             draw_small_files_rect_on_grid(buf, small_files_rect);
         }
         for (tile, selected, marked) in framed {
-            frame_on_grid(buf, tile, selected, marked);
+            frame_on_grid(buf, tile, selected, marked, self.focused);
         }
     }
 }

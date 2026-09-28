@@ -607,8 +607,12 @@ Exiting { app_loaded: bool }
   Keys named in it come from `Keybinds`, never literals. It ticks at frame rate only while it
   slides, and twice a rest otherwise (`App::ticker_pace`): 60 fps where something moves, next
   to nothing when idle.
-- **Colours**: no dark gray (unreadable on black) and no magenta on the light cursor bar; the
-  cursor is black on gray, marks black on yellow. `side_panel` tests assert both.
+- **Colours**: no dark gray (unreadable on black) and no magenta on the light cursor bar. The
+  list and the treemap highlight by one rule, `ui::highlight::highlight`: in the panel with the
+  keyboard the entry in hand is a bar, white on blue for a folder and black on gray for a file;
+  in the other it is white, bold and underlined, with no bar; marks are black on yellow either
+  way, underlined when in hand too. A highlighted tile's border takes the same colours.
+  `side_panel` and `grid` tests assert them.
 - **Focus**: the list has it by default (`Focus::List`; `list_cursor: None` means its top row,
   and while the list has focus `render` syncs the treemap's selection to it). `App::focus` says
   which panel the keyboard drives; it follows the last click, Tab,
@@ -836,8 +840,8 @@ measured and none helped — read the 2026-09-24 section before trying them agai
 - Adjust `HEIGHT_WIDTH_RATIO`, `MINIMUM_HEIGHT`, `MINIMUM_WIDTH` constants (the terminal's
   `Grid`), or `MIN_TILE_PIXELS` in `viewers/shared` (the windows')
 - Entries below the minimum tile size are never dropped: they fold into the "small files"
-  corner (in the terminal a plain box named "small files" where the name fits, its inside
-  cleared, since it can lie over the last tile's cells), clamped by
+  corner (in the terminal a box filled with `□`s in the terminal's own colours, drawn over
+  what is there, since it can lie over the last tile's cells), clamped by
   `SMALL_FILES_MINIMUM_WIDTH/HEIGHT` so it stays visible even when the hidden entries round to
   zero cells
 - Why the layout's work is bounded by the screen, not the folder (`largest_in_folder` ranks only

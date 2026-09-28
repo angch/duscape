@@ -309,6 +309,7 @@ where
                         board.selected_index,
                     )
                     .marked(&panel_state.marked)
+                    .focused(!panel_state.list_focused)
                     .nested(nested, &NESTING),
                     areas.grid,
                 );

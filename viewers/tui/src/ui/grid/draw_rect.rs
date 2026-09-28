@@ -4,6 +4,7 @@ use ::ratatui::style::{Color, Modifier, Style};
 use ::unicode_width::UnicodeWidthStr;
 
 use crate::ui::grid::{boundaries, draw_next_symbol};
+use crate::ui::highlight::highlight;
 use libduscape::format::{DisplayCount, DisplaySize, DisplaySizeRounded, truncate_middle};
 use libduscape::tiles::{FileType, Tile};
 
@@ -60,48 +61,29 @@ fn tile_second_line(tile: &Tile) -> String {
     }
 }
 
-pub fn tile_style(tile: &Tile, selected: bool, marked: bool) -> (Option<Style>, Style, Style) {
-    // Part of a multi-selection, and not the one under the cursor, which keeps its own look.
-    if marked && !selected {
-        let marked = Style::default().fg(Color::Black).bg(Color::Yellow);
-        return (
-            Some(Style::default().fg(Color::Yellow).bg(Color::Yellow)),
-            marked.add_modifier(Modifier::BOLD),
-            marked,
-        );
+/// A tile's look: the fill of its inside (a block in its colour, or none), its first line's
+/// style and its second's. In hand or marked it is [`highlight`]'s, the list's rule.
+pub fn tile_style(
+    tile: &Tile,
+    selected: bool,
+    marked: bool,
+    focused: bool,
+) -> (Option<Style>, Style, Style) {
+    if let Some(style) = highlight(tile.file_type, selected, marked, focused) {
+        let fill = style.bg.map(|bg| Style::default().fg(bg).bg(bg));
+        let second = style.remove_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+        return (fill, style, second);
     }
-    let (background_style, first_line_style, second_line_style) = match (selected, &tile.file_type)
-    {
-        // Black on the light selection: magenta on it is hard to read.
-        (true, FileType::File) => (
-            Some(Style::default().fg(Color::Gray).bg(Color::Gray)),
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Gray)
-                .add_modifier(Modifier::BOLD),
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Gray)
-                .add_modifier(Modifier::BOLD),
-        ),
-        (false, FileType::File) => (None, Style::default(), Style::default()),
-        (true, FileType::Folder) => (
-            Some(Style::default().fg(Color::Blue).bg(Color::Blue)),
-            Style::default()
-                .fg(Color::White)
-                .bg(Color::Blue)
-                .add_modifier(Modifier::BOLD),
-            Style::default().fg(Color::Black).bg(Color::Blue),
-        ),
-        (false, FileType::Folder) => (
+    match tile.file_type {
+        FileType::File => (None, Style::default(), Style::default()),
+        FileType::Folder => (
             None,
             Style::default()
                 .fg(Color::Blue)
                 .add_modifier(Modifier::BOLD),
             Style::default(),
         ),
-    };
-    (background_style, first_line_style, second_line_style)
+    }
 }
 
 pub fn draw_rect_on_grid(buf: &mut Buffer, coords: (u16, u16), dimensions: (u16, u16)) {
@@ -181,9 +163,15 @@ pub fn draw_filled_rect(buf: &mut Buffer, fill_style: Style, rect: &Rect) {
 
 /// A folder whose entries are drawn inside it: its name, and its size where there is room,
 /// on the row under its top border, which its entries' tiles start below.
-pub fn draw_folder_header_on_grid(buf: &mut Buffer, tile: &Tile, selected: bool, marked: bool) {
+pub fn draw_folder_header_on_grid(
+    buf: &mut Buffer,
+    tile: &Tile,
+    selected: bool,
+    marked: bool,
+    focused: bool,
+) {
     let (background_style, first_line_style, second_line_style) =
-        tile_style(tile, selected, marked);
+        tile_style(tile, selected, marked, focused);
     if let Some(background_style) = background_style {
         // The header row only: filled whole, the folder's colour hid every entry inside it.
         // Its border takes the colour too ([`frame_on_grid`]), once the entries are drawn.
@@ -205,19 +193,18 @@ pub fn draw_folder_header_on_grid(buf: &mut Buffer, tile: &Tile, selected: bool,
     }
 }
 
-/// `tile`'s border in the colour of its highlight, bold, leaving what is inside it as drawn:
-/// every selected or marked tile, so a file, a folder and a folder holding its entries (filled
-/// only in its header row) read as highlighted alike.
-pub fn frame_on_grid(buf: &mut Buffer, tile: &Tile, selected: bool, marked: bool) {
-    let Some(color) = tile_style(tile, selected, marked)
-        .0
-        .and_then(|style| style.fg)
-    else {
+/// `tile`'s border in its highlight's colours ([`highlight`]: white on blue for a folder in
+/// hand, black on gray for a file, black on yellow marked; white and bold where the other panel
+/// has the keyboard), leaving what is inside it as drawn: every highlighted tile, so a file, a
+/// folder and a folder holding its entries (filled only in its header row) read alike.
+pub fn frame_on_grid(buf: &mut Buffer, tile: &Tile, selected: bool, marked: bool, focused: bool) {
+    let Some(style) = highlight(tile.file_type, selected, marked, focused) else {
         return;
     };
+    let style = style.remove_modifier(Modifier::UNDERLINED);
     let (right, bottom) = (tile.x + tile.width, tile.y + tile.height);
     let mut frame = |x: u16, y: u16| {
-        buf[(x, y)].set_fg(color).modifier.insert(Modifier::BOLD);
+        buf[(x, y)].set_style(style);
     };
     for x in tile.x..=right {
         frame(x, tile.y);
@@ -229,7 +216,13 @@ pub fn frame_on_grid(buf: &mut Buffer, tile: &Tile, selected: bool, marked: bool
     }
 }
 
-pub fn draw_tile_text_on_grid(buf: &mut Buffer, tile: &Tile, selected: bool, marked: bool) {
+pub fn draw_tile_text_on_grid(
+    buf: &mut Buffer,
+    tile: &Tile,
+    selected: bool,
+    marked: bool,
+    focused: bool,
+) {
     let first_line = tile_first_line(tile);
     let first_line_length = first_line.width() as u16;
     let first_line_start_position =
@@ -239,7 +232,7 @@ pub fn draw_tile_text_on_grid(buf: &mut Buffer, tile: &Tile, selected: bool, mar
     let second_line_start_position =
         ((tile.width - second_line_length as u16) as f64 / 2.0).ceil() as u16 + tile.x;
     let (background_style, first_line_style, second_line_style) =
-        tile_style(tile, selected, marked);
+        tile_style(tile, selected, marked, focused);
 
     if let Some(background_style) = background_style {
         for x in tile.x + 1..tile.x + tile.width {

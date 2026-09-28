@@ -1784,7 +1784,20 @@ fn folders_show_their_entries_nested_inside_them() {
     ] {
         assert!(screen.contains(name), "{name} is drawn:\n{screen}");
     }
-    // `big/`, in hand, is highlighted by its header row and border: what is inside stays drawn.
+    // `big/` is in hand, but the list has the keyboard: the tile is only marked out, as the
+    // row is, with no bar. On the treemap it is, in its header row and border, what is inside
+    // it drawn as it is.
+    let header = |screen: &str| {
+        screen
+            .lines()
+            .find(|line| line.contains("big/ (+"))
+            .expect("drawn")
+            .to_string()
+    };
+    assert!(!header(&screen).contains('█'), "no bar:\n{screen}");
+    app.switch_focus();
+    app.render();
+    let screen = app.display.screen_text().join("\n");
     let line = |name: &str| {
         screen
             .lines()
@@ -1811,7 +1824,7 @@ fn folders_show_their_entries_nested_inside_them() {
 }
 
 #[test]
-fn the_small_files_corner_is_a_plain_box_named_where_it_fits() {
+fn the_small_files_corner_is_a_plain_box_marked_with_a_square() {
     let dir = temp_app_dir("small_files_box");
     fs::write(dir.join("big.bin"), vec![b'x'; 400_000]).expect("write");
     for index in 0..40 {
@@ -1824,7 +1837,8 @@ fn the_small_files_corner_is_a_plain_box_named_where_it_fits() {
         app.board.unrenderable_tile_coordinates.is_some(),
         "a corner:\n{screen}"
     );
-    assert!(screen.contains("small files"), "named:\n{screen}");
+    assert!(screen.contains('□'), "marked:\n{screen}");
+    assert!(!screen.contains("small files"), "not named:\n{screen}");
     assert!(
         !screen.contains("(x = Small files)"),
         "no legend for an x:\n{screen}"

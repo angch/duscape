@@ -400,23 +400,11 @@ impl Widget for SidePanel<'_> {
             let marked = self.marked.contains(&entry.name);
             let cursor = Some(index) == self.selected;
             // No dark gray anywhere: on a black background it is close to unreadable.
-            let style = if marked {
-                let marked = Style::default().fg(Color::Black).bg(Color::Yellow);
-                if cursor {
-                    marked.add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-                } else {
-                    marked
-                }
-            } else if cursor && self.focused {
-                // Black on the light cursor bar: magenta on it is hard to read.
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Gray)
-                    .add_modifier(Modifier::BOLD)
-            } else if cursor {
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+            // The treemap's rule too (`highlight`), so the row and its tile look alike.
+            let style = if let Some(style) =
+                crate::ui::highlight::highlight(entry.file_type, cursor, marked, self.focused)
+            {
+                style
             } else if !on_board {
                 // Listed but without a tile: a quieter colour than a real tile's, still legible.
                 Style::default().fg(Color::Gray)
@@ -719,7 +707,7 @@ mod tests {
         assert_ne!(background(false), Color::Gray);
     }
 
-    /// Marked rows stand out in black on yellow and the cursor is black on light gray. Nothing is
+    /// Marked rows stand out in black on yellow and a folder's cursor is white on blue. Nothing is
     /// drawn in dark gray, close to unreadable on black, or magenta, hard to read on light gray.
     #[test]
     fn marked_rows_stand_out_and_nothing_is_dark_gray() {
@@ -741,11 +729,12 @@ mod tests {
             .render(area, &mut buf);
         let cell = &buf[(10, HEADER_ROWS + 2)];
         assert_eq!((cell.fg, cell.bg), (Color::Black, Color::Yellow));
+        // The treemap's colours (`highlight`): a folder's bar white on blue.
         let cursor = &buf[(10, HEADER_ROWS)];
         assert_eq!(
             (cursor.fg, cursor.bg),
-            (Color::Black, Color::Gray),
-            "cursor bar"
+            (Color::White, Color::Blue),
+            "a folder's cursor bar"
         );
         for y in 0..area.height {
             for x in 0..area.width {
