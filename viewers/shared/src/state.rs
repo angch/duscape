@@ -584,6 +584,9 @@ impl Viewer {
             return;
         }
         self.pixel_scale = Some(scale);
+        // The board is laid out again in the new cells: not with a slide's tiles in it.
+        self.end_tween();
+        self.plans.clear();
         let grid = Grid::pixels(MIN_TILE_PIXELS);
         self.board.set_grid(grid);
         self.nesting = Nesting {
@@ -1532,7 +1535,16 @@ impl Viewer {
         self.tree.current_folder_names.len()
     }
 
+    /// Before the board is laid out again for a zoom: a slide under way is ended, or it would
+    /// put the new tiles where the old ones were going, and the nesting's rows forgotten, since
+    /// every folder's tile changes shape.
+    fn before_zoom(&mut self) {
+        self.end_tween();
+        self.plans.clear();
+    }
+
     pub fn zoom_in(&mut self) {
+        self.before_zoom();
         let started = Instant::now();
         self.board.zoom_in(self.tree.get_current_folder());
         self.rebuild_nested(started);
@@ -1540,6 +1552,7 @@ impl Viewer {
     }
 
     pub fn zoom_out(&mut self) {
+        self.before_zoom();
         let started = Instant::now();
         self.board.zoom_out(self.tree.get_current_folder());
         self.rebuild_nested(started);
@@ -1547,6 +1560,7 @@ impl Viewer {
     }
 
     pub fn reset_zoom(&mut self) {
+        self.before_zoom();
         let started = Instant::now();
         self.board.reset_zoom(self.tree.get_current_folder());
         self.rebuild_nested(started);

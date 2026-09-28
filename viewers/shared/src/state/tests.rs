@@ -1458,3 +1458,36 @@ fn tiles_slide_to_a_new_layout_and_end_exactly_there() {
     };
     assert_eq!(places(&sliding), places(&still));
 }
+
+#[test]
+fn a_zoom_during_a_slide_lays_the_tiles_out_where_the_zoom_puts_them() {
+    let mut sliding = viewer();
+    sliding.set_tree_view(true);
+    sliding.set_animation(true);
+    sliding.finish_scan(tree_with(100));
+    assert!(sliding.animating());
+    sliding.zoom_in();
+    let mut still = viewer();
+    still.set_tree_view(true);
+    still.finish_scan(tree_with(100));
+    still.zoom_in();
+    let start = Instant::now();
+    sliding.animate(start + TWEEN * 2);
+    let board = |viewer: &Viewer| -> Vec<_> {
+        viewer
+            .board
+            .tiles
+            .iter()
+            .map(|t| (t.name.clone(), t.x, t.y, t.width, t.height))
+            .collect()
+    };
+    assert_eq!(board(&sliding), board(&still));
+    let nested = |viewer: &Viewer| -> Vec<_> {
+        viewer
+            .nested()
+            .iter()
+            .map(|n| (n.tile.name.clone(), n.tile.x, n.tile.y, n.inside))
+            .collect()
+    };
+    assert_eq!(nested(&sliding), nested(&still));
+}

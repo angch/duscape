@@ -522,23 +522,35 @@ thread_local! {
     static VIEW: OnceCell<Retained<DiskView>> = const { OnceCell::new() };
 }
 
-/// Whether the frame thread is running, and whether a frame is waiting on the main queue.
+/// Whether frames are wanted, whether the frame thread is alive, and whether a frame is waiting
+/// on the main queue.
 static FRAMES: AtomicBool = AtomicBool::new(false);
+static FRAME_THREAD: AtomicBool = AtomicBool::new(false);
 static FRAME_QUEUED: AtomicBool = AtomicBool::new(false);
 
-/// A frame every 16 ms while the tiles slide: a thread of its own sleeps between them, and no
-/// more than one waits on the main queue.
+/// A frame every 16 ms while the tiles slide: one thread of its own sleeps between them, and no
+/// more than one frame waits on the main queue. Frames wanted again while the thread is on its
+/// way out keep it going rather than start a second one.
 fn start_frames() {
-    if FRAMES.swap(true, Ordering::AcqRel) {
+    FRAMES.store(true, Ordering::Release);
+    if FRAME_THREAD.swap(true, Ordering::AcqRel) {
         return;
     }
     let _ = ::std::thread::Builder::new()
         .name("frames".to_string())
         .spawn(|| {
-            while FRAMES.load(Ordering::Acquire) {
-                ::std::thread::sleep(::std::time::Duration::from_millis(16));
-                if !FRAME_QUEUED.swap(true, Ordering::AcqRel) {
-                    on_main(|view| view.frame());
+            loop {
+                while FRAMES.load(Ordering::Acquire) {
+                    ::std::thread::sleep(::std::time::Duration::from_millis(16));
+                    if !FRAME_QUEUED.swap(true, Ordering::AcqRel) {
+                        on_main(|view| view.frame());
+                    }
+                }
+                FRAME_THREAD.store(false, Ordering::Release);
+                // Wanted again between the last look and leaving: stay, unless another thread
+                // has started meanwhile.
+                if !FRAMES.load(Ordering::Acquire) || FRAME_THREAD.swap(true, Ordering::AcqRel) {
+                    break;
                 }
             }
         });
@@ -770,7 +782,8 @@ impl DiskView {
         viewer.sidebar = sidebar;
         viewer.set_tree_view(true);
         // Tiles slide to each new layout (`DUSCAPE_ANIMATE`, off by default); the steady
-        // layout keeps them in their rows as sizes change (`DUSCAPE_NO_STEADY` turns it off).
+        // layout keeps them in their rows as sizes change (`DUSCAPE_NO_STEADY` turns it off,
+        // for comparing).
         viewer.set_animation(::std::env::var_os("DUSCAPE_ANIMATE").is_some());
         viewer.set_steady(::std::env::var_os("DUSCAPE_NO_STEADY").is_none());
         // The treemap in the screen's pixels: every entry big enough to see gets a tile.
