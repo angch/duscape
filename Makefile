@@ -96,8 +96,9 @@ mac-universal:
 	lipo -create -output target/universal/duscape target/aarch64-apple-darwin/release/duscape target/x86_64-apple-darwin/release/duscape
 
 mac-app: mac-universal
-	mkdir -p $(MAC_APP)/Contents/MacOS
+	mkdir -p $(MAC_APP)/Contents/MacOS $(MAC_APP)/Contents/Resources
 	cp target/universal/duscape $(MAC_APP)/Contents/MacOS/duscape
+	cp viewers/macos/duscape.icns $(MAC_APP)/Contents/Resources/duscape.icns
 	sed 's/@VERSION@/$(VERSION)/g' viewers/macos/Info.plist > $(MAC_APP)/Contents/Info.plist
 	codesign --force --sign - $(MAC_APP)
 

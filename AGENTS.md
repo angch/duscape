@@ -391,7 +391,9 @@ shared `Viewer`, not in `win/`:
   `.ico` holds its best-compressed images). A placeholder until a drawn one. Windows sets
   it on the class and with `WM_SETICON` (`win::app_icon`, at `SM_CXICON`/`SM_CXSMICON`), and
   the `.exe`s carry it as a resource (`viewers/windows/resources.rs`); X11 as `_NET_WM_ICON`
-  (16–128 px); macOS as the application icon image (Dock, switcher). Not Wayland, which takes
+  (16–128 px); macOS as the application icon image (Dock, switcher), set once launching is done, and
+  `Duscape.app`'s file icon, `viewers/macos/duscape.icns` (`icns`, checked in and tested like the
+  `.ico`; `make mac-app` copies it, `Info.plist` names it). Not Wayland, which takes
   an icon from a `.desktop` file
 - `passes.rs` — a layout's paints, first in a hurry and then in full, for every viewer:
   `LABEL_DEADLINE` and `LabelBudget` (which tiles a paint has time to label), `Paints` (which

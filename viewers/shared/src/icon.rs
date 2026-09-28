@@ -203,9 +203,77 @@ pub fn ico(images: &[(u32, Vec<u8>)]) -> Vec<u8> {
     out
 }
 
+/// The images the macOS icon file holds: (type, size in pixels) — each point size at 1x and
+/// 2x, 16 to 512 points, what Finder, the Dock and Launchpad pick from.
+pub const ICNS_TYPES: [(&[u8; 4], u32); 10] = [
+    (b"icp4", 16),
+    (b"ic11", 32),
+    (b"icp5", 32),
+    (b"ic12", 64),
+    (b"ic07", 128),
+    (b"ic13", 256),
+    (b"ic08", 256),
+    (b"ic14", 512),
+    (b"ic09", 512),
+    (b"ic10", 1024),
+];
+
+/// A `.icns` file of `images`: (type, PNG bytes) each, as [`ICNS_TYPES`] names them. Every type
+/// there holds a PNG (from OS X 10.7), each after its type and length, big-endian, the lengths
+/// counting their own eight bytes.
+#[must_use]
+pub fn icns(images: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
+    let length: usize = 8 + images.iter().map(|(_, png)| 8 + png.len()).sum::<usize>();
+    let mut out = Vec::with_capacity(length);
+    out.extend_from_slice(b"icns");
+    out.extend_from_slice(&(length as u32).to_be_bytes());
+    for (kind, png) in images {
+        out.extend_from_slice(*kind);
+        out.extend_from_slice(&((8 + png.len()) as u32).to_be_bytes());
+        out.extend_from_slice(png);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ICO_SIZES, encode, ico, png, rgba};
+    use super::{ICNS_TYPES, ICO_SIZES, encode, icns, ico, png, rgba};
+
+    /// `viewers/macos/duscape.icns`, which `Duscape.app` carries as its icon (`make mac-app`), is
+    /// this module's drawing, as the Windows file is. `DUSCAPE_WRITE_ICON=1` writes it.
+    #[test]
+    fn the_icns_file_is_the_one_drawn() {
+        let best = image::codecs::png::CompressionType::Best;
+        let images: Vec<(&[u8; 4], Vec<u8>)> = ICNS_TYPES
+            .iter()
+            .map(|&(kind, size)| (kind, encode(size, best)))
+            .collect();
+        let drawn = icns(&images);
+        let path = ::std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../macos/duscape.icns");
+        if ::std::env::var_os("DUSCAPE_WRITE_ICON").is_some() {
+            ::std::fs::write(&path, &drawn).expect("writing the icon file");
+        }
+        let committed = ::std::fs::read(&path).unwrap_or_default();
+        assert!(
+            committed == drawn,
+            "{} is not the icon drawn: DUSCAPE_WRITE_ICON=1 cargo test -p duscape-viewer \
+             the_icns_file_is_the_one_drawn writes it",
+            path.display()
+        );
+        // The header's length is the file's, and every image's length leads to the next.
+        assert_eq!(&drawn[..4], b"icns");
+        assert_eq!(
+            u32::from_be_bytes(drawn[4..8].try_into().unwrap()) as usize,
+            drawn.len()
+        );
+        let mut at = 8;
+        for (kind, _) in ICNS_TYPES {
+            assert_eq!(&drawn[at..at + 4], kind);
+            assert_eq!(&drawn[at + 8..at + 12], b"\x89PNG");
+            at += u32::from_be_bytes(drawn[at + 4..at + 8].try_into().unwrap()) as usize;
+        }
+        assert_eq!(at, drawn.len());
+    }
 
     /// `viewers/windows/duscape.ico`, which the Windows binaries carry as their own icon (their
     /// build scripts pack it as a resource), is this module's drawing: the test fails when the

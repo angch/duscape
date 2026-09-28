@@ -82,6 +82,14 @@ define_class!(
             let mtm = self.mtm();
             let app = NSApplication::sharedApplication(mtm);
             app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+            // The app's icon, a treemap, in the Dock and the app switcher while it runs: set
+            // once launching is done, which puts the bundle's (or a bare binary's blank one)
+            // over any set before. `Duscape.app` carries the same picture as its file icon.
+            let icon = NSData::with_bytes(&duscape_viewer::icon::png(512));
+            if let Some(image) = NSImage::initWithData(NSImage::alloc(), &icon) {
+                // SAFETY: an image the app keeps for as long as it runs, set on the main thread.
+                unsafe { app.setApplicationIconImage(Some(&image)) };
+            }
             // Needed when started from a terminal rather than from Finder.
             #[allow(deprecated)]
             app.activateIgnoringOtherApps(true);
@@ -134,12 +142,6 @@ pub fn run_with(folder: Option<PathBuf>, scan_options: ScanOptions) {
     appkit::load();
     let mtm = MainThreadMarker::new().expect("AppKit runs on the main thread");
     let app = NSApplication::sharedApplication(mtm);
-    // The app's icon, a treemap, in the Dock and the app switcher while it runs.
-    let icon = NSData::with_bytes(&duscape_viewer::icon::png(512));
-    if let Some(image) = NSImage::initWithData(NSImage::alloc(), &icon) {
-        // SAFETY: an image the app keeps for as long as it runs, set on the main thread.
-        unsafe { app.setApplicationIconImage(Some(&image)) };
-    }
     let delegate = Delegate::new(mtm);
     app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
     app.setMainMenu(Some(&menu_bar(mtm, &app)));

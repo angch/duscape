@@ -10,6 +10,8 @@
     <string>io.github.angch.duscape</string>
     <key>CFBundleName</key>
     <string>Duscape</string>
+    <key>CFBundleIconFile</key>
+    <string>duscape</string>
     <key>CFBundleDisplayName</key>
     <string>Duscape</string>
     <key>CFBundlePackageType</key>
