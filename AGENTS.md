@@ -397,8 +397,10 @@ shared `Viewer`, not in `win/`:
   listing and the flat tiles
 - `state/tween.rs` — tiles sliding (`TWEEN`, 200 ms, keyed by path) from one steady layout to
   the next: `set_animation` turns it on, and a viewer that does calls `animate` once a frame
-  while `animating`. Off by default; only the macOS window drives it (`DUSCAPE_ANIMATE=1`,
-  labels while sliding with `DUSCAPE_SLIDE_LABELS=1`). Folders are painted whole while sliding
+  while `animating`. Off by default; only the macOS window drives it (`DUSCAPE_ANIMATE=1`).
+  Tiles keep their labels while they slide — without them the motion is unreadable, and during
+  a scan the tiles slide nearly all the time — so a viewer that drives it draws labels as when
+  still (10.9 ms a sliding frame on `~` on macOS). Folders are painted whole while sliding
   (their insides taken off) and the second pass snaps the slide to its end, which is why the
   Windows and Linux windows, whose second pass runs after `IDLE`, do not drive it yet
 - `icon.rs` — the app's icon, drawn by the treemap: a folder of three files beside five more,
