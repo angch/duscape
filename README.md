@@ -24,8 +24,9 @@ reasoning. The native windows came after, sharing everything but their drawing.
 
 - **Live scanning** — the treemap updates while the walk is still running
 - **A list beside the treemap** — the folder's entries, largest first, each with its size and
-  share; in the windows it is a tree, folders opening in place (as WizTree's), and the treemap
-  is nested, each folder's tile holding its entries' tiles down to the files
+  share; in the windows it is a tree, folders opening in place (as WizTree's)
+- **A nested treemap** — each folder's tile holds its entries' tiles down to the files wherever
+  there is room, in the terminal as in the windows
 - **Previews** — the file in hand's text or picture under the list (in a terminal: kitty
   graphics, sixels or half blocks); a binary file described, and in the windows shown as a hex
   dump

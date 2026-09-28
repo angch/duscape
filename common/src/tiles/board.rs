@@ -19,6 +19,9 @@ pub struct Board {
     kind: SizeKind,
     /// The cells the area is in; see [`Self::set_grid`].
     grid: Grid,
+    /// Counts the layouts: what a viewer keeps derived from the tiles (a nesting) is stale
+    /// when it has moved on.
+    generation: u64,
 }
 
 impl Board {
@@ -35,6 +38,7 @@ impl Board {
             zoom_level: 0,
             area: Area::default(),
             grid: Grid::TERMINAL,
+            generation: 0,
         }
     }
     /// Lay the tiles out in `grid`'s cells: a terminal's (the default), or a window's pixels.
@@ -118,7 +122,13 @@ impl Board {
             self.fill();
         }
     }
+    /// Which layout the tiles are: it changes with every one.
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
     fn fill(&mut self) {
+        self.generation += 1;
         let mut tree_map = TreeMap::with_grid(&self.area, self.grid);
         tree_map.populate_tiles(self.files.iter().collect());
         self.tiles = tree_map.tiles;

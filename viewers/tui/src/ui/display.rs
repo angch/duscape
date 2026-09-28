@@ -7,7 +7,7 @@ use ::std::path::PathBuf;
 use ::std::time::Duration;
 
 use libduscape::FileTree;
-use libduscape::tiles::{Area, Board, FileMetadata};
+use libduscape::tiles::{Area, Board, FileMetadata, Grid, Nested, Nesting, nest_with};
 
 use crate::UiMode;
 use crate::config::Keybinds;
@@ -139,6 +139,47 @@ where
     terminal: Terminal<B>,
     /// The terminal's cell size in pixels, from the last frame; it sizes the 16:9 preview.
     cell_pixels: (u16, u16),
+    /// The treemap nested inside the board's folder tiles, and the board's layout it was
+    /// made for: laid out again only when the board is, not on every frame.
+    nested: Option<(u64, Nested)>,
+}
+
+/// The nesting in character cells: a folder's name on the row under its top border, and its
+/// entries' tiles from the row after, their borders on the folder's own (no margin), so a
+/// folder reads as a box split into its entries.
+const NESTING: Nesting = Nesting {
+    max_depth: 64,
+    label_rows: 2,
+    margin: 0,
+    max_tiles: 100_000,
+    grid: Grid::TERMINAL,
+    dust: false,
+    deadline: None,
+    dust_deadline: None,
+    room_cap: usize::MAX,
+};
+
+/// The nesting for `board`'s tiles of `file_tree`'s current folder, from `cache` while the
+/// board's layout is the one it was made for.
+fn nesting<'a>(
+    cache: &'a mut Option<(u64, Nested)>,
+    file_tree: &FileTree,
+    board: &Board,
+) -> &'a Nested {
+    if cache
+        .as_ref()
+        .is_none_or(|(generation, _)| *generation != board.generation())
+    {
+        let nested = nest_with(
+            file_tree.get_current_folder(),
+            &board.tiles,
+            file_tree.shown,
+            &NESTING,
+            &mut |_| {},
+        );
+        *cache = Some((board.generation(), nested));
+    }
+    &cache.as_ref().expect("filled above").1
 }
 
 impl<B> Display<B>
@@ -152,6 +193,7 @@ where
         Display {
             terminal,
             cell_pixels: DEFAULT_CELL_PIXELS,
+            nested: None,
         }
     }
     /// The cell size in pixels, as the system reports it, else as the terminal said when asked,
@@ -208,6 +250,7 @@ where
         let clipboard_flash = ui_effects.clipboard_flash_at(::std::time::Instant::now());
         self.cell_pixels = self.measure_cell_pixels();
         let cell_pixels = self.cell_pixels;
+        let cache = &mut self.nested;
         self.terminal
             .draw(|f| {
                 let full_screen = f.area();
@@ -258,13 +301,15 @@ where
                     title = title.zoom_level(board.zoom_level);
                 }
                 f.render_widget(title, areas.title);
+                let nested = nesting(cache, file_tree, board);
                 f.render_widget(
                     RectangleGrid::new(
                         &board.tiles,
                         board.unrenderable_tile_coordinates,
                         board.selected_index,
                     )
-                    .marked(&panel_state.marked),
+                    .marked(&panel_state.marked)
+                    .nested(nested),
                     areas.grid,
                 );
                 let mut bottom = BottomLine::new(keybinds, ui_effects)

@@ -203,7 +203,9 @@ out and painting.
   first pass, and `nest_with` says whether either cut. What a folder's entries cover — its
   inside less its corner — is kept as its `Inside` (`NestedTile::inside`, `Nested::tops`,
   `Viewer::board_inside`), so painters fill a folder only around it (`Layout::fill_parts`, the
-  parts to fill in points, one helper for every painter). A `NestedTile` knows its
+  parts to fill in points, one helper for every painter). The terminal nests too (`ui/display.rs`'s `NESTING`:
+  two label rows, no margin, so an entry's borders are its folder's; laid out again only when
+  `Board::generation` moves, not every frame), drawn by `RectangleGrid::nested` A `NestedTile` knows its
   `parent` and `top` by index, not its path (`nested_path`, `nested_path_is`): paths cloned
   per tile were half the nesting's time
 - `delete.rs` — `remove` (from disk, a link itself never its target) and `refused` (NTFS metadata)

@@ -179,6 +179,32 @@ pub fn draw_filled_rect(buf: &mut Buffer, fill_style: Style, rect: &Rect) {
     }
 }
 
+/// A folder whose entries are drawn inside it: its name, and its size where there is room,
+/// on the row under its top border, which its entries' tiles start below.
+pub fn draw_folder_header_on_grid(buf: &mut Buffer, tile: &Tile, selected: bool, marked: bool) {
+    let (background_style, first_line_style, second_line_style) =
+        tile_style(tile, selected, marked);
+    if let Some(background_style) = background_style {
+        // The whole folder, so its entries are drawn over its colour: the selection reads as
+        // the folder and everything in it.
+        for x in tile.x + 1..tile.x + tile.width {
+            for y in tile.y + 1..tile.y + tile.height {
+                buf[(x, y)].set_symbol("█").set_style(background_style);
+            }
+        }
+    }
+    let room = usize::from(tile.width.saturating_sub(2));
+    let name = tile_first_line(tile);
+    let size = tile_second_line(tile);
+    let (name_width, size_width) = (name.width(), size.width());
+    let y = tile.y + 1;
+    buf.set_string(tile.x + 1, y, &name, first_line_style);
+    if name_width + 2 + size_width <= room {
+        let x = tile.x + 1 + (room - size_width) as u16;
+        buf.set_string(x, y, &size, second_line_style);
+    }
+}
+
 pub fn draw_tile_text_on_grid(buf: &mut Buffer, tile: &Tile, selected: bool, marked: bool) {
     let first_line = tile_first_line(tile);
     let first_line_length = first_line.width() as u16;

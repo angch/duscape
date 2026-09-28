@@ -1754,3 +1754,35 @@ fn a_toggles_between_apparent_and_on_disk_sizes_without_a_scan() {
     assert_eq!(app.file_tree.get_total_size(), (4 << 20) + 10_000);
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// `big/` holding `inner/` (two files) and a file, beside `other.bin`: enough room for the
+/// nesting in a 120×40 terminal.
+fn nested_dir(name: &str) -> PathBuf {
+    let dir = temp_app_dir(name);
+    let inner = dir.join("big").join("inner");
+    fs::create_dir_all(&inner).expect("create inner");
+    fs::write(inner.join("alpha.dat"), vec![b'x'; 40_000]).expect("write");
+    fs::write(inner.join("beta.dat"), vec![b'x'; 30_000]).expect("write");
+    fs::write(dir.join("big").join("gamma.dat"), vec![b'x'; 50_000]).expect("write");
+    fs::write(dir.join("other.bin"), vec![b'x'; 60_000]).expect("write");
+    dir
+}
+
+#[test]
+fn folders_show_their_entries_nested_inside_them() {
+    let dir = nested_dir("nested");
+    let mut app = app_with_scanned_dir(&dir, 120, 40);
+    app.render();
+    let screen = app.display.screen_text().join("\n");
+    for name in [
+        "big/",
+        "inner/",
+        "alpha.dat",
+        "beta.dat",
+        "gamma.dat",
+        "other.bin",
+    ] {
+        assert!(screen.contains(name), "{name} is drawn:\n{screen}");
+    }
+    let _ = fs::remove_dir_all(&dir);
+}

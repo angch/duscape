@@ -4,8 +4,8 @@ use ::ratatui::style::{Color, Style};
 use ::ratatui::widgets::Widget;
 use ::std::ffi::OsString;
 
-use crate::ui::grid::{draw_rect_on_grid, draw_tile_text_on_grid};
-use libduscape::tiles::Tile;
+use crate::ui::grid::{draw_folder_header_on_grid, draw_rect_on_grid, draw_tile_text_on_grid};
+use libduscape::tiles::{Area, Nested, Tile};
 
 fn draw_small_files_rect_on_grid(buf: &mut Buffer, rect: Rect) {
     for x in rect.x + 1..(rect.x + rect.width) {
@@ -50,6 +50,46 @@ fn fits(buf: &Buffer, tile: &Tile) -> bool {
         && u32::from(tile.y) + u32::from(tile.height) < u32::from(area.y) + u32::from(area.height)
 }
 
+/// The nesting, parents before children so each is drawn over its folder; then each folder's
+/// own "small files" corner, as the board's is drawn.
+fn draw_nested(buf: &mut Buffer, nested: &Nested) {
+    for tile in &nested.tiles {
+        if !fits(buf, &tile.tile) {
+            continue;
+        }
+        if tile.inside.is_some() {
+            draw_folder_header_on_grid(buf, &tile.tile, false, false);
+        } else {
+            draw_tile_text_on_grid(buf, &tile.tile, false, false);
+        }
+        let t = &tile.tile;
+        draw_rect_on_grid(buf, (t.x, t.y), (t.width, t.height));
+    }
+    let insides = nested.tops.iter().flatten();
+    for inside in insides.chain(nested.tiles.iter().filter_map(|tile| tile.inside.as_ref())) {
+        let Area {
+            x,
+            y,
+            width,
+            height,
+        } = inside.corner;
+        let corner = Rect {
+            x,
+            y,
+            width,
+            height,
+        };
+        let area = buf.area();
+        if width > 0
+            && height > 0
+            && x + width < area.x + area.width
+            && y + height < area.y + area.height
+        {
+            draw_small_files_rect_on_grid(buf, corner);
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct RectangleGrid<'a> {
     rectangles: &'a [Tile],
@@ -57,6 +97,8 @@ pub struct RectangleGrid<'a> {
     selected_rect_index: Option<usize>,
     /// Names of the entries in a multi-selection, drawn marked.
     marked: &'a [OsString],
+    /// The tiles inside the folder tiles, drawn in them.
+    nested: Option<&'a Nested>,
 }
 
 impl<'a> RectangleGrid<'a> {
@@ -70,7 +112,13 @@ impl<'a> RectangleGrid<'a> {
             small_files_coordinates,
             selected_rect_index,
             marked: &[],
+            nested: None,
         }
+    }
+    /// Draw `nested`, the nesting of these tiles, inside them.
+    pub fn nested(mut self, nested: &'a Nested) -> Self {
+        self.nested = Some(nested);
+        self
     }
     pub fn marked(mut self, marked: &'a [OsString]) -> Self {
         self.marked = marked;
@@ -98,8 +146,18 @@ impl<'a> Widget for RectangleGrid<'a> {
                     false
                 };
                 let marked = self.marked.contains(&tile.name);
-                draw_tile_text_on_grid(buf, tile, selected, marked);
+                let holds = self
+                    .nested
+                    .is_some_and(|nested| nested.tops.get(index).is_some_and(Option::is_some));
+                if holds {
+                    draw_folder_header_on_grid(buf, tile, selected, marked);
+                } else {
+                    draw_tile_text_on_grid(buf, tile, selected, marked);
+                }
                 draw_rect_on_grid(buf, (tile.x, tile.y), (tile.width, tile.height));
+            }
+            if let Some(nested) = self.nested {
+                draw_nested(buf, nested);
             }
         }
         if let Some(coords) = self.small_files_coordinates {
