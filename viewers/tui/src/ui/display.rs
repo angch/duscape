@@ -147,7 +147,7 @@ where
 /// The nesting in character cells: a folder's name on the row under its top border, and its
 /// entries' tiles from the row after as a block of their own inside the folder's border (a
 /// margin of one cell), so each level reads as a box within a box.
-const NESTING: Nesting = Nesting {
+pub(crate) const NESTING: Nesting = Nesting {
     max_depth: 64,
     label_rows: 2,
     margin: 1,
@@ -309,7 +309,7 @@ where
                         board.selected_index,
                     )
                     .marked(&panel_state.marked)
-                    .nested(nested),
+                    .nested(nested, &NESTING),
                     areas.grid,
                 );
                 let mut bottom = BottomLine::new(keybinds, ui_effects)

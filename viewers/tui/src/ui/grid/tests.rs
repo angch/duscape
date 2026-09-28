@@ -97,3 +97,43 @@ fn a_highlighted_folder_is_framed_in_its_colour_and_its_inside_left_alone() {
     super::frame_on_grid(&mut buf, &marked, false, true);
     assert_eq!(buf[(0, 0)].fg, Color::Yellow, "a mark frames in yellow");
 }
+
+#[test]
+fn a_folder_too_short_for_its_header_leaves_no_colour_on_its_entries_borders() {
+    use ::std::path::Path;
+    use libduscape::Folder;
+    use libduscape::model::SizeKind;
+    use libduscape::tiles::nest_with;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::widgets::Widget;
+
+    let mut root = Folder::new(Path::new("/tmp/example"));
+    root.add_file("short/a".into(), 600);
+    root.add_file("short/b".into(), 400);
+    // Tall enough to hold its entries under its border, too short for the header row above.
+    let tile = Tile {
+        height: 8,
+        width: 40,
+        name: OsString::from("short"),
+        ..sample_tile(FileType::Folder, 40)
+    };
+    let nesting = crate::ui::display::NESTING;
+    assert!(!nesting.labelled(&tile));
+    let tiles = [tile];
+    let nested = nest_with(&root, &tiles, SizeKind::Disk, &nesting, &mut |_| {});
+    assert!(nested.tops[0].is_some(), "its entries are nested");
+    let mut buf = Buffer::empty(Rect::new(0, 0, 50, 12));
+    super::RectangleGrid::new(&tiles, None, None)
+        .nested(&nested, &nesting)
+        .render(Rect::new(0, 0, 50, 12), &mut buf);
+    for y in 0..12 {
+        for x in 0..50 {
+            let cell = &buf[(x, y)];
+            assert!(
+                !("─│┌┐└┘├┤┬┴┼".contains(cell.symbol()) && cell.fg == Color::Blue),
+                "a border at {x},{y} took a header's blue"
+            );
+        }
+    }
+}
