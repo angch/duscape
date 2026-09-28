@@ -407,20 +407,12 @@ fn rows(viewer: &Viewer, list: Rect, key_window: bool, pens: &Pens) {
     let emphasised = key_window && viewer.focus() == Focus::List;
     let cursor = viewer.cursor_row();
     let top = viewer.list_top.min(rows.len());
-    // A top-level row's colour follows its place in the listing, as its tile's does.
-    let mut listed = rows[..top].iter().filter(|row| row.depth == 0).count();
     let visible = rows
         .iter()
         .enumerate()
         .skip(top)
         .take(viewer.layout.list_rows());
     for (shown, (index, row)) in visible.enumerate() {
-        let color_index = if row.depth == 0 {
-            listed += 1;
-            listed - 1
-        } else {
-            index
-        };
         let rect = Rect::new(list.x, list.y + shown as f64 * ROW, list.w, ROW);
         let in_hand = cursor == Some(index);
         let pill = rect.inset(5.0, 1.0);
@@ -444,12 +436,12 @@ fn rows(viewer: &Viewer, list: Rect, key_window: bool, pens: &Pens) {
                 &NSColor::labelColor().colorWithAlphaComponent(0.06),
             );
         }
-        row_words(pens, row, rect, color_index, in_hand && emphasised);
+        row_words(pens, row, rect, in_hand && emphasised);
     }
 }
 
 /// A row's expander, swatch, name and size.
-fn row_words(pens: &Pens, row: &Row, rect: Rect, color_index: usize, selected: bool) {
+fn row_words(pens: &Pens, row: &Row, rect: Rect, selected: bool) {
     const SIZE_W: f64 = 70.0;
     let entry = &row.entry;
     let is_dir = entry.file_type == FileType::Folder;
@@ -469,7 +461,7 @@ fn row_words(pens: &Pens, row: &Row, rect: Rect, color_index: usize, selected: b
     let swatch_x = indent + EXPANDER + 1.0;
     let name_x = swatch_x + 15.0;
     let right = rect.right() - 13.0;
-    let color = tile_color(&entry.name, entry.file_type, color_index);
+    let color = tile_color(&entry.name, entry.file_type);
     // Its share of its parent, as a bar under the name.
     let bar_w = (right - name_x).max(0.0) * entry.percentage.clamp(0.0, 1.0);
     fill(

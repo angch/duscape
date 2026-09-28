@@ -257,13 +257,13 @@ impl SpeckColors {
     fn dust(&mut self, speck: &Speck) -> Dust {
         let entry = speck.entry;
         let color = if entry.file_type == FileType::Folder {
-            entry_color(entry.name, entry.file_type, speck.rank, speck.depth)
+            entry_color(entry.name, entry.file_type, speck.depth)
         } else {
             let extension = Path::new(entry.name).extension().unwrap_or_default();
             let base = match self.by_extension.get(extension) {
                 Some(&color) => color,
                 None => {
-                    let color = tile_color(entry.name, entry.file_type, 0);
+                    let color = tile_color(entry.name, entry.file_type);
                     self.by_extension.insert(extension.to_os_string(), color);
                     color
                 }
@@ -746,24 +746,19 @@ impl Viewer {
         &self.dust
     }
 
-    /// The colour of the board's tile at `index`, for every painter alike: by its place in the
-    /// folder, the zoom counted, so a folder's tile and its swatch in the list agree.
+    /// The colour of the board's tile at `index`, for every painter alike: by its name, as its
+    /// swatch in the list is, so the two agree and neither changes as the listing re-sorts.
     #[must_use]
     pub fn board_color(&self, index: usize) -> (f64, f64, f64) {
         let tile = &self.board.tiles[index];
-        entry_color(&tile.name, tile.file_type, index + self.board.zoom_level, 0)
+        entry_color(&tile.name, tile.file_type, 0)
     }
 
     /// The colour of the nested tile at `index`: a step darker a level in ([`depth_shade`]).
     #[must_use]
     pub fn nested_color(&self, index: usize) -> (f64, f64, f64) {
         let nested = &self.nested[index];
-        entry_color(
-            &nested.tile.name,
-            nested.tile.file_type,
-            index,
-            nested.depth,
-        )
+        entry_color(&nested.tile.name, nested.tile.file_type, nested.depth)
     }
 
     /// What the nested entries of the board's tile at `index` cover, if any were laid out in it:
@@ -1979,29 +1974,19 @@ pub fn depth_shade(depth: usize) -> f64 {
 }
 
 /// The colour of an entry's tile — or its speck — `depth` levels into the nesting (0 the
-/// board's), `index` its place: [`tile_color`], [`depth_shade`] darker.
+/// board's): [`tile_color`], [`depth_shade`] darker.
 #[must_use]
-pub fn entry_color(
-    name: &OsStr,
-    file_type: FileType,
-    index: usize,
-    depth: usize,
-) -> (f64, f64, f64) {
-    darker(tile_color(name, file_type, index), depth_shade(depth))
+pub fn entry_color(name: &OsStr, file_type: FileType, depth: usize) -> (f64, f64, f64) {
+    darker(tile_color(name, file_type), depth_shade(depth))
 }
 
 /// A tile's colour, as sRGB components: folders in blues, files by their extension — so files
 /// of a kind share a colour, from one listing to the next — in muted tones that white text
-/// reads on.
-pub fn tile_color(name: &OsStr, file_type: FileType, index: usize) -> (f64, f64, f64) {
+/// reads on. Only the name decides it, never the entry's place: a scan re-sorts the listing
+/// with every batch, and a colour by rank changed under the pointer as it did.
+pub fn tile_color(name: &OsStr, file_type: FileType) -> (f64, f64, f64) {
     if file_type == FileType::Folder {
-        const FOLDERS: [(f64, f64, f64); 4] = [
-            (0.22, 0.42, 0.68),
-            (0.25, 0.48, 0.76),
-            (0.18, 0.36, 0.58),
-            (0.29, 0.53, 0.80),
-        ];
-        return FOLDERS[index % FOLDERS.len()];
+        return folder_color(fnv(name.as_encoded_bytes()));
     }
     let extension = Path::new(name)
         .extension()
@@ -2009,18 +1994,31 @@ pub fn tile_color(name: &OsStr, file_type: FileType, index: usize) -> (f64, f64,
     let Some(extension) = extension else {
         return (0.45, 0.45, 0.47);
     };
-    // FNV-1a: stable across runs and platforms, unlike the std hasher.
-    let hash = extension
-        .as_encoded_bytes()
-        .iter()
-        .fold(0xcbf2_9ce4_8422_2325_u64, |hash, &byte| {
-            (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
-        });
+    let hash = fnv(extension.as_encoded_bytes());
     // Hues clear of the folders' blues and the violets beside them (180°–280°), so a file never
     // passes for a folder.
     let hue = (hash % 260) as f64;
     let hue = if hue >= 180.0 { hue + 100.0 } else { hue };
     hsl(hue, 0.38, 0.46)
+}
+
+/// One of the folders' four blues, by `seed`: a folder's is its name's hash.
+#[must_use]
+pub fn folder_color(seed: u64) -> (f64, f64, f64) {
+    const FOLDERS: [(f64, f64, f64); 4] = [
+        (0.22, 0.42, 0.68),
+        (0.25, 0.48, 0.76),
+        (0.18, 0.36, 0.58),
+        (0.29, 0.53, 0.80),
+    ];
+    FOLDERS[(seed % FOLDERS.len() as u64) as usize]
+}
+
+/// FNV-1a: stable across runs and platforms, unlike the std hasher.
+fn fnv(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, &byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+    })
 }
 
 fn hsl(hue: f64, saturation: f64, lightness: f64) -> (f64, f64, f64) {

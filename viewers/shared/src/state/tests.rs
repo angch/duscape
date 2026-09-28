@@ -655,8 +655,61 @@ fn a_sized_preview_is_asked_again_when_its_size_changes() {
 }
 
 #[test]
+fn a_folder_keeps_its_colour_when_the_scan_reorders_the_listing() {
+    let root = Path::new(ROOT);
+    let mut viewer = Viewer::new(root, SizeKind::Disk, 1);
+    viewer.resize(1200.0, 800.0);
+    let batch = |folder: &str, file: &str, size: u64| {
+        let mut directory = libduscape::DirEntries::new(Arc::from(root.join(folder)));
+        directory.push(OsStr::new(file), meta(size, false));
+        DirSummary::of(&directory)
+    };
+    let mut top = libduscape::DirEntries::new(Arc::from(root));
+    for folder in ["alpha", "beta", "gamma", "delta"] {
+        top.push(OsStr::new(folder), meta(0, true));
+    }
+    let colours = |viewer: &Viewer| {
+        let mut colours: Vec<(String, (f64, f64, f64))> = (0..viewer.board.tiles.len())
+            .map(|index| {
+                let name = viewer.board.tiles[index]
+                    .name
+                    .to_string_lossy()
+                    .into_owned();
+                (name, viewer.board_color(index))
+            })
+            .collect();
+        colours.sort_by(|a, b| a.0.cmp(&b.0));
+        colours
+    };
+    viewer.add_summaries(vec![
+        DirSummary::of(&top),
+        batch("alpha", "a", 4000),
+        batch("beta", "b", 3000),
+        batch("gamma", "c", 2000),
+        batch("delta", "d", 1000),
+    ]);
+    let before = colours(&viewer);
+    assert_eq!(names(&viewer), ["alpha", "beta", "gamma", "delta"]);
+    // The walk finds more in the smallest: it goes to the top, the rest move down a place.
+    viewer.add_summaries(vec![batch("delta", "e", 9000)]);
+    assert_eq!(names(&viewer), ["delta", "alpha", "beta", "gamma"]);
+    assert_eq!(
+        colours(&viewer),
+        before,
+        "each folder's colour is its own, not its place's"
+    );
+    // And the four are not all one blue.
+    let mut blues: Vec<_> = before
+        .iter()
+        .map(|(_, colour)| format!("{colour:?}"))
+        .collect();
+    blues.dedup();
+    assert!(blues.len() > 1);
+}
+
+#[test]
 fn file_colours_follow_the_extension_and_stay_clear_of_folder_blue() {
-    let colour = |name: &str| tile_color(OsStr::new(name), FileType::File, 0);
+    let colour = |name: &str| tile_color(OsStr::new(name), FileType::File);
     assert_eq!(colour("a.jpg"), colour("b.JPG"));
     assert_ne!(colour("a.jpg"), colour("a.mp4"));
     for extension in ["rs", "txt", "zip", "mov", "dmg", "pdf", "o", "a", "json"] {

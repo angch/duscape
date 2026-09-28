@@ -174,7 +174,7 @@ out and painting.
   inside it in one-pixel cells with no least tile, as many as it has pixels, largest first and
   in proportion to each other, so a flat folder of 87k small files shows as specks, not a grey
   box. The motes have no names and are no targets; `Viewer::dust` colours them by the rule
-  their tiles would have (`entry_color`: `tile_color` by rank, `depth_shade` darker a level
+  their tiles would have (`entry_color`: `tile_color` by name, `depth_shade` darker a level
   in; a file's extension looked up once) and every desktop painter fills them in one pass.
   Each corner comes as a `Speck` (where, the entry, its rank, its depth): the board's from
   `Board::scatter_corner`, each nested folder's from `nest_with`'s `speck` (`Nesting::dust`).

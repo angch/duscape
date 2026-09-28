@@ -7,7 +7,7 @@ use ::std::ffi::OsStr;
 
 use libduscape::tiles::{Area, FileMetadata, FileType, Grid, TreeMap};
 
-use crate::state::{darker, tile_color};
+use crate::state::{darker, folder_color, tile_color};
 
 /// The entries drawn: (name, share, is a folder). The names only choose the colours.
 const TOP: [(&str, f64, bool); 6] = [
@@ -52,7 +52,11 @@ pub fn rgba(size: u32) -> Vec<u8> {
         } else {
             FileType::File
         };
-        let color = tile_color(OsStr::new(name), kind, index);
+        // The folder's blue by its place, as the icon has always been drawn.
+        let color = match kind {
+            FileType::Folder => folder_color(index as u64),
+            _ => tile_color(OsStr::new(name), kind),
+        };
         // Each tile gives up its right and bottom edge to the gap.
         let (w, h) = (
             tile.width.saturating_sub(gap).max(1),
@@ -70,7 +74,7 @@ pub fn rgba(size: u32) -> Vec<u8> {
             };
             let inner = layout(&INSIDE.map(|(name, share)| (name, share, false)), inside);
             for (tile, name, _) in &inner {
-                let color = darker(tile_color(OsStr::new(name), FileType::File, 0), 0.85);
+                let color = darker(tile_color(OsStr::new(name), FileType::File), 0.85);
                 canvas.fill(
                     tile.x,
                     tile.y,
