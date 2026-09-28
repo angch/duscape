@@ -35,7 +35,7 @@ Some terminals keep `Ctrl`+click for a context menu of their own; `Shift`+arrows
 them.
 
 The row for the selected tile is highlighted and kept in view. Entries without a tile of their
-own — too small, and folded into the `x` corner, or left off by the zoom — are listed dimmed, and
+own — too small, and folded into the "small files" corner, or left off by the zoom — are listed dimmed, and
 are often most of a folder: in a build cache of 30,000 small files the list is the only way to
 see them. Rows take the same clicks as tiles: select, double-click to open, right-click to copy.
 

@@ -314,8 +314,7 @@ where
                 );
                 let mut bottom = BottomLine::new(keybinds, ui_effects)
                     .currently_selected(panel_state.selected.as_ref())
-                    .switch_panel_hint(areas.side_panel.is_some())
-                    .hide_small_files_legend(board.unrenderable_tile_coordinates.is_none());
+                    .switch_panel_hint(areas.side_panel.is_some());
                 if chrome.scanning {
                     bottom = bottom
                         .last_read_path(ui_effects.last_read_path.as_ref())

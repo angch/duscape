@@ -9,15 +9,28 @@ use crate::ui::grid::{
 };
 use libduscape::tiles::{Area, Nested, Nesting, Tile};
 
+/// The "small files" corner: a plain box in the terminal's own colours, named where the name
+/// fits ("small files", else "small"), empty where not. Its inside is cleared first: pulled in
+/// from the edge to stay visible, the corner can lie over the last tile's cells.
 fn draw_small_files_rect_on_grid(buf: &mut Buffer, rect: Rect) {
-    for x in rect.x + 1..(rect.x + rect.width) {
-        for y in rect.y + 1..(rect.y + rect.height) {
-            let cell = &mut buf[(x, y)];
-            cell.set_symbol("x");
-            cell.set_style(Style::default().bg(Color::White).fg(Color::Black));
+    for x in rect.x + 1..rect.x + rect.width {
+        for y in rect.y + 1..rect.y + rect.height {
+            buf[(x, y)].set_symbol(" ").set_style(Style::reset());
         }
     }
     draw_rect_on_grid(buf, (rect.x, rect.y), (rect.width, rect.height));
+    let room = rect.width.saturating_sub(1);
+    let Some(name) = ["small files", "small"]
+        .into_iter()
+        .find(|name| name.len() as u16 <= room.saturating_sub(2))
+    else {
+        return;
+    };
+    if rect.height < 2 {
+        return;
+    }
+    let x = rect.x + 1 + (room - name.len() as u16) / 2;
+    buf.set_string(x, rect.y + rect.height / 2, name, Style::default());
 }
 
 fn draw_empty_folder(buf: &mut Buffer, area: Rect) {

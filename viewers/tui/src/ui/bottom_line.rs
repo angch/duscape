@@ -336,25 +336,10 @@ impl Strip {
     }
 }
 
-fn render_small_files_legend(buf: &mut Buffer, x: u16, y: u16, small_files_legend: &str) {
-    buf.set_string(
-        x,
-        y,
-        small_files_legend,
-        Style::default()
-            .fg(Color::Reset)
-            .bg(Color::Reset)
-            .remove_modifier(Modifier::all()),
-    );
-    let small_files_legend_character = &mut buf[(x + 1, y)];
-    small_files_legend_character.set_style(Style::default().bg(Color::White).fg(Color::Black));
-}
-
 pub struct BottomLine<'a> {
     keybinds: &'a Keybinds,
     /// Leave out of the help what cannot be done until the scan is done.
     scanning: bool,
-    hide_small_files_legend: bool,
     currently_selected: Option<&'a FileMetadata>,
     /// Name the key that moves between the list and the treemap, while there is a list.
     switch_panel_hint: bool,
@@ -369,7 +354,6 @@ impl<'a> BottomLine<'a> {
         Self {
             keybinds,
             scanning: false,
-            hide_small_files_legend: false,
             currently_selected: None,
             switch_panel_hint: false,
             last_read_path: None,
@@ -379,10 +363,6 @@ impl<'a> BottomLine<'a> {
     }
     pub fn scanning(mut self) -> Self {
         self.scanning = true;
-        self
-    }
-    pub fn hide_small_files_legend(mut self, should_hide_small_files_legend: bool) -> Self {
-        self.hide_small_files_legend = should_hide_small_files_legend;
         self
     }
     pub fn currently_selected(mut self, currently_selected: Option<&'a FileMetadata>) -> Self {
@@ -401,13 +381,7 @@ impl<'a> BottomLine<'a> {
 
 impl<'a> Widget for BottomLine<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let small_files_legend = "(x = Small files)";
-        let small_files_len = if self.hide_small_files_legend {
-            0
-        } else {
-            small_files_legend.chars().count() as u16
-        };
-        let max_status_len = area.width - small_files_len - 1;
+        let max_status_len = area.width - 1;
         let status_line_y = area.y + area.height - 2;
         let controls_line_y = status_line_y + 1;
         if let Some(rescanning) = self.rescanning {
@@ -424,15 +398,6 @@ impl<'a> Widget for BottomLine<'a> {
             render_currently_selected(buf, currently_selected, max_status_len, status_line_y);
         } else if let Some(last_read_path) = self.last_read_path {
             render_last_read_path(buf, last_read_path, max_status_len, status_line_y);
-        }
-
-        if !self.hide_small_files_legend {
-            render_small_files_legend(
-                buf,
-                area.width - small_files_len - 1,
-                status_line_y,
-                small_files_legend,
-            );
         }
 
         Strip::new(self.keybinds, self.scanning, self.switch_panel_hint).render(

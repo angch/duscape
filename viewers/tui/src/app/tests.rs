@@ -1809,3 +1809,34 @@ fn folders_show_their_entries_nested_inside_them() {
     assert!(screen.contains("┐│"), "and its other corner:\n{screen}");
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn the_small_files_corner_is_a_plain_box_named_where_it_fits() {
+    let dir = temp_app_dir("small_files_box");
+    fs::write(dir.join("big.bin"), vec![b'x'; 400_000]).expect("write");
+    for index in 0..40 {
+        fs::write(dir.join(format!("tiny{index}.txt")), vec![b'x'; 10]).expect("write");
+    }
+    let mut app = app_with_scanned_dir(&dir, 120, 40);
+    app.render();
+    let screen = app.display.screen_text().join("\n");
+    assert!(
+        app.board.unrenderable_tile_coordinates.is_some(),
+        "a corner:\n{screen}"
+    );
+    assert!(screen.contains("small files"), "named:\n{screen}");
+    assert!(
+        !screen.contains("(x = Small files)"),
+        "no legend for an x:\n{screen}"
+    );
+    let (x, y) = app.board.unrenderable_tile_coordinates.expect("a corner");
+    let inside = screen.lines().nth(usize::from(y) + 1).expect("a row");
+    assert!(
+        !inside
+            .chars()
+            .skip(usize::from(x) + 1)
+            .any(|c| c == 'x' || c == '█'),
+        "no fill, whatever tile it lies over:\n{screen}"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}

@@ -835,9 +835,11 @@ measured and none helped — read the 2026-09-24 section before trying them agai
   `viewers/macos/src/mac/draw.rs` (`treemap`)
 - Adjust `HEIGHT_WIDTH_RATIO`, `MINIMUM_HEIGHT`, `MINIMUM_WIDTH` constants (the terminal's
   `Grid`), or `MIN_TILE_PIXELS` in `viewers/shared` (the windows')
-- Entries below the minimum tile size are never dropped: they fold into the "small files" `x`
-  marker, whose corner is clamped by `SMALL_FILES_MINIMUM_WIDTH/HEIGHT` so it stays visible even
-  when the hidden entries round to zero cells
+- Entries below the minimum tile size are never dropped: they fold into the "small files"
+  corner (in the terminal a plain box named "small files" where the name fits, its inside
+  cleared, since it can lie over the last tile's cells), clamped by
+  `SMALL_FILES_MINIMUM_WIDTH/HEIGHT` so it stays visible even when the hidden entries round to
+  zero cells
 - Why the layout's work is bounded by the screen, not the folder (`largest_in_folder` ranks only
   what can get a tile, `Nesting` caps at what the area holds at the least tile, the corner
   ranks only as many as it has pixels): the goals' 60 fps relayout has to hold on a folder of a
