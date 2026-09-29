@@ -137,7 +137,9 @@ out and painting.
 | `ticker` | Sends `Instruction::Tick` with `try_send` (late ticks are dropped): every `ui::FRAME` (16 ms) while `App::ticker_pace` says the help line is sliding, else every `ui::IDLE_TICK` (250 ms), looking again one frame after each resting tick since a slide begins on one — twice per resting interval, not at frame rate. `App::tick` moves the help line (`ui::Ticker`/`Strip`) |
 | `refine_N` | The second pass (`duscape_scan::rescan::Refiner` → `refine::refine`, a few `refine_*` workers): FIEMAP on the small files the walk noted (`SmallFiles`, 4–64 KiB, `nlink == 1`, XFS/btrfs), directories under `App::scan_focus` (the folder shown) first → `Instruction::Refined(generation, Found, left)`; `FileTree::apply_found` charges them to the ledger. A new whole tree cancels it; folders rescanned meanwhile are skipped (`refine_skip`), since a folder rescan refines its own tree before grafting |
 | `rescan_N` | One per `r`/`R` (`duscape_scan::rescan::Rescanner`). A folder the whole scan would not enter (`walk_would_enter`: pseudo, network, `-x`, bind duplicate) or past `--max-depth` (counted from the scan root) is not rescanned (`Outcome::NotWalked`); a delete inside a folder being rescanned restarts that rescan. `parallel::build_tree` on the folder → `Instruction::Rescanned(id, Outcome)`. `App::rescan_done` grafts it (`FileTree::graft`, ancestors corrected by the difference) and leaks the old folder like `finish_scan` does. A rescan that another under way covers is not started; one the new rescan covers is cancelled and its result dropped |
-| `scan_recorder` | macOS: deflates and writes the scan's stream to the saved-scan file as it goes (`cache::Recorder`), one record a directory over a bounded channel, so the walk pays the encoding alone; the recorder renames the file into place when the stream ends, and removes it if the scan stops |
+| `scan_recorder` | macOS: deflates and writes the scan's stream, trimmed, to the saved-scan file as it goes (`cache::Recorder`), one record a directory over a bounded channel, so the walk pays the encoding alone; the recorder renames the file into place when the stream ends, and removes it if the scan stops |
+| `rescan_N` as the catch-up | macOS, after a tree read from the saved scan as it was is on screen: a whole-tree rescan through `Cache::CatchUp` (`Rescans::start_catch_up`), whose tree replaces it by `graft` as `R`'s would; the status line says "the saved scan, being brought up to date" |
+| `fill_N` | macOS, once the catch-up's tree has landed: lists the folders the saved scan trimmed, the one in view first, and reports batches of 256 (or every 100 ms) as `Outcome::Filled` under one id until `left` is `None` (`Rescanner::spawn_fill`, `fill::fill`); a delete does not restart it, and a fill adds only what the tree lacks |
 | `previewer` | Reads the file in hand for the preview: first 64 KB as text, or a PNG/JPEG decoded and scaled after a 100 ms debounce (a newer request supersedes it) → `Instruction::PreviewReady(generation, _)`; answers to an older generation are dropped |
 | **main** | App state mutations + ratatui rendering. During the scan it renders from the *outline*; on `ScanComplete` it swaps in the finished tree, keeping the current folder |
 
@@ -327,18 +329,33 @@ out and painting.
   `GetFileInformationByHandleEx(FileIdExtdDirectoryInfo)`. No listing carries a link count, so
   files in hard-link hot spots (or all files ≥ `--hard-link-threshold`) are sent with
   `LINKS_UNKNOWN` and the ledger dedupes them by file id — memory instead of a file open each
-- `cache.rs` — the saved scan (roadmap step 9): `Recorder`, a tee on whatever walker ran,
-  writing each `DirEntries` (deflated, on a thread of its own, `scan_recorder`) to
-  `~/Library/Caches/duscape/<key>.scan` and renaming it into place only when the stream ends;
-  `Saved`, the file read back and checked (magic, version, key, footer, checksum);
-  `CachedScan`, a walker like the others: the saved stream in its order with the `Changes`
-  the log named applied — the folders listed again first (`Lister`), so a hard-linked file's
-  fresh size patches every saved copy (the ledger keys on the disk size), then the stream,
-  folders gone dropped with what was under them, folders new walked (`Walker`), the root
-  carrying a note (kind `cache`) for `--issues`. `too_stale` says when a walk costs less.
-  Platform-independent and tested on Linux CI with a `std::fs` lister; only the log is
-  macOS. `ScanOptions::cache` turns it on: the viewers' first scan; not rescans, `--issues`,
-  the benchmark (`--bench-stage cached` excepted) or `--no-cache`
+- `cache.rs` — the saved scan (roadmap step 9), in three modes (`ScanOptions::cache`, a
+  `Cache`): `Recorder`, a tee on whatever walker ran, writing each `DirEntries` *trimmed*
+  (folders, hard-linked and shared-extent files, and files of `KEEP_FROM` = 1 MiB and up
+  kept one by one; the rest of each folder as one `Unlisted` sum — about one entry in fifty
+  kept, 3–4 bytes an entry deflated, so a terabyte's file is 10–30 MB) as tagged records
+  naming each directory by its parent's record index, deflated on a thread of its own
+  (`scan_recorder`), to `~/Library/Caches/duscape/<key>.scan`, renamed into place only when
+  the stream ends; the key and stamp in the clear at the front (`peek`), the counts and
+  checksum in a footer record. `SavedStream` (`Cache::Saved`, the viewers' first scan):
+  the file read as it is, inflating as it goes, the first directory in milliseconds, the
+  root noted `NOTE_OWED` so `FileTree::from_saved_scan` says a catch-up is owed. `Saved`
+  (`Cache::CatchUp`, the whole-tree rescan a viewer starts behind that tree): the file read
+  whole and checked, the log replayed on a thread while it inflates, then `CachedScan`, a
+  walker like the others — the folders the log named listed again first on a pool
+  (`Lister`, `threads`), so a hard-linked file's fresh size and link count patch every saved
+  copy (the ledger keys on the disk size), then the stream with folders gone dropped and
+  folders new walked (`Walker`), the root noted `NOTE_CAUGHT_UP`. `too_stale` says when a
+  walk costs less. Platform-independent and tested on Linux CI with a `std::fs` lister;
+  only the log is macOS. Off for rescans, `--issues`, the benchmark (`cached` and `saved`
+  stages excepted) and `--no-cache`
+- `fill.rs` — the fill pass: the folders a saved scan trimmed (`FileTree::unfilled_folders`)
+  listed again on a pool, the folder in view first (`Focus`), a batch at a time as
+  `rescan::Outcome::Filled` through the rescan channel every viewer has; `FileTree::fill`
+  puts each folder's smaller files in by name and takes the sum back. Started by a viewer
+  once the catch-up's tree has landed (`Rescans::start_fill`). Until a folder is filled its
+  sizes are right and its small files' tiles missing; a small file hard-linked *since* the
+  save is counted in the sum and once more where it was listed afresh, until the fill
 - `fsevents.rs` — macOS: the volume's change log, CoreServices `dlopen`ed when asked (the
   viewers keep frameworks out of their load commands): `current_event_id` (the stamp, taken
   before the walk starts), `log_uuid` (the log's identity for the device: reset means nothing
@@ -770,14 +787,19 @@ Exiting { app_loaded: bool }
   one extent per 128 KiB).
 - **The saved scan (macOS)**: the walk cannot be made faster than the kernel's floor there
   (`docs/scan-performance.md`, "macOS: what is left"), so every scan after the first starts
-  from the last one's saved stream, brought up to date by FSEvents (`cache.rs`, `fsevents.rs`
-  above): the volume's log names the folders that changed, and only those are listed again.
-  Whatever walker ran, the stream is recorded as it goes; the recording is stamped with the
-  log's id from *before* the walk started, so a change made during it is replayed next time.
-  Not a cache of the tree: the tree is built from the stream as on any scan, so the ledger
-  charges hard links as it would have, and a saved `DirEntries` carries what an `EntryMeta`
-  does. The stream's order — parent before child — is the file's order, and what the replay
-  keeps
+  from the last one's saved stream, in three steps that follow the goals' rule (coarse now,
+  complete after): *shown* as it was, streaming from the file, the first directory in
+  milliseconds (`Cache::Saved`, `SavedStream`); *caught up* behind that by a whole-tree
+  rescan through `Cache::CatchUp`, the FSEvents log naming the folders that changed and
+  only those listed again, the new tree swapped in as `R`'s is; *filled* in after that, the
+  folders the file had trimmed listed again, the one in view first (`fill.rs`). The file
+  keeps folders, hard-linked files and files of a megabyte and up; a folder's smaller files
+  travel as one sum (`Unlisted`, held by `Folder::unlisted`), so every size is right from
+  the first frame and only the small tiles arrive with the fill. Whatever walker ran, the
+  stream is recorded as it goes, stamped with the log's id from *before* the walk started,
+  so a change made during it is replayed next time. Not a cache of the tree: the tree is
+  built from the stream as on any scan, so the ledger charges hard links as it would have.
+  The stream's order — parent before child — is the file's order, and what the replay keeps
 - **Two passes**: the walk probes shared extents only from 64 KiB; smaller files are noted in
   `DirEntries::later` and probed after the tree is shown (see the `refine_N` thread). The
   benchmark's `refined` stage is walk + second pass, and is what the fixtures measure. This is
@@ -829,10 +851,14 @@ Exiting { app_loaded: bool }
 
 ## Code Conventions
 
-- **Every fence has its reason written down.** A decision that is not obvious from the code —
-  a constant's value, a call left out, an order kept, a branch that looks redundant, a walker
-  that declines — is a fence in a field (Chesterton's), and the next person will pull it
-  unless they can see why it stands. So the reason lives where it cannot be lost: as a test
+- **Every fence has its reason written down, so it can be taken down.** A decision that is
+  not obvious from the code — a constant's value, a call left out, an order kept, a branch
+  that looks redundant, a walker that declines, a limit, a gate, a check — is a fence in a
+  field (Chesterton's). The point of writing down why it stands is not to keep it standing:
+  it is that when the situation changes (a kernel gains the call, the disk is faster, the
+  format grows a field) whoever finds the fence can see at once whether its reason still
+  holds, and remove it without fear if it does not. A fence with no reason recorded can
+  neither be trusted nor removed. So the reason lives where it cannot be lost: as a test
   that fails when the decision is undone (preferred, since it cannot go stale — `nothing_
   changed_replays_the_saved_scan_whole`, `the_icon_file_is_the_one_drawn`, the fixture
   oracles, `model::tests::sharded`'s per-folder comparison), or as text beside the code (a
@@ -1066,8 +1092,9 @@ Regenerated by hand from `wc -l` when this file is touched; `make quality` print
 | `viewers/dos/SOFTFP.ASM` | ~810 lines — IEEE doubles on a 286 |
 | `viewers/dos/PREVIEW.ASM` | ~1300 lines — its previews: text, blocks, the palette |
 | `scanners/src/mft.rs` | ~980 lines — NTFS read from its master file table: the parser, the tree, and the volume read |
-| `scanners/src/cache.rs` | ~960 lines — the saved scan: the format, the recorder, the replay with the log's changes applied |
+| `scanners/src/cache.rs` | ~1230 lines — the saved scan: the trimmed format, the recorder, the stream as saved, the replay with the log's changes applied |
 | `scanners/src/fsevents.rs` | ~410 lines — macOS's change log through CoreServices, `dlopen`ed |
+| `scanners/src/fill.rs` | ~170 lines — the fill pass over the folders a saved scan trimmed |
 | `viewers/tui/src/ui/display.rs` | ~360 lines — the frame: what every mode shows, each mode's modal, the nesting's cache |
 | `viewers/tui/src/ui/grid/rectangle_grid.rs` | ~220 lines — the terminal's treemap: tiles, the nesting, corners, highlight frames |
 | `common/src/scan/mod.rs` | ~1070 lines — the scan protocol: options, entries, issues, the outline, the focus |
