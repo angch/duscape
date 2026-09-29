@@ -65,7 +65,7 @@ What every change is held to, adapted to sane practical defaults rather than met
     both a maximised first frame took 33 ms, now 7 (`Viewer::defer_to_second_pass`,
     `finish_second_pass`, `second_pass_owed`);
   - the first paint of a layout stops labelling the treemap's tiles at
-    `passes::LABEL_DEADLINE` (4 ms into the paint, Windows and Linux); the second pass paints
+    `passes::LABEL_DEADLINE` (4 ms spent on labels, Windows and Linux); the second pass paints
     in full, and a layout painted in full once stays so (`passes::Paints`, by
     `Viewer::layout_generation`), so labels never come and go on a hover.
 - And what is cheap should stay cheap: a folder tile is filled only around what its nested

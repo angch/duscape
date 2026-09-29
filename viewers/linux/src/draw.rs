@@ -153,7 +153,11 @@ fn treemap(canvas: &mut Canvas, viewer: &Viewer, pens: &Pens) {
         // window's background and the treemap read dark.
         canvas.gradient(rect, lighter(color, 0.18), color);
         // A folder too short for its label band has its entries right under its margin.
-        if rect.w >= 36.0 && rect.h >= 15.0 && viewer.labelled(tile) && pens.labels.allows() {
+        if rect.w >= 36.0
+            && rect.h >= 15.0
+            && viewer.labelled(tile)
+            && let Some(_label) = pens.labels.allows()
+        {
             tile_label(canvas, pens, rect, 4.0, tile, &pens.tile_name);
         }
     }
@@ -236,7 +240,11 @@ fn nested(canvas: &mut Canvas, viewer: &Viewer, pens: &Pens) {
             canvas.fill(part, color, 1.0);
         }
         canvas.stroke(rect, BLACK, 0.35, 1.0);
-        if rect.w > 30.0 && rect.h >= 15.0 && viewer.labelled(t) && pens.labels.allows() {
+        if rect.w > 30.0
+            && rect.h >= 15.0
+            && viewer.labelled(t)
+            && let Some(_label) = pens.labels.allows()
+        {
             tile_label(canvas, pens, rect, 3.0, t, &pens.nested_name);
         }
         if viewer.hover_nested == Some(index) {

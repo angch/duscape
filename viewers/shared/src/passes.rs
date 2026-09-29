@@ -10,9 +10,13 @@ use ::std::time::{Duration, Instant};
 
 use crate::state::Viewer;
 
-/// How long a first paint of a layout may spend before it stops labelling the treemap's tiles:
-/// the text is the most of a paint, and the relayout has had some 5–7 ms of the frame already.
-/// The rest come in the second pass's paint, in full.
+/// How long a first paint of a layout may spend on the treemap's labels before it stops
+/// labelling: the text is the most of a paint, and the relayout has had some 5–7 ms of the
+/// frame already. The rest come in the second pass's paint, in full. It is the labels' own
+/// time that counts, not the paint's: measured from the paint's start, the fills of some
+/// thousands of nested tiles used the whole of it before the first label, and a frame whose
+/// every label cost 1 ms went out with half of them, to be painted again with them all when
+/// the second pass came — a flicker on the Linux window at every relayout.
 pub const LABEL_DEADLINE: Duration = Duration::from_millis(4);
 
 /// `DUSCAPE_PAINT_TIMES`, read once: whether a viewer prints each frame's time, and each
@@ -23,10 +27,26 @@ pub fn paint_times() -> bool {
     *ON.get_or_init(|| ::std::env::var_os("DUSCAPE_PAINT_TIMES").is_some())
 }
 
-/// One paint's labels: all of them, or those it has time for until [`LABEL_DEADLINE`].
+/// One paint's labels: all of them, or those it has time for within [`LABEL_DEADLINE`] of
+/// labelling.
 pub struct LabelBudget {
-    until: Option<Instant>,
+    hurried: bool,
+    spent: Cell<Duration>,
     skipped: Cell<bool>,
+}
+
+/// Leave to draw one label, from [`LabelBudget::allows`]: held while it is drawn, its time
+/// is charged to the budget when it is dropped.
+pub struct Labelling<'a> {
+    budget: &'a LabelBudget,
+    started: Instant,
+}
+
+impl Drop for Labelling<'_> {
+    fn drop(&mut self) {
+        let spent = self.budget.spent.get() + self.started.elapsed();
+        self.budget.spent.set(spent);
+    }
 }
 
 impl LabelBudget {
@@ -34,21 +54,23 @@ impl LabelBudget {
     #[must_use]
     pub fn new(in_full: bool) -> Self {
         LabelBudget {
-            until: (!in_full).then(|| Instant::now() + LABEL_DEADLINE),
+            hurried: !in_full,
+            spent: Cell::new(Duration::ZERO),
             skipped: Cell::new(false),
         }
     }
 
-    /// Whether a tile may still be labelled: not past the deadline, which is noted, so the
-    /// second pass paints them.
-    pub fn allows(&self) -> bool {
-        match self.until {
-            Some(until) if Instant::now() >= until => {
-                self.skipped.set(true);
-                false
-            }
-            _ => true,
+    /// Leave to label a tile, held while it is drawn — or none, the labels having had their
+    /// time, which is noted so that the second pass paints them.
+    pub fn allows(&self) -> Option<Labelling<'_>> {
+        if self.hurried && self.spent.get() >= LABEL_DEADLINE {
+            self.skipped.set(true);
+            return None;
         }
+        Some(Labelling {
+            budget: self,
+            started: Instant::now(),
+        })
     }
 
     /// Whether every label was drawn.
@@ -96,7 +118,7 @@ impl Paints {
 
 #[cfg(test)]
 mod tests {
-    use super::{LabelBudget, Paints};
+    use super::{Duration, LabelBudget, Paints};
     use crate::state::Viewer;
     use libduscape::model::SizeKind;
 
@@ -125,6 +147,22 @@ mod tests {
     #[test]
     fn a_budget_in_full_allows_every_label() {
         let labels = LabelBudget::new(true);
-        assert!(labels.allows() && labels.complete());
+        assert!(labels.allows().is_some() && labels.complete());
+    }
+
+    #[test]
+    fn a_hurried_budget_counts_the_labels_time_not_the_paints() {
+        let labels = LabelBudget::new(false);
+        ::std::thread::sleep(super::LABEL_DEADLINE + Duration::from_millis(1));
+        assert!(
+            labels.allows().is_some(),
+            "the paint's fills took the time, not the labels"
+        );
+        {
+            let _one = labels.allows().expect("nothing spent yet");
+            ::std::thread::sleep(super::LABEL_DEADLINE);
+        }
+        assert!(labels.allows().is_none(), "the labels had their time");
+        assert!(!labels.complete(), "and the second pass is owed");
     }
 }

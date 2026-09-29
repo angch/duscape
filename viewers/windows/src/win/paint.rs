@@ -585,7 +585,11 @@ fn draw_treemap(canvas: &Canvas, window: &Window, layout: &Layout) {
         fill_tile(canvas, layout, tile, viewer.board_inside(index), color);
         canvas.frame(rect, BORDER, 1);
         // A folder too short for its label band has its entries right under its margin.
-        if rect.w > 40.0 && rect.h > LINE && viewer.labelled(tile) && canvas.labels.allows() {
+        if rect.w > 40.0
+            && rect.h > LINE
+            && viewer.labelled(tile)
+            && let Some(_label) = canvas.labels.allows()
+        {
             let ink = if marked { INK } else { rgb(240, 240, 240) };
             draw_tile_label(canvas, fonts, rect, pad, tile, ink, fonts.label_bold);
         }
@@ -753,7 +757,11 @@ fn draw_nested(canvas: &Canvas, window: &Window, layout: &Layout) {
         let color = colorref(viewer.nested_color(index));
         fill_tile(canvas, layout, t, nested.inside.as_ref(), color);
         canvas.frame(rect, BORDER, 1);
-        if rect.w > 30.0 && rect.h > LINE && viewer.labelled(t) && canvas.labels.allows() {
+        if rect.w > 30.0
+            && rect.h > LINE
+            && viewer.labelled(t)
+            && let Some(_label) = canvas.labels.allows()
+        {
             draw_tile_label(canvas, fonts, rect, pad, t, rgb(235, 235, 235), fonts.label);
         }
         if viewer.hover_nested == Some(index) {
