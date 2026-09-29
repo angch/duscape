@@ -28,7 +28,9 @@ use duscape_viewer::chooser::{Chooser, Target};
 use duscape_viewer::menu::{Action, Entry, Platform};
 use duscape_viewer::passes::{Paints, paint_times};
 use duscape_viewer::scan;
-use duscape_viewer::state::{Direction, Hit, IDLE, Jump, Mods, Preview, ROW, Rect, Viewer};
+use duscape_viewer::state::{
+    Direction, Hit, IDLE, Jump, Mods, Preview, ROW, Rect, Viewer, drop_later,
+};
 use libduscape::model::SizeKind;
 use libduscape::preview::{Reader, Ready};
 use libduscape::{DirSummary, FileTree, ScanOptions};
@@ -85,12 +87,14 @@ const WHEEL_ROWS: isize = 3;
 
 /// What a thread off the window's reports.
 enum AppMsg {
-    /// More of the live outline.
-    Summaries(Vec<DirSummary>),
-    /// The finished tree.
-    Scanned(Box<FileTree>),
-    Rescanned(u64, Outcome),
-    Preview(u64, Ready<Picture>),
+    /// More of the live outline, from the scan numbered first (`Window::scans`).
+    Summaries(u64, Vec<DirSummary>),
+    /// The finished tree, from the scan numbered.
+    Scanned(u64, Box<FileTree>),
+    /// A rescan's outcome: the scan it belongs to, then the rescan's own id.
+    Rescanned(u64, u64, Outcome),
+    /// A preview decoded: the scan it was asked under, then the request's generation.
+    Preview(u64, u64, Ready<Picture>),
 }
 
 /// Post `message` to the window at `hwnd`. If it cannot be posted — the window is gone — the
@@ -110,8 +114,11 @@ struct Window {
     viewer: Viewer,
     options: ScanOptions,
     reader: Option<Reader<PreviewRequest>>,
-    /// Cleared when the window closes, which stops the scan and any rescan.
+    /// Cleared when the window closes, or another folder is scanned, which stops the scan
+    /// and any rescan.
     running: Arc<AtomicBool>,
+    /// Counts scans: what one that has been replaced still reports is dropped by its number.
+    scans: u64,
     /// Pixels per point: the screen's DPI over 96.
     scale: f64,
     /// The decoded picture behind `viewer.preview`, when that is a picture.
@@ -125,9 +132,10 @@ struct Window {
     outline_behind: bool,
     /// Which layout was last painted in full, and so whether a paint may hurry.
     paints: Paints,
-    /// Opened with no folder: the volumes to choose from, until one is chosen; the viewer
-    /// meanwhile is an empty one on the home folder, for the layout's sake. Its rows as last
-    /// painted are in `crumbs`, each with its index.
+    /// Opened with no folder, or from the path bar's button: the volumes to choose from,
+    /// until one is chosen or, over a scan, the chooser is cancelled; the viewer meanwhile is
+    /// an empty one on the home folder, for the layout's sake, or the scan the button was on.
+    /// Its rows as last painted are in `crumbs`, each with its index.
     chooser: Option<Chooser>,
     /// `--no-elevate`: never ask to run as administrator for a volume chosen here.
     no_elevate: bool,
@@ -221,7 +229,10 @@ impl Window {
         match message {
             // Into the tree now, on screen when the timer fires: a burst of batches costs one
             // relayout, not one each.
-            AppMsg::Summaries(summaries) => {
+            AppMsg::Summaries(scan_id, summaries) => {
+                if scan_id != self.viewer.scan_id {
+                    return;
+                }
                 self.viewer.absorb_summaries(summaries);
                 if !self.outline_behind {
                     self.outline_behind = true;
@@ -230,12 +241,27 @@ impl Window {
                 }
                 return;
             }
-            AppMsg::Scanned(tree) => {
+            AppMsg::Scanned(scan_id, tree) => {
+                if scan_id != self.viewer.scan_id {
+                    drop_later(tree);
+                    return;
+                }
                 self.outline_caught_up(hwnd);
                 self.viewer.finish_scan(*tree);
             }
-            AppMsg::Rescanned(id, outcome) => self.viewer.rescan_done(id, outcome),
-            AppMsg::Preview(generation, ready) => {
+            AppMsg::Rescanned(scan_id, id, outcome) => {
+                if scan_id != self.viewer.scan_id {
+                    if let Outcome::Scanned(tree, ..) = outcome {
+                        drop_later(tree);
+                    }
+                    return;
+                }
+                self.viewer.rescan_done(id, outcome);
+            }
+            AppMsg::Preview(scan_id, generation, ready) => {
+                if scan_id != self.viewer.scan_id {
+                    return;
+                }
                 let (preview, picture) = match ready {
                     Ready::Info(info) => (Preview::Info(info), None),
                     Ready::Text(lines) => (Preview::Text(lines), None),
@@ -300,6 +326,9 @@ impl Window {
 
     /// Keys that are characters, as the keyboard layout makes them.
     fn on_char(&mut self, hwnd: HWND, character: u16) {
+        if self.chooser.is_some() {
+            return;
+        }
         match char::from_u32(u32::from(character)) {
             Some('+' | '=') => self.viewer.zoom_in(),
             Some('-') => self.viewer.zoom_out(),
@@ -329,6 +358,9 @@ impl Window {
                 self.choose_row(hwnd, index);
             }
             return;
+        }
+        if self.viewer.layout.chooser_button.contains(x, y) {
+            return self.open_chooser(hwnd);
         }
         if let Some(depth) = self.crumb_at(x, y) {
             self.viewer.go_to_depth(depth);
@@ -364,6 +396,9 @@ impl Window {
     /// Right-click: the entry under the pointer comes into hand — unless it is one of several
     /// marked, which stay marked — and a menu of what can be done with it opens.
     fn on_context_menu(&mut self, hwnd: HWND, x: i32, y: i32) {
+        if self.chooser.is_some() {
+            return;
+        }
         let (px, py) = (self.points(x), self.points(y));
         if self.viewer.context_click(px, py) {
             self.changed(hwnd);
@@ -463,6 +498,9 @@ impl Window {
     }
 
     fn on_wheel(&mut self, hwnd: HWND, delta: i16, x: i32, y: i32) {
+        if self.chooser.is_some() {
+            return;
+        }
         let (x, y) = (self.points(x), self.points(y));
         let layout = self.viewer.layout;
         if layout.list.is_some_and(|list| list.contains(x, y)) {
@@ -495,12 +533,14 @@ impl Window {
         self.arm_peek(hwnd);
     }
 
-    /// The chooser's keys: up and down, Enter to scan, Escape to close the window.
+    /// The chooser's keys: up and down, Enter to scan, Escape back to the scan it was opened
+    /// over — or, opened with no folder, to close the window.
     fn chooser_key(&mut self, hwnd: HWND, key: u16) {
         let bounds = self.viewer.layout.bounds;
         let Some(chooser) = &mut self.chooser else {
             return;
         };
+        let cancellable = chooser.cancellable();
         match key {
             VK_UP => chooser.arrow(false, bounds),
             VK_DOWN => chooser.arrow(true, bounds),
@@ -508,6 +548,7 @@ impl Window {
                 let cursor = chooser.cursor;
                 return self.choose_row(hwnd, cursor);
             }
+            VK_ESCAPE if cancellable => return self.close_chooser(hwnd),
             // SAFETY: our own window.
             VK_ESCAPE => unsafe {
                 DestroyWindow(hwnd);
@@ -515,6 +556,18 @@ impl Window {
             _ => return,
         }
         invalidate(hwnd);
+    }
+
+    /// The path bar's button: the chooser over the scan, with a way back to it.
+    fn open_chooser(&mut self, hwnd: HWND) {
+        self.chooser = Some(Chooser::new(true).with_cancel(self.viewer.root()));
+        invalidate(hwnd);
+    }
+
+    /// Back from the chooser to the scan under it.
+    fn close_chooser(&mut self, hwnd: HWND) {
+        self.chooser = None;
+        self.changed(hwnd);
     }
 
     /// The chooser's row `index` chosen: the folder dialog, or a scan of the volume or folder.
@@ -530,6 +583,7 @@ impl Window {
                 Some(path) => path,
                 None => return,
             },
+            Some(Target::Cancel) => return self.close_chooser(hwnd),
             None => return,
         };
         self.scan_chosen(hwnd, root);
@@ -554,11 +608,21 @@ impl Window {
             unsafe { DestroyWindow(hwnd) };
             return;
         }
-        let shown = self.viewer.tree.shown;
-        self.viewer = fresh_viewer(&root, shown, self.scale);
+        // The scan shown so far stops, with its rescans; what either still reports is
+        // dropped by its number. The size shown and the side panel carry over.
+        let (shown, sidebar) = (self.viewer.tree.shown, self.viewer.sidebar);
+        self.running.store(false, Ordering::Release);
+        self.running = Arc::new(AtomicBool::new(true));
+        self.scans += 1;
+        self.viewer.cancel_rescans();
+        let mut viewer = fresh_viewer(&root, shown, self.scale, self.scans);
+        viewer.sidebar = sidebar;
         if let Some(notice) = notice {
-            self.viewer.say(notice);
+            viewer.say(notice);
         }
+        let old = ::std::mem::replace(&mut self.viewer, viewer);
+        drop_later(::std::mem::ManuallyDrop::into_inner(old.tree));
+        self.picture = None;
         self.chooser = None;
         self.start(hwnd, root);
         self.on_size(hwnd);
@@ -604,23 +668,24 @@ impl Window {
     /// Start the scan, the preview thread and rescans, reporting to `hwnd`.
     fn start(&mut self, hwnd: HWND, root: PathBuf) {
         let window = hwnd as usize;
+        let scan_id = self.scans;
         self.reader = Some(Reader::spawn(prepare_picture, move |generation, ready| {
-            post(window, AppMsg::Preview(generation, ready));
+            post(window, AppMsg::Preview(scan_id, generation, ready));
         }));
         self.viewer.enable_rescans(Rescanner::new(
             self.options,
             Arc::clone(&self.running),
-            move |id, outcome| post(window, AppMsg::Rescanned(id, outcome)),
+            move |id, outcome| post(window, AppMsg::Rescanned(scan_id, id, outcome)),
         ));
         self.viewer.set_clipboard(libduscape::clipboard::copy);
         scan::spawn(
             root,
             self.options,
             Arc::clone(&self.running),
-            move |batch| post(window, AppMsg::Summaries(batch)),
+            move |batch| post(window, AppMsg::Summaries(scan_id, batch)),
             move |tree| {
                 if let Some(tree) = tree {
-                    post(window, AppMsg::Scanned(Box::new(tree)));
+                    post(window, AppMsg::Scanned(scan_id, Box::new(tree)));
                 }
             },
         );
@@ -869,7 +934,7 @@ fn dispatch(window: &mut Window, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
         WM_RBUTTONUP => window.on_context_menu(hwnd, low_word(lparam), high_word(lparam)),
         // The mouse's back button.
         WM_XBUTTONUP if high_word(wparam as isize) == 1 => {
-            if window.viewer.go_up() {
+            if window.chooser.is_none() && window.viewer.go_up() {
                 window.changed(hwnd);
             }
         }
@@ -1063,8 +1128,8 @@ fn resolve(folder: Option<PathBuf>) -> Option<PathBuf> {
 /// nested, tiles inside the folder tiles — `paint::draw_nested`), the treemap in the screen's
 /// pixels so every entry big enough to see gets a tile, and the specks of its corners in a
 /// second pass when laying them out would be slow.
-fn fresh_viewer(root: &Path, shown: SizeKind, scale: f64) -> Viewer {
-    let mut viewer = Viewer::new(root, shown, 0);
+fn fresh_viewer(root: &Path, shown: SizeKind, scale: f64, scan_id: u64) -> Viewer {
+    let mut viewer = Viewer::new(root, shown, scan_id);
     viewer.set_tree_view(true);
     viewer.set_pixel_scale(scale);
     viewer.defer_to_second_pass(true);
@@ -1110,7 +1175,7 @@ pub fn run_with(folder: Option<PathBuf>, options: ScanOptions, no_elevate: bool)
         SizeKind::Disk
     };
     let scale = dpi_scale();
-    let mut viewer = fresh_viewer(&root, shown, scale);
+    let mut viewer = fresh_viewer(&root, shown, scale, 0);
     if let Some(notice) = notice {
         viewer.say(notice);
     }
@@ -1120,6 +1185,7 @@ pub fn run_with(folder: Option<PathBuf>, options: ScanOptions, no_elevate: bool)
         options,
         reader: None,
         running: Arc::new(AtomicBool::new(true)),
+        scans: 0,
         scale,
         picture: None,
         crumbs: Vec::new(),

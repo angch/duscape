@@ -79,6 +79,10 @@ click 14 41
 state $out/opened
 key down
 state $out/nested
+click 15 15
+state $out/chooser
+key esc
+state $out/unchosen
 quit
 SCRIPT
 
@@ -128,6 +132,10 @@ expect quicklook "key window:  (QLPreviewPanel), active true"
 expect opened "rows: alpha | alpha/inner | alpha/a.dat | beta | other.log | it's \$odd.txt"
 expect opened "cursor: alpha"
 expect nested "cursor: alpha/inner"
+# The path bar's button opens the chooser over the scan; Esc is back to it, as it was.
+expect chooser "chooser: true"
+expect unchosen "chooser: false"
+expect unchosen "cursor: alpha/inner"
 [ -e "$fx/victim.log" ] && { echo "FAIL victim.log is still on disk"; failures=$((failures + 1)); }
 [ -e "$fx/other.log" ] || { echo "FAIL other.log was deleted"; failures=$((failures + 1)); }
 

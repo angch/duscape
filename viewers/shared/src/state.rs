@@ -62,6 +62,8 @@ pub const PEEK: Duration = Duration::from_millis(100);
 pub const FIRST_PASS_ROOM: usize = 1000;
 /// The breadcrumb bar across the top, and the status bar across the bottom.
 pub const PATH_BAR: f64 = 30.0;
+/// The button at the path bar's left that opens the chooser (what else to scan): a square.
+pub const CHOOSER_BUTTON: f64 = PATH_BAR;
 pub const STATUS_BAR: f64 = 24.0;
 /// One row of the list.
 pub const ROW: f64 = 22.0;
@@ -111,6 +113,9 @@ impl Rect {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Layout {
     pub bounds: Rect,
+    /// At the path bar's left: the button that opens the chooser over the scan.
+    pub chooser_button: Rect,
+    /// The breadcrumbs, from the button to the right edge.
     pub path_bar: Rect,
     /// The list of the folder's entries, when the window is wide enough for a side panel.
     pub list: Option<Rect>,
@@ -180,7 +185,13 @@ impl Layout {
         };
         Layout {
             bounds: Rect::new(0.0, 0.0, width, height),
-            path_bar: Rect::new(0.0, top, width, PATH_BAR),
+            chooser_button: Rect::new(0.0, top, CHOOSER_BUTTON.min(width), PATH_BAR),
+            path_bar: Rect::new(
+                CHOOSER_BUTTON.min(width),
+                top,
+                (width - CHOOSER_BUTTON).max(0.0),
+                PATH_BAR,
+            ),
             list,
             info,
             treemap,

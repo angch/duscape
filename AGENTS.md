@@ -443,11 +443,16 @@ shared `Viewer`, not in `win/`:
   (Win32 `TrackPopupMenu`, an `NSMenu`, the Linux viewer's `draw::menu`), adds its own key
   hints, and carries out the action chosen; an item offered on one window is offered on all.
   `open_in_hand` is Open: a folder goes in, a file's path comes back to be opened
-- `chooser.rs` — a window opened with no folder: `Chooser`, the volumes (each with how full
-  it is), the home folder and, where the viewer has one, the folder dialog (`Target::Dialog`),
-  laid out as rows in points (`layout`, `hit`, `hover_at`, `arrow`, `words`); each window
-  draws the rows and starts the scan on the target chosen — Windows through its elevation
-  prompt (`scan_chosen`), macOS `show_chooser`/`choose_row`, Linux `App::choose_row`
+- `chooser.rs` — a window opened with no folder, or the path bar's button
+  (`Layout::chooser_button`, at its left): `Chooser`, the volumes (each with how full it is),
+  the home folder and, where the viewer has one, the folder dialog (`Target::Dialog`); opened
+  over a scan, `with_cancel` ends it with a Cancel row (`Target::Cancel`) back to that scan, which
+  Esc takes too (`cancellable`), where opened with no folder Esc closes the window. Laid out as
+  rows in points (`layout`, `hit`, `hover_at`, `arrow`, `words`); each window draws the rows
+  and starts the scan on the target chosen — Windows through its elevation prompt
+  (`scan_chosen`, which stops the scan shown and numbers the new one so a replaced scan's
+  reports are dropped, as macOS and Linux do), macOS `show_chooser`/`choose_row`, Linux
+  `App::choose_row`
 - `scan.rs` — the first scan with the live `Outline`, results through callbacks on the scan's
   thread; `preview.rs` — the latest-wins preview reader (pictures are handed over as bytes for
   the viewer to decode: `NSImage` on macOS, the `image` crate on Linux; a binary file as its

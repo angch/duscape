@@ -103,8 +103,9 @@ pub struct App {
     canvas: Canvas,
     fonts: Fonts,
     viewer: Viewer,
-    /// Opened with no folder: the volumes to choose from, until one is chosen. The viewer
-    /// meanwhile is an empty one on the home folder, for the layout's sake.
+    /// Opened with no folder, or from the path bar's button: the volumes to choose from,
+    /// until one is chosen or, over a scan, the chooser is cancelled. The viewer meanwhile is
+    /// an empty one on the home folder, for the layout's sake, or the scan the button was on.
     chooser: Option<Chooser>,
     /// Where the last frame drew the chooser's rows, for clicks.
     chooser_rows: Vec<(Rect, usize)>,
@@ -650,12 +651,14 @@ impl App {
         }
     }
 
-    /// The chooser's keys: up and down, Enter to scan, `q` or Escape to quit.
+    /// The chooser's keys: up and down, Enter to scan, Escape back to the scan it was opened
+    /// over — or, opened with no folder, to quit, as `q` does.
     fn chooser_key(&mut self, keysym: u32, ch: Option<char>) {
         let bounds = self.chooser_bounds();
         let Some(chooser) = &mut self.chooser else {
             return;
         };
+        let cancellable = chooser.cancellable();
         match (keysym, ch) {
             (keys::UP | keys::KP_UP, _) => chooser.arrow(false, bounds),
             (keys::DOWN | keys::KP_DOWN, _) => chooser.arrow(true, bounds),
@@ -663,10 +666,23 @@ impl App {
                 let cursor = chooser.cursor;
                 return self.choose_row(cursor);
             }
+            (keys::ESCAPE, _) if cancellable => return self.close_chooser(),
             (keys::ESCAPE, _) | (_, Some('q')) => self.quit = true,
             _ => return,
         }
         self.dirty = true;
+    }
+
+    /// The path bar's button: the chooser over the scan, with a way back to it.
+    fn open_chooser(&mut self) {
+        self.chooser = Some(Chooser::new(false).with_cancel(self.viewer.root()));
+        self.dirty = true;
+    }
+
+    /// Back from the chooser to the scan under it.
+    fn close_chooser(&mut self) {
+        self.chooser = None;
+        self.changed();
     }
 
     /// Where the chooser is drawn: the window under the app's title bar, if it draws one.
@@ -689,12 +705,16 @@ impl App {
             .cloned();
         match target {
             Some(Target::Scan(path)) => self.start_scan(path),
+            Some(Target::Cancel) => self.close_chooser(),
             // No dialog here: the Linux window lists no such row.
             Some(Target::Dialog) | None => {}
         }
     }
 
     fn left_click(&mut self, x: f64, y: f64, mods: Mods) {
+        if self.viewer.layout.chooser_button.contains(x, y) {
+            return self.open_chooser();
+        }
         if let Some(&(_, depth)) = self.crumbs.iter().find(|(rect, _)| rect.contains(x, y)) {
             self.viewer.go_to_depth(depth);
             self.last_click = None;

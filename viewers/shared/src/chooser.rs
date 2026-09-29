@@ -5,6 +5,7 @@
 use ::std::path::{Path, PathBuf};
 
 use libduscape::DisplaySize;
+use libduscape::format::without_verbatim_prefix;
 use libduscape::os::{Volume, volumes};
 
 use crate::state::Rect;
@@ -26,6 +27,8 @@ pub enum Target {
     Scan(PathBuf),
     /// The platform's folder dialog, for a folder not listed.
     Dialog,
+    /// Back to the scan the chooser was opened over.
+    Cancel,
 }
 
 /// The height of a row, the gap between rows, and the band above them, in points.
@@ -101,6 +104,30 @@ impl Chooser {
             hover: None,
             scroll: 0,
         }
+    }
+
+    /// With a way back: the chooser opened over a scan — from the path bar's button — ends
+    /// with a Cancel row that returns to it, as Escape does then instead of closing the window.
+    #[must_use]
+    pub fn with_cancel(mut self, back_to: &Path) -> Self {
+        self.choices.push(Choice {
+            title: "Cancel".to_string(),
+            detail: format!(
+                "Back to {}",
+                without_verbatim_prefix(&back_to.to_string_lossy())
+            ),
+            fullness: None,
+            target: Target::Cancel,
+        });
+        self
+    }
+
+    /// Whether the chooser can be left for a scan already on screen.
+    #[must_use]
+    pub fn cancellable(&self) -> bool {
+        self.choices
+            .iter()
+            .any(|choice| choice.target == Target::Cancel)
     }
 
     /// The rows in `bounds`: centred, at most [`WIDTH`] wide, from the cursor's page.
@@ -285,5 +312,32 @@ mod tests {
         );
         chooser.arrow(true, bounds);
         assert_eq!(chooser.cursor, 9, "stays at the end");
+    }
+
+    /// Opened over a scan, the chooser ends with a Cancel row back to it; opened with no
+    /// folder there is nothing to go back to.
+    #[test]
+    fn a_chooser_over_a_scan_ends_with_cancel() {
+        let fresh = Chooser::from_parts(vec![volume("/", 1, 2)], None, false);
+        assert!(!fresh.cancellable());
+        let over = Chooser::from_parts(vec![volume("/", 1, 2)], None, true)
+            .with_cancel(Path::new("/home/me"));
+        assert!(over.cancellable());
+        let last = over.choices.len() - 1;
+        assert_eq!(over.target(last), Some(&Target::Cancel));
+        assert_eq!(
+            over.words(last),
+            (
+                "Cancel".to_string(),
+                "Back to /home/me".to_string(),
+                String::new(),
+                None
+            )
+        );
+        assert_eq!(
+            over.target(1),
+            Some(&Target::Dialog),
+            "the other rows as before"
+        );
     }
 }

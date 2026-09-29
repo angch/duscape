@@ -567,6 +567,7 @@ pub fn paint(
             draw_preview(&canvas, window, info);
         }
         let crumbs = draw_path_bar(&canvas, window, layout.path_bar);
+        draw_chooser_button(&canvas, layout.chooser_button);
         draw_status(&canvas, window, layout.status);
 
         GdiFlush();
@@ -1043,6 +1044,21 @@ fn draw_picture(canvas: &Canvas, picture: &crate::preview::Picture, body: Rect) 
 /// The breadcrumbs: the scan's root, then each folder down to the one shown, which is drawn
 /// bold; every one before it is a way back up. When they do not fit, the ones nearest the root
 /// after it give way to "…". On the right, the folder's size and the whole scan's.
+/// The button at the path bar's left that opens the chooser: a drive, drawn small.
+fn draw_chooser_button(canvas: &Canvas, button: Rect) {
+    canvas.fill(button, BAR);
+    let (w, h) = (16.0, 10.0);
+    let drive = Rect::new(
+        button.x + (button.w - w) / 2.0,
+        button.y + (button.h - h) / 2.0,
+        w,
+        h,
+    );
+    canvas.frame(drive, DIM, 1);
+    let light = Rect::new(drive.right() - 5.0, drive.bottom() - 5.0, 2.0, 2.0);
+    canvas.fill(light, DIM);
+}
+
 fn draw_path_bar(canvas: &Canvas, window: &Window, bar: Rect) -> Vec<(Rect, usize)> {
     let viewer = &window.viewer;
     let fonts = &window.fonts;

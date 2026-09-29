@@ -127,7 +127,27 @@ pub fn frame(
     }
     status(canvas, viewer, &pens);
     let crumbs = path_bar(canvas, viewer, &pens);
+    chooser_button(canvas, viewer.layout.chooser_button);
     (crumbs, pens.labels.complete())
+}
+
+/// The button at the path bar's left that opens the chooser: a drive, drawn small.
+fn chooser_button(canvas: &mut Canvas, button: Rect) {
+    canvas.fill(
+        Rect::new(button.x, button.bottom() - 1.0, button.w, 1.0),
+        SEPARATOR,
+        1.0,
+    );
+    let (w, h) = (16.0, 10.0);
+    let drive = Rect::new(
+        button.x + (button.w - w) / 2.0,
+        button.y + (button.h - h) / 2.0,
+        w,
+        h,
+    );
+    canvas.stroke(drive, SECONDARY, 1.0, 1.0);
+    let light = Rect::new(drive.right() - 5.0, drive.bottom() - 5.0, 2.0, 2.0);
+    canvas.fill(light, SECONDARY, 1.0);
 }
 
 fn treemap(canvas: &mut Canvas, viewer: &Viewer, pens: &Pens) {

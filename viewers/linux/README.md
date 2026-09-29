@@ -45,7 +45,8 @@ repeat is the client's job on Wayland, and is done here.
 
 ## The window
 
-- **Breadcrumbs** across the top: click one to go back up to it.
+- **Breadcrumbs** across the top: click one to go back up to it. The button at their left
+  offers the volumes and the home folder to scan instead; Cancel, or Esc, is back to this scan.
 - **The list** on the left: the folder's entries, largest first, each with its share of the
   folder as a bar. Under it, the entry in hand: its size, item count and share, and a preview of
   a file — its first lines of text, or the picture (PNG, JPEG).

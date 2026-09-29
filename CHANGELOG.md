@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - In the windows, the details panel follows the pointer: a treemap tile it rests on for 100 ms
   is what the panel shows and previews, and 100 ms after it leaves the entry in hand is back. A
   key press brings it back at once.
+- In the windows, a button at the path bar's left opens the chooser over the scan — the
+  volumes, the home folder, the folder dialog where there is one — to scan something else;
+  its Cancel row, or Esc, is back to the scan as it was. On Windows the scan replaced now
+  stops, as it did on macOS and Linux.
 
 ### Fixed
 

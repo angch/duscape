@@ -720,6 +720,26 @@ fn file_colours_follow_the_extension_and_stay_clear_of_folder_blue() {
     }
 }
 
+/// The chooser's button is the path bar's left end: the breadcrumbs start after it, and it
+/// moves down with the bar under a title bar the viewer draws itself.
+#[test]
+fn the_chooser_button_is_at_the_path_bars_left() {
+    let layout = Layout::new(1200.0, 800.0, true);
+    assert_eq!(layout.chooser_button.x, 0.0);
+    assert_eq!(layout.chooser_button.y, 0.0);
+    assert_eq!(layout.chooser_button.h, PATH_BAR);
+    assert_eq!(layout.path_bar.x, layout.chooser_button.right());
+    assert_eq!(layout.path_bar.right(), 1200.0);
+    assert!(layout.chooser_button.contains(15.0, 15.0));
+    assert!(!layout.path_bar.contains(15.0, 15.0));
+    let inset = Layout::with_top(1200.0, 800.0, true, 32.0);
+    assert_eq!(inset.chooser_button.y, 32.0);
+    // A window too narrow for the button still has a layout.
+    let narrow = Layout::new(10.0, 800.0, true);
+    assert_eq!(narrow.chooser_button.w, 10.0);
+    assert_eq!(narrow.path_bar.w, 0.0);
+}
+
 #[test]
 fn a_top_inset_moves_everything_down_and_the_bounds_stay_whole() {
     let plain = Layout::new(1200.0, 800.0, true);

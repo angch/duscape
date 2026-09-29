@@ -120,9 +120,7 @@ define_class!(
             let Ok(viewer) = self.ivars().viewer.try_borrow() else {
                 return;
             };
-            if viewer.is_none()
-                && let Some(chooser) = self.ivars().chooser.borrow().as_ref()
-            {
+            if let Some(chooser) = self.ivars().chooser.borrow().as_ref() {
                 let bounds = self.bounds();
                 let bounds = Rect::new(0.0, 0.0, bounds.size.width, bounds.size.height);
                 *self.ivars().chooser_rows.borrow_mut() = draw::chooser(bounds, chooser);
@@ -179,6 +177,10 @@ define_class!(
                 }
                 return;
             }
+            if self.with(|viewer| viewer.layout.chooser_button.contains(x, y)) == Some(true) {
+                self.open_chooser();
+                return;
+            }
             let crumb = self
                 .ivars()
                 .crumbs
@@ -225,9 +227,11 @@ define_class!(
         #[unsafe(method_id(menuForEvent:))]
         fn menu_for_event(&self, event: &NSEvent) -> Option<Retained<NSMenu>> {
             let (x, y) = self.point(event);
+            // Nothing over the chooser: the scan under it is not what is shown.
+            let chooser_up = self.ivars().chooser.borrow().is_some();
             let entries = self
                 .update(|viewer| {
-                    if viewer.context_click(x, y) {
+                    if !chooser_up && viewer.context_click(x, y) {
                         viewer.context_menu(&PLATFORM)
                     } else {
                         Vec::new()
@@ -267,6 +271,9 @@ define_class!(
 
         #[unsafe(method(scrollWheel:))]
         fn scroll_wheel(&self, event: &NSEvent) {
+            if self.ivars().chooser.borrow().is_some() {
+                return;
+            }
             let (x, y) = self.point(event);
             let (over_list, over_treemap) = self
                 .with(|viewer| {
@@ -308,6 +315,9 @@ define_class!(
 
         #[unsafe(method(magnifyWithEvent:))]
         fn magnify_with_event(&self, event: &NSEvent) {
+            if self.ivars().chooser.borrow().is_some() {
+                return;
+            }
             let (x, y) = self.point(event);
             if self.with(|viewer| viewer.layout.treemap.contains(x, y)) != Some(true) {
                 return;
@@ -328,7 +338,7 @@ define_class!(
         /// The mouse's back (thumb) button goes up a folder.
         #[unsafe(method(otherMouseDown:))]
         fn other_mouse_down(&self, event: &NSEvent) {
-            if event.buttonNumber() == 3 {
+            if event.buttonNumber() == 3 && self.ivars().chooser.borrow().is_none() {
                 self.update(Viewer::go_up);
             }
         }
@@ -680,11 +690,29 @@ impl DiskView {
         self.setNeedsDisplay(true);
     }
 
-    /// The chooser's keys: up and down, Return to scan. Whether the key was one of its.
+    /// The path bar's button: the chooser over the scan, with a way back to it.
+    fn open_chooser(&self) {
+        let chooser = match self.with(|viewer| viewer.root().to_path_buf()) {
+            Some(root) => Chooser::new(true).with_cancel(&root),
+            None => Chooser::new(true),
+        };
+        self.ivars().chooser.replace(Some(chooser));
+        self.setNeedsDisplay(true);
+    }
+
+    /// Back from the chooser to the scan under it.
+    fn close_chooser(&self) {
+        self.ivars().chooser.replace(None);
+        self.changed();
+    }
+
+    /// The chooser's keys: up and down, Return to scan, Escape back to the scan it was opened
+    /// over. Whether the key was one of its.
     fn chooser_key(&self, code: u16) -> bool {
         let bounds = self.bounds();
         let bounds = Rect::new(0.0, 0.0, bounds.size.width, bounds.size.height);
         let mut chosen = None;
+        let mut cancel = false;
         {
             let mut slot = self.ivars().chooser.borrow_mut();
             let Some(chooser) = slot.as_mut() else {
@@ -694,8 +722,13 @@ impl DiskView {
                 125 => chooser.arrow(true, bounds),
                 126 => chooser.arrow(false, bounds),
                 36 | 76 => chosen = Some(chooser.cursor),
+                53 if chooser.cancellable() => cancel = true,
                 _ => return false,
             }
+        }
+        if cancel {
+            self.close_chooser();
+            return true;
         }
         match chosen {
             Some(index) => self.choose_row(index),
@@ -719,6 +752,7 @@ impl DiskView {
             Some(Target::Dialog) => unsafe {
                 let _: () = msg_send![self, scanFolder: Option::<&objc2::runtime::AnyObject>::None];
             },
+            Some(Target::Cancel) => self.close_chooser(),
             None => {}
         }
     }
@@ -1119,6 +1153,10 @@ impl DiskView {
             ("scanning", viewer.scanning.to_string()),
             ("preview", format!("{:?}", viewer.preview)),
             ("image", self.ivars().image.borrow().is_some().to_string()),
+            (
+                "chooser",
+                self.ivars().chooser.borrow().is_some().to_string(),
+            ),
             ("status", status),
             ("totals", totals),
         ]
@@ -1277,6 +1315,10 @@ impl DiskView {
         let Some(action) = item.action() else {
             return true;
         };
+        // Over the chooser, the scan under it is not what is shown: only a new scan is offered.
+        if self.ivars().chooser.borrow().is_some() {
+            return action == sel!(scanFolder:);
+        }
         let Ok(viewer) = self.ivars().viewer.try_borrow() else {
             return false;
         };
