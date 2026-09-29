@@ -24,6 +24,7 @@ use ::std::time::Instant;
 
 use clap::Parser;
 use duscape_scan::rescan::{Outcome, Rescanner};
+use duscape_viewer::chooser::{Chooser, Target};
 use duscape_viewer::menu::{Action, Entry, Platform};
 use duscape_viewer::passes::{Paints, paint_times};
 use duscape_viewer::scan;
@@ -48,9 +49,9 @@ use windows_sys::Win32::UI::Shell::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CREATESTRUCTW, CS_DBLCLKS, CW_USEDEFAULT, CreateIconIndirect, CreatePopupMenu,
-    CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW, GWLP_USERDATA, GetClientRect,
-    GetMessageW, GetSystemMetrics, GetWindowLongPtrW, HICON, ICON_BIG, ICON_SMALL, ICONINFO,
-    IDC_ARROW, IDI_APPLICATION, IDYES, KillTimer, LoadCursorW, LoadIconW, MB_ICONERROR,
+    CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow, DispatchMessageW, GWLP_USERDATA,
+    GetClientRect, GetMessageW, GetSystemMetrics, GetWindowLongPtrW, HICON, ICON_BIG, ICON_SMALL,
+    ICONINFO, IDC_ARROW, IDI_APPLICATION, IDYES, KillTimer, LoadCursorW, LoadIconW, MB_ICONERROR,
     MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_YESNO, MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG,
     MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassW, SM_CXICON, SM_CXSMICON, SW_SHOW,
     SYSTEM_METRICS_INDEX, SendMessageW, SetProcessDPIAware, SetTimer, SetWindowLongPtrW,
@@ -124,6 +125,12 @@ struct Window {
     outline_behind: bool,
     /// Which layout was last painted in full, and so whether a paint may hurry.
     paints: Paints,
+    /// Opened with no folder: the volumes to choose from, until one is chosen; the viewer
+    /// meanwhile is an empty one on the home folder, for the layout's sake. Its rows as last
+    /// painted are in `crumbs`, each with its index.
+    chooser: Option<Chooser>,
+    /// `--no-elevate`: never ask to run as administrator for a volume chosen here.
+    no_elevate: bool,
 }
 
 /// The preview panel's caption line and, under it, the area for the picture or text: in points.
@@ -257,6 +264,9 @@ impl Window {
     }
 
     fn on_key(&mut self, hwnd: HWND, key: u16) {
+        if self.chooser.is_some() {
+            return self.chooser_key(hwnd, key);
+        }
         let shift = key_down(VK_SHIFT);
         let ctrl = key_down(VK_CONTROL);
         match key {
@@ -314,6 +324,12 @@ impl Window {
 
     fn on_click(&mut self, hwnd: HWND, x: i32, y: i32, double: bool) {
         let (x, y) = (self.points(x), self.points(y));
+        if self.chooser.is_some() {
+            if let Some(index) = self.crumb_at(x, y) {
+                self.choose_row(hwnd, index);
+            }
+            return;
+        }
         if let Some(depth) = self.crumb_at(x, y) {
             self.viewer.go_to_depth(depth);
             return self.changed(hwnd);
@@ -465,10 +481,87 @@ impl Window {
     }
 
     fn on_mouse_move(&mut self, hwnd: HWND, x: i32, y: i32) {
-        if self.viewer.hover_at(self.points(x), self.points(y)) {
+        let (x, y) = (self.points(x), self.points(y));
+        let bounds = self.viewer.layout.bounds;
+        if let Some(chooser) = &mut self.chooser {
+            if chooser.hover_at(bounds, x, y) {
+                invalidate(hwnd);
+            }
+            return;
+        }
+        if self.viewer.hover_at(x, y) {
             invalidate(hwnd);
         }
         self.arm_peek(hwnd);
+    }
+
+    /// The chooser's keys: up and down, Enter to scan, Escape to close the window.
+    fn chooser_key(&mut self, hwnd: HWND, key: u16) {
+        let bounds = self.viewer.layout.bounds;
+        let Some(chooser) = &mut self.chooser else {
+            return;
+        };
+        match key {
+            VK_UP => chooser.arrow(false, bounds),
+            VK_DOWN => chooser.arrow(true, bounds),
+            VK_RETURN => {
+                let cursor = chooser.cursor;
+                return self.choose_row(hwnd, cursor);
+            }
+            // SAFETY: our own window.
+            VK_ESCAPE => unsafe {
+                DestroyWindow(hwnd);
+            },
+            _ => return,
+        }
+        invalidate(hwnd);
+    }
+
+    /// The chooser's row `index` chosen: the folder dialog, or a scan of the volume or folder.
+    fn choose_row(&mut self, hwnd: HWND, index: usize) {
+        let target = self
+            .chooser
+            .as_ref()
+            .and_then(|chooser| chooser.target(index))
+            .cloned();
+        let root = match target {
+            Some(Target::Scan(path)) => path,
+            Some(Target::Dialog) => match pick_folder() {
+                Some(path) => path,
+                None => return,
+            },
+            None => return,
+        };
+        self.scan_chosen(hwnd, root);
+    }
+
+    /// Scan `root`, chosen in the window: as `run_with` would have with it on the command
+    /// line — a whole local volume asks to run as administrator, and if that process starts
+    /// this window closes.
+    fn scan_chosen(&mut self, hwnd: HWND, root: PathBuf) {
+        let root = root.canonicalize().unwrap_or(root);
+        if !root.is_dir() {
+            message(
+                hwnd,
+                &format!("Not a folder: {}", root.display()),
+                MB_OK | MB_ICONERROR,
+            );
+            return;
+        }
+        let (handed, notice) = handed_to_elevated(false, self.no_elevate, &root);
+        if handed {
+            // SAFETY: our own window; the elevated process has the scan.
+            unsafe { DestroyWindow(hwnd) };
+            return;
+        }
+        let shown = self.viewer.tree.shown;
+        self.viewer = fresh_viewer(&root, shown, self.scale);
+        if let Some(notice) = notice {
+            self.viewer.say(notice);
+        }
+        self.chooser = None;
+        self.start(hwnd, root);
+        self.on_size(hwnd);
     }
 
     /// Wake when the details panel is to follow the pointer, if it is to.
@@ -965,6 +1058,19 @@ fn resolve(folder: Option<PathBuf>) -> Option<PathBuf> {
     Some(root.canonicalize().unwrap_or(root))
 }
 
+/// A viewer on `root` as this window sets one up: the tree view (the list as a tree, folders
+/// open in place, drawn with their depth and an expander — `paint::draw_list`; the treemap
+/// nested, tiles inside the folder tiles — `paint::draw_nested`), the treemap in the screen's
+/// pixels so every entry big enough to see gets a tile, and the specks of its corners in a
+/// second pass when laying them out would be slow.
+fn fresh_viewer(root: &Path, shown: SizeKind, scale: f64) -> Viewer {
+    let mut viewer = Viewer::new(root, shown, 0);
+    viewer.set_tree_view(true);
+    viewer.set_pixel_scale(scale);
+    viewer.defer_to_second_pass(true);
+    viewer
+}
+
 pub fn run() {
     if let Some(opt) = parse() {
         let options = opt.scan_options();
@@ -972,38 +1078,42 @@ pub fn run() {
     }
 }
 
-/// The window on `folder` (else one picked in a dialog), scanning with `options`; `no_elevate`
+/// The window on `folder` (else on the volumes to choose from), scanning with `options`; `no_elevate`
 /// never asks to run as administrator.
+/// The folder the window opens on and whether it was given: with none, the volumes to choose
+/// from (`Chooser`) and, until one is chosen, an empty viewer on the home folder for the
+/// layout's sake. A given whole volume may hand the scan to an elevated process (`None`), or
+/// leave a notice for the status bar.
+fn starting_root(
+    folder: Option<PathBuf>,
+    no_elevate: bool,
+) -> Option<(PathBuf, bool, Option<String>)> {
+    let Some(folder) = folder else {
+        let home = duscape_viewer::chooser::home().unwrap_or_else(|| PathBuf::from("C:\\"));
+        return Some((home, false, None));
+    };
+    let root = resolve(Some(folder))?;
+    // The root is resolved, so `.` in a volume root is the volume.
+    let (handed, notice) = handed_to_elevated(true, no_elevate, &root);
+    (!handed).then_some((root, true, notice))
+}
+
 pub fn run_with(folder: Option<PathBuf>, options: ScanOptions, no_elevate: bool) {
     // SAFETY: called before any window exists.
     unsafe { SetProcessDPIAware() };
-    let given = folder.is_some();
-    let Some(root) = resolve(folder) else {
+    let Some((root, given, notice)) = starting_root(folder, no_elevate) else {
         return;
     };
-    // The root is resolved, so `.` in a volume root is the volume.
-    let (handed, notice) = handed_to_elevated(given, no_elevate, &root);
-    if handed {
-        return;
-    }
     let shown = if options.show_apparent_size {
         SizeKind::Apparent
     } else {
         SizeKind::Disk
     };
     let scale = dpi_scale();
-    let mut viewer = Viewer::new(&root, shown, 0);
+    let mut viewer = fresh_viewer(&root, shown, scale);
     if let Some(notice) = notice {
         viewer.say(notice);
     }
-    // The tree view: the list as a tree, folders open in place, drawn with their depth and an
-    // expander (`paint::draw_list`); the treemap nested, tiles inside the folder tiles
-    // (`paint::draw_nested`).
-    viewer.set_tree_view(true);
-    // The treemap in the screen's pixels: every entry big enough to see gets a tile.
-    viewer.set_pixel_scale(scale);
-    // And the specks of its corners in a second pass, when laying them out would be slow.
-    viewer.defer_to_second_pass(true);
     let window = Box::new(Window {
         hwnd: 0,
         viewer,
@@ -1017,6 +1127,8 @@ pub fn run_with(folder: Option<PathBuf>, options: ScanOptions, no_elevate: bool)
         back_buffer: None,
         outline_behind: false,
         paints: Paints::default(),
+        chooser: (!given).then(|| Chooser::new(true)),
+        no_elevate,
     });
     let state = Box::into_raw(window);
 
@@ -1067,7 +1179,9 @@ pub fn run_with(folder: Option<PathBuf>, options: ScanOptions, no_elevate: bool)
         // Through the guard like any handler: both re-enter the window procedure.
         run_handler(state, |window| {
             window.hwnd = hwnd as usize;
-            window.start(hwnd, root);
+            if given {
+                window.start(hwnd, root);
+            }
             window.on_size(hwnd);
             0
         });

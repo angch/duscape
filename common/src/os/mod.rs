@@ -13,3 +13,6 @@ pub use self::windows::{
 
 #[cfg(test)]
 mod tests;
+
+mod volumes;
+pub use volumes::{Volume, volumes};

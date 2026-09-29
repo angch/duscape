@@ -35,8 +35,9 @@ use objc2_quick_look_ui::{
 };
 
 use super::appkit;
-use super::draw::{Frame, draw};
+use super::draw::{self, Frame, draw};
 use duscape_scan::rescan::{Outcome, Rescanner};
+use duscape_viewer::chooser::{Chooser, Target};
 use duscape_viewer::menu::{Action, Entry, Platform};
 use duscape_viewer::preview::{Loaded, Previewer};
 use duscape_viewer::scan;
@@ -69,6 +70,10 @@ pub struct Ivars {
     /// The context menu last opened, for a script to choose from or close (`script`): while it
     /// is open, it reads events itself.
     context_menu: RefCell<Option<Retained<NSMenu>>>,
+    /// Opened with no folder: the volumes to choose from, until one is chosen.
+    chooser: RefCell<Option<Chooser>>,
+    /// Where its rows were drawn, each with its index, for clicks.
+    chooser_rows: RefCell<Vec<(Rect, usize)>>,
 }
 
 define_class!(
@@ -115,6 +120,14 @@ define_class!(
             let Ok(viewer) = self.ivars().viewer.try_borrow() else {
                 return;
             };
+            if viewer.is_none()
+                && let Some(chooser) = self.ivars().chooser.borrow().as_ref()
+            {
+                let bounds = self.bounds();
+                let bounds = Rect::new(0.0, 0.0, bounds.size.width, bounds.size.height);
+                *self.ivars().chooser_rows.borrow_mut() = draw::chooser(bounds, chooser);
+                return;
+            }
             let image = self.ivars().image.borrow();
             let key_window = self.window().is_some_and(|window| window.isKeyWindow());
             let bounds = self.bounds();
@@ -153,6 +166,19 @@ define_class!(
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
             let (x, y) = self.point(event);
+            if self.ivars().chooser.borrow().is_some() {
+                let row = self
+                    .ivars()
+                    .chooser_rows
+                    .borrow()
+                    .iter()
+                    .find(|(rect, _)| rect.contains(x, y))
+                    .map(|&(_, index)| index);
+                if let Some(index) = row {
+                    self.choose_row(index);
+                }
+                return;
+            }
             let crumb = self
                 .ivars()
                 .crumbs
@@ -216,6 +242,14 @@ define_class!(
         #[unsafe(method(mouseMoved:))]
         fn mouse_moved(&self, event: &NSEvent) {
             let (x, y) = self.point(event);
+            if let Some(chooser) = self.ivars().chooser.borrow_mut().as_mut() {
+                let bounds = self.bounds();
+                let bounds = Rect::new(0.0, 0.0, bounds.size.width, bounds.size.height);
+                if chooser.hover_at(bounds, x, y) {
+                    self.setNeedsDisplay(true);
+                }
+                return;
+            }
             if self.with(|viewer| viewer.hover_at(x, y)) == Some(true) {
                 self.setNeedsDisplay(true);
             }
@@ -582,6 +616,8 @@ impl DiskView {
             viewer: RefCell::new(None),
             image: RefCell::new(None),
             crumbs: RefCell::new(Vec::new()),
+            chooser: RefCell::new(None),
+            chooser_rows: RefCell::new(Vec::new()),
             previewer: OnceCell::new(),
             running: RefCell::new(Arc::new(AtomicBool::new(false))),
             scans: Cell::new(0),
@@ -636,6 +672,55 @@ impl DiskView {
     fn with<R>(&self, change: impl FnOnce(&mut Viewer) -> R) -> Option<R> {
         let mut viewer = self.ivars().viewer.try_borrow_mut().ok()?;
         viewer.as_deref_mut().map(change)
+    }
+
+    /// Opened with no folder: the volumes to choose from, in the window.
+    pub fn show_chooser(&self) {
+        self.ivars().chooser.replace(Some(Chooser::new(true)));
+        self.setNeedsDisplay(true);
+    }
+
+    /// The chooser's keys: up and down, Return to scan. Whether the key was one of its.
+    fn chooser_key(&self, code: u16) -> bool {
+        let bounds = self.bounds();
+        let bounds = Rect::new(0.0, 0.0, bounds.size.width, bounds.size.height);
+        let mut chosen = None;
+        {
+            let mut slot = self.ivars().chooser.borrow_mut();
+            let Some(chooser) = slot.as_mut() else {
+                return false;
+            };
+            match code {
+                125 => chooser.arrow(true, bounds),
+                126 => chooser.arrow(false, bounds),
+                36 | 76 => chosen = Some(chooser.cursor),
+                _ => return false,
+            }
+        }
+        match chosen {
+            Some(index) => self.choose_row(index),
+            None => self.setNeedsDisplay(true),
+        }
+        true
+    }
+
+    /// The chooser's row `index` chosen: the folder dialog, or a scan of the volume or folder.
+    fn choose_row(&self, index: usize) {
+        let target = self
+            .ivars()
+            .chooser
+            .borrow()
+            .as_ref()
+            .and_then(|chooser| chooser.target(index))
+            .cloned();
+        match target {
+            Some(Target::Scan(path)) => self.start_scan(path),
+            // SAFETY: the view's own action method, which takes an optional sender.
+            Some(Target::Dialog) => unsafe {
+                let _: () = msg_send![self, scanFolder: Option::<&objc2::runtime::AnyObject>::None];
+            },
+            None => {}
+        }
     }
 
     /// Run `change` on the viewer, then bring the window up to date with it.
@@ -716,6 +801,9 @@ impl DiskView {
 
     /// A key, whether pressed here or in the Quick Look panel. Returns whether it meant anything.
     fn key(&self, event: &NSEvent) -> bool {
+        if self.ivars().chooser.borrow().is_some() {
+            return self.chooser_key(event.keyCode());
+        }
         let flags = event.modifierFlags();
         if flags.intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control) {
             return false;
@@ -786,6 +874,7 @@ impl DiskView {
             );
             return;
         }
+        self.ivars().chooser.replace(None);
         let running = Arc::new(AtomicBool::new(true));
         self.ivars()
             .running

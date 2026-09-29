@@ -16,6 +16,7 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{NSAttributedStringKey, NSDictionary, NSPoint, NSRect, NSSize, NSString};
 
+use duscape_viewer::chooser::Chooser;
 use duscape_viewer::state::{
     EXPANDER, Focus, LIST_PAD, Preview, ROW, ROW_INDENT, Rect, TILE_LABEL, Viewer, lighter,
     tile_color,
@@ -756,4 +757,63 @@ fn abbreviate_home(path: &Path) -> String {
         };
     }
     path.display().to_string()
+}
+
+/// The window opened with no folder: the volumes and the home folder as rows, each with how
+/// full it is, the one in hand framed and the one under the pointer lit. Returns the rows
+/// with their indexes, for clicks.
+pub fn chooser(bounds: Rect, chooser: &Chooser) -> Vec<(Rect, usize)> {
+    fill(bounds, &NSColor::windowBackgroundColor());
+    let pens = Pens::new();
+    let (left, right) = (NSTextAlignment::Left, NSTextAlignment::Right);
+    let tail = NSLineBreakMode::ByTruncatingTail;
+    let heading = Pen::new(
+        &system(16.0, appkit::font_weight_semibold()),
+        &NSColor::labelColor(),
+        left,
+        tail,
+    );
+    let size_pen = Pen::new(
+        &system(11.0, appkit::font_weight_regular()),
+        &NSColor::secondaryLabelColor(),
+        right,
+        tail,
+    );
+    let layout = chooser.layout(bounds);
+    heading.draw(chooser.heading(), layout.heading);
+    for &(rect, index) in &layout.rows {
+        let (title, detail, size, share) = chooser.words(index);
+        let lit = chooser.hover == Some(index);
+        let back = if lit {
+            NSColor::selectedControlColor()
+        } else {
+            NSColor::controlBackgroundColor()
+        };
+        rounded(rect, 8.0, &back);
+        if chooser.cursor == index {
+            stroke(rect, &NSColor::controlAccentColor(), 1.5);
+        }
+        let inner = rect.inset(14.0, 8.0);
+        let size_w = size_pen.width(&size) + 8.0;
+        pens.strong
+            .draw(&title, Rect::new(inner.x, inner.y, inner.w - size_w, 18.0));
+        size_pen.draw(
+            &size,
+            Rect::new(inner.right() - size_w, inner.y + 1.0, size_w, 16.0),
+        );
+        pens.secondary
+            .draw(&detail, Rect::new(inner.x, inner.y + 19.0, inner.w, 15.0));
+        if let Some(share) = share {
+            let bar = Rect::new(inner.x, inner.bottom() - 5.0, inner.w, 4.0);
+            rounded(bar, 2.0, &NSColor::quaternaryLabelColor());
+            let used = Rect::new(bar.x, bar.y, bar.w * share, bar.h);
+            let color = if share > 0.9 {
+                NSColor::systemRedColor()
+            } else {
+                NSColor::controlAccentColor()
+            };
+            rounded(used, 2.0, &color);
+        }
+    }
+    layout.rows
 }

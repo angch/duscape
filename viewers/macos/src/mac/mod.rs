@@ -101,10 +101,7 @@ define_class!(
             };
             match self.ivars().folder.get() {
                 Some(folder) => view.start_scan(folder.clone()),
-                // SAFETY: the view's own action method, which takes an optional sender.
-                None => unsafe {
-                    let _: () = msg_send![&**view, scanFolder: Option::<&NSObject>::None];
-                },
+                None => view.show_chooser(),
             }
         }
 
@@ -136,7 +133,7 @@ pub fn run() {
     run_with(options.folder, scan_options);
 }
 
-/// The app on `folder` (else it asks for one), scanning with `scan_options`.
+/// The app on `folder` (else on the volumes to choose from), scanning with `scan_options`.
 pub fn run_with(folder: Option<PathBuf>, scan_options: ScanOptions) {
     // Before any class is asked for: the binaries link no framework (see `appkit`).
     appkit::load();

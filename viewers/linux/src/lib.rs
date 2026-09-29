@@ -52,7 +52,7 @@ pub fn run() {
             Some("-h" | "--help") => {
                 println!(
                     "duscape-linux [-a|--apparent-size] [FOLDER]\n\n\
-                     A window on where the disk space went. Without a folder, the current one.\n\n\
+                     A window on where the disk space went. Without a folder, it offers the volumes.\n\n\
                      DUSCAPE_BACKEND=…    wayland or x11 (else Wayland if WAYLAND_DISPLAY is set)\n\
                      DUSCAPE_SCALE=2      twice the size on X11 (else Xft.dpi, GDK_SCALE; Wayland scales itself)\n\
                      DUSCAPE_FONT=FILE    the font to use (else fontconfig's sans-serif)\n\
@@ -74,18 +74,19 @@ pub fn run() {
     run_with(folder, options);
 }
 
-/// The window on `folder` (else the current one), scanning with `options`: the entry point for
+/// The window on `folder`, scanning with `options` — or with none, offering the volumes: the entry point for
 /// `duscape`, which has read its own command line. Exits the process if it is not a folder
 /// or no window can be opened.
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 pub fn run_with(folder: Option<::std::path::PathBuf>, options: libduscape::ScanOptions) {
-    let root = folder.unwrap_or_else(|| ::std::path::PathBuf::from("."));
-    let root = root.canonicalize().unwrap_or(root);
-    if !root.is_dir() {
+    let root = folder.map(|root| root.canonicalize().unwrap_or(root));
+    if let Some(root) = &root
+        && !root.is_dir()
+    {
         eprintln!("duscape: “{}” is not a folder", root.display());
         ::std::process::exit(2);
     }
-    let outcome = app::App::new(&root, options).and_then(app::App::run);
+    let outcome = app::App::new(root.as_deref(), options).and_then(app::App::run);
     if let Err(error) = outcome {
         eprintln!("duscape-linux: {error}");
         ::std::process::exit(1);

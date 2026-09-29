@@ -243,6 +243,10 @@ out and painting.
   thread, and every child is reaped by a thread that waits for it
 - `format/display_size.rs` — byte → human-readable (B/KB/MB/GB/TB)
 - `os/unix.rs`, `os/windows.rs` — `is_user_admin()`, `size_on_disk_fast()`, `volume_id()`, `link_count()`
+- `os/volumes.rs` — `volumes()`: what is mounted, its device or label, filesystem, size and
+  use — `/proc/self/mounts` sifted (block devices and the known network filesystems, one line
+  a source, tested) and `statvfs`; `getmntinfo` on macOS; the drive letters on Windows. For
+  the windows' chooser
 
 **`duscape-scan`** (`scanners/`) — reading the disk:
 - `lib.rs` — `scan_directories()`: per-directory batches, the seam every walker plugs into;
@@ -435,6 +439,11 @@ shared `Viewer`, not in `win/`:
   (Win32 `TrackPopupMenu`, an `NSMenu`, the Linux viewer's `draw::menu`), adds its own key
   hints, and carries out the action chosen; an item offered on one window is offered on all.
   `open_in_hand` is Open: a folder goes in, a file's path comes back to be opened
+- `chooser.rs` — a window opened with no folder: `Chooser`, the volumes (each with how full
+  it is), the home folder and, where the viewer has one, the folder dialog (`Target::Dialog`),
+  laid out as rows in points (`layout`, `hit`, `hover_at`, `arrow`, `words`); each window
+  draws the rows and starts the scan on the target chosen — Windows through its elevation
+  prompt (`scan_chosen`), macOS `show_chooser`/`choose_row`, Linux `App::choose_row`
 - `scan.rs` — the first scan with the live `Outline`, results through callbacks on the scan's
   thread; `preview.rs` — the latest-wins preview reader (pictures are handed over as bytes for
   the viewer to decode: `NSImage` on macOS, the `image` crate on Linux; a binary file as its

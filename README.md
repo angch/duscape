@@ -57,7 +57,8 @@ reasoning. The native windows came after, sharing everything but their drawing.
 started from a desktop — a launcher on Linux, Explorer on Windows, Finder through `Duscape.app`
 on macOS (`make mac-app`). `--gui` and `--tui` choose, and so does the name: a link called
 `duscape-gui` is the window. The window takes the same command line: the folder, `-a`, `-x`,
-`--max-depth` and the other scan flags.
+`--max-depth` and the other scan flags. Started with no folder, it offers the volumes, each
+with how full it is, and the home folder.
 
 ```bash
 duscape ~          # in a terminal: the terminal viewer

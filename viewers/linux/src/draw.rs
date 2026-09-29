@@ -10,6 +10,7 @@ use ::std::path::{MAIN_SEPARATOR, Path};
 
 use crate::canvas::{Canvas, Color, Rgba};
 use crate::font::{Align, Cut, Face, Fonts, Pen};
+use duscape_viewer::chooser::Chooser;
 use duscape_viewer::menu::Entry;
 use duscape_viewer::passes::LabelBudget;
 use duscape_viewer::state::{
@@ -891,4 +892,66 @@ pub fn title_bar(
         .max(bar.x + 8.0);
     title_pen.draw(canvas, title, Rect::new(x, bar.y, width, bar.h));
     buttons
+}
+
+/// The window opened with no folder: the volumes and the home folder as rows, each with how
+/// full it is, the one in hand framed and the one under the pointer lit. Returns the rows,
+/// for clicks.
+pub fn chooser(
+    canvas: &mut Canvas,
+    fonts: &Fonts,
+    bounds: Rect,
+    chooser: &Chooser,
+) -> Vec<(Rect, usize)> {
+    canvas.clear(WINDOW);
+    let pens = Pens::new(fonts);
+    let layout = chooser.layout(bounds);
+    let heading = pen(&fonts.bold, 16.0, LABEL, Align::Left, Cut::Tail);
+    heading.draw(canvas, chooser.heading(), layout.heading);
+    for &(rect, index) in &layout.rows {
+        let (title, detail, size, share) = chooser.words(index);
+        let lit = chooser.hover == Some(index);
+        canvas.rounded(
+            rect,
+            8.0,
+            if lit {
+                (0.22, 0.22, 0.25)
+            } else {
+                (0.17, 0.17, 0.19)
+            },
+            1.0,
+        );
+        if chooser.cursor == index {
+            canvas.stroke(rect, ACCENT, 1.0, 1.5);
+        }
+        let inner = rect.inset(14.0, 8.0);
+        let size_w = pens.secondary_right.width(canvas, &size) + 8.0;
+        pens.strong.draw(
+            canvas,
+            &title,
+            Rect::new(inner.x, inner.y, inner.w - size_w, 18.0),
+        );
+        pens.secondary_right.draw(
+            canvas,
+            &size,
+            Rect::new(inner.right() - size_w, inner.y + 1.0, size_w, 16.0),
+        );
+        pens.secondary.draw(
+            canvas,
+            &detail,
+            Rect::new(inner.x, inner.y + 19.0, inner.w, 15.0),
+        );
+        if let Some(share) = share {
+            let bar = Rect::new(inner.x, inner.bottom() - 5.0, inner.w, 4.0);
+            canvas.rounded(bar, 2.0, ACCENT_QUIET, 1.0);
+            let used = Rect::new(bar.x, bar.y, bar.w * share, bar.h);
+            let color = if share > 0.9 {
+                (0.85, 0.30, 0.25)
+            } else {
+                ACCENT
+            };
+            canvas.rounded(used, 2.0, color, 1.0);
+        }
+    }
+    layout.rows
 }

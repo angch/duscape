@@ -6,6 +6,7 @@
 //! Each viewer turns its toolkit's events into calls here and draws what is here, so the
 //! behaviour is the same from one to the next and is tested once, on every platform.
 
+pub mod chooser;
 pub mod icon;
 pub mod menu;
 pub mod passes;

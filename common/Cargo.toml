@@ -23,6 +23,10 @@ unicode-width = { workspace = true }
 # Where a file's blocks are (`placement`): the FIEMAP ioctl and device numbers.
 libc = { workspace = true }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# The mounted volumes (`os::volumes`): `getmntinfo`.
+libc = { workspace = true }
+
 [target.'cfg(windows)'.dependencies]
 # The native clipboard (`clipboard`); opening a file with its default app (`launch`).
 windows-sys = { workspace = true, features = [

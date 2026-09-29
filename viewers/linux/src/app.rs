@@ -15,6 +15,7 @@ use crate::draw::{self, TitleButton};
 use crate::font::Fonts;
 use crate::trash;
 use duscape_scan::rescan::{Outcome, Rescanner};
+use duscape_viewer::chooser::{Chooser, Target};
 use duscape_viewer::menu::{Action, Entry, Platform};
 use duscape_viewer::passes::{Paints, paint_times};
 use duscape_viewer::preview::{Loaded, Previewer};
@@ -102,6 +103,11 @@ pub struct App {
     canvas: Canvas,
     fonts: Fonts,
     viewer: Viewer,
+    /// Opened with no folder: the volumes to choose from, until one is chosen. The viewer
+    /// meanwhile is an empty one on the home folder, for the layout's sake.
+    chooser: Option<Chooser>,
+    /// Where the last frame drew the chooser's rows, for clicks.
+    chooser_rows: Vec<(Rect, usize)>,
     picture: Option<Rgba>,
     dialog: Dialog,
     /// Where the last frame drew the breadcrumbs, the dialog's buttons and the title bar's, for
@@ -132,7 +138,8 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(root: &Path, options: ScanOptions) -> Result<App, String> {
+    /// The window: on `root`, scanning at once, or with no folder offering the volumes.
+    pub fn new(root: Option<&Path>, options: ScanOptions) -> Result<App, String> {
         let fonts = Fonts::system()?;
         let (tx, rx) = channel();
         let events = tx.clone();
@@ -155,7 +162,8 @@ impl App {
         } else {
             SizeKind::Disk
         };
-        let mut viewer = Viewer::new(root, kind, 0);
+        let placeholder = duscape_viewer::chooser::home().unwrap_or_else(|| PathBuf::from("/"));
+        let mut viewer = Viewer::new(root.unwrap_or(&placeholder), kind, 0);
         if !backend.decorated() {
             viewer.top_inset = TITLE_BAR;
         }
@@ -165,6 +173,8 @@ impl App {
         viewer.resize(width, height);
         let mut app = App {
             viewer,
+            chooser: root.is_none().then(|| Chooser::new(false)),
+            chooser_rows: Vec::new(),
             backend,
             canvas,
             fonts,
@@ -191,13 +201,19 @@ impl App {
             tick_due: None,
             snapshot: ::std::env::var_os("DUSCAPE_SNAPSHOT").map(PathBuf::from),
         };
-        app.start_scan(root.to_path_buf());
+        if let Some(root) = root {
+            app.start_scan(root.to_path_buf());
+        }
         Ok(app)
     }
 
     /// The loop. Returns when the window is closed.
     pub fn run(mut self) -> Result<(), String> {
         self.render()?;
+        // `DUSCAPE_SNAPSHOT` with no folder: the chooser is the frame to write.
+        if self.chooser.is_some() && self.snapshot.is_some() {
+            let _ = self.tx.send(Msg::Snapshot);
+        }
         // When what is shown last changed: the second pass waits for `IDLE` after it, as the
         // other windows' timers do, each change putting it off again — not each message, since
         // one that changes nothing is no reason to wait longer.
@@ -276,6 +292,20 @@ impl App {
 
     fn render(&mut self) -> Result<(), String> {
         self.dirty = false;
+        if let Some(chooser) = &self.chooser {
+            let bounds = self.viewer.layout.bounds;
+            let below = Rect::new(
+                bounds.x,
+                bounds.y + self.viewer.top_inset,
+                bounds.w,
+                (bounds.h - self.viewer.top_inset).max(0.0),
+            );
+            self.chooser_rows = draw::chooser(&mut self.canvas, &self.fonts, below, chooser);
+            self.crumbs = Vec::new();
+            self.popup_rows = Vec::new();
+            self.buttons = Vec::new();
+            return self.finish_frame("duscape");
+        }
         let started = Instant::now();
         let (crumbs, complete) = draw::frame(
             &mut self.canvas,
@@ -350,12 +380,18 @@ impl App {
             self.viewer.title(),
             self.viewer.subtitle()
         );
+        self.finish_frame(&title)
+    }
+
+    /// The title bar if the app draws one, the frame presented, and the title set.
+    fn finish_frame(&mut self, title: &str) -> Result<(), String> {
+        let bounds = self.viewer.layout.bounds;
         self.title_buttons = if self.viewer.top_inset > 0.0 {
             draw::title_bar(
                 &mut self.canvas,
                 &self.fonts,
                 Rect::new(0.0, 0.0, bounds.w, self.viewer.top_inset),
-                &title,
+                title,
                 self.focused,
             )
         } else {
@@ -363,8 +399,8 @@ impl App {
         };
         self.backend.present(&self.canvas)?;
         if title != self.title {
-            self.backend.set_title(&title)?;
-            self.title = title;
+            self.backend.set_title(title)?;
+            self.title = title.to_string();
         }
         if let Some(left) = self.viewer.message_left() {
             self.tick_in(left + Duration::from_millis(30));
@@ -477,6 +513,14 @@ impl App {
             Input::Key { keysym, mods } => self.key(keysym, mods),
             Input::Button { button, x, y, mods } => self.button(button, x, y, mods),
             Input::Motion { x, y } if self.popup.is_some() => self.popup_hover(x, y),
+            Input::Motion { x, y } if self.chooser.is_some() => {
+                let bounds = self.chooser_bounds();
+                if let Some(chooser) = &mut self.chooser
+                    && chooser.hover_at(bounds, x, y)
+                {
+                    self.dirty = true;
+                }
+            }
             Input::Motion { x, y } => {
                 if matches!(self.dialog, Dialog::None) && self.viewer.hover_at(x, y) {
                     self.dirty = true;
@@ -516,6 +560,9 @@ impl App {
                 _ => {}
             }
             return;
+        }
+        if self.chooser.is_some() {
+            return self.chooser_key(keysym, ch);
         }
         match keysym {
             keys::LEFT | keys::KP_LEFT => self.viewer.arrow(Direction::Left, shift),
@@ -583,12 +630,67 @@ impl App {
             self.title_bar_click(button, x, y);
             return;
         }
+        if self.chooser.is_some() {
+            if button == Button::Left
+                && let Some(&(_, index)) = self
+                    .chooser_rows
+                    .iter()
+                    .find(|(rect, _)| rect.contains(x, y))
+            {
+                self.choose_row(index);
+            }
+            return;
+        }
         match button {
             Button::Left => self.left_click(x, y, mods),
             Button::Right => self.open_popup(x, y),
             Button::WheelUp | Button::WheelDown => self.wheel(button == Button::WheelUp, x, y),
             Button::Back if self.viewer.go_up() => self.changed(),
             Button::Back | Button::Other => {}
+        }
+    }
+
+    /// The chooser's keys: up and down, Enter to scan, `q` or Escape to quit.
+    fn chooser_key(&mut self, keysym: u32, ch: Option<char>) {
+        let bounds = self.chooser_bounds();
+        let Some(chooser) = &mut self.chooser else {
+            return;
+        };
+        match (keysym, ch) {
+            (keys::UP | keys::KP_UP, _) => chooser.arrow(false, bounds),
+            (keys::DOWN | keys::KP_DOWN, _) => chooser.arrow(true, bounds),
+            (keys::RETURN | keys::KP_ENTER, _) => {
+                let cursor = chooser.cursor;
+                return self.choose_row(cursor);
+            }
+            (keys::ESCAPE, _) | (_, Some('q')) => self.quit = true,
+            _ => return,
+        }
+        self.dirty = true;
+    }
+
+    /// Where the chooser is drawn: the window under the app's title bar, if it draws one.
+    fn chooser_bounds(&self) -> Rect {
+        let bounds = self.viewer.layout.bounds;
+        Rect::new(
+            bounds.x,
+            bounds.y + self.viewer.top_inset,
+            bounds.w,
+            (bounds.h - self.viewer.top_inset).max(0.0),
+        )
+    }
+
+    /// The chooser's row `index` chosen: scan it.
+    fn choose_row(&mut self, index: usize) {
+        let target = self
+            .chooser
+            .as_ref()
+            .and_then(|chooser| chooser.target(index))
+            .cloned();
+        match target {
+            Some(Target::Scan(path)) => self.start_scan(path),
+            // No dialog here: the Linux window lists no such row.
+            Some(Target::Dialog) | None => {}
         }
     }
 
@@ -692,6 +794,7 @@ impl App {
     // ---------------------------------------------------------------- scanning
 
     fn start_scan(&mut self, root: PathBuf) {
+        self.chooser = None;
         self.running.store(false, Ordering::Release);
         let running = Arc::new(AtomicBool::new(true));
         self.running = Arc::clone(&running);

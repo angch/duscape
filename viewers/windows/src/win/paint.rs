@@ -9,6 +9,7 @@ use ::std::cell::Cell;
 use ::std::mem::{size_of, zeroed};
 use ::std::ptr::{null, null_mut};
 
+use duscape_viewer::chooser::Chooser;
 use duscape_viewer::passes::LabelBudget;
 use duscape_viewer::state::{
     EXPANDER, Focus, LIST_PAD, Layout, MIN_TILE_PIXELS, Preview, ROW, ROW_INDENT, Rect, TILE_LABEL,
@@ -551,6 +552,13 @@ pub fn paint(
         let layout = &viewer.layout;
 
         canvas.fill(layout.bounds, BACKGROUND);
+        if let Some(chooser) = &window.chooser {
+            let rows = draw_chooser(&canvas, window, layout.bounds, chooser);
+            GdiFlush();
+            BitBlt(screen, 0, 0, width, height, dc, 0, 0, SRCCOPY);
+            EndPaint(hwnd, &ps);
+            return (rows, true);
+        }
         draw_treemap(&canvas, window, layout);
         if let Some(list) = layout.list {
             draw_list(&canvas, window, list);
@@ -1167,4 +1175,61 @@ fn draw_status(canvas: &Canvas, window: &Window, status: Rect) {
         fonts.ui,
         false,
     );
+}
+
+/// The window opened with no folder: the volumes and the home folder as rows, each with how
+/// full it is, the one in hand framed and the one under the pointer lit. Returns the rows
+/// with their indexes, for clicks, in the breadcrumbs' place.
+fn draw_chooser(
+    canvas: &Canvas,
+    window: &Window,
+    bounds: Rect,
+    chooser: &Chooser,
+) -> Vec<(Rect, usize)> {
+    let fonts = &window.fonts;
+    let layout = chooser.layout(bounds);
+    canvas.text(layout.heading, chooser.heading(), TEXT, fonts.bold, false);
+    for &(rect, index) in &layout.rows {
+        let (title, detail, size, share) = chooser.words(index);
+        let lit = chooser.hover == Some(index);
+        canvas.fill(rect, if lit { rgb(52, 52, 56) } else { PANEL });
+        if chooser.cursor == index {
+            canvas.frame(rect, ACCENT, 2);
+        }
+        let inner = rect.inset(14.0, 8.0);
+        let size_w = canvas.width(&size, fonts.ui) + 8.0;
+        canvas.text(
+            Rect::new(inner.x, inner.y, inner.w - size_w, LINE),
+            &title,
+            TEXT,
+            fonts.bold,
+            false,
+        );
+        canvas.text(
+            Rect::new(inner.right() - size_w, inner.y, size_w, LINE),
+            &size,
+            DIM,
+            fonts.ui,
+            true,
+        );
+        canvas.text(
+            Rect::new(inner.x, inner.y + LINE, inner.w, LINE),
+            &detail,
+            DIM,
+            fonts.ui,
+            false,
+        );
+        if let Some(share) = share {
+            let bar = Rect::new(inner.x, inner.bottom() - 5.0, inner.w, 4.0);
+            canvas.fill(bar, BAR);
+            let used = Rect::new(bar.x, bar.y, bar.w * share, bar.h);
+            let color = if share > 0.9 {
+                rgb(215, 75, 65)
+            } else {
+                ACCENT
+            };
+            canvas.fill(used, color);
+        }
+    }
+    layout.rows
 }
