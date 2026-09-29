@@ -226,10 +226,14 @@ out and painting.
   font shrunk until a line fits — `Fonts::fitting` on Windows, `draw::hex` on macOS and Linux,
   which put the description above it)
 - `placement.rs` — where a file's blocks are, for the preview of a file with nothing else to
-  show (Linux): FIEMAP for its extents, sparseness and shared blocks, then sysfs for the disk —
+  show. Linux: FIEMAP for its extents, sparseness and shared blocks, then sysfs for the disk —
   through a partition to the disk's model and SSD/HDD and the offset into it; the members of an
   LVM or md volume (the table that says which is root's); a loop device's file. The companion
-  tool `whereisthis` follows every layer; this is the few lines that fit under a treemap
+  tool `whereisthis` follows every layer; this is the few lines that fit under a treemap.
+  Windows: `FSCTL_GET_RETRIEVAL_POINTERS` for the runs (summed by `runs::sum`, tested
+  everywhere), the volume's disk extents for the disk and offset, `IOCTL_STORAGE_QUERY_PROPERTY`
+  for its model, bus and seek penalty — the volume and disk opened with no access rights, so
+  unelevated. All three desktop viewers draw it wrapped above the hex dump
 - `clipboard.rs` — native clipboard (`pbcopy`, Win32, `wl-copy`/`xclip`/`xsel`), `base64`
 - `launch.rs` — `open` (the default app) and `reveal` (the file manager, selected): `open`/
   `open -R` on macOS; `ShellExecuteW` and `explorer.exe /select,"…"` (a raw argument: Explorer

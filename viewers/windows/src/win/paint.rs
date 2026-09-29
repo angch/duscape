@@ -918,8 +918,30 @@ fn draw_preview(canvas: &Canvas, window: &Window, info: Rect) {
         Preview::Loading => vec!["…"],
         Preview::Info(info) => vec![info.as_str()],
         Preview::Text(text) => text.iter().map(String::as_str).collect(),
-        Preview::Hex { dump, .. } => {
-            draw_hex(canvas, fonts, body, dump);
+        Preview::Hex { info, dump } => {
+            // Its description first, one paragraph wrapped to the panel, then the dump.
+            let words = duscape_viewer::preview::paragraph(info);
+            let described =
+                duscape_viewer::preview::wrap(&words, body.w, |line| canvas.width(line, fonts.ui));
+            let mut top = body.y;
+            for line in &described {
+                if top + LINE > body.bottom() {
+                    break;
+                }
+                canvas.text(
+                    Rect::new(body.x, top, body.w, LINE),
+                    line,
+                    DIM,
+                    fonts.ui,
+                    false,
+                );
+                top += LINE;
+            }
+            if !described.is_empty() {
+                top += LINE / 2.0;
+            }
+            let rest = Rect::new(body.x, top, body.w, (body.bottom() - top).max(0.0));
+            draw_hex(canvas, fonts, rest, dump);
             Vec::new()
         }
         Preview::Picture(_) => {
