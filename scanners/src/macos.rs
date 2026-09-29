@@ -591,18 +591,22 @@ impl Queue {
     }
 }
 
-/// A share's snapshots, seen over the network (`nas::left_out`): noted in the directory and
-/// named, so that the walk lists them and does not enter them.
-fn leave_out(entries: &mut DirEntries, snapshots: bool) -> Vec<OsString> {
-    let left_out: Vec<OsString> = entries
+/// A share's snapshots, seen over the network (`DirEntries::leave_out`): noted in the directory
+/// and named, so that the walk lists them and does not enter them. Asked only where the walk
+/// would go down (`descend`).
+fn leave_out(entries: &mut DirEntries, descend: bool, snapshots: bool) -> Vec<OsString> {
+    if !descend {
+        return Vec::new();
+    }
+    let folders: Vec<OsString> = entries
         .iter()
-        .filter(|(name, meta)| meta.is_dir && nas::left_out(name, snapshots))
+        .filter(|(name, meta)| meta.is_dir && nas::left_out(name, snapshots).is_some())
         .map(|(name, _)| name.to_os_string())
         .collect();
-    for name in &left_out {
-        entries.note("left out", Some(name), nas::left_out_note(name));
-    }
-    left_out
+    folders
+        .into_iter()
+        .filter(|name| entries.leave_out(name, true, snapshots))
+        .collect()
 }
 
 /// Walk `root` in parallel, yielding one message per directory read.
@@ -682,8 +686,9 @@ pub fn walk_macos(
                                     queue.finish();
                                     continue;
                                 }
-                                let left_out = leave_out(&mut read.entries, snapshots);
-                                let children = if max_depth.is_none_or(|max| job.depth + 1 < max) {
+                                let descend = max_depth.is_none_or(|max| job.depth + 1 < max);
+                                let left_out = leave_out(&mut read.entries, descend, snapshots);
+                                let children = if descend {
                                     read.entries
                                         .iter()
                                         .zip(&read.listed)

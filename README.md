@@ -49,7 +49,7 @@ reasoning. The native windows came after, sharing everything but their drawing.
   (Synology's `#snapshot`, QNAP's `@Recently-Snapshot`, ZFS's `.zfs`, NetApp's `.snapshot`), are
   left empty by name. `--snapshots` walks them, counting each shared block once where the walker
   can see sharing; over the network it cannot, and a volume root then says how much more was
-  counted than the volume holds. A NAS's other folders — its recycle bins (`#recycle`,
+  counted than the volume holds (blocks shared, or compressed, counted in full). A NAS's other folders — its recycle bins (`#recycle`,
   `@Recycle`), `@docker`, `@appstore`, `@eaDir`, `.@__thumb`… — hold space and are walked; the
   status line says what each is
 - **Reads the disk itself** — as root on ext4, the metadata comes straight off the block device

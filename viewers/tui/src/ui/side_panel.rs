@@ -168,8 +168,8 @@ pub struct FolderDetails<'a> {
     pub scan_total: Option<u128>,
     /// The volume's used space and how much of it the scan did not reach, at a volume root.
     pub disk: Option<(u128, u128)>,
-    /// What the scan counted beyond the volume's used space: blocks shared between files the
-    /// walker could not see shared (a snapshot's with the live file's, over the network).
+    /// What the scan counted beyond the volume's used space: blocks the walker could not see
+    /// shared (a snapshot's with the live file's, over the network) or compressed.
     pub over: Option<u128>,
 }
 
@@ -355,8 +355,8 @@ impl Widget for SidePanel<'_> {
                 Some(over) => {
                     let over = DisplaySize(over as f64);
                     [
-                        format!("disk used {used}, {over} counted twice (shared blocks)"),
-                        format!("disk {used}, {over} shared"),
+                        format!("disk used {used}, {over} over it (shared or compressed)"),
+                        format!("disk {used}, +{over} over"),
                     ]
                 }
                 None => [

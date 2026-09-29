@@ -299,7 +299,7 @@ pub fn walk_would_enter(scan_root: &Path, folder: &Path, options: ScanOptions) -
     if folder != scan_root
         && folder
             .file_name()
-            .is_some_and(|name| libduscape::nas::left_out(name, options.snapshots))
+            .is_some_and(|name| libduscape::nas::left_out(name, options.snapshots).is_some())
     {
         return false;
     }
@@ -673,12 +673,9 @@ fn descend_predicate(
         if !max_depth.is_none_or(|max| entry.depth < max) {
             return false;
         }
-        // A share's snapshots, seen over the network: listed, not entered.
-        if entry
-            .path()
-            .file_name()
-            .is_some_and(|name| libduscape::nas::left_out(name, snapshots))
-        {
+        // A share's snapshots, seen over the network: listed, not entered — the scan's own
+        // root scanned whatever it is named, as every walker scans it.
+        if entry.depth > 0 && libduscape::nas::left_out(&entry.file_name, snapshots).is_some() {
             return false;
         }
         match (root_device, &entry.metadata) {

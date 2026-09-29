@@ -46,8 +46,10 @@ fn render_currently_selected(
             ],
         ),
     };
-    // A NAS's own folder says what it is, where there is room.
-    if let Some(what) = libduscape::nas::describe(&currently_selected.name) {
+    // A NAS's own folder says what it is, where there is room; a file of the name is a file.
+    if currently_selected.file_type == FileType::Folder
+        && let Some(what) = libduscape::nas::describe(&currently_selected.name)
+    {
         lines.insert(0, format!("{} — {what}", lines[0]));
     }
     for line in lines {

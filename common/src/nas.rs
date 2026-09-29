@@ -90,25 +90,26 @@ pub fn known(name: &OsStr) -> Option<&'static Known> {
     KNOWN.iter().find(|known| name == known.name)
 }
 
-/// Whether a walk leaves the folder `name` empty — listed, not entered: a share's snapshots,
+/// The folder a walk leaves empty under `name` — listed, not entered: a share's snapshots,
 /// unless `snapshots` asks for them. Anywhere in the scan, not only at a share's top, since
-/// nothing else is named so; named as the scan's root, any folder is scanned.
+/// nothing else is named so; named as the scan's root, any folder is scanned. Every walker
+/// asks through [`crate::scan::DirEntries::leave_out`], which notes it too.
 #[must_use]
-pub fn left_out(name: &OsStr, snapshots: bool) -> bool {
-    !snapshots && known(name).is_some_and(|known| known.kind == Kind::Snapshots)
+pub fn left_out(name: &OsStr, snapshots: bool) -> Option<&'static Known> {
+    if snapshots {
+        return None;
+    }
+    known(name).filter(|known| known.kind == Kind::Snapshots)
 }
 
 /// What a walker notes in the directory holding a folder it left out (`DirEntries::note`, kind
 /// `left out`), for `--issues`.
 #[must_use]
-pub fn left_out_note(name: &OsStr) -> String {
-    match known(name) {
-        Some(known) => format!(
-            "{}: {}, left empty (--snapshots walks it)",
-            known.vendor, known.what
-        ),
-        None => "left empty (--snapshots walks it)".to_string(),
-    }
+pub fn left_out_note(known: &Known) -> String {
+    format!(
+        "{}: {}, left empty (--snapshots walks it)",
+        known.vendor, known.what
+    )
 }
 
 /// What a system's folder is, for a viewer to say beside its name: `Synology: the share's
@@ -135,9 +136,9 @@ mod tests {
             "~snapshot",
             ".snapshots",
         ] {
-            assert!(left_out(OsStr::new(name), false), "{name}");
+            assert!(left_out(OsStr::new(name), false).is_some(), "{name}");
             assert!(
-                !left_out(OsStr::new(name), true),
+                left_out(OsStr::new(name), true).is_none(),
                 "{name}, with --snapshots"
             );
         }
@@ -153,12 +154,12 @@ mod tests {
             "#snapshot2",
         ] {
             assert!(
-                !left_out(OsStr::new(name), false),
+                left_out(OsStr::new(name), false).is_none(),
                 "{name} is walked: it is space"
             );
         }
         assert!(
-            !left_out(OsStr::new("#Snapshot"), false),
+            left_out(OsStr::new("#Snapshot"), false).is_none(),
             "the spelling is the system's"
         );
     }
@@ -184,7 +185,7 @@ mod tests {
             Some(Kind::RecycleBin)
         );
         assert_eq!(
-            left_out_note(OsStr::new("@Recently-Snapshot")),
+            left_out_note(left_out(OsStr::new("@Recently-Snapshot"), false).expect("left out")),
             "QNAP: the share's snapshots, a whole earlier copy each, left empty (--snapshots walks it)"
         );
     }

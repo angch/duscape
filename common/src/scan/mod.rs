@@ -377,6 +377,24 @@ impl Issues {
 impl DirEntries {
     /// Something the walk did not do here, and why — a folder not walked, not a read that failed:
     /// kept for `--issues` as a failure is, but not counted in [`Self::failed`].
+    /// Whether the folder `name`, an entry of this directory that the walk `would_enter`, is
+    /// left out by name instead — a share's snapshots, unless `snapshots`
+    /// ([`crate::nas::left_out`]) — and noted here (kind `left out`) for `--issues`. One rule
+    /// for every walker. A folder the depth cap already keeps out is not noted, since
+    /// `--snapshots` would not walk it either.
+    pub fn leave_out(&mut self, name: &OsStr, would_enter: bool, snapshots: bool) -> bool {
+        if !would_enter {
+            return false;
+        }
+        match crate::nas::left_out(name, snapshots) {
+            Some(known) => {
+                self.note("left out", Some(name), crate::nas::left_out_note(known));
+                true
+            }
+            None => false,
+        }
+    }
+
     pub fn note(
         &mut self,
         action: &'static str,

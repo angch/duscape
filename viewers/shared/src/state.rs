@@ -2131,7 +2131,7 @@ impl Viewer {
         }
         if let Some(over) = self.tree.counted_beyond_volume() {
             words.push(format!(
-                "{} more than the volume holds: shared blocks counted in full",
+                "{} more than the volume holds: blocks shared or compressed, counted in full",
                 DisplaySize(over as f64)
             ));
         }
@@ -2177,7 +2177,10 @@ pub fn describe(entry: &FileMetadata) -> String {
         (FileType::Folder, None) => "folder".to_string(),
         (FileType::File, _) => "file".to_string(),
     };
-    let nas = libduscape::nas::describe(&entry.name)
+    // What a system keeps the folder for; a file of the name is just a file.
+    let nas = (entry.file_type == FileType::Folder)
+        .then(|| libduscape::nas::describe(&entry.name))
+        .flatten()
         .map(|words| format!(" · {words}"))
         .unwrap_or_default();
     format!(

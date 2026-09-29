@@ -1571,11 +1571,21 @@ fn a_nas_folder_is_described_in_the_status_line() {
     );
     let plain = FileMetadata {
         name: OsString::from("recycle"),
-        ..entry
+        ..entry.clone()
     };
     assert!(
         describe(&plain).ends_with("folder, 3 items"),
         "{}",
         describe(&plain)
+    );
+    let file = FileMetadata {
+        file_type: FileType::File,
+        descendants: None,
+        ..entry
+    };
+    assert!(
+        describe(&file).ends_with(" · file"),
+        "a file of the name is a file: {}",
+        describe(&file)
     );
 }

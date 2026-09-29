@@ -260,6 +260,7 @@ fn walk(max_depth: Option<usize>) -> Vec<DirEntries> {
         ROOT_RECORD,
         Arc::from(root().as_path()),
         max_depth,
+        false,
         |batch| {
             out.extend(batch);
             true

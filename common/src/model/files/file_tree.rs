@@ -327,11 +327,11 @@ impl FileTree {
         let found = self.base_folder.sizes.disk + self.freed_since_scan.disk;
         self.volume_used.map(|used| used.saturating_sub(found))
     }
-    /// Bytes the scan counted beyond what the volume holds: blocks shared between files — a
-    /// snapshot's with the live file's, hard links, reflinks — that the walker could not see
-    /// shared and so counted in full, as a share over the network shows them. `None` when the
-    /// volume's usage is not comparable (see [`Self::outside_scan`]) or nothing was counted
-    /// twice.
+    /// Bytes the scan counted beyond what the volume holds: blocks the walker could not see
+    /// were shared between files — a snapshot's with the live file's, hard links, reflinks, as
+    /// a share over the network shows them — or compressed (btrfs's compressed sizes are read
+    /// as root only), and so counted in full. `None` when the volume's usage is not comparable
+    /// (see [`Self::outside_scan`]) or nothing was counted beyond it.
     pub fn counted_beyond_volume(&self) -> Option<u128> {
         if self.shown != SizeKind::Disk {
             return None;

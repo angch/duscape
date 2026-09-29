@@ -16,7 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on the NAS itself. Each snapshot is a whole earlier copy of the share, so walking a share's
   `#snapshot` walked it once an hour of retention; and over the network no walker can see the
   blocks a snapshot shares with the live files, so a scan of a volume root now says how much
-  more it counted than the volume holds, in the status line and the panel. The other folders a
+  more it counted than the volume holds (blocks shared, or compressed, counted in full), in the
+  status line and the panel. The other folders a
   NAS keeps — its recycle bins (`#recycle`, `@Recycle`, Samba's `.recycle`, Unraid's
   `.Recycle.Bin`), Synology's `@docker`, `@appstore`, `@ActiveBackup`, `@iSCSI`, `@eaDir`…,
   QNAP's `.qpkg`, `.system`, `.@__thumb`, `.streams`… — hold space and are walked, and every

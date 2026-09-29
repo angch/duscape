@@ -27,7 +27,6 @@ use ::rustix::fs::{AtFlags, FileType, Mode, OFlags, RawDir, StatxFlags, openat};
 
 use super::{DirEntries, EntryMeta, ScanOptions};
 use crate::focus::{self, Focus, FocusWatch};
-use libduscape::nas;
 
 pub(crate) mod btrfs;
 mod crossing;
@@ -479,14 +478,11 @@ fn read_directory(
             };
             // A share's snapshots, seen over the network: listed, not entered.
             let name = OsStr::from_bytes(name_of(l).to_bytes());
-            let left_out = found.child.is_some() && nas::left_out(name, options.snapshots);
-            if left_out {
-                directory.note("left out", Some(name), nas::left_out_note(name));
-            } else if let Some(child) = found.child {
+            let left_out = directory.leave_out(name, found.child.is_some(), options.snapshots);
+            if !left_out && let Some(child) = found.child {
                 children.push(child);
             }
             if let Some(ancestor) = &found.loops_to {
-                let name = OsStr::from_bytes(name_of(l).to_bytes());
                 directory.note(
                     "loop",
                     Some(name),
@@ -501,7 +497,7 @@ fn read_directory(
                     .later
                     .push(u32::try_from(directory.len()).unwrap_or(u32::MAX));
             }
-            directory.push(OsStr::from_bytes(name_of(l).to_bytes()), found.meta);
+            directory.push(name, found.meta);
         };
 
     let helpers = (listed.len() / STAT_CHUNK).min(shared.threads);

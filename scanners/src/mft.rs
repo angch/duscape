@@ -359,6 +359,7 @@ impl Catalog {
         root_record: u32,
         root: Arc<Path>,
         max_depth: Option<usize>,
+        snapshots: bool,
         mut send: impl FnMut(Vec<DirEntries>) -> bool,
     ) {
         struct Pending {
@@ -397,7 +398,10 @@ impl Catalog {
                     meta.size = entry.clusters.saturating_mul(self.cluster_bytes);
                     meta.apparent = 0;
                 }
-                if meta.is_dir && descend {
+                // A share's snapshots by name (`.snapshots`, `.zfs` mirrored onto NTFS): listed,
+                // not entered, as every walker leaves them.
+                let left_out = meta.is_dir && directory.leave_out(&entry.name, descend, snapshots);
+                if meta.is_dir && descend && !left_out {
                     let path = pending.path.join(&entry.name);
                     frontier.push_back(Pending {
                         record: entry.record,
@@ -961,9 +965,13 @@ mod volume {
         let emitter = ::std::thread::Builder::new()
             .name("mft_emitter".to_string())
             .spawn(move || {
-                catalog.emit(root_record, root, options.max_depth, |batch| {
-                    sender.send(batch).is_ok()
-                });
+                catalog.emit(
+                    root_record,
+                    root,
+                    options.max_depth,
+                    options.snapshots,
+                    |batch| sender.send(batch).is_ok(),
+                );
             })
             .ok()?;
         Some(MftWalk {
