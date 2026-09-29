@@ -49,6 +49,9 @@ pub struct FileTree {
     /// Bytes in use on the volume the scan covered, when it covered a whole volume in disk-usage
     /// mode and stayed on it, so that the two are comparable. See [`Self::outside_scan`].
     pub volume_used: Option<u128>,
+    /// Built from a saved scan as it was, so a catch-up is owed: the viewer starts one
+    /// (`Cache::CatchUp`), and the tree that replaces this one is current.
+    pub from_saved_scan: bool,
     pub path_in_filesystem: PathBuf,
     base_folder: Folder,
     hard_links: HardLinks,
@@ -81,6 +84,7 @@ impl FileTree {
             failed_to_read: 0,
             issues: crate::scan::Issues::default(),
             volume_used: None,
+            from_saved_scan: false,
             hard_links: HardLinks::default(),
             size_at_depth: Vec::new(),
             positions: Vec::new(),
@@ -501,13 +505,76 @@ impl FileTree {
     /// once per entry is what keeps tree building off the critical path of a fast walk.
     pub fn add_dir_entries(&mut self, mut directory: DirEntries) {
         self.issues.merge(directory.take_issues());
+        let unlisted = directory.unlisted;
         let (dir_path, names, entries) = directory.into_parts();
         // A directory from outside the scanned tree has no place in it. Silently folding such a
         // path into the base folder, as skipping a component count would, invents entries.
         let Some(relative) = self.relative_to_root(&dir_path) else {
             return;
         };
-        self.add_relative_dir_entries(relative, names, entries);
+        self.add_relative_dir_entries(relative, names, entries, unlisted);
+    }
+
+    /// Put the files of the folder at `dir_path` (absolute, under the root) that a saved scan
+    /// left out — its [`Folder::unlisted`] — in one by one, from `listing`, a fresh listing of
+    /// it: what is not there by name is added, charged to the ledger as any entry is, and the
+    /// sum they stood in for is taken back from the folder and its ancestors. A folder with
+    /// nothing unlisted is left alone. Returns whether the tree changed.
+    pub fn fill(&mut self, dir_path: &Path, listing: &DirEntries) -> bool {
+        let Some(relative) = self.relative_to_root(dir_path) else {
+            return false;
+        };
+        let names: Vec<OsString> = relative
+            .components()
+            .map(|c| c.as_os_str().to_os_string())
+            .collect();
+        let folder = match self.base_folder.folder_at_mut_path(&names) {
+            Some(folder) => folder,
+            None => return false,
+        };
+        let unlisted = ::std::mem::take(&mut folder.unlisted);
+        if unlisted.is_zero() {
+            return false;
+        }
+        let mut missing = DirEntries::with_capacity(Arc::clone(&listing.path), listing.len(), 0);
+        for (name, meta) in listing.iter() {
+            if !meta.is_dir && !folder.contents.contains_key(name) {
+                missing.push(name, *meta);
+            }
+        }
+        // The sum out, along the path, then the files in.
+        let taken = Sizes::of(unlisted.size, unlisted.apparent);
+        let mut folder = &mut self.base_folder;
+        folder.sizes = folder.sizes.saturating_sub(taken);
+        folder.num_descendants = folder.num_descendants.saturating_sub(unlisted.count);
+        for name in &names {
+            folder = folder.contents.folder_or_insert(name);
+            folder.sizes = folder.sizes.saturating_sub(taken);
+            folder.num_descendants = folder.num_descendants.saturating_sub(unlisted.count);
+        }
+        let (_, names_buffer, entries) = missing.into_parts();
+        self.add_relative_dir_entries(relative, names_buffer, entries, crate::scan::Unlisted::ZERO);
+        true
+    }
+
+    /// Every folder with files unlisted, as absolute paths, parents before children: what a
+    /// fill pass has to list again.
+    #[must_use]
+    pub fn unfilled_folders(&self) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        let mut stack: Vec<(PathBuf, &Folder)> =
+            vec![(self.path_in_filesystem.clone(), &self.base_folder)];
+        while let Some((path, folder)) = stack.pop() {
+            if !folder.unlisted.is_zero() {
+                out.push(path.clone());
+            }
+            for (name, entry) in folder.contents.iter() {
+                if let FileOrFolder::Folder(sub) = entry {
+                    stack.push((path.join(name), sub));
+                }
+            }
+        }
+        out
     }
     pub fn add_entry(&mut self, meta: EntryMeta, entry_full_path: &Path) {
         let Some(relative) = self.relative_to_root(entry_full_path) else {
@@ -520,7 +587,7 @@ impl FileTree {
         let mut single = DirEntries::new(Arc::from(parent));
         single.push(name, meta);
         let (_, names, entries) = single.into_parts();
-        self.add_relative_dir_entries(parent, names, entries);
+        self.add_relative_dir_entries(parent, names, entries, crate::scan::Unlisted::ZERO);
     }
     /// Add one directory's entries, given that directory's path relative to the scan root.
     ///
@@ -532,6 +599,7 @@ impl FileTree {
         relative_dir: &Path,
         names: Vec<u8>,
         entries: Vec<NamedEntry>,
+        unlisted: crate::scan::Unlisted,
     ) {
         let depth = relative_dir.components().count();
         let Self {
@@ -597,6 +665,8 @@ impl FileTree {
         if let (Some(deferred), Some(noted)) = (deferred.as_mut(), noted) {
             deferred.push((this_dir, noted));
         }
+        // What the directory holds unlisted counts as its own, plain files would.
+        normal_size += Sizes::of(unlisted.size, unlisted.apparent);
         if !normal_size.is_zero() {
             for folder_size in &mut size_at_depth[..] {
                 *folder_size += normal_size;
@@ -604,8 +674,11 @@ impl FileTree {
         }
         let ledgered = started.map(|_| Instant::now());
 
-        let count = entries.len() as u64;
+        let count = entries.len() as u64 + unlisted.count;
         let folder = base_folder.descend(positions, size_at_depth, count);
+        folder.unlisted.size += unlisted.size;
+        folder.unlisted.apparent += unlisted.apparent;
+        folder.unlisted.count += unlisted.count;
         folder.place_entries(names, entries);
 
         if let (Some(profile), Some(started), Some(resolved), Some(ledgered)) =

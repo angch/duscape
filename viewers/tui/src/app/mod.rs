@@ -410,9 +410,27 @@ where
         // everything in it, here on the thread that draws the screen.
         ::std::mem::forget(finished.old);
         self.describe_rescans();
+        // A fill's batch changes no size and moves nothing: only the folder shown, if it was
+        // among those filled, is laid out again, and the file in hand is left as it is.
+        if let Some((filled, _left)) = finished.filled {
+            let here = self.file_tree.get_current_path();
+            if filled.contains(&here) {
+                let current_folder = self.file_tree.get_current_folder();
+                self.board.change_files(current_folder);
+                if let Some(tile) = selected
+                    .and_then(|name| self.board.tiles.iter().position(|tile| tile.name == name))
+                {
+                    self.board.set_selected_index(&tile);
+                }
+            }
+            self.render();
+            return;
+        }
         if let Some((duration, small)) = finished.whole {
             self.scan_duration = Some(duration);
             self.start_refining(small);
+            // The tree is current now; what the saved scan trimmed is put back behind it.
+            self.start_fill();
         }
         if let Some(folder) = finished.refined_folder {
             self.refine_skip.push(folder);
@@ -638,6 +656,32 @@ where
         self.ui_mode = UiMode::Normal;
         self.loaded = true;
         self.render_and_update_board();
+        // A tree read from the saved scan as it was is brought up to date behind itself.
+        if self.file_tree.from_saved_scan {
+            self.start_catch_up();
+        }
+    }
+    /// The saved scan the tree came from, brought up to date by the volume's change log on a
+    /// thread of its own; its tree replaces this one when it lands (`rescan_done`).
+    fn start_catch_up(&mut self) {
+        let Some(rescanner) = &self.rescanner else {
+            return;
+        };
+        if self.rescans.start_catch_up(rescanner, &self.file_tree) {
+            self.describe_rescans();
+        }
+    }
+    /// Put back the smaller files a saved scan trimmed, the folder in view first.
+    fn start_fill(&mut self) {
+        let Some(rescanner) = &self.rescanner else {
+            return;
+        };
+        if self
+            .rescans
+            .start_fill(rescanner, &self.file_tree, self.scan_focus.clone())
+        {
+            self.describe_rescans();
+        }
     }
     /// Add the outlines of several scanned directories to the live view.
     pub fn add_scanned_summaries(&mut self, summaries: Vec<DirSummary>) {

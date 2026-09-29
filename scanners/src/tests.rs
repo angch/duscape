@@ -1772,14 +1772,16 @@ fn a_share_s_snapshots_are_left_empty_by_name_and_its_recycle_bin_walked() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The saved scan on macOS, end to end: a tree scanned with the cache on, changed, and scanned
-/// again from the file with the volume's change log applied, agrees with a fresh walk to the
-/// byte. fseventsd writes its log a moment after the change, so the test waits for it.
+/// The saved scan on macOS, end to end, in its two modes: a tree scanned with the cache on and
+/// saved; changed; read again as saved (`Cache::Saved`: the same listing, a catch-up owed);
+/// then brought up to date (`Cache::CatchUp`), agreeing with a fresh walk in every folder's
+/// sizes and counts. fseventsd writes its log a moment after the change, so the test waits.
 #[cfg(target_os = "macos")]
 #[test]
-fn a_saved_scan_brought_up_to_date_by_fsevents_agrees_with_a_fresh_walk() {
+fn a_saved_scan_is_shown_as_it_was_and_then_brought_up_to_date_by_fsevents() {
     use ::std::collections::BTreeMap;
     use ::std::time::Duration;
+    use libduscape::Cache;
     let dir = temp_scan_dir("fsevents_cache");
     let cache = temp_scan_dir("fsevents_cache_dir");
     // SAFETY: the tests in this crate that read this variable are this one; the others scan
@@ -1789,26 +1791,50 @@ fn a_saved_scan_brought_up_to_date_by_fsevents_agrees_with_a_fresh_walk() {
     std::fs::create_dir_all(dir.join("gone/inside")).unwrap();
     std::fs::write(dir.join("a/one"), vec![1u8; 4096]).unwrap();
     std::fs::write(dir.join("a/deep/two"), vec![2u8; 8192]).unwrap();
+    std::fs::write(dir.join("a/deep/kept"), vec![9u8; 2 << 20]).unwrap();
     std::fs::write(dir.join("gone/inside/three"), vec![3u8; 4096]).unwrap();
     std::fs::hard_link(dir.join("a/one"), dir.join("a/deep/one-too")).unwrap();
-    let options = ScanOptions {
-        cache: true,
+    let with = |cache: Cache| ScanOptions {
+        cache,
         ..ScanOptions::default()
     };
-    let listing = |options: ScanOptions| -> BTreeMap<PathBuf, (u64, u64)> {
-        crate::scan_directories(&dir, options, &crate::Focus::default())
+    // Each folder's entry count (the unlisted sum's count included) and size.
+    let listing = |options: ScanOptions| -> (BTreeMap<PathBuf, (u64, u64)>, Vec<String>) {
+        let mut notes = Vec::new();
+        let map = crate::scan_directories(&dir, options, &crate::Focus::default())
             .map(|d| {
-                let sizes = d.iter().map(|(_, m)| m.size).sum::<u64>();
-                (d.path.to_path_buf(), (d.len() as u64, sizes))
+                for (kind, why) in d.issues.kinds.keys() {
+                    if kind.starts_with("saved scan") {
+                        notes.push(format!("{kind}: {why}"));
+                    }
+                }
+                let sizes = d.iter().map(|(_, m)| m.size).sum::<u64>() + d.unlisted.size;
+                (
+                    d.path.to_path_buf(),
+                    (d.len() as u64 + d.unlisted.count, sizes),
+                )
             })
-            .collect()
+            .collect();
+        (map, notes)
     };
-    let first = listing(options);
+    let (first, notes) = listing(with(Cache::Saved));
     assert_eq!(first.len(), 5, "{first:?}");
-    let saved = crate::cache::Saved::open(&cache, &crate::cache::Key::new(&dir, options))
-        .unwrap_or_else(|why| panic!("the scan was saved: {why:?}"));
-    assert_eq!(saved.header.directories, 5);
-    assert!(saved.header.stamp.event_id > 0);
+    assert!(
+        notes.is_empty(),
+        "no file yet: walked and saved, no note ({notes:?})"
+    );
+    let key = crate::cache::Key::new(&dir, with(Cache::Saved));
+    // The writer thread finishes the file after the stream ends.
+    let mut stamp = None;
+    for _ in 0..200 {
+        stamp = crate::cache::peek(&cache, &key);
+        if stamp.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let stamp = stamp.expect("the scan was saved");
+    assert!(stamp.event_id > 0);
 
     // Grown through the other name, a folder gone, a folder new under a saved one.
     std::fs::write(dir.join("a/deep/one-too"), vec![1u8; 65536]).unwrap();
@@ -1817,21 +1843,123 @@ fn a_saved_scan_brought_up_to_date_by_fsevents_agrees_with_a_fresh_walk() {
     std::fs::write(dir.join("a/new/inner/four"), vec![4u8; 16384]).unwrap();
     std::thread::sleep(Duration::from_secs(3));
 
-    let mut from_file = BTreeMap::new();
-    let mut note = None;
-    for d in crate::scan_directories(&dir, options, &crate::Focus::default()) {
-        if let Some(((action, why), _)) = d.issues.kinds.iter().find(|((a, _), _)| *a == "cache") {
-            note = Some(format!("{action}: {why}"));
-        }
-        from_file.insert(
-            d.path.to_path_buf(),
-            (d.len() as u64, d.iter().map(|(_, m)| m.size).sum::<u64>()),
-        );
-    }
-    let fresh = listing(ScanOptions::default());
-    assert_eq!(from_file, fresh);
-    let note = note.expect("the root says where the tree came from");
-    assert!(note.contains("read from the scan saved"), "{note}");
+    // As saved: the old listing, and the note that a catch-up is owed.
+    let (as_saved, notes) = listing(with(Cache::Saved));
+    assert_eq!(as_saved, first, "read as it was");
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(
+        notes[0].starts_with(crate::cache::NOTE_OWED) && notes[0].contains("read as saved"),
+        "{notes:?}"
+    );
+
+    // Brought up to date: what the disk holds now, to the byte.
+    let (caught_up, notes) = listing(with(Cache::CatchUp));
+    let (fresh, _) = listing(with(Cache::Off));
+    assert_eq!(caught_up, fresh);
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(
+        notes[0].starts_with(crate::cache::NOTE_CAUGHT_UP),
+        "{notes:?}"
+    );
+    // And saved again: the next start as saved shows the current tree.
+    std::thread::sleep(Duration::from_millis(500));
+    let (again, _) = listing(with(Cache::Saved));
+    assert_eq!(again, fresh);
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&cache);
+}
+
+/// A fill runs through the rescan channel: a tree with a folder's smaller files as one sum
+/// (what a saved scan trims) is filled batch by batch, the record staying until the pass says
+/// it is done — and a folder's rescan is accepted while it runs, since a fill covers nothing.
+#[test]
+fn a_fill_puts_the_trimmed_files_back_and_blocks_no_rescan() {
+    use crate::rescan::{Outcome, Rescanner, Rescans};
+    use libduscape::model::{FileTree, Folder};
+    use libduscape::scan::Unlisted;
+    use std::sync::Mutex;
+    use std::time::Duration;
+    let dir = temp_scan_dir("fill_rescans");
+    std::fs::create_dir_all(dir.join("a/deep")).unwrap();
+    std::fs::write(dir.join("a/one"), vec![1u8; 100]).unwrap();
+    std::fs::write(dir.join("a/two"), vec![2u8; 200]).unwrap();
+    std::fs::write(dir.join("a/deep/three"), vec![3u8; 300]).unwrap();
+    // The tree as a saved scan would give it: the folders, and each one's files as a sum.
+    let mut tree = FileTree::new(Folder::new(&dir), dir.clone());
+    for (relative, listing) in [("", "a/"), ("a", "a/deep/"), ("a/deep", "")] {
+        let path = if relative.is_empty() {
+            dir.clone()
+        } else {
+            dir.join(relative)
+        };
+        let fresh = crate::fill::list_for_tests(&path).unwrap();
+        let mut trimmed = libduscape::DirEntries::new(std::sync::Arc::from(path.as_path()));
+        let mut unlisted = Unlisted::ZERO;
+        for (name, meta) in fresh.iter() {
+            if meta.is_dir {
+                trimmed.push(name, *meta);
+            } else {
+                unlisted.add(meta);
+            }
+        }
+        trimmed.unlisted = unlisted;
+        let _ = listing;
+        tree.add_dir_entries(trimmed);
+    }
+    let on_disk = tree.get_total_size();
+    assert!(
+        on_disk >= 600,
+        "three files, at least their lengths: {on_disk}"
+    );
+    assert_eq!(tree.unfilled_folders().len(), 2);
+
+    let outcomes: std::sync::Arc<Mutex<Vec<(u64, Outcome)>>> = Default::default();
+    let record = std::sync::Arc::clone(&outcomes);
+    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let rescanner = Rescanner::new(ScanOptions::default(), running, move |id, outcome| {
+        record.lock().unwrap().push((id, outcome));
+    });
+    let mut rescans = Rescans::default();
+    assert!(rescans.start_fill(&rescanner, &tree, crate::Focus::default()));
+    assert!(
+        !rescans.start_fill(&rescanner, &tree, crate::Focus::default()),
+        "one at a time"
+    );
+    assert!(
+        rescans.start(&rescanner, &tree, vec!["a".into()]),
+        "a folder's rescan is not blocked by the fill"
+    );
+    assert_eq!(rescans.len(), 2);
+    for _ in 0..300 {
+        if outcomes
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(_, outcome)| matches!(outcome, Outcome::Filled(_, None)))
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let taken: Vec<(u64, Outcome)> = std::mem::take(&mut *outcomes.lock().unwrap());
+    let mut fill_done = false;
+    for (id, outcome) in taken {
+        if let Outcome::Filled(_, left) = &outcome {
+            let ends = left.is_none();
+            let finished = rescans
+                .finish(id, outcome, &mut tree)
+                .expect("the fill is known");
+            assert!(finished.filled.is_some());
+            fill_done |= ends;
+        }
+    }
+    assert!(fill_done, "the pass said it was done");
+    assert!(tree.unfilled_folders().is_empty());
+    assert_eq!(tree.get_total_size(), on_disk, "the sums stood in exactly");
+    assert_eq!(
+        rescans.len(),
+        1,
+        "the fill's record went with its last batch; the folder's stays"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

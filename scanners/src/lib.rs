@@ -46,6 +46,7 @@ pub mod mft;
 pub mod ntfs;
 
 pub mod cache;
+pub mod fill;
 pub mod focus;
 #[cfg(target_os = "macos")]
 pub mod fsevents;
@@ -116,6 +117,16 @@ pub mod parallel {
         (hash % shards as u64) as usize
     }
 
+    /// Whether `directory` came from a saved scan read as it was: its root says so, and the
+    /// tree built from it owes a catch-up.
+    fn owes_catch_up(directory: &DirEntries) -> bool {
+        directory
+            .issues
+            .kinds
+            .keys()
+            .any(|(kind, _)| *kind == super::cache::NOTE_OWED)
+    }
+
     /// Walk `root` and build its tree on `shards` threads.
     ///
     /// `progress` sees every directory as it is dispatched, before any builder has it, and may
@@ -171,11 +182,13 @@ pub mod parallel {
         let mut failed = 0u64;
         let mut stopped = false;
         let mut small = super::refine::SmallFiles::default();
+        let mut from_saved_scan = false;
         for directory in scan_directories(&root, options, focus) {
             if !progress(&directory) {
                 stopped = true;
                 break;
             }
+            from_saved_scan |= owes_catch_up(&directory);
             failed += directory.failed;
             small.note(&directory);
             // One shard means one builder: skip hashing the path to choose it — the hash runs per
@@ -223,6 +236,7 @@ pub mod parallel {
         tree.replay_deferred();
         tree.volume_used = super::comparable_volume_used(&root, options);
         tree.shown = options.shown();
+        tree.from_saved_scan = from_saved_scan;
         let replayed = Instant::now();
 
         Some((
@@ -282,26 +296,21 @@ fn walker_words(root: &Path, options: ScanOptions) -> String {
     }
     #[cfg(target_os = "macos")]
     {
-        // Whether a saved scan is there is answered from the file's date, not by reading
-        // it: it is the whole tree, deflated, and this is one line of a report.
-        let saved = options
-            .cache
-            .then(cache::directory)
-            .flatten()
-            .map(|dir| dir.join(cache::Key::new(root, options).file_name()));
-        match saved.as_ref().map(|file| (file, std::fs::metadata(file))) {
-            Some((file, Ok(meta))) => format!(
-                "getattrlistbulk, or the scan saved {} brought up to date by FSEvents ({})",
-                meta.modified()
-                    .ok()
-                    .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map_or_else(
-                        || "earlier".to_string(),
-                        |at| cache::age_words_ago(at.as_secs())
-                    ),
-                file.display(),
+        // Whether a saved scan is there is answered from its header, not by reading it whole.
+        let key = cache::Key::new(root, options);
+        let saved = match options.cache {
+            Cache::Off => None,
+            Cache::Saved | Cache::CatchUp => {
+                cache::directory().map(|dir| (cache::peek(&dir, &key), dir))
+            }
+        };
+        match saved {
+            Some((Some(stamp), dir)) => format!(
+                "getattrlistbulk, or the scan saved {} shown at once and brought up to date by FSEvents ({})",
+                cache::age_words_ago(stamp.saved_at),
+                dir.join(key.file_name()).display(),
             ),
-            Some((_, Err(_))) => "getattrlistbulk, saved for next time (FSEvents)".to_string(),
+            Some((None, _)) => "getattrlistbulk, saved for next time (FSEvents)".to_string(),
             None => "getattrlistbulk, walked afresh (no saved scan used or made)".to_string(),
         }
     }
@@ -399,10 +408,10 @@ pub fn scan_directories(
     }
 }
 
-/// The macOS walk: the saved scan brought up to date by the volume's change log where there
-/// is one and the options ask for it, else `getattrlistbulk`; either recorded for next time
-/// when asked. The log's id is taken before the walk starts, so a change made while it runs
-/// is replayed next time.
+/// The macOS walk, by [`Cache`]: `Off`, `getattrlistbulk`, nothing saved; `Saved`, the saved
+/// scan streamed as it is where its stamp still holds (else the walk, saved); `CatchUp`, the
+/// saved scan brought up to date by the change log (else the walk), saved. The log's id is
+/// taken before a walk starts, so a change made while it runs is replayed next time.
 #[cfg(target_os = "macos")]
 fn macos_scan<'a>(
     root: &Path,
@@ -419,21 +428,30 @@ fn macos_scan<'a>(
             focus,
         ))
     };
-    let dir = options.cache.then(cache::directory).flatten();
+    let dir = match options.cache {
+        Cache::Off => None,
+        Cache::Saved | Cache::CatchUp => cache::directory(),
+    };
     let key = cache::Key::new(root, options);
     let stamp = dir.as_ref().and_then(|_| macos_stamp(root));
-    let cached = match (&dir, &stamp) {
-        (Some(dir), Some(stamp)) => macos_cached(dir, &key, stamp, options, walk),
+    let (Some(dir), Some(now)) = (dir, stamp) else {
+        return cache::Recorder::plain(MacosScan::Walk(walk(root, 0)));
+    };
+    if options.cache == Cache::Saved {
+        // As it was, no recording: the file is already that, and the catch-up will record.
+        if let Some(saved) = macos_saved(&dir, &key, &now) {
+            return cache::Recorder::plain(MacosScan::Saved(Box::new(saved)));
+        }
+    }
+    let cached = match options.cache {
+        Cache::CatchUp => macos_cached(&dir, &key, &now, options, walk),
         _ => None,
     };
     let inner = match cached {
         Some(cached) => MacosScan::Cached(Box::new(cached)),
         None => MacosScan::Walk(walk(root, 0)),
     };
-    match (dir, stamp) {
-        (Some(dir), Some(stamp)) => cache::Recorder::new(inner, &dir, key, stamp),
-        _ => cache::Recorder::plain(inner),
-    }
+    cache::Recorder::new(inner, &dir, key, now)
 }
 
 /// What a scan starting now is stamped with; `None` where the volume keeps no log, and then
@@ -453,9 +471,31 @@ fn macos_stamp(root: &Path) -> Option<cache::Stamp> {
     })
 }
 
+/// Whether the log since `then` can still say what changed: the same device, the same log,
+/// the same system.
+#[cfg(target_os = "macos")]
+fn stamp_holds(then: &cache::Stamp, now: &cache::Stamp) -> bool {
+    then.device == now.device && then.log_uuid == now.log_uuid && then.system == now.system
+}
+
+/// The saved scan for `key` as it is, streamed, if its stamp holds.
+#[cfg(target_os = "macos")]
+fn macos_saved(dir: &Path, key: &cache::Key, now: &cache::Stamp) -> Option<cache::SavedStream> {
+    let then = cache::peek(dir, key)?;
+    if !stamp_holds(&then, now) {
+        return None;
+    }
+    let note = format!(
+        "read as saved {}; being brought up to date",
+        cache::age_words_ago(then.saved_at)
+    );
+    cache::SavedStream::open(dir, key, note).ok()
+}
+
 /// The saved scan for `key` brought up to date, if there is one and the log since it can be
-/// trusted. Replaying the log is given half the time the walk would take, at the rate
-/// measured here (`docs/scan-performance.md`, "macOS: what is left").
+/// trusted. The file is inflated and checked while the log replays on a thread of its own;
+/// the replay is given half the time the walk would take, at the rate measured here
+/// (`docs/scan-performance.md`, "macOS: what is left").
 #[cfg(target_os = "macos")]
 fn macos_cached<'a>(
     dir: &Path,
@@ -464,39 +504,76 @@ fn macos_cached<'a>(
     options: ScanOptions,
     walk: impl FnMut(&Path, usize) -> Box<dyn Iterator<Item = DirEntries> + 'a> + 'a,
 ) -> Option<cache::CachedScan<'a>> {
-    let saved = cache::Saved::open(dir, key).ok()?;
-    let then = &saved.header.stamp;
-    if then.device != now.device || then.log_uuid != now.log_uuid || then.system != now.system {
+    let timing = std::env::var_os("DUSCAPE_CACHE_TIMES").is_some();
+    let started = std::time::Instant::now();
+    let then = cache::peek(dir, key)?;
+    if !stamp_holds(&then, now) {
         return None;
     }
     const WALK_ENTRIES_PER_SECOND: u64 = 300_000;
-    let give_up = std::time::Duration::from_millis(
-        (saved.header.entries * 1000 / WALK_ENTRIES_PER_SECOND / 2).clamp(1000, 60_000),
-    );
-    let fsevents::Replay::Changes(changes) = fsevents::replay(&key.root, then.event_id, give_up)
-    else {
+    let (saved, replay) = std::thread::scope(|scope| {
+        let replay = scope.spawn(|| {
+            // The saved entry count is in the footer; the file's size stands in for it here.
+            let bytes = std::fs::metadata(dir.join(key.file_name())).map_or(0, |m| m.len());
+            let give_up = std::time::Duration::from_millis(
+                (bytes / 3 * 1000 / WALK_ENTRIES_PER_SECOND / 2).clamp(1000, 60_000),
+            );
+            fsevents::replay(&key.root, then.event_id, give_up)
+        });
+        let saved = cache::Saved::open(dir, key);
+        if timing {
+            eprintln!(
+                "cache: file read, inflated and checked in {:.3}s",
+                started.elapsed().as_secs_f64()
+            );
+        }
+        (saved, replay.join().ok())
+    });
+    let saved = saved.ok()?;
+    let fsevents::Replay::Changes(changes) = replay? else {
         return None;
     };
+    if timing {
+        eprintln!(
+            "cache: log replayed by {:.3}s: {} events, {} folders to list, {} to walk",
+            started.elapsed().as_secs_f64(),
+            changes.events,
+            changes.listed.len(),
+            changes.walked.len()
+        );
+    }
     if cache::too_stale(&changes, &saved.header) {
         return None;
     }
-    let list = Box::new(move |path: &Path, depth: usize| {
+    let list = move |path: &Path, depth: usize| {
         macos::list_one(path, depth, options.max_depth, options.snapshots)
-    });
+    };
     let note = cache::note(&saved.header, &changes, changes.listed.len() as u64);
-    Some(cache::CachedScan::new(
+    let listing = std::time::Instant::now();
+    let scan = cache::CachedScan::new(
         saved,
         &key.root,
         &changes,
-        list,
+        &list,
+        thread_count(options),
         Box::new(walk),
         note,
-    ))
+    );
+    if timing {
+        eprintln!(
+            "cache: {} folders listed again in {:.3}s; first directory after {:.3}s in all",
+            scan.relisted(),
+            listing.elapsed().as_secs_f64(),
+            started.elapsed().as_secs_f64()
+        );
+    }
+    Some(scan)
 }
 
-/// The macOS walk: from the saved scan, or the kernel.
+/// The macOS walk: from the saved scan as it is, from it brought up to date, or the kernel.
 #[cfg(target_os = "macos")]
 enum MacosScan<'a> {
+    Saved(Box<cache::SavedStream>),
     Cached(Box<cache::CachedScan<'a>>),
     Walk(Box<dyn Iterator<Item = DirEntries> + 'a>),
 }
@@ -506,6 +583,7 @@ impl Iterator for MacosScan<'_> {
     type Item = DirEntries;
     fn next(&mut self) -> Option<DirEntries> {
         match self {
+            MacosScan::Saved(stream) => stream.next(),
             MacosScan::Cached(scan) => scan.next(),
             MacosScan::Walk(walk) => walk.next(),
         }

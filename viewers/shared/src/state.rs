@@ -1099,6 +1099,20 @@ impl Viewer {
         if self.selected.is_none() {
             self.select_first();
         }
+        // A tree read from the saved scan as it was is brought up to date behind itself.
+        if self.tree.from_saved_scan
+            && let Some(rescanner) = &self.rescanner
+        {
+            self.rescans.start_catch_up(rescanner, &self.tree);
+        }
+    }
+
+    /// Put back the smaller files a saved scan trimmed, the folder in view first.
+    fn start_fill(&mut self) {
+        if let Some(rescanner) = &self.rescanner {
+            self.rescans
+                .start_fill(rescanner, &self.tree, self.scan_focus.clone());
+        }
     }
 
     // ---------------------------------------------------------------- what is in hand
@@ -1964,6 +1978,17 @@ impl Viewer {
         if let Some((duration, _small)) = finished.whole {
             self.scan_took = Some(duration);
             self.entries_scanned = self.tree.get_total_descendants();
+            // The tree is current now; what the saved scan trimmed is put back behind it.
+            self.start_fill();
+        }
+        // A fill's batch changes no size and moves nothing: only the folder shown, if it was
+        // among those filled, is laid out again, and the preview is left as it is.
+        if let Some((filled, _left)) = finished.filled {
+            let here = self.tree.get_current_path();
+            if filled.contains(&here) {
+                self.refresh_steady();
+            }
+            return;
         }
         if finished.changed {
             if self.tree.current_folder_names != navigated_to {

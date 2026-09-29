@@ -11,7 +11,7 @@ use libduscape::{DisplayCount, DisplaySize, ScanOptions};
 /// Scan `path` as the app does and print the report on stdout.
 pub fn run(path: &Path, mut options: ScanOptions) {
     // A report on what the disk holds now, not on what was saved.
-    options.cache = false;
+    options.cache = libduscape::Cache::Off;
     println!(
         "duscape {} on {} {}",
         env!("CARGO_PKG_VERSION"),

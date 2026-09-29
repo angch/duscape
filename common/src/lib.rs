@@ -25,7 +25,7 @@ pub use error::DuscapeError;
 pub use format::{DisplayCount, DisplaySize, DisplaySizeRounded, truncate_end, truncate_middle};
 pub use model::{File, FileOrFolder, FileToDelete, FileTree, Folder};
 pub use scan::{
-    DirEntries, DirSummary, EntryMeta, Issue, Issues, NamedEntry, Outline, ScanItem, ScanOptions,
-    SharedBlocks,
+    Cache, DirEntries, DirSummary, EntryMeta, Issue, Issues, NamedEntry, Outline, ScanItem,
+    ScanOptions, SharedBlocks,
 };
 pub use tiles::{Area, Board, FileMetadata, FileType, RectFloat, Tile, TreeMap, files_in_folder};

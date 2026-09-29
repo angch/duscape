@@ -3479,10 +3479,67 @@ back). The end-to-end test
 file through its other name, removes a folder and makes one, waits for fseventsd, and checks
 the replay against a fresh walk directory by directory.
 
+### Shown at once, caught up behind, filled in after; and a tenth the file (2026-09-29, later)
+
+Two things were wrong with the first version. In the window, after the volume was chosen,
+"Scanning" stood for seconds: nothing streamed until the file was inflated whole, the log
+replayed and every folder it named listed again, one at a time and cold (`~`: 1.0 + 0.9 +
+4.9 s, the first directory after 6.8 s; `/`: 1.8 s). And the files were 300 MB between them,
+16 bytes an entry, against a wish of about 30 MB a terabyte.
+
+Now three steps, the goals' shape (coarse now, complete after), and a format a tenth the size:
+
+- **Shown as it was.** `Cache::Saved`: the file's key and stamp are in the clear at the front,
+  so a start decides on 4 KiB; the records are streamed through the inflater as they are, the
+  first directory in milliseconds, and the tree they build is flagged `from_saved_scan`.
+- **Caught up behind it.** The viewer starts a whole-tree rescan through `Cache::CatchUp` —
+  the file read whole and checked while the log replays on a thread, the folders it names
+  listed again on a pool, hard-linked files patched, the rest streamed — and the new tree
+  replaces the shown one as `R`'s would, current folder kept. The status line says so.
+- **Filled in after.** The file keeps folders, hard-linked and shared-extent files, and files
+  of `KEEP_FROM` (1 MiB) and up; a folder's smaller files travel as one sum (`Unlisted`,
+  `Folder::unlisted`), so every size is right from the first frame. Once the catch-up's tree
+  has landed, a fill pass lists the trimmed folders again, the one in view first, and puts
+  the small files in one by one (`fill.rs`, `FileTree::fill`), a batch every 256 folders or
+  100 ms through the rescan channel every viewer has.
+
+| tree | entries | first walk, saving | shown (`saved`) | caught up (`cached`), first directory / whole | file, was |
+| --- | --- | --- | --- | --- | --- |
+| `~/Library/Caches` | 318k | 1.32 s | **0.02 s** | 0.01 / 0.09 s | 0.9 MB, was 5.4 |
+| `~/project` | 3.19M | 9.5 s | **0.17 s** | 0.08 / 0.70 s | 11 MB, was 46 |
+| `~` | 8.13M | 28.6 s | **0.51 s** | 0.55 / 2.56 s | 23 MB, was 129 |
+| `/` | 11.37M | 42.4 s | **0.88 s** | 0.62 / 3.52 s | 32 MB, was 170 |
+
+Totals from the file equal the walk's to the byte on the quiet tree (`~/project`,
+140,985,257,984 B) though only 480k of its 3.19M entries are listed: the sums stand in
+exactly. The file is 3 bytes an entry deflated (7.7 raw: the directory names are most of
+it, each once, the parent by index), 40 MB a terabyte used here; the default deflate level
+took a sixth off the fastest (31 against 37 MB on `/`) and runs on the recorder's thread,
+which finishes and renames the file by itself, so the stream's end no longer waits for it.
+Peak memory shown from the file: 518 MB on `~`, 809 on `/` (were 1.39 and 1.98 GB).
+
+What the catch-up still costs after its first directory — 2 s on `~`, 3 s on `/` behind a
+tree already on screen — is the replay's own loop (a relative path made and looked up per
+record where the log named anything) and the stream's encoding for the new file; a folder
+listed again cold is about 3 ms, so a day's few hundred take under half a second on the
+pool. The fill pass costs a walk's reads spread behind the window — a million folders at
+about 3 ms each on six threads would be some ten minutes on `/`, arithmetic from the relist
+cost rather than a timed fill — the folder in view first. A fill blocks no rescan and is
+stopped by none, a batch lays out only the folder shown and leaves the preview alone (both
+pinned by `a_fill_puts_the_trimmed_files_back_and_blocks_no_rescan`). The window's smoke
+test ran a fresh walk of its fixture; the shown → caught up → filled sequence has been seen
+in the benchmark's stages and the tests, not yet watched in a window.
+
+Until a folder is filled its small files' tiles are missing and its sizes are right — with
+one exception, said in `fill.rs`: a small file hard-linked *since* the save is in its old
+folder's sum and listed afresh in the new one, so counted once more until the fill.
+
 ### Reproduce
 
 ```sh
 ./target/release/duscape --benchmark --bench-stage cached ~   # twice: the first saves
+./target/release/duscape --benchmark --bench-stage saved ~    # what is shown first
+DUSCAPE_CACHE_TIMES=1 ./target/release/duscape --benchmark --bench-stage cached ~
 cd docs/probes && cc -O2 -o bulkwalk bulkwalk.c && cc -O2 -o searchfs_probe searchfs_probe.c
 cc -O2 -Wno-deprecated-declarations -framework CoreServices -o fsevents_probe fsevents_probe.c
 THREADS=1 ./bulkwalk /Applications                    # with: iostat -d -w 3 disk0

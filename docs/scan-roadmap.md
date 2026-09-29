@@ -200,13 +200,14 @@ does not need one.
   a fresh walk and on screen in under 10 s; the cache loads at no less than 5M entries/s; a
   saved tree older than the log's reach is rescanned whole and says why. `make test-fs` and
   every viewer unchanged.
-- Result (`scan-performance.md`, "Roadmap step 9, done"): `~` (8.1M entries) in 4.8–6.1 s
-  against 27.8 s fresh, `~/project` (3.2M) in 1.3 s against 9.1 s with totals identical to the
-  byte; `/` (11.4M) in 8.4 s against 43 s; the first scan pays nothing measurable to save,
-  the deflate and the write being on a thread of their own. What the step said it would not handle it
-  does not: a new subfolder that is a mount point is walked as a root; `R` does not refresh
-  the file; the decompressed file is held whole while it replays (1.4 GB peak on `~`).
-  Windows (the USN journal, elevated) is the next cell.
+- Result (`scan-performance.md`, "Roadmap step 9, done", then "Shown at once, caught up
+  behind, filled in after"): `~` (8.1M entries) shown in 0.5 s and current in 2.6 against
+  28 s fresh, `/` (11.4M) in 0.9 and 3.5 against 42, `~/project` (3.2M) in 0.17 and 0.7
+  against 9.5 with totals identical to the byte; the file 3 bytes an entry (23 MB for `~`,
+  32 for `/`); the first scan pays nothing measurable to save. What the step said it would
+  not handle it does not: a new subfolder that is a mount point is walked as a root; `R`
+  does not refresh the file, only the catch-up does. Windows (the USN journal, elevated) is
+  the next cell.
 - Risk: a size changed with no directory event (an `mmap` writer that has not closed, unmeasured)
   is stale until its folder is rescanned; the cache's own size (about 25 bytes an entry
   compactly, 200 MB for `~`) and its staleness after a volume is moved between machines

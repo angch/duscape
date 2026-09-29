@@ -13,7 +13,8 @@ fn temp_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("duscape-cache-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("temp dir");
-    dir
+    // Canonical, as the app's roots are: on macOS `temp_dir()` is a symlink into `/private`.
+    dir.canonicalize().expect("canonical temp dir")
 }
 
 /// A listing through `std::fs`, in the walkers' shape: directories at size 0, files with
@@ -80,8 +81,8 @@ fn walk_std(root: &Path) -> Vec<DirEntries> {
     out
 }
 
-fn lister<'a>() -> Lister<'a> {
-    Box::new(|path, _| list_std(path))
+fn lister(path: &Path, _depth: usize) -> io::Result<DirEntries> {
+    list_std(path)
 }
 
 fn walker<'a>() -> Walker<'a> {
@@ -101,13 +102,17 @@ fn total<'a>(stream: impl IntoIterator<Item = &'a DirEntries>) -> (u64, u64) {
 /// An entry as compared: its name, length and whether it is a folder.
 type Named = (String, u64, bool);
 
-/// Every directory's entries by name and length, order-free, for comparing two streams.
+/// Every directory's entries by name and length, order-free, for comparing two streams. A
+/// directory read from a saved scan lists only what was kept and sums the rest
+/// (`KEEP_FROM`); it compares equal to a fresh listing whose small files sum to the same,
+/// so the entries below the threshold are folded into one line here, from either side.
 fn listing_map<'a>(stream: impl IntoIterator<Item = &'a DirEntries>) -> Vec<(PathBuf, Vec<Named>)> {
     let mut out: Vec<_> = stream
         .into_iter()
         .map(|directory| {
             let mut entries: Vec<_> = directory
                 .iter()
+                .filter(|(_, meta)| kept(meta))
                 .map(|(name, meta)| {
                     (
                         name.to_string_lossy().into_owned(),
@@ -116,6 +121,14 @@ fn listing_map<'a>(stream: impl IntoIterator<Item = &'a DirEntries>) -> Vec<(Pat
                     )
                 })
                 .collect();
+            let mut rest = directory.unlisted;
+            for (_, meta) in directory.iter().filter(|(_, meta)| !kept(meta)) {
+                rest.add(meta);
+            }
+            if rest.count > 0 {
+                entries.push(("<unlisted>".to_string(), rest.apparent, false));
+                entries.push(("<unlisted count>".to_string(), rest.count, false));
+            }
             entries.sort();
             (directory.path.to_path_buf(), entries)
         })
@@ -130,11 +143,14 @@ fn write(path: &Path, bytes: usize) {
 
 fn make_tree(root: &Path) {
     fs::create_dir_all(root.join("a/deep/deeper")).unwrap();
+    // One file large enough to be kept one by one; the rest are summed.
+    write(&root.join("a/big"), KEEP_FROM as usize + 1);
     fs::create_dir_all(root.join("b")).unwrap();
     fs::create_dir_all(root.join("gone/inside")).unwrap();
     write(&root.join("top.txt"), 10);
     write(&root.join("a/one"), 100);
-    write(&root.join("a/deep/two"), 200);
+    // Large enough to be kept one by one: the hard-link case below needs it listed.
+    write(&root.join("a/deep/two"), KEEP_FROM as usize + 2);
     write(&root.join("a/deep/deeper/three"), 300);
     write(&root.join("b/four"), 400);
     write(&root.join("gone/five"), 500);
@@ -155,11 +171,23 @@ fn stamp() -> Stamp {
     }
 }
 
+/// The writer thread finishes the file after the stream ends: wait for `ready`, briefly.
+fn settle(mut ready: impl FnMut() -> bool) {
+    for _ in 0..200 {
+        if ready() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    panic!("the writer thread did not finish");
+}
+
 /// Record a walk of `root` into `cache`, and read it back.
 fn save(root: &Path, cache: &Path) -> Saved {
     let recorded: Vec<DirEntries> =
         Recorder::new(walk_std(root).into_iter(), cache, key(root), stamp()).collect();
     assert!(!recorded.is_empty());
+    settle(|| cache.join(key(root).file_name()).exists());
     Saved::open(cache, &key(root)).expect("the saved scan reads back")
 }
 
@@ -173,7 +201,18 @@ fn the_saved_scan_reads_back_as_it_was_written() {
     assert_eq!(saved.header.key, key(&root));
     assert_eq!(saved.header.stamp, stamp());
     assert_eq!(saved.header.directories, 7);
-    let replayed: Vec<DirEntries> = saved.directories(&root).map(|(_, d)| d).collect();
+    assert_eq!(
+        saved.header.entries, 8,
+        "the six folders and the two big files are kept"
+    );
+    let a = saved
+        .directories(&root)
+        .find(|d| *d.path == *root.join("a"))
+        .unwrap();
+    assert_eq!(a.unlisted.count, 1, "`one` is summed, not listed");
+    assert_eq!(a.unlisted.apparent, 100);
+    assert!(a.iter().any(|(name, _)| name == "big"));
+    let replayed: Vec<DirEntries> = saved.directories(&root).collect();
     assert_eq!(listing_map(&replayed), listing_map(&walk_std(&root)));
     // Nothing but the final file is left, and it is the owner's alone.
     let files: Vec<_> = fs::read_dir(&cache)
@@ -202,11 +241,8 @@ fn a_stopped_scan_saves_nothing() {
     let mut recorder = Recorder::new(walk_std(&root).into_iter(), &cache, key(&root), stamp());
     let _ = recorder.next();
     drop(recorder);
+    settle(|| fs::read_dir(&cache).unwrap().next().is_none());
     assert_eq!(Saved::open(&cache, &key(&root)).err(), Some(Unusable::None));
-    assert!(
-        fs::read_dir(&cache).unwrap().next().is_none(),
-        "the part file is removed"
-    );
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -248,13 +284,18 @@ fn nothing_changed_replays_the_saved_scan_whole() {
     let cache = dir.join("cache");
     let saved = save(&root, &cache);
     let changes = Changes::default();
-    let scan = CachedScan::new(saved, &root, &changes, lister(), walker(), "note".into());
+    let scan = CachedScan::new(saved, &root, &changes, &lister, 2, walker(), "note".into());
     let replayed: Vec<DirEntries> = scan.collect();
     assert_eq!(listing_map(&replayed), listing_map(&walk_std(&root)));
     // The root carries the note, and nothing else does.
     let notes: Vec<_> = replayed
         .iter()
-        .filter(|d| d.issues.kinds.keys().any(|(action, _)| *action == "cache"))
+        .filter(|d| {
+            d.issues
+                .kinds
+                .keys()
+                .any(|(action, _)| *action == NOTE_CAUGHT_UP)
+        })
         .map(|d| d.path.to_path_buf())
         .collect();
     assert_eq!(notes, vec![root.clone()]);
@@ -283,7 +324,7 @@ fn the_changes_named_are_listed_again_and_the_rest_read_from_the_file() {
         events: 5,
     };
     assert!(!too_stale(&changes, &saved.header));
-    let scan = CachedScan::new(saved, &root, &changes, lister(), walker(), "note".into());
+    let scan = CachedScan::new(saved, &root, &changes, &lister, 2, walker(), "note".into());
     let replayed: Vec<DirEntries> = scan.collect();
     assert_eq!(listing_map(&replayed), listing_map(&walk_std(&root)));
     assert_eq!(total(&replayed), total(&walk_std(&root)));
@@ -319,7 +360,7 @@ fn a_changed_directory_that_is_gone_drops_what_was_under_it() {
         listed: vec![PathBuf::from("gone"), PathBuf::from("gone/inside")],
         ..Changes::default()
     };
-    let scan = CachedScan::new(saved, &root, &changes, lister(), walker(), "note".into());
+    let scan = CachedScan::new(saved, &root, &changes, &lister, 2, walker(), "note".into());
     let replayed: Vec<DirEntries> = scan.collect();
     assert!(
         replayed
@@ -349,7 +390,7 @@ fn a_hard_linked_file_grown_through_another_name_is_patched_everywhere() {
         listed: vec![PathBuf::from("b")],
         ..Changes::default()
     };
-    let scan = CachedScan::new(saved, &root, &changes, lister(), walker(), "note".into());
+    let scan = CachedScan::new(saved, &root, &changes, &lister, 2, walker(), "note".into());
     let replayed: Vec<DirEntries> = scan.collect();
     let a = replayed
         .iter()
@@ -421,4 +462,42 @@ fn varints_round_trip() {
         pos: 0,
     };
     assert_eq!(cursor.varint(), None, "an endless varint is not a number");
+}
+
+#[test]
+fn the_tree_holds_the_unlisted_sum_and_a_fill_puts_the_files_back() {
+    use libduscape::model::{FileTree, Folder};
+    let dir = temp_dir("fill");
+    let root = dir.join("tree");
+    make_tree(&root);
+    let cache = dir.join("cache");
+    let saved = save(&root, &cache);
+    let mut tree = FileTree::new(Folder::new(&root), root.clone());
+    for directory in saved.directories(&root) {
+        tree.add_dir_entries(directory);
+    }
+    let mut fresh = FileTree::new(Folder::new(&root), root.clone());
+    for directory in walk_std(&root) {
+        fresh.add_dir_entries(directory);
+    }
+    assert_eq!(
+        tree.get_total_size(),
+        fresh.get_total_size(),
+        "the sums stand in for the files"
+    );
+    assert_eq!(tree.get_total_descendants(), fresh.get_total_descendants());
+    let mut to_fill = tree.unfilled_folders();
+    to_fill.sort();
+    assert_eq!(to_fill.len(), 6, "{to_fill:?}");
+    for folder in &to_fill {
+        assert!(tree.fill(folder, &list_std(folder).unwrap()));
+    }
+    assert!(tree.unfilled_folders().is_empty());
+    assert_eq!(tree.get_total_size(), fresh.get_total_size());
+    assert_eq!(tree.get_total_descendants(), fresh.get_total_descendants());
+    let a = tree.get_current_folder();
+    let _ = a;
+    // Filling again changes nothing.
+    assert!(!tree.fill(&to_fill[0], &list_std(&to_fill[0]).unwrap()));
+    let _ = fs::remove_dir_all(&dir);
 }

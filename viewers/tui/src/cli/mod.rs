@@ -109,7 +109,11 @@ impl Opt {
             hard_link_threshold: self.hard_link_threshold,
             read_device: !self.no_device_read,
             snapshots: self.snapshots,
-            cache: !self.no_cache,
+            cache: if self.no_cache {
+                libduscape::Cache::Off
+            } else {
+                libduscape::Cache::Saved
+            },
         }
     }
 

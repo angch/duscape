@@ -10,7 +10,8 @@ use ::std::time::{Duration, Instant};
 use crate::focus::Focus;
 use crate::parallel;
 use crate::refine::{Found, SmallFiles, refine};
-use libduscape::{DisplayCount, FileToDelete, FileTree, Folder, ScanOptions};
+use libduscape::scan::Cache;
+use libduscape::{DirEntries, DisplayCount, FileToDelete, FileTree, Folder, ScanOptions};
 
 /// What a rescan found.
 pub enum Outcome {
@@ -24,6 +25,19 @@ pub enum Outcome {
     /// filesystem under `-x`, a bind mount of a folder it reaches anyway, or past `--max-depth` —
     /// so neither does its rescan.
     NotWalked,
+    /// A fill pass's batch: folders a saved scan had trimmed, listed again, and how many are
+    /// still to come (`None` once it has finished; the pass reports under one id until then).
+    Filled(Vec<(PathBuf, DirEntries)>, Option<usize>),
+}
+
+/// What a rescan is for: one folder (its second pass run here, before it is handed over),
+/// everything (the second pass left to the caller), or everything as the saved scan's
+/// catch-up (`Cache::CatchUp`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Job {
+    Folder,
+    Whole,
+    CatchUp,
 }
 
 /// Starts rescans, and hands each one's outcome to `done` with the id it was started under.
@@ -50,10 +64,10 @@ impl Rescanner {
     /// Scan `path` in the background. Setting `cancel` stops the walk, and then nothing is
     /// reported: whoever cancelled it has stopped waiting.
     ///
-    /// With `refine_here`, the second pass runs here too, on the new tree before it is handed
-    /// over: a folder's tree is small, and has a ledger of its own that the whole tree's second
-    /// pass knows nothing of. A whole-tree rescan leaves it to the caller, to run while the new
-    /// tree is already on screen.
+    /// For a folder ([`Job::Folder`]) the second pass runs here too, on the new tree before it
+    /// is handed over: a folder's tree is small, and has a ledger of its own that the whole
+    /// tree's second pass knows nothing of. A whole-tree rescan leaves it to the caller, to run
+    /// while the new tree is already on screen; a catch-up is one through the saved scan.
     ///
     /// `path` is `depth` folders below the scan root `root`, and is walked under the same rules as
     /// if the whole scan had reached it: see [`Outcome::NotWalked`].
@@ -64,14 +78,17 @@ impl Rescanner {
         path: PathBuf,
         depth: usize,
         cancel: Arc<AtomicBool>,
-        refine_here: bool,
+        job: Job,
     ) {
+        let refine_here = job == Job::Folder;
+        let catch_up = job == Job::CatchUp;
         let mut options = self.options;
         // A rescan is of a folder the user is looking at: small, and wanted current, so it
         // goes through the kernel even where the first scan read the device.
         options.read_device = false;
-        // Nor through the saved scan, which is of the whole tree.
-        options.cache = false;
+        // Nor through the saved scan, which is of the whole tree — unless this is the whole
+        // tree's catch-up, the saved scan brought up to date behind the one on screen.
+        options.cache = if catch_up { Cache::CatchUp } else { Cache::Off };
         let running = Arc::clone(&self.running);
         let done = Arc::clone(&self.done);
         let _ = thread::Builder::new()
@@ -129,6 +146,43 @@ impl Rescanner {
     }
 }
 
+impl Rescanner {
+    /// List `folders` — those a saved scan had trimmed, absolute paths — on threads of the
+    /// walk's count, the folder the user is in first, and report each batch as
+    /// [`Outcome::Filled`] under `id`. Setting `cancel` stops it, and then nothing more is
+    /// reported.
+    pub fn spawn_fill(
+        &self,
+        id: u64,
+        root: PathBuf,
+        folders: Vec<PathBuf>,
+        focus: Focus,
+        cancel: Arc<AtomicBool>,
+    ) {
+        let options = self.options;
+        let running = Arc::clone(&self.running);
+        let done = Arc::clone(&self.done);
+        let _ = thread::Builder::new()
+            .name(format!("fill_{id}"))
+            .spawn(move || {
+                let keep_going =
+                    || running.load(Ordering::Acquire) && !cancel.load(Ordering::Acquire);
+                crate::fill::fill(
+                    &root,
+                    folders,
+                    options,
+                    crate::thread_count(options),
+                    &focus,
+                    &keep_going,
+                    |batch, left| {
+                        done(id, Outcome::Filled(batch, left));
+                        true
+                    },
+                );
+            });
+    }
+}
+
 /// The rescans a viewer has under way, and what their outcomes do to its tree.
 ///
 /// Each is known by its folder's path from the scan root. One whose folder holds another's brings
@@ -146,6 +200,18 @@ struct Rescan {
     id: u64,
     relative: Vec<OsString>,
     cancel: Arc<AtomicBool>,
+    kind: Kind,
+}
+
+/// What a rescan is doing.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    /// A folder, or everything, walked again.
+    Walk,
+    /// Everything: the saved scan brought up to date behind the one on screen.
+    CatchUp,
+    /// The folders a saved scan trimmed, listed again, a batch at a time.
+    Fill,
 }
 
 /// What a finished rescan did to the tree.
@@ -160,6 +226,9 @@ pub struct Finished {
     /// A folder's rescan that was grafted in: its path, which the whole tree's second pass, if
     /// one is under way, must now skip — the folder had a second pass of its own.
     pub refined_folder: Option<PathBuf>,
+    /// For a fill pass's batch: the folders filled in, and how many are still to come
+    /// (`None` when the pass has finished and the tree is whole).
+    pub filled: Option<(Vec<PathBuf>, Option<usize>)>,
     /// The folder the rescanned one replaced. Dropping it walks everything in it, so the viewer
     /// decides: leak it (the terminal viewer, which quits soon enough), or drop it on a thread of
     /// its own (a window, which may live for hours of rescans).
@@ -175,15 +244,17 @@ impl Rescans {
         tree: &FileTree,
         relative: Vec<OsString>,
     ) -> bool {
+        // A fill adds what the tree lacks, folder by folder, and covers nothing: it neither
+        // stands in a rescan's way (it runs for minutes on a whole disk) nor is stopped by one.
         if self
             .under_way
             .iter()
-            .any(|rescan| relative.starts_with(&rescan.relative))
+            .any(|rescan| rescan.kind != Kind::Fill && relative.starts_with(&rescan.relative))
         {
             return false;
         }
         self.under_way.retain(|rescan| {
-            let covered = rescan.relative.starts_with(&relative);
+            let covered = rescan.kind != Kind::Fill && rescan.relative.starts_with(&relative);
             if covered {
                 rescan.cancel.store(true, Ordering::Release);
             }
@@ -203,12 +274,87 @@ impl Rescans {
             path,
             relative.len(),
             Arc::clone(&cancel),
-            !relative.is_empty(),
+            if relative.is_empty() {
+                Job::Whole
+            } else {
+                Job::Folder
+            },
         );
         self.under_way.push(Rescan {
             id,
             relative,
             cancel,
+            kind: Kind::Walk,
+        });
+        true
+    }
+
+    /// Bring the saved scan `tree` was read from up to date, behind it: a rescan of everything
+    /// through `Cache::CatchUp`, whose tree replaces this one when it lands. Not when a rescan
+    /// of everything is under way already. Whether one was started.
+    pub fn start_catch_up(&mut self, rescanner: &Rescanner, tree: &FileTree) -> bool {
+        if self
+            .under_way
+            .iter()
+            .any(|rescan| rescan.relative.is_empty())
+        {
+            return false;
+        }
+        self.under_way.retain(|rescan| {
+            rescan.cancel.store(true, Ordering::Release);
+            false
+        });
+        self.next_id += 1;
+        let id = self.next_id;
+        let cancel = Arc::new(AtomicBool::new(false));
+        rescanner.spawn(
+            id,
+            tree.path_in_filesystem.clone(),
+            tree.path_in_filesystem.clone(),
+            0,
+            Arc::clone(&cancel),
+            Job::CatchUp,
+        );
+        self.under_way.push(Rescan {
+            id,
+            relative: Vec::new(),
+            cancel,
+            kind: Kind::CatchUp,
+        });
+        true
+    }
+
+    /// Put back what a saved scan trimmed from `tree`: every folder with files unlisted, listed
+    /// again on a thread of its own, the folder the user is in (`focus`) first, each batch
+    /// coming back as [`Outcome::Filled`]. Nothing to fill, or a fill under way already, and
+    /// none is started. Whether one was.
+    pub fn start_fill(&mut self, rescanner: &Rescanner, tree: &FileTree, focus: Focus) -> bool {
+        if self
+            .under_way
+            .iter()
+            .any(|rescan| rescan.kind == Kind::Fill)
+        {
+            return false;
+        }
+        let folders = tree.unfilled_folders();
+        if folders.is_empty() {
+            return false;
+        }
+        self.next_id += 1;
+        let id = self.next_id;
+        let cancel = Arc::new(AtomicBool::new(false));
+        rescanner.spawn_fill(
+            id,
+            tree.path_in_filesystem.clone(),
+            folders,
+            focus,
+            Arc::clone(&cancel),
+        );
+        self.under_way.push(Rescan {
+            id,
+            relative: Vec::new(),
+            cancel,
+            kind: Kind::Fill,
         });
         true
     }
@@ -222,6 +368,11 @@ impl Rescans {
     ) -> bool {
         let mut restart = Vec::new();
         self.under_way.retain(|rescan| {
+            // A fill only adds what the tree lacks; a folder emptied since is listed as it is.
+            // A catch-up's replay includes the deletion.
+            if rescan.kind != Kind::Walk {
+                return true;
+            }
             let holds = deleted
                 .iter()
                 .any(|file| file.path_to_file.starts_with(&rescan.relative));
@@ -252,6 +403,10 @@ impl Rescans {
     pub fn describe(&self, root: &Path) -> Option<String> {
         match self.under_way.as_slice() {
             [] => None,
+            [one] if one.kind == Kind::CatchUp => {
+                Some("the saved scan, being brought up to date".to_string())
+            }
+            [one] if one.kind == Kind::Fill => Some("filling in the smaller files".to_string()),
             [one] if one.relative.is_empty() => {
                 Some(format!("{} (everything)", root.to_string_lossy()))
             }
@@ -262,7 +417,19 @@ impl Rescans {
                     .to_string_lossy()
                     .into_owned(),
             ),
-            many => Some(format!("{} folders", DisplayCount(many.len() as u64))),
+            many => {
+                let folders = many.iter().filter(|r| r.kind != Kind::Fill).count();
+                let filling = folders < many.len();
+                Some(match (folders, filling) {
+                    (0, _) => "filling in the smaller files".to_string(),
+                    (1, true) => "1 folder, and filling in the smaller files".to_string(),
+                    (n, true) => format!(
+                        "{} folders, and filling in the smaller files",
+                        DisplayCount(n as u64)
+                    ),
+                    (n, false) => format!("{} folders", DisplayCount(n as u64)),
+                })
+            }
         }
     }
 
@@ -291,14 +458,30 @@ impl Rescans {
     /// nearest folder that is still there (see [`FileTree::current_folder_exists`]).
     pub fn finish(&mut self, id: u64, outcome: Outcome, tree: &mut FileTree) -> Option<Finished> {
         let index = self.under_way.iter().position(|rescan| rescan.id == id)?;
-        let rescan = self.under_way.remove(index);
         let mut finished = Finished {
             changed: false,
             whole: None,
             refined_folder: None,
             old: None,
             relative: Vec::new(),
+            filled: None,
         };
+        // A fill reports batch after batch under its id, and is done when it says so.
+        if let Outcome::Filled(batch, left) = outcome {
+            let mut done = Vec::with_capacity(batch.len());
+            for (path, listing) in batch {
+                if tree.fill(&path, &listing) {
+                    finished.changed = true;
+                    done.push(path);
+                }
+            }
+            finished.filled = Some((done, left));
+            if left.is_none() {
+                self.under_way.remove(index);
+            }
+            return Some(finished);
+        }
+        let rescan = self.under_way.remove(index);
         match outcome {
             Outcome::NotWalked => {}
             Outcome::Scanned(rescanned, duration, small) => {
@@ -318,6 +501,7 @@ impl Rescans {
                 }
             }
             Outcome::Gone => finished.changed = tree.remove_path(&rescan.relative),
+            Outcome::Filled(..) => unreachable!("handled above"),
         }
         finished.relative = rescan.relative;
         Some(finished)

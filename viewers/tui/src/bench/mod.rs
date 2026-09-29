@@ -46,11 +46,14 @@ pub enum BenchStage {
     /// ext4's inode tables read from the device (root): every live inode's size summed, no
     /// names, no tree — the floor a device-reading walker could reach. Linux, ext4, root.
     Ext4Raw,
-    /// `sharded` with the saved scan: what the app does on macOS on every start after the
-    /// first — the file read, the volume's change log replayed, the folders it names listed
-    /// again. Run twice: the first saves, the second is the measurement. Every other stage
-    /// walks afresh and saves nothing.
+    /// `sharded` with the saved scan brought up to date: what the app does on macOS behind
+    /// the tree it shows — the file read, the volume's change log replayed, the folders it
+    /// names listed again. Run twice: the first saves, the second is the measurement. Every
+    /// other stage but `saved` walks afresh and saves nothing.
     Cached,
+    /// `sharded` from the saved scan as it is: what the app shows first on macOS on every
+    /// start after the first. Needs a `cached` run before it.
+    Saved,
     /// Run every stage in order.
     All,
 }
@@ -437,9 +440,14 @@ pub fn run(
     shard_depth: usize,
     profile: bool,
 ) {
-    // The stages measure the walk; only `cached` starts from the saved scan, or saves one —
-    // and not with `--no-cache`.
-    options.cache = options.cache && stage == BenchStage::Cached;
+    // The stages measure the walk; only `cached` and `saved` start from the saved scan, and
+    // only `cached` saves one — and neither with `--no-cache`.
+    options.cache = match (options.cache, stage) {
+        (libduscape::Cache::Off, _) => libduscape::Cache::Off,
+        (_, BenchStage::Cached) => libduscape::Cache::CatchUp,
+        (_, BenchStage::Saved) => libduscape::Cache::Saved,
+        _ => libduscape::Cache::Off,
+    };
     if profile {
         libduscape::model::files::profile::enable();
     }
@@ -463,6 +471,7 @@ pub fn run(
         BenchStage::All => ALL_STAGES,
         BenchStage::Ext4Raw => &[BenchStage::Ext4Raw],
         BenchStage::Cached => &[BenchStage::Cached],
+        BenchStage::Saved => &[BenchStage::Saved],
         other => std::slice::from_ref(
             ALL_STAGES
                 .iter()
@@ -483,7 +492,9 @@ pub fn run(
                 BenchStage::Sharded => bench_sharded(path, options, shards, shard_depth, false),
                 BenchStage::Refined => bench_sharded(path, options, shards, shard_depth, true),
                 BenchStage::Ext4Raw => bench_ext4_raw(path),
-                BenchStage::Cached => bench_sharded(path, options, shards, shard_depth, false),
+                BenchStage::Cached | BenchStage::Saved => {
+                    bench_sharded(path, options, shards, shard_depth, false)
+                }
             };
             result.report();
         }

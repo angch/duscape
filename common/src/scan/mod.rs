@@ -74,13 +74,30 @@ pub struct ScanOptions {
     /// QNAP's `@Recently-Snapshot`, ZFS's `.zfs`, NetApp's `.snapshot`): every walker leaves
     /// those empty by name, and this walks them ([`crate::nas::left_out`]).
     pub snapshots: bool,
-    /// Save the finished scan, and start the next one from it: on macOS the saved listing of
-    /// every folder, with the volume's FSEvents id at the moment the walk began, and at the next
-    /// start the folders the volume's change log names since then listed again, the rest read
-    /// from the file (`duscape_scan::cache`). Off for rescans, the benchmark (its `cached`
-    /// stage excepted), `--issues`, and with `--no-cache`. Ignored where nothing keeps a
-    /// change log the scan can read (Linux, Windows so far).
-    pub cache: bool,
+    /// The saved scan (`duscape_scan::cache`): on macOS the listing of every folder saved as
+    /// the walk ends with the volume's FSEvents id from before it began, and the next start of
+    /// the same folder made from it. See [`Cache`]. Ignored where nothing keeps a change log
+    /// the scan can read (Linux, Windows so far).
+    pub cache: Cache,
+}
+
+/// How a scan uses the saved scan of its folder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Cache {
+    /// Walk, and save nothing: rescans, `--issues`, the benchmark's walking stages,
+    /// `--no-cache`.
+    #[default]
+    Off,
+    /// The viewers' first scan: a saved scan whose stamp still holds is streamed as it is —
+    /// on screen in the time it takes to read, current as of when it was saved — and the tree
+    /// says so ([`crate::FileTree::from_saved_scan`]) so the viewer starts a `CatchUp` behind
+    /// it. Without one, the walk runs and is saved.
+    Saved,
+    /// The saved scan brought up to date: the change log since its stamp replayed, the
+    /// folders it names listed again, the rest read from the file, the result saved with a
+    /// new stamp. A whole-tree rescan the viewer starts once a `Saved` tree is on screen; the
+    /// walk, saved, where the file cannot be trusted any more.
+    CatchUp,
 }
 
 impl ScanOptions {
@@ -106,7 +123,7 @@ impl Default for ScanOptions {
             hard_link_threshold: None,
             read_device: true,
             snapshots: false,
-            cache: false,
+            cache: Cache::Off,
         }
     }
 }
@@ -233,6 +250,39 @@ pub struct DirEntries {
     pub extent_space: u64,
     /// Why what [`Self::failed`] counts failed, for `--issues`; see [`Self::fail`].
     pub issues: Issues,
+    /// Files of this directory not in `entries`, as one sum: what a saved scan trimmed away
+    /// (`duscape_scan::cache` keeps folders, hard-linked files and the largest files, and
+    /// carries the rest of a folder as this), for the tree to hold until the folder is listed
+    /// again ([`crate::FileTree::fill`]). Zero from every walker.
+    pub unlisted: Unlisted,
+}
+
+/// Files a directory holds that are not listed one by one: how much they take, and how many.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Unlisted {
+    pub size: u64,
+    pub apparent: u64,
+    pub count: u64,
+}
+
+impl Unlisted {
+    pub const ZERO: Unlisted = Unlisted {
+        size: 0,
+        apparent: 0,
+        count: 0,
+    };
+
+    #[must_use]
+    pub fn is_zero(&self) -> bool {
+        self.count == 0 && self.size == 0 && self.apparent == 0
+    }
+
+    /// Take one more file into the sum.
+    pub fn add(&mut self, meta: &EntryMeta) {
+        self.size += meta.size;
+        self.apparent += meta.apparent;
+        self.count += 1;
+    }
 }
 
 /// A failure a scan counted, kept to be shown (`duscape --issues`): where, what was being done
@@ -456,6 +506,7 @@ impl DirEntries {
             later: Vec::new(),
             extent_space: 0,
             issues: Issues::default(),
+            unlisted: Unlisted::ZERO,
         }
     }
 
@@ -470,6 +521,7 @@ impl DirEntries {
             later: Vec::new(),
             extent_space: 0,
             issues: Issues::default(),
+            unlisted: Unlisted::ZERO,
         }
     }
 

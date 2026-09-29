@@ -128,7 +128,7 @@ pub fn run() {
     let options = options();
     let scan_options = ScanOptions {
         show_apparent_size: options.apparent,
-        cache: true,
+        cache: libduscape::Cache::Saved,
         ..ScanOptions::default()
     };
     run_with(options.folder, scan_options);

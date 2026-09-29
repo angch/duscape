@@ -180,6 +180,10 @@ pub struct Folder {
     pub contents: ContentsMap,
     pub sizes: Sizes,
     pub num_descendants: u64,
+    /// Files of this folder counted in `sizes` and `num_descendants` but not in `contents`:
+    /// what a saved scan trimmed away (`crate::scan::Unlisted`), until the folder is listed
+    /// again and they are put in one by one (`FileTree::fill`).
+    pub unlisted: crate::scan::Unlisted,
     /// This folder in the tree's hard-link ledger, given when a directory's entries are first
     /// resolved to it, or [`DirRef::NONE`] until then. Links found in it are charged under this
     /// id, so a folder never has to be named to the ledger by path.
@@ -191,6 +195,7 @@ impl Default for Folder {
             contents: ContentsMap::default(),
             sizes: Sizes::ZERO,
             num_descendants: 0,
+            unlisted: crate::scan::Unlisted::ZERO,
             dir: DirRef::NONE,
         }
     }
@@ -440,6 +445,9 @@ impl Folder {
     ) {
         self.sizes += other.sizes;
         self.num_descendants += other.num_descendants;
+        self.unlisted.size += other.unlisted.size;
+        self.unlisted.apparent += other.unlisted.apparent;
+        self.unlisted.count += other.unlisted.count;
         if other.dir != DirRef::NONE {
             if self.dir == DirRef::NONE && parent != DirRef::NONE {
                 self.dir = ledger.child(parent);
@@ -499,6 +507,18 @@ impl Folder {
             path.components().map(|component| component.as_os_str()),
         );
     }
+    /// The folder `names` below this one, to change; `None` where the path is not all folders.
+    pub fn folder_at_mut_path(&mut self, names: &[OsString]) -> Option<&mut Folder> {
+        let mut folder = self;
+        for name in names {
+            folder = match folder.contents.get_mut(name)? {
+                FileOrFolder::Folder(next) => next,
+                FileOrFolder::File(_) => return None,
+            };
+        }
+        Some(folder)
+    }
+
     pub fn path(&self, mut folder_names: Vec<OsString>) -> Option<&FileOrFolder> {
         let next_folder_name = folder_names.remove(0);
         let next_in_path = &self.contents.get(&next_folder_name)?;
