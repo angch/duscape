@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   needing elevation. A volume over several disks names them. The Windows window draws it above
   the hex dump, as the Linux and macOS windows do.
 
+- In the windows, the details panel follows the pointer: a treemap tile it rests on for 100 ms
+  is what the panel shows and previews, and 100 ms after it leaves the entry in hand is back. A
+  key press brings it back at once.
+
 ### Fixed
 
 - The Linux and Windows windows no longer flash a treemap without labels before one with them

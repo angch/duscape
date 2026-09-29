@@ -73,6 +73,8 @@ const OUTLINE_TIMER: usize = 2;
 /// Fires once input has stopped for `IDLE` while the second pass is owed — the viewer's
 /// (the deeper nesting, the specks), or a paint's (the labels a first paint had no time for).
 const SECOND_PASS_TIMER: usize = 3;
+/// The details panel following the pointer, `PEEK` after it rests on a tile or leaves one.
+const PEEK_TIMER: usize = 4;
 /// How long after a batch the live view is laid out — the elevated scan of a volume sends
 /// dozens of batches a second, and each relayout took 15–25 ms, so laid out per batch the
 /// window answered nothing until the scan ended.
@@ -466,6 +468,16 @@ impl Window {
         if self.viewer.hover_at(self.points(x), self.points(y)) {
             invalidate(hwnd);
         }
+        self.arm_peek(hwnd);
+    }
+
+    /// Wake when the details panel is to follow the pointer, if it is to.
+    fn arm_peek(&self, hwnd: HWND) {
+        if let Some(due) = self.viewer.peek_due() {
+            let ms = u32::try_from(due.as_millis()).unwrap_or(u32::MAX).max(1);
+            // SAFETY: our own window and timer.
+            unsafe { SetTimer(hwnd, PEEK_TIMER, ms, None) };
+        }
     }
 
     /// Delete what is marked, or the entry in hand, once the user has said yes.
@@ -792,6 +804,14 @@ fn dispatch(window: &mut Window, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
             unsafe { KillTimer(hwnd, SECOND_PASS_TIMER) };
             window.paints.second_pass(&mut window.viewer);
             invalidate(hwnd);
+        }
+        WM_TIMER if wparam == PEEK_TIMER => {
+            // SAFETY: our own timer.
+            unsafe { KillTimer(hwnd, PEEK_TIMER) };
+            if window.viewer.peek_tick() {
+                window.changed(hwnd);
+            }
+            window.arm_peek(hwnd);
         }
         WM_TIMER if wparam == FLASH_TIMER => {
             if window.viewer.message_left().is_none() {

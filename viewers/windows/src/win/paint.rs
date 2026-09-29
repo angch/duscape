@@ -892,11 +892,7 @@ fn draw_preview(canvas: &Canvas, window: &Window, info: Rect) {
             libduscape::DisplayCount(viewer.marked.len() as u64),
             DisplaySize(size as f64)
         )
-    } else if let Some(entry) = viewer
-        .cursor_entry()
-        .map(|row| &row.entry)
-        .or_else(|| viewer.selected_entry())
-    {
+    } else if let Some(entry) = viewer.shown_entry().or_else(|| viewer.selected_entry()) {
         let mut words = entry.name.to_string_lossy().into_owned();
         if entry.file_type == FileType::Folder {
             words.push('\\');

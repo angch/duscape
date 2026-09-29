@@ -1491,3 +1491,45 @@ fn a_zoom_during_a_slide_lays_the_tiles_out_where_the_zoom_puts_them() {
     };
     assert_eq!(nested(&sliding), nested(&still));
 }
+
+#[test]
+fn the_details_follow_a_tile_the_pointer_rests_on_and_come_back_after_it_leaves() {
+    use super::PEEK;
+    let mut viewer = viewer();
+    let in_hand = viewer.shown_entry().map(|entry| entry.name.clone());
+    assert_eq!(in_hand.as_deref(), Some(OsStr::new("big")));
+    let (x, y) = center_of(&viewer, "medium.txt");
+    viewer.hover_at(x, y);
+    assert!(viewer.peek_due().is_some_and(|due| due <= PEEK));
+    assert!(!viewer.peek_tick(), "not before it has rested");
+    assert_eq!(viewer.shown_entry().map(|e| e.name.clone()), in_hand);
+    ::std::thread::sleep(PEEK + Duration::from_millis(10));
+    assert!(viewer.peek_tick());
+    assert_eq!(
+        viewer.shown_entry().map(|e| e.name.clone()).as_deref(),
+        Some(OsStr::new("medium.txt"))
+    );
+    assert_eq!(
+        viewer.peek_due(),
+        None,
+        "nothing pending while it rests there"
+    );
+    let (generation, path) = viewer.wanted_preview().expect("the file's preview");
+    assert!(path.ends_with("medium.txt") && generation > 0);
+    // Off the tile: the entry in hand comes back after PEEK, not at once.
+    viewer.hover_at(-1.0, -1.0);
+    assert!(viewer.peek_due().is_some());
+    assert!(!viewer.peek_tick());
+    ::std::thread::sleep(PEEK + Duration::from_millis(10));
+    assert!(viewer.peek_tick());
+    assert_eq!(viewer.shown_entry().map(|e| e.name.clone()), in_hand);
+    assert_eq!(viewer.peek_due(), None);
+    assert!(viewer.wanted_preview().is_none(), "a folder: no preview");
+    // A key press ends it at once.
+    viewer.hover_at(x, y);
+    ::std::thread::sleep(PEEK + Duration::from_millis(10));
+    assert!(viewer.peek_tick());
+    viewer.arrow(Direction::Down, false);
+    assert_ne!(viewer.shown_entry().map(|e| e.name.clone()), in_hand);
+    assert_eq!(viewer.peek_due(), None);
+}

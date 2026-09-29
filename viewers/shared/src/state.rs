@@ -53,6 +53,10 @@ pub const LAYOUT_BUDGET: Duration = Duration::from_millis(10);
 /// ([`Viewer::finish_second_pass`]), and paints in full what a first paint left out: long
 /// enough that a drag of the window's edge is not held up.
 pub const IDLE: Duration = Duration::from_millis(60);
+/// How long the pointer rests on a treemap tile before the details panel shows that entry in
+/// the entry in hand's place, and how long after it leaves before the entry in hand is shown
+/// again ([`Viewer::peek_due`], [`Viewer::peek_tick`]).
+pub const PEEK: Duration = Duration::from_millis(100);
 /// Entries a folder lays out at most in a first pass: the largest, so it is the smallest that
 /// wait. A Windows component store (27k entries) took 10–16 ms alone laid out whole.
 pub const FIRST_PASS_ROOM: usize = 1000;
@@ -445,6 +449,13 @@ pub struct Viewer {
     layout_generation: u64,
     /// The nested tile under the pointer.
     pub hover_nested: Option<usize>,
+    /// The treemap entry under the pointer, as its path from the listed folder, and since when:
+    /// after [`PEEK`] the details panel shows it.
+    hover_target: Option<(Vec<OsString>, Instant)>,
+    /// The entry the details panel shows in the entry in hand's place while the pointer rests
+    /// on its tile, and when the pointer left it — [`PEEK`] later the panel goes back.
+    peek: Option<(Vec<OsString>, FileMetadata)>,
+    peek_left: Option<Instant>,
     /// The zoom level of each folder above this one, to restore on the way back up.
     zooms: Vec<usize>,
     pub scanning: bool,
@@ -517,6 +528,9 @@ impl Viewer {
             dust_cost: None,
             layout_generation: 0,
             hover_nested: None,
+            hover_target: None,
+            peek: None,
+            peek_left: None,
             zooms: Vec::new(),
             scanning: true,
             scan_id,
@@ -1092,6 +1106,7 @@ impl Viewer {
 
     /// Put a row in hand by its path; its top-level entry is what the treemap selects.
     fn select_row(&mut self, path: Vec<OsString>, chosen: bool) {
+        self.drop_peek();
         self.selected = path.first().cloned();
         self.chosen = chosen && self.selected.is_some();
         self.anchor = self.selected.clone();
@@ -1460,22 +1475,130 @@ impl Viewer {
         true
     }
 
-    /// The pointer moved. Returns whether what it is over changed.
+    /// The pointer moved. Returns whether what it is over changed. A treemap tile it comes to
+    /// rest on is what the details panel shows after [`PEEK`] (a viewer wakes for
+    /// [`Viewer::peek_tick`] when [`Viewer::peek_due`] says).
     pub fn hover_at(&mut self, x: f64, y: f64) -> bool {
-        let (hover, hover_row, hover_nested) = match self.hit(x, y) {
-            Hit::Row(index) | Hit::Expander(index) => {
-                (Some(self.rows[index].path[0].clone()), Some(index), None)
-            }
-            Hit::Tile(name) => (Some(name), None, None),
-            Hit::Nested(index) => (None, None, Some(index)),
-            Hit::SmallFiles | Hit::Nothing => (None, None, None),
+        let (hover, hover_row, hover_nested, target) = match self.hit(x, y) {
+            Hit::Row(index) | Hit::Expander(index) => (
+                Some(self.rows[index].path[0].clone()),
+                Some(index),
+                None,
+                None,
+            ),
+            Hit::Tile(name) => (Some(name.clone()), None, None, Some(vec![name])),
+            Hit::Nested(index) => (None, None, Some(index), Some(self.nested_path(index))),
+            Hit::SmallFiles | Hit::Nothing => (None, None, None, None),
         };
         let changed =
             hover != self.hover || hover_row != self.hover_row || hover_nested != self.hover_nested;
         self.hover = hover;
         self.hover_row = hover_row;
         self.hover_nested = hover_nested;
+        match target {
+            Some(path) => {
+                if self
+                    .hover_target
+                    .as_ref()
+                    .is_none_or(|(there, _)| *there != path)
+                {
+                    self.hover_target = Some((path, Instant::now()));
+                }
+                self.peek_left = None;
+            }
+            None => {
+                self.hover_target = None;
+                if self.peek.is_some() && self.peek_left.is_none() {
+                    self.peek_left = Some(Instant::now());
+                }
+            }
+        }
         changed
+    }
+
+    /// How long until [`Viewer::peek_tick`] has something to do: the pointer's rest on a tile
+    /// reaching [`PEEK`], or its absence from one; none when neither is pending.
+    #[must_use]
+    pub fn peek_due(&self) -> Option<Duration> {
+        let since = match (&self.hover_target, &self.peek_left) {
+            (Some((path, since)), _) => {
+                if self.peek.as_ref().is_some_and(|(shown, _)| shown == path) {
+                    return None;
+                }
+                *since
+            }
+            (None, Some(left)) if self.peek.is_some() => *left,
+            _ => return None,
+        };
+        Some(PEEK.saturating_sub(since.elapsed()))
+    }
+
+    /// The time [`Viewer::peek_due`] named has come: the details panel takes the tile the
+    /// pointer rests on, or goes back to the entry in hand. Returns whether what it shows
+    /// changed (then the viewer asks for the preview again, as after any change).
+    pub fn peek_tick(&mut self) -> bool {
+        if let Some((path, since)) = &self.hover_target {
+            if since.elapsed() < PEEK || self.peek.as_ref().is_some_and(|(shown, _)| shown == path)
+            {
+                return false;
+            }
+            let path = path.clone();
+            match self.entry_at(&path) {
+                Some(entry) => {
+                    self.peek = Some((path, entry));
+                    self.peek_left = None;
+                    return true;
+                }
+                // Gone (a delete, a rescan): nothing to show, and nothing to wait for.
+                None => self.hover_target = None,
+            }
+        }
+        if self.peek.is_some() && self.peek_left.is_some_and(|left| left.elapsed() >= PEEK) {
+            self.drop_peek();
+            return true;
+        }
+        false
+    }
+
+    /// The details panel back on the entry in hand at once.
+    fn drop_peek(&mut self) {
+        self.peek = None;
+        self.peek_left = None;
+        self.hover_target = None;
+    }
+
+    /// The entry the details panel is about: the one the pointer rests on, else the row in
+    /// hand, with its path from the listed folder.
+    #[must_use]
+    pub fn shown(&self) -> Option<(&[OsString], &FileMetadata)> {
+        self.peek
+            .as_ref()
+            .map(|(path, entry)| (path.as_slice(), entry))
+            .or_else(|| {
+                self.cursor_entry()
+                    .map(|row| (row.path.as_slice(), &row.entry))
+            })
+    }
+
+    /// [`Viewer::shown`]'s entry.
+    #[must_use]
+    pub fn shown_entry(&self) -> Option<&FileMetadata> {
+        self.shown().map(|(_, entry)| entry)
+    }
+
+    /// The entry at `path` from the listed folder, as the list would give it.
+    fn entry_at(&self, path: &[OsString]) -> Option<FileMetadata> {
+        let (last, parents) = path.split_last()?;
+        let mut folder = self.tree.get_current_folder();
+        for name in parents {
+            match folder.contents.get(name)? {
+                FileOrFolder::Folder(inside) => folder = inside,
+                FileOrFolder::File(_) => return None,
+            }
+        }
+        libduscape::tiles::files_in_folder(folder, 0, self.tree.shown)
+            .into_iter()
+            .find(|entry| &entry.name == last)
     }
 
     // ---------------------------------------------------------------- navigation
@@ -1846,9 +1969,9 @@ impl Viewer {
     /// drawn: `pixels` is part of what was asked, so a resize asks again for the same file.
     pub fn wanted_preview_sized(&mut self, pixels: Option<(u32, u32)>) -> Option<(u64, PathBuf)> {
         let target = self
-            .cursor_entry()
-            .filter(|row| row.entry.file_type == FileType::File)
-            .map(|row| (self.row_path(&row.path), pixels));
+            .shown()
+            .filter(|(_, entry)| entry.file_type == FileType::File)
+            .map(|(path, _)| (self.row_path(path), pixels));
         if target == self.preview_for {
             return None;
         }

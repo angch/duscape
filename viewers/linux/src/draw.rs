@@ -379,11 +379,7 @@ fn details(canvas: &mut Canvas, viewer: &Viewer, info: Rect, picture: Option<&Rg
     canvas.fill(Rect::new(info.x, info.y, info.w, 1.0), SEPARATOR, 1.0);
     let inner = info.inset(12.0, 8.0);
     // The row in hand — nested in the tree or not — is what the preview is of.
-    let Some(entry) = viewer
-        .cursor_entry()
-        .map(|row| &row.entry)
-        .or_else(|| viewer.selected_entry())
-    else {
+    let Some(entry) = viewer.shown_entry().or_else(|| viewer.selected_entry()) else {
         return;
     };
     pens.strong.draw(

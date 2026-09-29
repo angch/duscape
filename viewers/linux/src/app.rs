@@ -204,14 +204,33 @@ impl App {
         let mut changed_at = Instant::now();
         loop {
             // While the second pass is owed, the wait is only until changes have stopped: then
-            // the second pass, and a frame with it in full.
-            let msg = if self.paints.owed(&self.viewer) {
-                let wait = IDLE.saturating_sub(changed_at.elapsed());
+            // the second pass, and a frame with it in full. And while the pointer rests on a
+            // tile, or has just left one, until the details panel is to follow it.
+            let second_pass = self
+                .paints
+                .owed(&self.viewer)
+                .then(|| IDLE.saturating_sub(changed_at.elapsed()));
+            let wait = match (second_pass, self.viewer.peek_due()) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+            let msg = if let Some(wait) = wait {
                 match self.rx.recv_timeout(wait) {
                     Ok(msg) => msg,
                     Err(RecvTimeoutError::Timeout) => {
-                        self.paints.second_pass(&mut self.viewer);
-                        self.render()?;
+                        if second_pass.is_some()
+                            && changed_at.elapsed() >= IDLE
+                            && self.paints.owed(&self.viewer)
+                        {
+                            self.paints.second_pass(&mut self.viewer);
+                            self.dirty = true;
+                        }
+                        if self.viewer.peek_tick() {
+                            self.changed();
+                        }
+                        if self.dirty {
+                            self.render()?;
+                        }
                         continue;
                     }
                     Err(RecvTimeoutError::Disconnected) => break,

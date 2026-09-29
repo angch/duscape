@@ -219,6 +219,7 @@ define_class!(
             if self.with(|viewer| viewer.hover_at(x, y)) == Some(true) {
                 self.setNeedsDisplay(true);
             }
+            self.arm_peek();
         }
 
         #[unsafe(method(mouseExited:))]
@@ -227,6 +228,7 @@ define_class!(
             if self.with(|viewer| viewer.hover_at(-1.0, -1.0)) == Some(true) {
                 self.setNeedsDisplay(true);
             }
+            self.arm_peek();
         }
 
         #[unsafe(method(scrollWheel:))]
@@ -522,6 +524,9 @@ thread_local! {
     static VIEW: OnceCell<Retained<DiskView>> = const { OnceCell::new() };
 }
 
+/// Whether a wake for the details panel to follow the pointer is on its way (`arm_peek`).
+static PEEK_PENDING: AtomicBool = AtomicBool::new(false);
+
 /// Whether frames are wanted, whether the frame thread is alive, and whether a frame is waiting
 /// on the main queue.
 static FRAMES: AtomicBool = AtomicBool::new(false);
@@ -638,6 +643,30 @@ impl DiskView {
         let result = self.with(change);
         self.changed();
         result
+    }
+
+    /// Wake when the details panel is to follow the pointer (`Viewer::peek_due`), if it is to:
+    /// one thread sleeps until then and comes back on the main queue; a wake that finds the
+    /// pointer moved since sleeps again for the rest.
+    fn arm_peek(&self) {
+        let Some(due) = self.with(|viewer| viewer.peek_due()).flatten() else {
+            return;
+        };
+        if PEEK_PENDING.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let _ = ::std::thread::Builder::new()
+            .name("peek".to_string())
+            .spawn(move || {
+                ::std::thread::sleep(due);
+                on_main(|view| {
+                    PEEK_PENDING.store(false, Ordering::Release);
+                    if view.with(|viewer| viewer.peek_tick()) == Some(true) {
+                        view.changed();
+                    }
+                    view.arm_peek();
+                });
+            });
     }
 
     /// After any change: the title, the preview, and a redraw.

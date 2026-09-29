@@ -379,7 +379,10 @@ shared `Viewer`, not in `win/`:
   nesting's `TILE_LABEL` band and `TILE_MARGIN` kept in points; every desktop viewer does,
   and the scale is taken at the `resize` it calls with it),
   the entry in hand kept by *name* so a
-  relayout cannot move it, marks, navigation, zoom, delete (`delete`, `delete_prompt`, and
+  relayout cannot move it, the details panel following the pointer (`PEEK`: a tile rested on
+  100 ms is `shown` and previewed until 100 ms after the pointer leaves; `peek_due` says when
+  a viewer is to wake for `peek_tick` — the Linux loop's wait, a Win32 timer, a sleeping thread
+  on macOS), marks, navigation, zoom, delete (`delete`, `delete_prompt`, and
   `removed` for a Trash), rescans (through `duscape_scan::rescan::Rescans`), the status bar's
   words; `absorb_summaries` takes outline batches in without a relayout and `catch_up` lays the
   view out for them (`add_summaries` is both). It keeps the TUI's rules from "Key Patterns": `chosen` says whether the entry in hand was
