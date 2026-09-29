@@ -137,6 +137,7 @@ out and painting.
 | `ticker` | Sends `Instruction::Tick` with `try_send` (late ticks are dropped): every `ui::FRAME` (16 ms) while `App::ticker_pace` says the help line is sliding, else every `ui::IDLE_TICK` (250 ms), looking again one frame after each resting tick since a slide begins on one — twice per resting interval, not at frame rate. `App::tick` moves the help line (`ui::Ticker`/`Strip`) |
 | `refine_N` | The second pass (`duscape_scan::rescan::Refiner` → `refine::refine`, a few `refine_*` workers): FIEMAP on the small files the walk noted (`SmallFiles`, 4–64 KiB, `nlink == 1`, XFS/btrfs), directories under `App::scan_focus` (the folder shown) first → `Instruction::Refined(generation, Found, left)`; `FileTree::apply_found` charges them to the ledger. A new whole tree cancels it; folders rescanned meanwhile are skipped (`refine_skip`), since a folder rescan refines its own tree before grafting |
 | `rescan_N` | One per `r`/`R` (`duscape_scan::rescan::Rescanner`). A folder the whole scan would not enter (`walk_would_enter`: pseudo, network, `-x`, bind duplicate) or past `--max-depth` (counted from the scan root) is not rescanned (`Outcome::NotWalked`); a delete inside a folder being rescanned restarts that rescan. `parallel::build_tree` on the folder → `Instruction::Rescanned(id, Outcome)`. `App::rescan_done` grafts it (`FileTree::graft`, ancestors corrected by the difference) and leaks the old folder like `finish_scan` does. A rescan that another under way covers is not started; one the new rescan covers is cancelled and its result dropped |
+| `scan_recorder` | macOS: deflates and writes the scan's stream to the saved-scan file as it goes (`cache::Recorder`), one record a directory over a bounded channel, so the walk pays the encoding alone; the recorder renames the file into place when the stream ends, and removes it if the scan stops |
 | `previewer` | Reads the file in hand for the preview: first 64 KB as text, or a PNG/JPEG decoded and scaled after a 100 ms debounce (a newer request supersedes it) → `Instruction::PreviewReady(generation, _)`; answers to an older generation are dropped |
 | **main** | App state mutations + ratatui rendering. During the scan it renders from the *outline*; on `ScanComplete` it swaps in the finished tree, keeping the current folder |
 
@@ -326,6 +327,24 @@ out and painting.
   `GetFileInformationByHandleEx(FileIdExtdDirectoryInfo)`. No listing carries a link count, so
   files in hard-link hot spots (or all files ≥ `--hard-link-threshold`) are sent with
   `LINKS_UNKNOWN` and the ledger dedupes them by file id — memory instead of a file open each
+- `cache.rs` — the saved scan (roadmap step 9): `Recorder`, a tee on whatever walker ran,
+  writing each `DirEntries` (deflated, on a thread of its own, `scan_recorder`) to
+  `~/Library/Caches/duscape/<key>.scan` and renaming it into place only when the stream ends;
+  `Saved`, the file read back and checked (magic, version, key, footer, checksum);
+  `CachedScan`, a walker like the others: the saved stream in its order with the `Changes`
+  the log named applied — the folders listed again first (`Lister`), so a hard-linked file's
+  fresh size patches every saved copy (the ledger keys on the disk size), then the stream,
+  folders gone dropped with what was under them, folders new walked (`Walker`), the root
+  carrying a note (kind `cache`) for `--issues`. `too_stale` says when a walk costs less.
+  Platform-independent and tested on Linux CI with a `std::fs` lister; only the log is
+  macOS. `ScanOptions::cache` turns it on: the viewers' first scan; not rescans, `--issues`,
+  the benchmark (`--bench-stage cached` excepted) or `--no-cache`
+- `fsevents.rs` — macOS: the volume's change log, CoreServices `dlopen`ed when asked (the
+  viewers keep frameworks out of their load commands): `current_event_id` (the stamp, taken
+  before the walk starts), `log_uuid` (the log's identity for the device: reset means nothing
+  since is known; `None`, no log, means nothing is saved), `system_version`, and `replay`, the
+  stream since an id on a dispatch queue, ended by `HistoryDone` or a time bounded by the walk
+  it would save; `MustScanSubDirs`/dropped → walked whole, wrapped or root changed → lost
 - `focus.rs` — steering a walk toward the folder shown: `arrange` puts a worker's jobs toward
   the focus (under it, or on the way down to it) where its stack pops them next, `take_toward` a
   steal's pick from the shared queue; the macOS walker partitions its one queue as it fills
@@ -749,6 +768,16 @@ Exiting { app_loaded: bool }
   `Marked` for `STATX_ATTR_COMPRESSED` files only, `Never` if not btrfs or not permitted), since
   it costs ~1 µs a file. The FIEMAP identity pages through long extent maps (compressed files have
   one extent per 128 KiB).
+- **The saved scan (macOS)**: the walk cannot be made faster than the kernel's floor there
+  (`docs/scan-performance.md`, "macOS: what is left"), so every scan after the first starts
+  from the last one's saved stream, brought up to date by FSEvents (`cache.rs`, `fsevents.rs`
+  above): the volume's log names the folders that changed, and only those are listed again.
+  Whatever walker ran, the stream is recorded as it goes; the recording is stamped with the
+  log's id from *before* the walk started, so a change made during it is replayed next time.
+  Not a cache of the tree: the tree is built from the stream as on any scan, so the ledger
+  charges hard links as it would have, and a saved `DirEntries` carries what an `EntryMeta`
+  does. The stream's order — parent before child — is the file's order, and what the replay
+  keeps
 - **Two passes**: the walk probes shared extents only from 64 KiB; smaller files are noted in
   `DirEntries::later` and probed after the tree is shown (see the `refine_N` thread). The
   benchmark's `refined` stage is walk + second pass, and is what the fixtures measure. This is
@@ -800,6 +829,23 @@ Exiting { app_loaded: bool }
 
 ## Code Conventions
 
+- **Every fence has its reason written down.** A decision that is not obvious from the code —
+  a constant's value, a call left out, an order kept, a branch that looks redundant, a walker
+  that declines — is a fence in a field (Chesterton's), and the next person will pull it
+  unless they can see why it stands. So the reason lives where it cannot be lost: as a test
+  that fails when the decision is undone (preferred, since it cannot go stale — `nothing_
+  changed_replays_the_saved_scan_whole`, `the_icon_file_is_the_one_drawn`, the fixture
+  oracles, `model::tests::sharded`'s per-folder comparison), or as text beside the code (a
+  comment saying what was tried and what it cost, or a dated section of
+  `docs/scan-performance.md` with the numbers — "What did not work: opening directories
+  relative to their parent", the six-worker table, the `-x`-on-btrfs rule in "Key Patterns"
+  above). A negative result is recorded like a positive one, so it is not tried twice
+  (`docs/scan-roadmap.md`, "Not worth revisiting"). What counts as recorded: a reader who did
+  not write it can say what breaks if the code goes back to the simple thing. A change that
+  removes a fence says, in its commit, which reason it found written down and why it no longer
+  holds; one that finds a fence with no reason recorded writes the reason down first, or the
+  test, then decides. This is the file's own rule: its "Key Patterns" and the crate map are
+  those reasons, kept where every agent reads them.
 - **Error handling**: `thiserror` derives; `?` propagation; distinct error enums per crate boundary.
 - **Testing**: `#[cfg(test)] mod tests` in same file; temp dirs via helpers; setup → action → assert.
 - **Concurrency**: Named threads; bounded channels; `park_timeout` (100ms) for polling. The
@@ -1020,6 +1066,8 @@ Regenerated by hand from `wc -l` when this file is touched; `make quality` print
 | `viewers/dos/SOFTFP.ASM` | ~810 lines — IEEE doubles on a 286 |
 | `viewers/dos/PREVIEW.ASM` | ~1300 lines — its previews: text, blocks, the palette |
 | `scanners/src/mft.rs` | ~980 lines — NTFS read from its master file table: the parser, the tree, and the volume read |
+| `scanners/src/cache.rs` | ~960 lines — the saved scan: the format, the recorder, the replay with the log's changes applied |
+| `scanners/src/fsevents.rs` | ~410 lines — macOS's change log through CoreServices, `dlopen`ed |
 | `viewers/tui/src/ui/display.rs` | ~360 lines — the frame: what every mode shows, each mode's modal, the nesting's cache |
 | `viewers/tui/src/ui/grid/rectangle_grid.rs` | ~220 lines — the terminal's treemap: tiles, the nesting, corners, highlight frames |
 | `common/src/scan/mod.rs` | ~1070 lines — the scan protocol: options, entries, issues, the outline, the focus |
