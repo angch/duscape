@@ -70,6 +70,8 @@ impl Rescanner {
         // A rescan is of a folder the user is looking at: small, and wanted current, so it
         // goes through the kernel even where the first scan read the device.
         options.read_device = false;
+        // Nor through the saved scan, which is of the whole tree.
+        options.cache = false;
         let running = Arc::clone(&self.running);
         let done = Arc::clone(&self.done);
         let _ = thread::Builder::new()

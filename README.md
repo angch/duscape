@@ -52,6 +52,10 @@ reasoning. The native windows came after, sharing everything but their drawing.
   counted than the volume holds (blocks shared, or compressed, counted in full). A NAS's other folders — its recycle bins (`#recycle`,
   `@Recycle`), `@docker`, `@appstore`, `@eaDir`, `.@__thumb`… — hold space and are walked; the
   status line says what each is
+- **Remembers the last scan** — on macOS, where the metadata cannot be read off the disk, the
+  finished scan is saved and the next start of the same folder replays the volume's change log
+  (FSEvents) over it, listing again only the folders that changed: a home folder that walks in
+  27 s is on screen, current, in a few (`--no-cache` walks afresh)
 - **Reads the disk itself** — as root on ext4, the metadata comes straight off the block device
   in ordered sweeps rather than one `stat` per file (a cold scan in half the time); elevated on
   Windows, a whole NTFS volume can be read from its master file table, as WizTree does, where a

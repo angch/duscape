@@ -3261,3 +3261,233 @@ buffers passed back from the parsers would avoid. The cold read: the synchronous
 got 0.5 GB/s on one cold run (`C:\Windows`: 4.4 s to read and parse) where the device does
 3 GB/s; overlapped reads would take the cold `C:\` from 3.1 s towards 2 s. The sample is one
 machine's predictor, and its threshold is set from two volumes.
+
+## macOS: what is left, and where the floor is (2026-09-29)
+
+The question was how to bring the macOS scan near what Linux and Windows get — 4.2M entries in
+0.4 s on Linux, a 2.5M-entry volume in 3.7 s on Windows — when `~` here (8M entries) takes 27 s
+and `/Users/angch/project` (3.1M) 9 s. Those two platforms got there by reading the metadata off
+the device (ext4's inode tables, NTFS's `$MFT`); this section measures what APFS offers instead.
+Machine as in `benchmarks/handles-20260928.md`: M4 Pro, 48 GiB, APFS on the internal SSD,
+FileVault on. Three probes in `docs/probes/`: `bulkwalk.c` (the walker's `getattrlistbulk` loop
+with every knob on an environment variable), `searchfs_probe.c`, `fsevents_probe.c`.
+
+### The walk reads the disk every time, even "warm"
+
+`/Applications` (1.05M entries, 124k directories) walked six times over, then once more on one
+thread while `iostat` watched `disk0`:
+
+```
+    KB/t   tps  MB/s
+    4.21  8894 36.56
+    4.16  8347 33.94
+```
+
+About 8.5k synchronous 4 KiB reads a second for the whole 12 s: **APFS does not keep the
+catalog cached between scans** on this machine, whatever the vnode counters say (the vnodes stay;
+the B-tree leaves they were read from do not). A scan of `/` reads about 5.4 GB
+(the 2026-09-23 section's 150 MB/s for 37 s, over the system volume and the data volume both);
+`searchfs` over the data volume alone, 4.3 GB at 38 MB/s for 113 s — so the catalog is
+roughly 400 bytes an entry, and the walk reads about what the catalog holds, not several times it. Every number in
+this section is therefore an I/O number at a queue depth of about the worker count, and the
+"warm" and "cold" rows of `handles-*.md` being within 10% of each other is explained.
+
+### The kernel's cost, and where the workers stop paying
+
+`bulkwalk` on `/Applications`, the same tree the app walks in 3.07 s (its 3.01 s and
+90.3 GiB match the app's):
+
+| workers | wall | system CPU | sys per entry | sys per directory |
+| --- | --- | --- | --- | --- |
+| 1 | 11.9 s | 4.2 s | 4.0 µs | 34 µs |
+| 2 | 6.5 s | 4.7 s | 4.5 µs | |
+| 4 | 3.8 s | 5.5 s | 5.3 µs | |
+| 6 | 3.0 s | 7.3 s | 7.0 µs | |
+| 8 | **2.9 s** | 11.1 s | 10.6 µs | |
+| 12 | 3.3 s | 25.6 s | 24.4 µs | 207 µs |
+
+One thread is blocked two thirds of its time (11.9 s wall on 4.2 s CPU: the reads above), and
+the kernel's own cost per entry more than doubles by eight workers and sextuples by twelve.
+Fourteen cores contention-free would put the tree at 0.85 s; contention puts it at 2.9. The
+same on `/Users/angch/project`: 6 workers 8.7–9.1 s, 8 workers 7.8 s (10% better there, where
+the 2026-09-23 rounds on `/` had six ahead of eight; the cap is between them and tree-dependent).
+
+**It is global kernel state, not the process.** The same tree split round-robin into six (then
+twelve) lists of app bundles, walked as one process of six threads and as six single-threaded
+processes at once:
+
+| | one process | N processes |
+| --- | --- | --- |
+| 6 workers | 3.3 s, 9.0 µs sys/entry | 4.6 s wall, 4.6–6.3 µs sys/entry each |
+| 12 workers | 3.3 s, 23.9 µs | 5.3 s wall, 11–22 µs |
+
+Twelve processes contend as twelve threads do (the process rows are slower only by the split's
+imbalance: the largest of the six lists held 36% of the entries, of the twelve 25%). A
+six-thread run in the middle of that series came out at 5.5 s and 20 µs an entry, twice the
+rows before and after it; the next run alone was 2.9 s again. Not explained — something else
+was reading — and the rows kept are from quiet rounds. So the lock is APFS's or the vnode layer's, not
+the file table's, and a multi-process walker buys nothing.
+
+**Nothing in the request matters.** At six workers, each on `/Applications` twice:
+
+| change | wall | sys/entry |
+| --- | --- | --- |
+| the walker's attributes (name, type, flags, id, links, both sizes) | 2.98 s | 7.0 µs |
+| no sizes (name, type, id) | 2.98 s | 7.0 µs |
+| names and types alone | 2.99 s | 7.0 µs |
+| `O_EVTONLY` on the open | 2.96 s | 6.9 µs |
+| no `fstat` after the open | 2.99 s | 7.0 µs |
+| buffer 32 KiB / 1 MiB / 4 MiB (128 KiB shipped) | 3.00 / 2.99 / 2.99 s | 7.0 µs |
+
+Asking for nothing but names costs exactly what asking for everything does: the price is the
+directory's open and the leaves read to list it, not the attributes packed. Together with the
+2026-09-23 `openat` result, every lever inside the walker has now been pulled and none moves.
+
+**Inode order does not help on APFS.** Children pushed smallest file id first, and a queue
+that always pops the smallest id in it (what step 8 of the roadmap proposes for Linux), on
+`/Users/angch/project`, which reads the disk:
+
+| order | wall, two rounds |
+| --- | --- |
+| depth first as shipped | 9.06 / 8.70 s |
+| children by file id | 9.80 / 10.04 s |
+| smallest id in the queue | 10.19 / 10.09 s |
+
+Slower by 10%: APFS is copy-on-write, so leaves in key order are not neighbours on the device,
+and the queue's own order was the better locality. Not worth carrying to macOS.
+
+### `searchfs`: the catalog without a directory opened — serial, and I/O-bound
+
+`searchfs(2)` works on APFS and enumerates a whole volume from its catalog with no `open` per
+directory: `SRCHFS_MATCHDIRS | SRCHFS_MATCHFILES`, a modification-time range from 0 as the
+criterion (`ATTR_CMN_RETURNED_ATTRS` in the return list is `EINVAL`; leave it out), and
+`ATTR_CMN_PARENTID` with each entry's id, so the tree can be assembled as `mft.rs` assembles
+NTFS's. On the data volume (10.55M entries, 1.40M directories):
+
+```
+10555307 entries in 528 calls, 113.2s, 93k entries/s, alloc 762.8 GiB   user 0.02 sys 31.3
+```
+
+Three times cheaper in kernel CPU than the walk (3.0 µs an entry against 8–10), and three
+times *slower* in wall time, because it is one thread doing 4 KiB reads one at a time: `iostat`
+showed 9–11k tps at 4.1 KB each for its whole length. Neither of the two ways to parallelise it
+works:
+
+- a file-id range as the criterion (`ATTR_CMN_FILEID` 5,000,000–5,001,000) took the same
+  113 s and returned every entry on the volume — APFS filters after a full scan, and does not
+  even honour that filter;
+- two searches at once got 6–8k tps between them, fewer than one alone: they are serialised.
+
+The walk of the same volume (`--bench-stage walk /System/Volumes/Data`, 38.2 s) lists
+10.85M entries and 755.8 GiB; `searchfs` 10.55M and 763 GiB. Fewer entries: it returns only
+what the caller may reach, and does not report the 431 the walk found unreadable or what is
+under them. More bytes, most likely because it returns a record per *name* and the probe sums
+each — the sealed system's 5,799-link `CodeResources` alone would show — where the walk's
+ledger counts an inode once. Not chased, since it is not going to be used. Batch size is
+irrelevant: 1,000 and 20,000 matches a call took the same time. Measured dead as a scan.
+
+### Spotlight: slow and a third of the volume
+
+`mdfind "kMDItemFSSize >= 0"` — every item the index holds — returned 4.59M items for the
+whole disk in 187 s, and 2.24M under `/Users/angch/project` (which holds 3.1M) in 105 s.
+Neither complete nor fast; not even an outline.
+
+### What cannot be done
+
+- **The device.** FileVault is on, as it is on nearly every Mac, so `/dev/rdisk3s5` is
+  ciphertext; and it needs root. There is no `ext4.rs`/`mft.rs` for APFS.
+- **The cache.** `kern.maxvnodes` is root-only and, as the reads above show, the vnodes are not
+  what is missing; there is no user-settable knob for the catalog's cache.
+- **More workers.** Eight is where the kernel's contention eats the gain, in one process or
+  several.
+
+So a first scan of this volume costs the kernel's floor: about 2.9 s a million entries on this
+machine, 27 s for `~`. Linux and Windows are under 10 s because their metadata can be read
+sequentially at the device's bandwidth. APFS's cannot be read at all except through the VFS,
+one leaf at a time.
+
+### What can: the volume remembers what changed
+
+`FSEventsGetCurrentEventId` and a stream created with `sinceWhen` set to an old id replay the
+volume's persisted change log (`.fseventsd`, kept by the system, no privilege to read through
+the API), one event per directory whose contents changed, coalesced. On this machine the log
+holds the volume's whole history — 52M event ids, the first replayed at id 57,617 — and
+replays it at about 1 µs an event:
+
+| replayed | directories reported | time |
+| --- | --- | --- |
+| last 100k events | 888 | 0.38 s |
+| last 1M events | 10,596 | 1.7 s |
+| last 10M events | 110,611 | 11.7 s |
+| everything (52M) | 452,137 | 58 s |
+
+Ids advanced here by about 7,000 over the ten minutes of this session's runs, which were
+reads; call it a million a day and remeasure on a machine that builds, where it may be several. So a tree saved at the end of a
+scan with the event id of that moment, and loaded at the next start, needs only the directories
+reported since to be listed again — one `getattrlistbulk` each, no recursion unless the event
+says `MustScanSubDirs` — and the ledger's shared blocks re-charged where they were touched.
+For a day-old tree of `~`: load the file (the build runs at 11M entries/s from memory, so a
+few seconds at most including the read), replay a million events (1.7 s), list ten thousand
+directories (about a second at six workers), and the scan that took 27 s is on screen, current,
+in well under ten. The first scan on a machine still costs the floor; every later one does not.
+The same shape exists on Windows (the USN change journal, what Everything uses) and not on
+Linux (`fanotify` needs root and nothing persists across a boot), which is fine: Linux already
+scans in the time the others would take to load a cache.
+
+What it must handle, from the flags: `EventIdsWrapped` and `HistoryDone` ending the replay
+early, `RootChanged`, `MustScanSubDirs` (the log was pruned or a rename moved a subtree),
+`kFSEventStreamEventFlagKernelDropped`/`UserDropped` — each of which means a folder, or the
+tree, is rescanned whole. A size changed with no directory event to say so — a file
+written through `mmap` and not yet closed is the suspected case, not a measured one — stays
+stale until its folder is rescanned (`r` does it now, and the folder in view could be relisted
+on every start). The rename, hard-link and removed-directory cases are in roadmap step 9's
+risks, with the gate. On Windows the USN journal is the same log, but reading it opens the
+volume elevated — which the window already does for a volume scan — where FSEvents asks
+nothing.
+
+### Roadmap step 9, done: the saved scan brought up to date by FSEvents
+
+Built the same day (`scanners/src/cache.rs`, `scanners/src/fsevents.rs`; `docs/features.md`,
+`cache`). The finished stream of `DirEntries` is recorded as it goes — deflated on a thread of
+its own into `~/Library/Caches/duscape/<key>.scan`, renamed into place when the walk ends,
+stamped with the log's id from before it began — and the next scan of the same folder replays
+the log, lists the folders it names again (the hard-linked files' fresh sizes patched into
+every saved copy first, since the ledger keys on the disk size), drops the folders gone,
+walks the folders new, and reads the rest from the file. `--bench-stage cached`, which is the
+app's path with the cache on, run three times (the first saves) against `sharded` afresh:
+
+| tree | entries | first, saving | from the file | fresh | file |
+| --- | --- | --- | --- | --- | --- |
+| `~/Library/Caches` | 318k | 1.46 s | **0.20 s** | 1.41 s | 5.4 MB |
+| `~/project` | 3.17M | 9.93 s (9.53 once the writer had a thread) | **1.33 / 1.33 s** | 9.15 s (9.78 in the later pair) | 46 MB |
+| `~` | 8.11M | 28.3 s | **6.07 / 4.83 s** | 27.8 s | 129 MB |
+| `/` | 11.36M | 43.0 s | **8.38 s** | (the 2026-09-23 rounds: 39.5–40.3 s) | 170 MB |
+
+On `~/project`, a quiet tree, the totals from the file and afresh are identical to the byte
+(139,241,091,072 B, 20,208 hard-linked); `~` and `~/Library/Caches` are written to as they are
+scanned, and each run's total lands among the fresh ones'. The gate — `~` current and on
+screen in under 10 s — is met with room, and the whole disk comes in under it too: `/` is
+stamped on the sealed system volume's device, which keeps a log of its own, and the data
+volume's changes come through the firmlinks under the same root. The file costs 15–16 bytes
+an entry, and the recording nothing the walk can see once the deflate and the write were
+moved to a thread of their own (`scan_recorder`): the first pair above, 9.93 s saving against
+9.15 s fresh, was measured with them on the walk's thread; the later pair, 9.53 against 9.78,
+with them off it. Peak memory from the file is 1.39 GB on `~` against 0.91 GB fresh, 1.98 GB on `/`:
+the decompressed body is held whole while it is replayed (a streaming decode would take that
+back). The end-to-end test
+(`a_saved_scan_brought_up_to_date_by_fsevents_agrees_with_a_fresh_walk`) grows a hard-linked
+file through its other name, removes a folder and makes one, waits for fseventsd, and checks
+the replay against a fresh walk directory by directory.
+
+### Reproduce
+
+```sh
+./target/release/duscape --benchmark --bench-stage cached ~   # twice: the first saves
+cd docs/probes && cc -O2 -o bulkwalk bulkwalk.c && cc -O2 -o searchfs_probe searchfs_probe.c
+cc -O2 -Wno-deprecated-declarations -framework CoreServices -o fsevents_probe fsevents_probe.c
+THREADS=1 ./bulkwalk /Applications                    # with: iostat -d -w 3 disk0
+for n in 1 2 4 6 8 12; do THREADS=$n ./bulkwalk /Applications; done
+ATTRS=names ./bulkwalk /Applications; ORDER=minid ./bulkwalk ~/project
+NORET=1 BUF=8388608 ./searchfs_probe / 20000          # the whole volume, ~2 minutes
+BACK=1000000 ./fsevents_probe ~ 0                     # the last million events
+```

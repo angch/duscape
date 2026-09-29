@@ -69,6 +69,7 @@ pub fn run() {
     }
     let options = libduscape::ScanOptions {
         show_apparent_size: apparent,
+        cache: true,
         ..libduscape::ScanOptions::default()
     };
     run_with(folder, options);

@@ -1771,3 +1771,67 @@ fn a_share_s_snapshots_are_left_empty_by_name_and_its_recycle_bin_walked() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The saved scan on macOS, end to end: a tree scanned with the cache on, changed, and scanned
+/// again from the file with the volume's change log applied, agrees with a fresh walk to the
+/// byte. fseventsd writes its log a moment after the change, so the test waits for it.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_saved_scan_brought_up_to_date_by_fsevents_agrees_with_a_fresh_walk() {
+    use ::std::collections::BTreeMap;
+    use ::std::time::Duration;
+    let dir = temp_scan_dir("fsevents_cache");
+    let cache = temp_scan_dir("fsevents_cache_dir");
+    // SAFETY: the tests in this crate that read this variable are this one; the others scan
+    // with the cache off.
+    unsafe { std::env::set_var("DUSCAPE_CACHE_DIR", &cache) };
+    std::fs::create_dir_all(dir.join("a/deep")).unwrap();
+    std::fs::create_dir_all(dir.join("gone/inside")).unwrap();
+    std::fs::write(dir.join("a/one"), vec![1u8; 4096]).unwrap();
+    std::fs::write(dir.join("a/deep/two"), vec![2u8; 8192]).unwrap();
+    std::fs::write(dir.join("gone/inside/three"), vec![3u8; 4096]).unwrap();
+    std::fs::hard_link(dir.join("a/one"), dir.join("a/deep/one-too")).unwrap();
+    let options = ScanOptions {
+        cache: true,
+        ..ScanOptions::default()
+    };
+    let listing = |options: ScanOptions| -> BTreeMap<PathBuf, (u64, u64)> {
+        crate::scan_directories(&dir, options, &crate::Focus::default())
+            .map(|d| {
+                let sizes = d.iter().map(|(_, m)| m.size).sum::<u64>();
+                (d.path.to_path_buf(), (d.len() as u64, sizes))
+            })
+            .collect()
+    };
+    let first = listing(options);
+    assert_eq!(first.len(), 5, "{first:?}");
+    let saved = crate::cache::Saved::open(&cache, &crate::cache::Key::new(&dir, options))
+        .unwrap_or_else(|why| panic!("the scan was saved: {why:?}"));
+    assert_eq!(saved.header.directories, 5);
+    assert!(saved.header.stamp.event_id > 0);
+
+    // Grown through the other name, a folder gone, a folder new under a saved one.
+    std::fs::write(dir.join("a/deep/one-too"), vec![1u8; 65536]).unwrap();
+    std::fs::remove_dir_all(dir.join("gone")).unwrap();
+    std::fs::create_dir_all(dir.join("a/new/inner")).unwrap();
+    std::fs::write(dir.join("a/new/inner/four"), vec![4u8; 16384]).unwrap();
+    std::thread::sleep(Duration::from_secs(3));
+
+    let mut from_file = BTreeMap::new();
+    let mut note = None;
+    for d in crate::scan_directories(&dir, options, &crate::Focus::default()) {
+        if let Some(((action, why), _)) = d.issues.kinds.iter().find(|((a, _), _)| *a == "cache") {
+            note = Some(format!("{action}: {why}"));
+        }
+        from_file.insert(
+            d.path.to_path_buf(),
+            (d.len() as u64, d.iter().map(|(_, m)| m.size).sum::<u64>()),
+        );
+    }
+    let fresh = listing(ScanOptions::default());
+    assert_eq!(from_file, fresh);
+    let note = note.expect("the root says where the tree came from");
+    assert!(note.contains("read from the scan saved"), "{note}");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&cache);
+}

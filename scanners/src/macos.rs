@@ -609,6 +609,23 @@ fn leave_out(entries: &mut DirEntries, descend: bool, snapshots: bool) -> Vec<Os
         .collect()
 }
 
+/// List one directory as the walk would, for the saved scan brought up to date
+/// ([`crate::cache`]): `depth` from the scan root, so the depth cap and the folders left out
+/// by name apply as they did. `NotFound` means it is gone.
+pub fn list_one(
+    path: &Path,
+    depth: usize,
+    max_depth: Option<usize>,
+    snapshots: bool,
+) -> io::Result<DirEntries> {
+    let mut buffer = Box::new(AlignedBuffer([0; BUFFER_BYTES]));
+    let mut size = SizeAttribute::new();
+    let mut read = read_dir_bulk(path, &mut size, &mut buffer)?;
+    let descend = max_depth.is_none_or(|max| depth + 1 < max);
+    leave_out(&mut read.entries, descend, snapshots);
+    Ok(read.entries)
+}
+
 /// Walk `root` in parallel, yielding one message per directory read.
 ///
 /// Mount points other than the root are not entered, so each volume is visited at most once. That
@@ -624,7 +641,7 @@ pub fn walk_macos(
     one_file_system: bool,
     snapshots: bool,
     focus: &Focus,
-) -> impl Iterator<Item = DirEntries> {
+) -> MacosWalk {
     // Which filesystem the scan starts on. A mount point leading back to it is a second route to
     // files the scan already reaches, rather than somewhere new.
     let root_device = ::std::fs::metadata(root)
@@ -734,7 +751,9 @@ pub fn walk_macos(
     }
 }
 
-struct MacosWalk {
+/// The walk under way: its workers, and the directories they send. Owns everything it needs,
+/// so it outlives the arguments it was made from.
+pub struct MacosWalk {
     receiver: Receiver<DirEntries>,
     workers: Option<Vec<thread::JoinHandle<()>>>,
     queue: Arc<Queue>,

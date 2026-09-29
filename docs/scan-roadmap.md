@@ -180,11 +180,55 @@ A heap on the shared queue alone may get most of it for less. Only worth judging
 disk, where the run length is the seek.
 - Gate: cold on an HDD at least 10% faster; warm within 1%.
 
+### 9. A saved tree, brought up to date by the volume's change journal (done on macOS: `~` in 4.8–6.1 s from 27.8 s; Windows to come)
+
+*macOS, every scan after the first; Windows likewise.* APFS offers nothing to read but the
+VFS (`scan-performance.md`, "macOS: what is left": the device is FileVault ciphertext,
+`searchfs` is serial and I/O-bound, and the kernel's contention caps the walk at eight
+workers and about 2.9 s a million entries), so a first scan stays at that floor. But the
+volume keeps a change log that needs no privilege to replay: FSEvents holds this machine's
+whole history and replays a day's million events in 1.7 s as ten thousand changed
+directories. Save the finished tree with the event id at the end of a scan (under
+`~/Library/Caches` or the config directory, per scan root, versioned); on the next start load
+it, replay the log since its id, list the reported directories again (one bulk call each,
+recursive where the event says so), re-charge the ledger for what was touched, and show the
+tree. Show the saved tree at once and refresh in place, as the outline is shown now; a log
+that has wrapped, been dropped or pruned, or names the root, means a whole rescan, said so in
+the status line. Windows has the USN journal for the same, elevated; Linux has no persistent journal and
+does not need one.
+- Gate: on `~` here (8M entries, 27 s), a second scan a day later current to the byte against
+  a fresh walk and on screen in under 10 s; the cache loads at no less than 5M entries/s; a
+  saved tree older than the log's reach is rescanned whole and says why. `make test-fs` and
+  every viewer unchanged.
+- Result (`scan-performance.md`, "Roadmap step 9, done"): `~` (8.1M entries) in 4.8–6.1 s
+  against 27.8 s fresh, `~/project` (3.2M) in 1.3 s against 9.1 s with totals identical to the
+  byte; `/` (11.4M) in 8.4 s against 43 s; the first scan pays nothing measurable to save,
+  the deflate and the write being on a thread of their own. What the step said it would not handle it
+  does not: a new subfolder that is a mount point is walked as a root; `R` does not refresh
+  the file; the decompressed file is held whole while it replays (1.4 GB peak on `~`).
+  Windows (the USN journal, elevated) is the next cell.
+- Risk: a size changed with no directory event (an `mmap` writer that has not closed, unmeasured)
+  is stale until its folder is rescanned; the cache's own size (about 25 bytes an entry
+  compactly, 200 MB for `~`) and its staleness after a volume is moved between machines
+  (key it on the volume UUID and the event id together). And three cases a relist of the
+  reported directories alone gets wrong, each wanting model work: a folder *renamed* fires
+  events on the old and the new parent with no `MustScanSubDirs`, so a relist sees one gone
+  and one new — either the node is moved by inode, or the moved subtree is walked again
+  whole; a hard-linked file written through *another* name fires its event in that other
+  directory, so this one's copy of the size goes stale unless every link of the inode is
+  updated after a relist (the ledger keys on inode, so the hook exists); and a relist must
+  take `ENOENT` as the directory itself gone. Listing a directory again while keeping the
+  subfolders under it is a new operation beside `FileTree::graft`, which replaces a subtree
+  whole. On Windows the USN journal is read from the volume handle, elevated — the window
+  elevates for a volume scan already — where FSEvents needs no privilege.
+
 ## Not worth revisiting
 
 Measured dead, with the numbers in `scan-performance.md`: `statx` masks, `AT_STATX_DONT_SYNC`,
 skipping stats by `d_type`, io_uring `statx` (warm and cold), per-crate `opt-level` under LTO,
-thin LTO, mimalloc, PGO in the release pipeline.
+thin LTO, mimalloc, PGO in the release pipeline. On macOS (2026-09-29): `searchfs`, Spotlight,
+fewer attributes in the bulk request, `O_EVTONLY`, bigger buffers, inode-ordered descent, more
+than eight workers, and workers as processes rather than threads.
 
 ## Running a step on another machine
 

@@ -466,6 +466,7 @@ name = "duscape-scan"
 version = "0.2.1"
 dependencies = [
  "dua-core",
+ "flate2",
  "libc",
  "libduscape",
  "rustix",

@@ -17,3 +17,6 @@ libduscape = { workspace = true }
 dua-core = { workspace = true }
 libc = { workspace = true }
 rustix = { workspace = true }
+# The saved scan (`cache`) is deflated: miniz_oxide, which `image` already brings, and what a
+# zip reader would build on.
+flate2 = { workspace = true }

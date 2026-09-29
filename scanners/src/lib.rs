@@ -45,7 +45,10 @@ pub mod mft;
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod ntfs;
 
+pub mod cache;
 pub mod focus;
+#[cfg(target_os = "macos")]
+pub mod fsevents;
 pub mod refine;
 pub mod rescan;
 
@@ -279,8 +282,28 @@ fn walker_words(root: &Path, options: ScanOptions) -> String {
     }
     #[cfg(target_os = "macos")]
     {
-        let _ = (root, options);
-        "getattrlistbulk".to_string()
+        // Whether a saved scan is there is answered from the file's date, not by reading
+        // it: it is the whole tree, deflated, and this is one line of a report.
+        let saved = options
+            .cache
+            .then(cache::directory)
+            .flatten()
+            .map(|dir| dir.join(cache::Key::new(root, options).file_name()));
+        match saved.as_ref().map(|file| (file, std::fs::metadata(file))) {
+            Some((file, Ok(meta))) => format!(
+                "getattrlistbulk, or the scan saved {} brought up to date by FSEvents ({})",
+                meta.modified()
+                    .ok()
+                    .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map_or_else(
+                        || "earlier".to_string(),
+                        |at| cache::age_words_ago(at.as_secs())
+                    ),
+                file.display(),
+            ),
+            Some((_, Err(_))) => "getattrlistbulk, saved for next time (FSEvents)".to_string(),
+            None => "getattrlistbulk, walked afresh (no saved scan used or made)".to_string(),
+        }
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
@@ -328,14 +351,7 @@ pub fn scan_directories(
 ) -> impl Iterator<Item = DirEntries> {
     #[cfg(target_os = "macos")]
     {
-        macos::walk_macos(
-            root,
-            thread_count(options),
-            options.max_depth,
-            options.one_file_system,
-            options.snapshots,
-            focus,
-        )
+        macos_scan(root, options, focus)
     }
     #[cfg(target_os = "linux")]
     {
@@ -380,6 +396,119 @@ pub fn scan_directories(
         // `dua-core` walks in its own order; the focus is not passed on.
         let _ = focus;
         fallback::group_by_directory(root, options)
+    }
+}
+
+/// The macOS walk: the saved scan brought up to date by the volume's change log where there
+/// is one and the options ask for it, else `getattrlistbulk`; either recorded for next time
+/// when asked. The log's id is taken before the walk starts, so a change made while it runs
+/// is replayed next time.
+#[cfg(target_os = "macos")]
+fn macos_scan<'a>(
+    root: &Path,
+    options: ScanOptions,
+    focus: &'a Focus,
+) -> cache::Recorder<MacosScan<'a>> {
+    let walk = move |path: &Path, depth: usize| -> Box<dyn Iterator<Item = DirEntries> + '_> {
+        Box::new(macos::walk_macos(
+            path,
+            thread_count(options),
+            options.max_depth.map(|max| max.saturating_sub(depth)),
+            options.one_file_system,
+            options.snapshots,
+            focus,
+        ))
+    };
+    let dir = options.cache.then(cache::directory).flatten();
+    let key = cache::Key::new(root, options);
+    let stamp = dir.as_ref().and_then(|_| macos_stamp(root));
+    let cached = match (&dir, &stamp) {
+        (Some(dir), Some(stamp)) => macos_cached(dir, &key, stamp, options, walk),
+        _ => None,
+    };
+    let inner = match cached {
+        Some(cached) => MacosScan::Cached(Box::new(cached)),
+        None => MacosScan::Walk(walk(root, 0)),
+    };
+    match (dir, stamp) {
+        (Some(dir), Some(stamp)) => cache::Recorder::new(inner, &dir, key, stamp),
+        _ => cache::Recorder::plain(inner),
+    }
+}
+
+/// What a scan starting now is stamped with; `None` where the volume keeps no log, and then
+/// nothing is saved either.
+#[cfg(target_os = "macos")]
+fn macos_stamp(root: &Path) -> Option<cache::Stamp> {
+    use std::os::unix::fs::MetadataExt;
+    let device = std::fs::metadata(root).ok()?.dev();
+    Some(cache::Stamp {
+        event_id: fsevents::current_event_id()?,
+        device,
+        log_uuid: fsevents::log_uuid(device)?,
+        system: fsevents::system_version(),
+        saved_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |now| now.as_secs()),
+    })
+}
+
+/// The saved scan for `key` brought up to date, if there is one and the log since it can be
+/// trusted. Replaying the log is given half the time the walk would take, at the rate
+/// measured here (`docs/scan-performance.md`, "macOS: what is left").
+#[cfg(target_os = "macos")]
+fn macos_cached<'a>(
+    dir: &Path,
+    key: &cache::Key,
+    now: &cache::Stamp,
+    options: ScanOptions,
+    walk: impl FnMut(&Path, usize) -> Box<dyn Iterator<Item = DirEntries> + 'a> + 'a,
+) -> Option<cache::CachedScan<'a>> {
+    let saved = cache::Saved::open(dir, key).ok()?;
+    let then = &saved.header.stamp;
+    if then.device != now.device || then.log_uuid != now.log_uuid || then.system != now.system {
+        return None;
+    }
+    const WALK_ENTRIES_PER_SECOND: u64 = 300_000;
+    let give_up = std::time::Duration::from_millis(
+        (saved.header.entries * 1000 / WALK_ENTRIES_PER_SECOND / 2).clamp(1000, 60_000),
+    );
+    let fsevents::Replay::Changes(changes) = fsevents::replay(&key.root, then.event_id, give_up)
+    else {
+        return None;
+    };
+    if cache::too_stale(&changes, &saved.header) {
+        return None;
+    }
+    let list = Box::new(move |path: &Path, depth: usize| {
+        macos::list_one(path, depth, options.max_depth, options.snapshots)
+    });
+    let note = cache::note(&saved.header, &changes, changes.listed.len() as u64);
+    Some(cache::CachedScan::new(
+        saved,
+        &key.root,
+        &changes,
+        list,
+        Box::new(walk),
+        note,
+    ))
+}
+
+/// The macOS walk: from the saved scan, or the kernel.
+#[cfg(target_os = "macos")]
+enum MacosScan<'a> {
+    Cached(Box<cache::CachedScan<'a>>),
+    Walk(Box<dyn Iterator<Item = DirEntries> + 'a>),
+}
+
+#[cfg(target_os = "macos")]
+impl Iterator for MacosScan<'_> {
+    type Item = DirEntries;
+    fn next(&mut self) -> Option<DirEntries> {
+        match self {
+            MacosScan::Cached(scan) => scan.next(),
+            MacosScan::Walk(walk) => walk.next(),
+        }
     }
 }
 

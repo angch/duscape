@@ -91,6 +91,10 @@ pub struct Opt {
     /// keeps them waiting on the disk)
     #[arg(long, value_name = "N")]
     pub threads: Option<usize>,
+    /// Walk everything afresh: neither start from the scan saved last time (macOS, brought
+    /// up to date by the volume's change log) nor save this one
+    #[arg(long)]
+    pub no_cache: bool,
 }
 
 impl Opt {
@@ -105,6 +109,7 @@ impl Opt {
             hard_link_threshold: self.hard_link_threshold,
             read_device: !self.no_device_read,
             snapshots: self.snapshots,
+            cache: !self.no_cache,
         }
     }
 

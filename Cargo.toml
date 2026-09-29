@@ -49,6 +49,7 @@ toml = "1"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 unicode-width = "0.2"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+flate2 = "1"
 
 # The release build with symbols kept and line tables, for profilers (`--profile profiling`).
 [profile.profiling]

@@ -74,6 +74,13 @@ pub struct ScanOptions {
     /// QNAP's `@Recently-Snapshot`, ZFS's `.zfs`, NetApp's `.snapshot`): every walker leaves
     /// those empty by name, and this walks them ([`crate::nas::left_out`]).
     pub snapshots: bool,
+    /// Save the finished scan, and start the next one from it: on macOS the saved listing of
+    /// every folder, with the volume's FSEvents id at the moment the walk began, and at the next
+    /// start the folders the volume's change log names since then listed again, the rest read
+    /// from the file (`duscape_scan::cache`). Off for rescans, the benchmark (its `cached`
+    /// stage excepted), `--issues`, and with `--no-cache`. Ignored where nothing keeps a
+    /// change log the scan can read (Linux, Windows so far).
+    pub cache: bool,
 }
 
 impl ScanOptions {
@@ -99,6 +106,7 @@ impl Default for ScanOptions {
             hard_link_threshold: None,
             read_device: true,
             snapshots: false,
+            cache: false,
         }
     }
 }

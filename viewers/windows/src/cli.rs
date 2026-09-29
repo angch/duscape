@@ -42,6 +42,7 @@ impl Opt {
             hard_link_threshold: self.hard_link_threshold,
             max_depth: self.max_depth,
             threads: self.threads,
+            cache: true,
             ..ScanOptions::default()
         }
     }
