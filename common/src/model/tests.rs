@@ -1091,3 +1091,19 @@ fn a_share_root_without_its_separator_still_places_every_directory() {
     assert_eq!(folder_at(&tree, &["sub"]).sizes.disk, 100);
     assert_eq!(tree.get_total_descendants(), 3);
 }
+
+/// A scan that counted more than the volume holds saw shared blocks in full: a snapshot's with
+/// the live file's over the network, hard links a walker could not count. The excess is
+/// reported, and nothing is "outside the scan" then.
+#[test]
+fn what_the_scan_counted_beyond_the_volume_is_reported() {
+    let mut tree = tree_of(&[("live", 600), ("#snapshot/hourly/live", 600)]);
+    tree.volume_used = Some(700);
+    assert_eq!(tree.counted_beyond_volume(), Some(500));
+    assert_eq!(tree.outside_scan(), Some(0));
+    tree.volume_used = Some(1300);
+    assert_eq!(tree.counted_beyond_volume(), None);
+    assert_eq!(tree.outside_scan(), Some(100));
+    tree.volume_used = None;
+    assert_eq!(tree.counted_beyond_volume(), None);
+}
