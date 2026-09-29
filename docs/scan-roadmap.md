@@ -40,6 +40,10 @@ walk is the kernel's cost on either. Cold, the NVMe is 2.5–3x the warm time wh
 shows once the disk is the floor. Cold on a spinning disk has not been seen at all, and it is
 where the inode-order and prefetch work should show most.
 
+One spinning disk has been seen, briefly (`scan-performance.md`, "A spinning RAID, twelve
+minutes in": a 7.3 TB hardware RAID, 11.1M inodes, kernel 5.4, no root): about 2,200 random
+4 KiB reads a second and a walk of over half an hour cold, which is where the device read and
+the saved scan would pay most, and neither has been measured there.
 On macOS (`handles-20260925.md`: M4 Pro, APFS on the internal SSD) the walk is about 300–350k
 entries/s warm, a seventh of Linux's, and `diskus` takes 1.6x as long and WizTreeMac 5.4x (0.45 s
 of which is its start-up). Root changes nothing: macOS has no device read. `purge` leaves APFS's
@@ -86,6 +90,9 @@ the hard-link ledger unchanged.
 - Result on this machine (`scan-performance.md`, "Roadmap step 2"): the cold gate met, the
   warm one not — 2.5 GiB of directory blocks out of the page cache costs what the kernel's
   `statx` threads cost on eight cores. On by default as root; `--no-device-read` opts out.
+- Open: a spinning disk. On the RAID above the kernel walk is bound by 2,200 random reads a
+  second; the device read's ordered sweep of the used inode-table blocks should be minutes
+  against half an hour. Needs the device readable there (root, or the `disk` group).
 - Result on bare-metal NVMe (`badwolf-20260925-full.md`, 16 cores, kernel 7.0): totals
   identical, but the cold gate is not met and warm it is a loss — cold 1.06–1.4x the kernel
   walk as root (1.09x on 673k entries), warm 0.7–0.8x (343 ms against 281). The inode survey
@@ -207,7 +214,9 @@ does not need one.
   32 for `/`); the first scan pays nothing measurable to save. What the step said it would
   not handle it does not: a new subfolder that is a mount point is walked as a root; `R`
   does not refresh the file, only the catch-up does. Windows (the USN journal, elevated) is
-  the next cell.
+  the next cell; Linux the one after, on the spinning RAID above: the Saved stream and the
+  recorder alone, a catch-up that always walks (no change log a user can read), no fill,
+  since a cold walk there is half an hour and the file a second or two.
 - Risk: a size changed with no directory event (an `mmap` writer that has not closed, unmeasured)
   is stale until its folder is rescanned; the cache's own size (about 25 bytes an entry
   compactly, 200 MB for `~`) and its staleness after a volume is moved between machines

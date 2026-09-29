@@ -3548,3 +3548,44 @@ ATTRS=names ./bulkwalk /Applications; ORDER=minid ./bulkwalk ~/project
 NORET=1 BUF=8388608 ./searchfs_probe / 20000          # the whole volume, ~2 minutes
 BACK=1000000 ./fsevents_probe ~ 0                     # the last million events
 ```
+
+## A spinning RAID, twelve minutes in: zelda (2026-09-29)
+
+A look at the other kind of disk, to inform the saved scan on Linux. `zelda`: Ubuntu, kernel
+5.4.0, 4 cores, 19 GiB, one 7.3 TB PERC H330 hardware RAID (rotational), ext4 on LVM, `/var`
+holding 3.3 TB in **11.1M inodes**; a registry, minio and nginx reading the disk beside the
+probe; no passwordless sudo, so no cache drop and no device read. The walk of `/var` was
+started as found (the buffer cache at 7.6 GB, part of the metadata surely in it already) and
+stopped after 12.4 minutes, unfinished, at the owner's request; the owner reports a cold walk
+takes over thirty.
+
+| over 12.4 min | |
+| --- | --- |
+| reads | 1.62M, about 2,200 a second |
+| bytes | 7.5 GiB, about 10 MB/s — 4.7 KiB a read |
+| buffer cache | 7.58 → 8.34 GB, with other readers evicting behind it |
+| load | 8–9 on 4 cores, twelve walker threads mostly waiting |
+
+Two thousand reads a second of 4 KiB each is the RAID's spindles answering random metadata
+reads, and it is the whole cost: at that rate 11M inodes on their tables and every
+directory's blocks take the half hour the owner sees. What it says for caching:
+
+- **Warm, the walk is fast; the question is what stays warm.** ext4's metadata for 11M
+  inodes is about 2.8 GB of inode tables plus the directory blocks, and it fits the 12 GB
+  buffer cache — but the machine's own readers (minio, a registry) push it out, which is why
+  a walk here is cold so often. A saved scan is worth the most exactly on such a machine.
+- **The saved scan as it is (`Cache::Saved`) would show `/var` in a second or two** from a
+  30–40 MB file, sizes right, against the half-hour walk. Linux keeps no change log a user
+  can read, so the catch-up behind it would be a walk — the same half hour, but behind a
+  tree already on screen, and warm again once it ran. That is the Linux cell to build: the
+  Saved stream and the recorder, a catch-up that always walks, no fill (the walk brings all).
+- **The device read is the real lever on a spinning disk** (roadmap step 2, `ext4.rs`, root):
+  the used inode-table blocks, about 2.8 GB, read in device order a group at a time at a
+  RAID's 150+ MB/s is a minute or two, against 2,200 random reads a second. It measured 1.7x the kernel walk cold on an
+  SSD VM; on spindles the ratio should be far larger, and is unmeasured. It needs the device
+  readable: root, or the user in the `disk` group.
+
+Not measured, since the run was cut: the warm walk, the metadata's whole footprint, and the
+device read. Reproduce with the static musl `duscape` copied over and
+`--benchmark --bench-stage walk --no-cache /var`, watching `/proc/diskstats` (`sda`) and
+`Buffers` in `/proc/meminfo` beside it.
