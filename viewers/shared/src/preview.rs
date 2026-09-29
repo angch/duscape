@@ -92,9 +92,64 @@ fn picture(path: &Path, caption: String) -> Loaded {
     }
 }
 
+/// A binary file's description as one paragraph, its lines joined with ` · `, for a panel that
+/// wraps it to its width ([`wrap`]): one line a fact took seven lines of a panel a few hundred
+/// points wide, the hex dump under them ten rows.
+#[must_use]
+pub fn paragraph(info: &[String]) -> String {
+    info.join(" · ")
+}
+
+/// `text` word-wrapped into lines no wider than `width` by `measure` (a pen's width in the
+/// panel's units): greedy, at spaces; a word wider than the line stands alone, for the pen to
+/// cut with its ellipsis.
+pub fn wrap(text: &str, width: f64, measure: impl Fn(&str) -> f64) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split(' ').filter(|word| !word.is_empty()) {
+        if line.is_empty() {
+            line.push_str(word);
+            continue;
+        }
+        let longer = format!("{line} {word}");
+        if measure(&longer) <= width {
+            line = longer;
+        } else {
+            lines.push(::std::mem::replace(&mut line, word.to_string()));
+        }
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_paragraph_wraps_at_spaces_to_the_width() {
+        let by_chars = |text: &str| text.chars().count() as f64;
+        assert_eq!(
+            wrap(
+                "binary file · 13.3M · 2 extents, fragmented",
+                20.0,
+                by_chars
+            ),
+            ["binary file · 13.3M", "· 2 extents,", "fragmented"]
+        );
+        assert_eq!(wrap("", 20.0, by_chars), Vec::<String>::new());
+        assert_eq!(
+            wrap("a word-longer-than-the-line b", 8.0, by_chars),
+            ["a", "word-longer-than-the-line", "b"],
+            "a word too wide stands alone, for the pen to cut"
+        );
+        assert_eq!(
+            paragraph(&["binary file · 1M".to_string(), "1 extent".to_string()]),
+            "binary file · 1M · 1 extent"
+        );
+    }
 
     #[test]
     fn text_is_read_as_lines() {

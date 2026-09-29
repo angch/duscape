@@ -488,7 +488,7 @@ fn details(viewer: &Viewer, info: Rect, image: Option<&NSImage>, pens: &Pens) {
         Rect::new(info.x, info.y, info.w, 1.0),
         &NSColor::separatorColor(),
     );
-    let inner = info.inset(12.0, 10.0);
+    let inner = info.inset(12.0, 8.0);
     // The row in hand — nested in the tree or not — is what the preview is of.
     let Some(entry) = viewer
         .cursor_entry()
@@ -515,8 +515,8 @@ fn details(viewer: &Viewer, info: Rect, image: Option<&NSImage>, pens: &Pens) {
         ),
     };
     pens.secondary
-        .draw(&summary, Rect::new(inner.x, inner.y + 20.0, inner.w, 15.0));
-    let body = Rect::new(inner.x, inner.y + 42.0, inner.w, (inner.h - 42.0).max(0.0));
+        .draw(&summary, Rect::new(inner.x, inner.y + 18.0, inner.w, 15.0));
+    let body = Rect::new(inner.x, inner.y + 36.0, inner.w, (inner.h - 36.0).max(0.0));
     if body.h < 20.0 {
         return;
     }
@@ -580,8 +580,13 @@ fn details(viewer: &Viewer, info: Rect, image: Option<&NSImage>, pens: &Pens) {
 /// A binary file: what can be said about it, then its hex dump with the monospace font shrunk
 /// until a whole line fits the width, so the characters' column is never cut off.
 fn hex(body: Rect, info: &[String], dump: &[String], pens: &Pens) {
+    // One paragraph wrapped to the panel, not a line a fact: the dump gets the room.
+    let info =
+        duscape_viewer::preview::wrap(&duscape_viewer::preview::paragraph(info), body.w, |line| {
+            pens.secondary.width(line)
+        });
     let mut y = body.y;
-    for line in info {
+    for line in &info {
         if y + 15.0 > body.bottom() {
             return;
         }

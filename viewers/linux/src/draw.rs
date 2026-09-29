@@ -377,7 +377,7 @@ fn row_words(canvas: &mut Canvas, pens: &Pens, row: &Row, rect: Rect, selected: 
 
 fn details(canvas: &mut Canvas, viewer: &Viewer, info: Rect, picture: Option<&Rgba>, pens: &Pens) {
     canvas.fill(Rect::new(info.x, info.y, info.w, 1.0), SEPARATOR, 1.0);
-    let inner = info.inset(12.0, 10.0);
+    let inner = info.inset(12.0, 8.0);
     // The row in hand — nested in the tree or not — is what the preview is of.
     let Some(entry) = viewer
         .cursor_entry()
@@ -407,9 +407,9 @@ fn details(canvas: &mut Canvas, viewer: &Viewer, info: Rect, picture: Option<&Rg
     pens.secondary.draw(
         canvas,
         &summary,
-        Rect::new(inner.x, inner.y + 20.0, inner.w, 15.0),
+        Rect::new(inner.x, inner.y + 18.0, inner.w, 15.0),
     );
-    let body = Rect::new(inner.x, inner.y + 42.0, inner.w, (inner.h - 42.0).max(0.0));
+    let body = Rect::new(inner.x, inner.y + 36.0, inner.w, (inner.h - 36.0).max(0.0));
     if body.h < 20.0 {
         return;
     }
@@ -453,8 +453,13 @@ fn details(canvas: &mut Canvas, viewer: &Viewer, info: Rect, picture: Option<&Rg
 /// A binary file: what can be said about it, then its hex dump with the monospace font shrunk
 /// until a whole line fits the width, so the characters' column is never cut off.
 fn hex(canvas: &mut Canvas, pens: &Pens, body: Rect, info: &[String], dump: &[String]) {
+    // One paragraph wrapped to the panel, not a line a fact: the dump gets the room.
+    let info =
+        duscape_viewer::preview::wrap(&duscape_viewer::preview::paragraph(info), body.w, |line| {
+            pens.secondary.width(canvas, line)
+        });
     let mut y = body.y;
-    for line in info {
+    for line in &info {
         if y + 15.0 > body.bottom() {
             return;
         }
