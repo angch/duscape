@@ -310,7 +310,8 @@ where
                     )
                     .marked(&panel_state.marked)
                     .focused(!panel_state.list_focused)
-                    .nested(nested, &NESTING),
+                    .nested(nested, &NESTING)
+                    .scanning(chrome.scanning),
                     areas.grid,
                 );
                 let mut bottom = BottomLine::new(keybinds, ui_effects)

@@ -848,6 +848,7 @@ impl App {
             root,
             options,
             running,
+            self.viewer.scan_focus(),
             move |summaries| {
                 let _ = batch.send(Msg::Batch(scan_id, summaries));
             },

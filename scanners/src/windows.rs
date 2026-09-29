@@ -21,6 +21,7 @@ use ::std::sync::{Arc, Condvar, Mutex};
 use ::std::thread::JoinHandle;
 
 use super::{DirEntries, EntryMeta, LINKS_UNKNOWN, ScanOptions};
+use crate::focus::{self, Focus, FocusWatch};
 
 #[allow(non_snake_case, clippy::upper_case_acronyms)]
 mod ffi {
@@ -513,17 +514,24 @@ struct Shared {
     volume: u64,
     /// NTFS's metadata files, for whichever worker reads the root to add to it.
     metafiles: Mutex<Option<metafiles::Metafiles>>,
+    /// The scan root, and the folder the user is in, which the walk reads toward first
+    /// (`crate::focus`).
+    root: Arc<Path>,
+    focus: Focus,
 }
 
 impl Shared {
-    /// Wait for a directory published by another worker, or for the walk to end.
-    fn steal(&self) -> Option<Job> {
+    /// Wait for a directory published by another worker, or for the walk to end: one toward
+    /// the focus if there is one, else the last published.
+    fn steal(&self, focus: &mut FocusWatch) -> Option<Job> {
         let mut jobs = self.jobs.lock().expect("scan queue poisoned");
         loop {
             if self.stop.load(Ordering::Relaxed) {
                 return None;
             }
-            if let Some(job) = jobs.pop() {
+            if let Some(job) =
+                focus::take_toward(focus, &mut jobs, |job| &job.path).or_else(|| jobs.pop())
+            {
                 self.queued.store(jobs.len(), Ordering::Relaxed);
                 return Some(job);
             }
@@ -782,8 +790,13 @@ impl Drop for WindowsWalk {
 }
 
 /// Walk `root` with `threads` workers, yielding one [`DirEntries`] per directory.
-pub fn walk_windows(root: &Path, threads: usize, options: ScanOptions) -> WindowsWalk {
-    let root: PathBuf = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+pub fn walk_windows(
+    root: &Path,
+    threads: usize,
+    options: ScanOptions,
+    focus: &Focus,
+) -> WindowsWalk {
+    let root: PathBuf = libduscape::os::canonical_root(root);
     let root: Arc<Path> = Arc::from(root.as_path());
 
     // Elevated, this lets the walk into every folder, as WizTree's does; unelevated it is a no-op.
@@ -834,6 +847,8 @@ pub fn walk_windows(root: &Path, threads: usize, options: ScanOptions) -> Window
         hot_paths,
         volume,
         metafiles: Mutex::new(metafiles),
+        root: Arc::clone(&root),
+        focus: focus.clone(),
     });
 
     let (sender, batches): (SyncSender<Vec<DirEntries>>, Receiver<Vec<DirEntries>>) =
@@ -871,6 +886,7 @@ fn worker(
     let mut outbox: Vec<DirEntries> = Vec::new();
     let mut outbox_entries = 0usize;
     let mut buffer = vec![0u64; BUFFER_BYTES / 8];
+    let mut focus = shared.focus.watch_under(&shared.root);
 
     macro_rules! abandon {
         () => {{
@@ -879,7 +895,7 @@ fn worker(
         }};
     }
 
-    while let Some(job) = local.pop().or_else(|| shared.steal()) {
+    while let Some(job) = local.pop().or_else(|| shared.steal(&mut focus)) {
         let (mut directory, children) = read_directory(&job, &options, shared, &mut buffer);
         if job.depth == 0 {
             let metafiles = shared.metafiles.lock().expect("metafiles poisoned").take();
@@ -907,7 +923,10 @@ fn worker(
         }
 
         shared.pending.fetch_add(children.len(), Ordering::Relaxed);
+        let pushed = children.len();
         local.extend(children);
+        // The folder the user is in, and the way down to it, before anything else.
+        focus::arrange(&mut focus, &mut local, pushed, |job| &job.path);
         if local.len() > 1 && shared.queued.load(Ordering::Relaxed) < donate_below {
             shared.donate(&mut local);
         }

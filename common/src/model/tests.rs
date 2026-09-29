@@ -627,6 +627,10 @@ mod outline {
     use crate::scan::{DirEntries, DirSummary, EntryMeta};
 
     fn summary(root: &Path, relative: &str, subdirs: &[&str], files: &[u64]) -> DirSummary {
+        DirSummary::of(&group(root, relative, subdirs, files))
+    }
+
+    fn group(root: &Path, relative: &str, subdirs: &[&str], files: &[u64]) -> DirEntries {
         let mut group = DirEntries::new(Arc::from(root.join(relative).as_path()));
         for name in subdirs {
             group.push(
@@ -648,7 +652,75 @@ mod outline {
                 },
             );
         }
-        DirSummary::of(&group)
+        group
+    }
+
+    /// The folder the user is in is exempt from the outline's depth cap: what is under it is
+    /// sent whole to the same depth again, counted from it, and the folder itself comes with
+    /// its files — while a folder as deep elsewhere is rolled up as before.
+    #[test]
+    fn the_folder_in_focus_is_outlined_whole_with_its_files() {
+        use crate::scan::{Focus, Outline};
+        let root = PathBuf::from("/scan");
+        let focus = Focus::new();
+        focus.set(Some(root.join("a").join("b")));
+        let mut outline = Outline::new(root.clone(), 1, usize::MAX).following(&focus);
+        let mut tree = FileTree::new(Folder::new(&root), root.clone());
+        let read = [
+            ("", &["a", "x"][..], &[][..]),
+            ("a", &["b"][..], &[][..]),
+            ("a/b", &["c"][..], &[10u64, 20][..]),
+            ("a/b/c", &["d"][..], &[100][..]),
+            ("a/b/c/d", &[][..], &[1000][..]),
+            ("x", &["y"][..], &[][..]),
+            ("x/y", &["z"][..], &[5][..]),
+            ("x/y/z", &[][..], &[50][..]),
+        ];
+        for (relative, subdirs, files) in read {
+            let group = group(&root, relative, subdirs, files);
+            let relative = ::std::path::Path::new(relative);
+            assert!(
+                outline.add(&group).is_none(),
+                "{relative:?}: the batch is not full"
+            );
+        }
+        for summary in outline.finish() {
+            tree.add_summary(summary);
+        }
+        // Under the focus (`a/b`, depth 2, cap 1): `a/b/c` at depth 3 is sent whole, and
+        // `a/b/c/d` (depth 4, past the cap of 1 + 2) rolled into it.
+        assert_eq!(folder(&tree, &["a", "b"]).sizes.disk, 1130);
+        let b = folder(&tree, &["a", "b"]);
+        assert!(
+            b.contents.get(&OsString::from("f0")).is_some()
+                && b.contents.get(&OsString::from("f1")).is_some(),
+            "the folder in focus comes with its files: {:?}",
+            (&b.contents)
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            b.num_descendants, 6,
+            "c, f0, f1, then c's file, d and its file"
+        );
+        assert_eq!(folder(&tree, &["a", "b", "c"]).sizes.disk, 1100);
+        assert_eq!(
+            folder(&tree, &["a", "b", "c", "d"]).sizes.disk,
+            1000,
+            "the frontier under the focus, rolled up"
+        );
+        assert!(folder(&tree, &["a", "b", "c", "d"]).contents.is_empty());
+        // Elsewhere the cap of 1 holds: `x/y` is the frontier, `x/y/z` rolled into it.
+        assert_eq!(folder(&tree, &["x", "y"]).sizes.disk, 55);
+        assert!(folder(&tree, &["x", "y"]).contents.is_empty());
+        assert!(
+            folder(&tree, &["x"])
+                .contents
+                .get(&OsString::from("f0"))
+                .is_none(),
+            "files elsewhere are not sent"
+        );
     }
 
     fn folder<'a>(tree: &'a FileTree, path: &[&str]) -> &'a Folder {

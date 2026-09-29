@@ -5,30 +5,35 @@ use ::std::path::PathBuf;
 use ::std::sync::Arc;
 use ::std::sync::atomic::{AtomicBool, Ordering};
 
-use duscape_scan::parallel;
+use duscape_scan::{Focus, parallel};
 use libduscape::{DirSummary, FileTree, Outline, ScanOptions};
 
 /// How many entries go into one batch of outlines sent to the window.
 const BATCH: usize = 4096;
 
 /// Scan `root`. `batch` gets the outlines as they are ready and `done` the finished tree, both
-/// on the scan's thread; `None` if the scan was stopped. Clearing `running` stops it.
+/// on the scan's thread; `None` if the scan was stopped. Clearing `running` stops it. `focus`
+/// is the folder the viewer shows ([`crate::state::Viewer::focus`]): the walk reads toward it
+/// first, and the outline sends what is under it whole.
 pub fn spawn(
     root: PathBuf,
     options: ScanOptions,
     running: Arc<AtomicBool>,
+    focus: Focus,
     batch: impl Fn(Vec<DirSummary>) + Send + 'static,
     done: impl FnOnce(Option<FileTree>) + Send + 'static,
 ) {
     let _ = ::std::thread::Builder::new()
         .name("hd_scanner".to_string())
         .spawn(move || {
-            let mut outline = Outline::new(root.clone(), Outline::DEFAULT_DEPTH, BATCH);
+            let mut outline =
+                Outline::new(root.clone(), Outline::DEFAULT_DEPTH, BATCH).following(&focus);
             let built = parallel::build_tree(
                 &root,
                 options,
                 parallel::SHARDS,
                 parallel::SHARD_DEPTH,
+                &focus,
                 |directory| {
                     if !running.load(Ordering::Acquire) {
                         return false;

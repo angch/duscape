@@ -1854,3 +1854,59 @@ fn the_small_files_corner_is_a_plain_box_marked_with_a_square() {
     );
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// A folder entered while the scan runs, with nothing to draw yet, is being scanned; once
+/// the scan is over, a folder with nothing in it is empty.
+#[test]
+fn a_folder_entered_during_the_scan_is_being_scanned_not_empty() {
+    use ::std::ffi::OsStr;
+    use ::std::sync::Arc;
+
+    use libduscape::scan::{DirEntries, DirSummary, EntryMeta};
+
+    let dir = temp_app_dir("scanning_not_empty");
+    fs::create_dir_all(dir.join("sub")).expect("mkdir");
+    let (tx, _rx) = mpsc::sync_channel(1);
+    let mut app = App::new(
+        TestBackend::new(100, 30),
+        dir.to_path_buf(),
+        tx,
+        Keybinds::default(),
+        true,
+    );
+    // The outline: the root, holding `sub`, which has not been read yet.
+    let mut root = DirEntries::new(Arc::from(dir.as_path()));
+    root.push(
+        OsStr::new("sub"),
+        EntryMeta {
+            is_dir: true,
+            ..EntryMeta::default()
+        },
+    );
+    app.add_scanned_summaries(vec![DirSummary::of(&root)]);
+    app.file_tree.enter_folder(OsStr::new("sub"));
+    app.render_and_update_board();
+    let screen = app.display.screen_text().join("\n");
+    assert!(
+        screen.contains("Scanning this folder"),
+        "while the scan runs: {screen}"
+    );
+    assert!(!screen.contains("Folder is empty"), "{screen}");
+
+    let options = ScanOptions {
+        parallel: false,
+        show_apparent_size: true,
+        ..ScanOptions::default()
+    };
+    let (tree, _) = scan_into_tree(&dir, options);
+    app.finish_scan(tree);
+    app.start_ui();
+    // The finished tree takes the outline's place, keeping the user in `sub`.
+    app.render_and_update_board();
+    let screen = app.display.screen_text().join("\n");
+    assert!(
+        screen.contains("Folder is empty"),
+        "after the scan: {screen}"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}

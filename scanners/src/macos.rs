@@ -21,6 +21,7 @@ use ::std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use ::std::sync::{Arc, Condvar, Mutex, PoisonError};
 use ::std::thread;
 
+use crate::focus::{Focus, FocusWatch};
 use crate::{DirEntries, EntryMeta};
 
 /// An entry inside a directory, named relative to it.
@@ -483,8 +484,57 @@ struct Queue {
 struct QueueState {
     /// Used as a stack: depth-first keeps the queue short and the parent directory cache-warm.
     pending: Vec<Job>,
+    /// The jobs toward the folder the user is in (`crate::focus`), served before `pending`.
+    toward: Vec<Job>,
     /// Workers currently reading a directory; the walk is over when this and `pending` are empty.
     working: usize,
+    focus: FocusWatch,
+}
+
+impl QueueState {
+    /// Take `jobs` in, those toward the focus onto their own stack. The focus having moved,
+    /// both stacks are sorted again first.
+    fn absorb(&mut self, jobs: Vec<Job>) {
+        if self.focus.refresh() {
+            self.sort_again();
+        }
+        self.place(jobs);
+    }
+
+    /// The focus moved: both stacks placed again by the new one.
+    fn sort_again(&mut self) {
+        let all: Vec<Job> = self
+            .toward
+            .drain(..)
+            .chain(self.pending.drain(..))
+            .collect();
+        self.place(all);
+    }
+
+    fn place(&mut self, jobs: Vec<Job>) {
+        if self.focus.current().is_none() {
+            self.pending.extend(jobs);
+            return;
+        }
+        for job in jobs {
+            if self.focus.toward(&job.path) {
+                self.toward.push(job);
+            } else {
+                self.pending.push(job);
+            }
+        }
+    }
+
+    fn next(&mut self) -> Option<Job> {
+        if self.focus.refresh() {
+            self.sort_again();
+        }
+        self.toward.pop().or_else(|| self.pending.pop())
+    }
+
+    fn is_empty(&self) -> bool {
+        self.toward.is_empty() && self.pending.is_empty()
+    }
 }
 
 impl Queue {
@@ -493,7 +543,7 @@ impl Queue {
             return;
         }
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        state.pending.extend(jobs);
+        state.absorb(jobs);
         self.wakeup.notify_all();
     }
 
@@ -515,7 +565,7 @@ impl Queue {
             if self.stop.load(Ordering::Acquire) {
                 return None;
             }
-            if let Some(job) = state.pending.pop() {
+            if let Some(job) = state.next() {
                 state.working += 1;
                 return Some(job);
             }
@@ -534,7 +584,7 @@ impl Queue {
     fn finish(&self) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.working -= 1;
-        if state.working == 0 && state.pending.is_empty() {
+        if state.working == 0 && state.is_empty() {
             self.wakeup.notify_all();
         }
     }
@@ -553,6 +603,7 @@ pub fn walk_macos(
     threads: usize,
     max_depth: Option<usize>,
     one_file_system: bool,
+    focus: &Focus,
 ) -> impl Iterator<Item = DirEntries> {
     // Which filesystem the scan starts on. A mount point leading back to it is a second route to
     // files the scan already reaches, rather than somewhere new.
@@ -568,7 +619,9 @@ pub fn walk_macos(
                 // The root is always read, mount point or not.
                 firmlink: true,
             }],
+            toward: Vec::new(),
             working: 0,
+            focus: focus.watch_under(root),
         }),
         wakeup: Condvar::new(),
         stop: AtomicBool::new(false),
@@ -825,7 +878,7 @@ mod tests {
         ::std::fs::create_dir(mount.join("nested")).expect("create nested");
         ::std::fs::write(mount.join("nested/b.bin"), vec![0u8; 24 * 1024]).expect("write b.bin");
 
-        let total: u64 = walk_macos(&mount, 2, None, false)
+        let total: u64 = walk_macos(&mount, 2, None, false, &crate::focus::Focus::default())
             .flat_map(|directory| {
                 directory
                     .entries()

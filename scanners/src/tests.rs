@@ -2,7 +2,9 @@ use ::std::fs::File;
 use ::std::io::Write;
 use ::std::path::PathBuf;
 
-use super::{EntryMeta, ScanItem, ScanOptions, scan_directories, scan_folder, scan_into_tree};
+use super::{
+    EntryMeta, Focus, ScanItem, ScanOptions, scan_directories, scan_folder, scan_into_tree,
+};
 
 fn temp_scan_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("duscape_scan_test_{name}"));
@@ -83,7 +85,7 @@ fn scan_directories_groups_entries_by_directory() {
         show_apparent_size: true,
         ..ScanOptions::default()
     };
-    let mut named: Vec<_> = scan_directories(&dir, options)
+    let mut named: Vec<_> = scan_directories(&dir, options, &Focus::default())
         .flat_map(|directory| {
             let parent = directory.path.to_path_buf();
             let names: Vec<_> = directory
@@ -164,7 +166,7 @@ fn collect_paths(
     dir: &std::path::Path,
     options: ScanOptions,
 ) -> std::collections::BTreeSet<PathBuf> {
-    scan_directories(dir, options)
+    scan_directories(dir, options, &Focus::default())
         .flat_map(|directory| {
             let parent = directory.path.to_path_buf();
             let names: Vec<_> = directory
@@ -180,7 +182,7 @@ fn collect_paths(
 fn scan_directories_reports_every_entry_exactly_once() {
     let (dir, expected) = fixture_tree("every_entry");
     let mut seen = Vec::new();
-    for directory in scan_directories(&dir, ScanOptions::default()) {
+    for directory in scan_directories(&dir, ScanOptions::default(), &Focus::default()) {
         let parent = directory.path.to_path_buf();
         seen.extend(directory.iter().map(|(name, _)| parent.join(name)));
     }
@@ -596,7 +598,7 @@ mod linux_walker {
     }
 
     fn walk(root: &Path, threads: usize, options: ScanOptions) -> Vec<crate::DirEntries> {
-        walk_linux(root, threads, options).collect()
+        walk_linux(root, threads, options, &crate::Focus::default()).collect()
     }
 
     #[test]
@@ -971,7 +973,7 @@ mod linux_walker {
     #[test]
     fn dropping_the_walk_early_does_not_hang() {
         let root = tree("linux_early_drop");
-        let mut walk = walk_linux(&root, 8, ScanOptions::default());
+        let mut walk = walk_linux(&root, 8, ScanOptions::default(), &crate::Focus::default());
         let _first = walk.next().expect("at least one directory");
         drop(walk); // Joins the workers; hangs here if the stop flag is not honoured.
         let _ = std::fs::remove_dir_all(&root);
@@ -1250,11 +1252,12 @@ fn parallel_build_matches_the_single_threaded_tree() {
     let directories = expected.iter().filter(|path| path.is_dir()).count() + 1;
 
     let mut seen = 0usize;
-    let (parallel, failed, _, _) = crate::parallel::build_tree(&dir, options, 3, 1, |_| {
-        seen += 1;
-        true
-    })
-    .expect("nothing asked the scan to stop");
+    let (parallel, failed, _, _) =
+        crate::parallel::build_tree(&dir, options, 3, 1, &Focus::default(), |_| {
+            seen += 1;
+            true
+        })
+        .expect("nothing asked the scan to stop");
     let _ = std::fs::remove_dir_all(&dir);
 
     assert_eq!(failed, single_failed);
@@ -1292,8 +1295,9 @@ fn single_shard_build_matches_the_single_threaded_tree() {
         ..ScanOptions::default()
     };
     let (single, single_failed) = scan_into_tree(&dir, options);
-    let (sharded, failed, _, _) = crate::parallel::build_tree(&dir, options, 1, 1, |_| true)
-        .expect("nothing asked the scan to stop");
+    let (sharded, failed, _, _) =
+        crate::parallel::build_tree(&dir, options, 1, 1, &Focus::default(), |_| true)
+            .expect("nothing asked the scan to stop");
     let _ = std::fs::remove_dir_all(&dir);
 
     assert_eq!(failed, single_failed);
@@ -1312,7 +1316,14 @@ fn single_shard_build_matches_the_single_threaded_tree() {
 #[test]
 fn parallel_build_stops_when_progress_says_so() {
     let (dir, _) = fixture_tree("parallel_stop");
-    let result = crate::parallel::build_tree(&dir, ScanOptions::default(), 2, 1, |_| false);
+    let result = crate::parallel::build_tree(
+        &dir,
+        ScanOptions::default(),
+        2,
+        1,
+        &Focus::default(),
+        |_| false,
+    );
     let _ = std::fs::remove_dir_all(&dir);
     assert!(result.is_none(), "a stopped scan yields no tree");
 }
@@ -1628,4 +1639,46 @@ fn a_scanned_tree_shows_either_size_without_scanning_again() {
     let granule = if cfg!(windows) { 8 } else { 512 };
     assert_eq!(disk % granule, 0, "whole blocks");
     assert!(disk < apparent, "the hole takes no space on disk");
+}
+
+/// The walk reads toward the folder the user is in first. One worker, so the order is the
+/// stack's: with the focus on `b/x`, everything under it — and `b` on the way down — comes
+/// before `a`, `c` and `b/y`, wherever the listing put them.
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[test]
+fn the_walk_reads_toward_the_focus_first() {
+    let dir = temp_scan_dir("focus_first");
+    for path in ["a/1", "a/2", "b/x/1/deep", "b/x/2", "b/y", "c/1"] {
+        std::fs::create_dir_all(dir.join(path)).expect("mkdir");
+    }
+    let focus = Focus::new();
+    focus.set(Some(dir.join("b").join("x")));
+    let options = ScanOptions {
+        threads: Some(1),
+        read_device: false,
+        ..ScanOptions::default()
+    };
+    let order: Vec<PathBuf> = scan_directories(&dir, options, &focus)
+        .map(|directory| directory.path.to_path_buf())
+        .collect();
+    let _ = std::fs::remove_dir_all(&dir);
+    let position = |relative: &str| {
+        let full = dir.join(relative);
+        order
+            .iter()
+            .position(|path| path == &full)
+            .unwrap_or_else(|| panic!("{relative} was not read: {order:?}"))
+    };
+    let last_toward = ["b", "b/x", "b/x/1", "b/x/1/deep", "b/x/2"]
+        .iter()
+        .map(|p| position(p))
+        .max()
+        .unwrap();
+    for elsewhere in ["a", "a/1", "a/2", "b/y", "c", "c/1"] {
+        assert!(
+            position(elsewhere) > last_toward,
+            "{elsewhere} was read before the focus was done: {order:?}"
+        );
+    }
+    assert_eq!(order.len(), 12, "every directory once");
 }

@@ -32,6 +32,7 @@ use ::std::time::{Duration, Instant};
 use libduscape::model::files::hash::FastMap;
 
 use super::{DirEntries, EntryMeta, ScanOptions};
+use crate::focus::Focus;
 
 const SUPERBLOCK_OFFSET: u64 = 1024;
 const SUPERBLOCK_LEN: usize = 1024;
@@ -683,7 +684,7 @@ fn dir_is_readable(fs: &Fs, dir: &DirInode) -> bool {
 
 /// Walk `root` from its device, if it is on ext4 and the device opens; `None` means the kernel
 /// walk should be used instead, and nothing has been read that matters.
-pub fn walk_ext4(root: &Path, options: ScanOptions) -> Option<Ext4Walk> {
+pub fn walk_ext4(root: &Path, options: ScanOptions, focus: &Focus) -> Option<Ext4Walk> {
     let root: PathBuf = root.canonicalize().ok()?;
     let mut fs = device_fs(&root)?;
     let root_ino = ::std::fs::metadata(&root).ok()?.ino();
@@ -695,10 +696,11 @@ pub fn walk_ext4(root: &Path, options: ScanOptions) -> Option<Ext4Walk> {
     }
     let root: Arc<Path> = Arc::from(root.as_path());
     let (sender, batches) = sync_channel(64);
+    let focus = focus.clone();
     let reader = ::std::thread::Builder::new()
         .name("ext4_reader".to_string())
         .spawn(move || {
-            if let Err(error) = read_tree(fs, inodes, root, root_ino, options, &sender)
+            if let Err(error) = read_tree(fs, inodes, root, root_ino, options, &focus, &sender)
                 && error != CONSUMER_GONE
             {
                 // Nothing to fall back to once directories have been handed on; say so.
@@ -721,6 +723,7 @@ fn read_tree(
     root: Arc<Path>,
     root_ino: u64,
     options: ScanOptions,
+    focus: &Focus,
     sender: &SyncSender<Vec<DirEntries>>,
 ) -> Result<(), String> {
     // Mount points strictly inside the scan root are other filesystems: the kernel walk's.
@@ -929,7 +932,8 @@ fn read_tree(
                         .map_or(0, |p| p.components().count());
                     let mut below = options;
                     below.max_depth = options.max_depth.map(|max| max.saturating_sub(depth));
-                    for sub in super::linux::walk_linux(&path, super::thread_count(options), below)
+                    for sub in
+                        super::linux::walk_linux(&path, super::thread_count(options), below, focus)
                     {
                         outbox_entries += sub.len().max(1);
                         outbox.push(sub);
@@ -1056,7 +1060,7 @@ mod tests {
                 .sync_all()
                 .expect("sync");
         }
-        let Some(device) = walk_ext4(&dir, ScanOptions::default()) else {
+        let Some(device) = walk_ext4(&dir, ScanOptions::default(), &Focus::default()) else {
             eprintln!("not root on ext4: skipped");
             let _ = std::fs::remove_dir_all(&dir);
             return;
@@ -1082,7 +1086,7 @@ mod tests {
             .collect();
         from_device.sort();
         let mut from_kernel: Seen =
-            super::super::linux::walk_linux(&dir, 2, ScanOptions::default())
+            super::super::linux::walk_linux(&dir, 2, ScanOptions::default(), &Focus::default())
                 .map(|d| {
                     let mut entries: Vec<(String, u64, u64, bool)> = d
                         .entries()

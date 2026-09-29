@@ -26,6 +26,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - In the windows, the details panel follows the pointer: a treemap tile it rests on for 100 ms
   is what the panel shows and previews, and 100 ms after it leaves the entry in hand is back. A
   key press brings it back at once.
+- A folder entered while the first scan runs is read first: the walkers take the directories on
+  the way down to it and under it before any other, the live outline sends what is under it
+  whole (to its usual depth again, counted from that folder) and the folder's own files, and a
+  batch holding any of it goes at once rather than when it fills. The terminal viewer's treemap
+  says "Scanning this folder…" for a folder with nothing to draw yet, where it said "Folder is
+  empty"; the windows already said "Scanning…". A folder's files still come with the finished
+  tree when the walk read it before it was entered.
 - In the windows, a button at the path bar's left opens the chooser over the scan — the
   volumes, the home folder, the folder dialog where there is one — to scan something else;
   its Cancel row, or Esc, is back to the scan as it was. On Windows the scan replaced now

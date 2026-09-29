@@ -26,6 +26,7 @@ use ::std::thread::JoinHandle;
 use ::rustix::fs::{AtFlags, FileType, Mode, OFlags, RawDir, StatxFlags, openat};
 
 use super::{DirEntries, EntryMeta, ScanOptions};
+use crate::focus::{self, Focus, FocusWatch};
 
 pub(crate) mod btrfs;
 mod crossing;
@@ -101,6 +102,8 @@ struct Shared {
     points: ::std::sync::OnceLock<::std::collections::HashMap<PathBuf, u64>>,
     /// The block devices opened for [`dirblocks`], by `st_dev`; `None` where one could not be.
     devices: Mutex<::std::collections::HashMap<u64, Option<Arc<dirblocks::Device>>>>,
+    /// The folder the user is in, which the walk reads toward first (`crate::focus`).
+    focus: Focus,
 }
 
 impl Shared {
@@ -130,14 +133,17 @@ impl Shared {
             .clone()
     }
 
-    /// Wait for a directory published by another worker, or for the walk to end.
-    fn steal(&self) -> Option<Job> {
+    /// Wait for a directory published by another worker, or for the walk to end: one toward
+    /// the focus if there is one, else the last published.
+    fn steal(&self, focus: &mut FocusWatch) -> Option<Job> {
         let mut jobs = self.jobs.lock().expect("scan queue poisoned");
         loop {
             if self.stop.load(Ordering::Relaxed) {
                 return None;
             }
-            if let Some(job) = jobs.pop() {
+            if let Some(job) =
+                focus::take_toward(focus, &mut jobs, |job| &job.path).or_else(|| jobs.pop())
+            {
                 self.queued.store(jobs.len(), Ordering::Relaxed);
                 return Some(job);
             }
@@ -570,7 +576,7 @@ impl Drop for LinuxWalk {
 }
 
 /// Walk `root` with `threads` workers, yielding one [`DirEntries`] per directory.
-pub fn walk_linux(root: &Path, threads: usize, options: ScanOptions) -> LinuxWalk {
+pub fn walk_linux(root: &Path, threads: usize, options: ScanOptions, focus: &Focus) -> LinuxWalk {
     if ::std::env::var_os("DUSCAPE_NO_STATX").is_some() {
         NO_STATX.store(true, Ordering::Relaxed);
     }
@@ -600,6 +606,7 @@ pub fn walk_linux(root: &Path, threads: usize, options: ScanOptions) -> LinuxWal
         root_space: root_kind.extent_space.unwrap_or(scan_device),
         points: ::std::sync::OnceLock::new(),
         devices: Mutex::new(::std::collections::HashMap::new()),
+        focus: focus.clone(),
     });
     shared.jobs.lock().expect("scan queue poisoned").push(Job {
         path: Arc::clone(&root),
@@ -656,6 +663,7 @@ fn worker(
     let mut outbox: Vec<DirEntries> = Vec::new();
     let mut outbox_entries = 0usize;
     let mut prefetch = dirblocks::Prefetcher::default();
+    let mut focus = shared.focus.watch_under(&shared.root);
 
     // Every job on `local` is counted in `pending`, so any path out of this function has to hand
     // the whole stack back or the walk never finishes.
@@ -666,7 +674,7 @@ fn worker(
         }};
     }
 
-    while let Some(job) = local.pop().or_else(|| shared.steal()) {
+    while let Some(job) = local.pop().or_else(|| shared.steal(&mut focus)) {
         let (directory, children) =
             read_directory(&job, &options, scan_device, shared, &mut prefetch);
 
@@ -693,7 +701,10 @@ fn worker(
         // 25k in readdir order, and a single-threaded cold walk took 6.2s against 7.3s. (Serving
         // the whole queue in inode order, not just each directory's children, halves the runs
         // again but cost 6% warm in sorting; see `docs/scan-performance.md`, "Cold cache".)
+        let pushed = children.len();
         local.extend(children.into_iter().rev());
+        // The folder the user is in, and the way down to it, before anything else.
+        focus::arrange(&mut focus, &mut local, pushed, |job| &job.path);
         // Publish while the queue is thin enough that a worker could be about to go idle, rather
         // than only when it is empty: by the time it is empty the others are already asleep.
         if local.len() > 1 && shared.queued.load(Ordering::Relaxed) < donate_below {

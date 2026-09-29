@@ -949,12 +949,14 @@ impl DiskView {
         ));
         let bounds = self.bounds();
         viewer.resize(bounds.size.width, bounds.size.height);
+        let focus = viewer.scan_focus();
         self.ivars().viewer.replace(Some(Box::new(viewer)));
         self.ivars().image.replace(None);
         scan::spawn(
             root,
             options,
             running,
+            focus,
             move |summaries| on_main(move |view| view.scan_batch(scan_id, summaries)),
             move |tree| on_main(move |view| view.scan_done(scan_id, tree)),
         );

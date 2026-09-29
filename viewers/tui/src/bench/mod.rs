@@ -13,11 +13,12 @@
 //! The `dua-*` stages measure the general-purpose `dua-core` walker, the others the walker the app
 //! now uses. Comparing them is the point: they scan the same tree, so the difference is the walker.
 
-use ::std::path::Path;
+use ::std::path::{Path, PathBuf};
 use ::std::sync::mpsc::{self, Receiver, SyncSender};
 use ::std::thread;
 use ::std::time::{Duration, Instant};
 
+use duscape_scan::Focus;
 use duscape_scan::{parallel, scan_directories, scan_folder, thread_count};
 use libduscape::{DirEntries, FileTree, Folder, ScanItem, ScanOptions};
 
@@ -188,7 +189,7 @@ fn bench_scan(path: &Path, options: ScanOptions, build_tree: bool) -> StageResul
     let mut entries = 0u64;
     let mut failed = 0u64;
     let mut total_size = 0u128;
-    for directory in scan_directories(path, options) {
+    for directory in scan_directories(path, options, &Focus::default()) {
         entries += directory.len() as u64;
         failed += directory.failed;
         if build_tree {
@@ -215,6 +216,14 @@ fn bench_scan(path: &Path, options: ScanOptions, build_tree: bool) -> StageResul
     }
 }
 
+/// The folder the walk is steered toward, as a viewer sets it (`DUSCAPE_BENCH_FOCUS`): for
+/// measuring the steered walk against the plain one.
+fn bench_focus() -> Focus {
+    let focus = Focus::new();
+    focus.set(::std::env::var_os("DUSCAPE_BENCH_FOCUS").map(PathBuf::from));
+    focus
+}
+
 /// The tree build with the walk taken out of the measurement.
 ///
 /// `walk` against `tree` cannot separate the two on Linux, because the consuming thread drives the
@@ -222,7 +231,7 @@ fn bench_scan(path: &Path, options: ScanOptions, build_tree: bool) -> StageResul
 /// and timing only the model answers "what would the scan cost if the walk were free", which is
 /// the floor a faster walker can reach.
 fn bench_tree_only(path: &Path, options: ScanOptions) -> StageResult {
-    let directories: Vec<DirEntries> = scan_directories(path, options).collect();
+    let directories: Vec<DirEntries> = scan_directories(path, options, &Focus::default()).collect();
 
     let start = Instant::now();
     let mut tree = new_tree(path);
@@ -251,7 +260,7 @@ fn bench_pipeline(path: &Path, options: ScanOptions) -> StageResult {
         move || {
             let mut batch = Vec::with_capacity(128);
             let mut batched = 0usize;
-            for directory in scan_directories(&path, options) {
+            for directory in scan_directories(&path, options, &Focus::default()) {
                 batched += directory.len().max(1);
                 batch.push(directory);
                 if batched >= BATCH {
@@ -293,7 +302,7 @@ fn bench_sharded(
     let start = Instant::now();
     let mut entries = 0u64;
     let (mut tree, failed, timings, small) =
-        parallel::build_tree(path, options, shards, depth, |directory| {
+        parallel::build_tree(path, options, shards, depth, &bench_focus(), |directory| {
             entries += directory.len() as u64;
             true
         })
@@ -313,7 +322,7 @@ fn bench_sharded(
     duscape_scan::refine::refine(
         small,
         thread_count(options),
-        &::std::sync::Mutex::new(None),
+        &Focus::default(),
         &|| true,
         |found, _| {
             charged += tree.apply_found(&found);

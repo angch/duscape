@@ -682,6 +682,7 @@ impl Window {
             root,
             self.options,
             Arc::clone(&self.running),
+            self.viewer.scan_focus(),
             move |batch| post(window, AppMsg::Summaries(scan_id, batch)),
             move |tree| {
                 if let Some(tree) = tree {

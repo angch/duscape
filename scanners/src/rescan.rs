@@ -2,11 +2,12 @@
 
 use ::std::ffi::OsString;
 use ::std::path::{Path, PathBuf};
+use ::std::sync::Arc;
 use ::std::sync::atomic::{AtomicBool, Ordering};
-use ::std::sync::{Arc, Mutex};
 use ::std::thread;
 use ::std::time::{Duration, Instant};
 
+use crate::focus::Focus;
 use crate::parallel;
 use crate::refine::{Found, SmallFiles, refine};
 use libduscape::{DisplayCount, FileToDelete, FileTree, Folder, ScanOptions};
@@ -92,11 +93,13 @@ impl Rescanner {
                     return;
                 }
                 let start = Instant::now();
+                // A rescan is of one folder, all of it wanted: nothing to steer toward.
                 let built = parallel::build_tree(
                     &path,
                     options,
                     parallel::SHARDS,
                     parallel::SHARD_DEPTH,
+                    &Focus::default(),
                     |_| running.load(Ordering::Acquire) && !cancel.load(Ordering::Acquire),
                 );
                 if let Some((mut tree, failed, _, mut small)) = built {
@@ -107,7 +110,7 @@ impl Rescanner {
                         refine(
                             ::std::mem::take(&mut small),
                             crate::thread_count(options),
-                            &Mutex::new(None),
+                            &Focus::default(),
                             &keep_going,
                             |found, _| {
                                 tree.apply_found(&found);
@@ -346,13 +349,7 @@ impl Refiner {
 
     /// Probe `small` in the background. `focus` is read before each directory is chosen, so the
     /// folder the user moves to is taken next. Setting `cancel` stops it.
-    pub fn spawn(
-        &self,
-        generation: u64,
-        small: SmallFiles,
-        focus: Arc<Mutex<Option<PathBuf>>>,
-        cancel: Arc<AtomicBool>,
-    ) {
+    pub fn spawn(&self, generation: u64, small: SmallFiles, focus: Focus, cancel: Arc<AtomicBool>) {
         let threads = self.threads;
         let running = Arc::clone(&self.running);
         let deliver = Arc::clone(&self.deliver);

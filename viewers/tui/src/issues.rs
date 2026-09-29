@@ -26,6 +26,7 @@ pub fn run(path: &Path, options: ScanOptions) {
         options,
         parallel::SHARDS,
         parallel::SHARD_DEPTH,
+        &duscape_scan::Focus::default(),
         |_| true,
     ) else {
         return;

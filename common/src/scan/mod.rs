@@ -4,7 +4,9 @@
 
 use ::std::ffi::{OsStr, OsString};
 use ::std::path::{Path, PathBuf};
-use ::std::sync::Arc;
+use ::std::sync::atomic::{AtomicU64, Ordering};
+use ::std::sync::{Arc, Mutex};
+use ::std::time::{Duration, Instant};
 
 /// A path from the scan root as `strip_prefix` gives it, less a leading separator.
 ///
@@ -550,6 +552,21 @@ impl DirSummary {
             entries: directory.len() as u64,
         }
     }
+
+    /// Every entry, the files too: for the folder the user is in, so that what it holds shows
+    /// as soon as the walk reaches it rather than when the scan ends. The files' sizes are
+    /// summed as in [`DirSummary::of`]; the tree adds them once, through those sums.
+    #[must_use]
+    pub fn whole(directory: &DirEntries) -> Self {
+        let mut summary = Self::of(directory);
+        let mut all = DirEntries::new(Arc::clone(&directory.path));
+        for (name, meta) in directory.iter() {
+            all.push(name, *meta);
+        }
+        all.failed = directory.failed;
+        summary.dirs = all;
+        summary
+    }
 }
 
 /// Turns the stream of scanned directories into the outline the live view is built from.
@@ -562,6 +579,12 @@ impl DirSummary {
 /// count and read failures — into the *frontier* folder just below the cap that contains it.
 /// Folders the view can show keep exact running totals; what lies beneath the frontier is
 /// unknown until the finished tree arrives.
+///
+/// The folder the user has gone into ([`Focus`], `following`) is the exception: what is under
+/// it is sent whole to the same depth again, counted from it, since that is what is on screen;
+/// the folder itself comes with its files, if the walk reads it after the user got there; and a
+/// batch holding something under it goes at once — [`Outline::FOCUS_FLUSH`] after the last —
+/// rather than when it fills.
 pub struct Outline {
     root: PathBuf,
     depth: usize,
@@ -571,15 +594,27 @@ pub struct Outline {
     /// Frontier folder (relative to the root) → rolled-up (file bytes, entries, failed).
     /// Per frontier folder: files on disk, their lengths, entries, unreadable entries.
     rolled: ::std::collections::HashMap<PathBuf, (u64, u64, u64, u64)>,
+    /// The folder the user is in, if any: exempt from the depth cap.
+    focus: FocusWatch,
+    /// When the last batch went, for the early one under the focus.
+    last_batch: Instant,
 }
 
 impl Outline {
     /// How deep the outline goes. Six levels below the root is past where anyone navigates in the
     /// first second of a scan, and on the volume measured it turns 385k summaries into about 15k.
     pub const DEFAULT_DEPTH: usize = 6;
+    /// How soon after the last batch one holding a directory under the focus is sent, full or
+    /// not: the folder on screen fills in as it is read, at no more than ten batches a second.
+    pub const FOCUS_FLUSH: Duration = Duration::from_millis(100);
 
+    /// `root` is named as the scan names it ([`crate::os::scan_root`]): a share's root given
+    /// bare would leave the focus, which the tree names with the separator, never equal to it,
+    /// and the whole scan "under the focus".
     #[must_use]
     pub fn new(root: PathBuf, depth: usize, batch_size: usize) -> Self {
+        let root = crate::os::scan_root(root);
+        let focus = Focus::default().watch_under(&root);
         Self {
             root,
             depth,
@@ -587,20 +622,48 @@ impl Outline {
             batch: Vec::with_capacity(128),
             batched_entries: 0,
             rolled: ::std::collections::HashMap::new(),
+            focus,
+            last_batch: Instant::now(),
         }
+    }
+
+    /// Follow `focus`, the folder the user is in, as described above.
+    #[must_use]
+    pub fn following(mut self, focus: &Focus) -> Self {
+        self.focus = focus.watch_under(&self.root);
+        self
     }
 
     /// Take one scanned directory in. Returns a batch of summaries when one is ready to send.
     pub fn add(&mut self, directory: &DirEntries) -> Option<Vec<DirSummary>> {
         self.batched_entries += directory.len().max(1);
-        let relative = directory
-            .path
-            .strip_prefix(&self.root)
-            .unwrap_or(&directory.path);
-        if relative.components().count() <= self.depth {
-            self.batch.push(DirSummary::of(directory));
+        let relative = below_root(
+            directory
+                .path
+                .strip_prefix(&self.root)
+                .unwrap_or(&directory.path),
+        );
+        self.focus.refresh();
+        // Under the folder the user is in, the cap is that folder's depth and the usual depth
+        // again, so its own entries and those below show; the folder itself with its files.
+        let focus = self
+            .focus
+            .current()
+            .and_then(|focus| focus.strip_prefix(&self.root).ok())
+            .map(below_root)
+            .filter(|focus| relative.starts_with(focus));
+        let (cap, at_focus) = match focus {
+            Some(focus) => (self.depth + focus.components().count(), relative == focus),
+            None => (self.depth, false),
+        };
+        if relative.components().count() <= cap {
+            self.batch.push(if at_focus {
+                DirSummary::whole(directory)
+            } else {
+                DirSummary::of(directory)
+            });
         } else {
-            let frontier: PathBuf = relative.components().take(self.depth + 1).collect();
+            let frontier: PathBuf = relative.components().take(cap + 1).collect();
             let (disk, apparent) = directory.iter().filter(|(_, meta)| !meta.is_dir).fold(
                 (0u64, 0u64),
                 |(disk, apparent), (_, meta)| {
@@ -616,7 +679,9 @@ impl Outline {
             slot.2 += directory.len() as u64;
             slot.3 += directory.failed;
         }
-        (self.batched_entries >= self.batch_size).then(|| self.take_batch())
+        let due = self.batched_entries >= self.batch_size
+            || (focus.is_some() && self.last_batch.elapsed() >= Self::FOCUS_FLUSH);
+        due.then(|| self.take_batch())
     }
 
     /// Whatever is left, once the scan is over.
@@ -627,6 +692,7 @@ impl Outline {
 
     fn take_batch(&mut self) -> Vec<DirSummary> {
         self.batched_entries = 0;
+        self.last_batch = Instant::now();
         for (frontier, (files_size, files_apparent, entries, failed)) in self.rolled.drain() {
             let mut dirs = DirEntries::new(Arc::from(self.root.join(frontier).as_path()));
             dirs.failed = failed;
@@ -664,10 +730,185 @@ pub struct FoundFile {
     pub identity: u64,
 }
 
+/// Where the user is looking while a scan runs: the folder shown, set by the viewer as they
+/// move and read by whatever is still working — the walkers, which take the directories on the
+/// way down to it and under it before any other; the [`Outline`], which sends what is under it
+/// whole where it would roll deeper folders up, and the folder's own files; and the second pass.
+/// One is shared by cloning (an `Arc` inside). `None`, or the scan root, is nowhere in
+/// particular. A reader keeps a [`FocusWatch`], which tells a move by one atomic load.
+#[derive(Clone, Debug, Default)]
+pub struct Focus {
+    inner: Arc<FocusInner>,
+}
+
+#[derive(Debug, Default)]
+struct FocusInner {
+    path: Mutex<Option<PathBuf>>,
+    /// Counts the changes, so a watcher can tell one without the lock.
+    generation: AtomicU64,
+}
+
+impl Focus {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The folder shown now. Set to what it already is, nothing moves.
+    pub fn set(&self, path: Option<PathBuf>) {
+        let mut current = self.inner.path.lock().unwrap_or_else(|e| e.into_inner());
+        if *current != path {
+            *current = path;
+            self.inner.generation.fetch_add(1, Ordering::Release);
+        }
+    }
+
+    #[must_use]
+    pub fn get(&self) -> Option<PathBuf> {
+        self.inner
+            .path
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// How many times the focus has moved.
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        self.inner.generation.load(Ordering::Acquire)
+    }
+
+    /// A reader's view of the focus for a scan of `root`: a focus at the root itself, or off
+    /// it, is nowhere in particular.
+    #[must_use]
+    pub fn watch_under(&self, root: &Path) -> FocusWatch {
+        let mut watch = FocusWatch {
+            focus: self.clone(),
+            root: root.to_path_buf(),
+            seen: u64::MAX,
+            current: None,
+        };
+        watch.refresh();
+        watch
+    }
+}
+
+/// One reader's view of a [`Focus`]: the folder as of the last [`FocusWatch::refresh`], which
+/// costs an atomic load until the focus has moved.
+#[derive(Debug)]
+pub struct FocusWatch {
+    focus: Focus,
+    root: PathBuf,
+    seen: u64,
+    current: Option<PathBuf>,
+}
+
+impl FocusWatch {
+    /// Bring the view up to date. Whether the focus moved since last asked.
+    pub fn refresh(&mut self) -> bool {
+        let generation = self.focus.generation();
+        if generation == self.seen {
+            return false;
+        }
+        self.seen = generation;
+        self.current = self
+            .focus
+            .get()
+            .filter(|path| path != &self.root && path.starts_with(&self.root));
+        true
+    }
+
+    /// The folder in focus, as of the last refresh.
+    #[must_use]
+    pub fn current(&self) -> Option<&Path> {
+        self.current.as_deref()
+    }
+
+    /// Whether `path` is toward the folder in focus: under it, or on the way down to it.
+    #[must_use]
+    pub fn toward(&self, path: &Path) -> bool {
+        self.current
+            .as_deref()
+            .is_some_and(|focus| path.starts_with(focus) || focus.starts_with(path))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// An outline of a share given its root bare, as `canonicalize` names it, with the focus
+    /// on the root as the tree names it: the root is nowhere in particular, so it is outlined
+    /// as any root is, its files summed and not sent.
+    #[cfg(windows)]
+    #[test]
+    fn an_outline_names_its_root_as_the_scan_does() {
+        let bare = PathBuf::from(r"\\?\UNC\server\share");
+        let focus = Focus::new();
+        focus.set(Some(PathBuf::from(r"\\?\UNC\server\share\")));
+        let mut outline = Outline::new(bare.clone(), 6, usize::MAX).following(&focus);
+        let mut root = DirEntries::new(Arc::from(bare.as_path()));
+        root.push(
+            OsStr::new("sub"),
+            EntryMeta {
+                is_dir: true,
+                ..EntryMeta::default()
+            },
+        );
+        root.push(
+            OsStr::new("top.txt"),
+            EntryMeta {
+                size: 10,
+                apparent: 10,
+                links: 1,
+                ..EntryMeta::default()
+            },
+        );
+        assert!(outline.add(&root).is_none());
+        let batch = outline.finish();
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].files_size, 10);
+        assert_eq!(
+            batch[0].dirs.len(),
+            1,
+            "the folder only: the root's files are not sent"
+        );
+    }
+
+    /// A path from the root as `strip_prefix` gives it, less a leading separator: `\sub`,
+    /// what is left under a share root named without its own, is `sub`.
+    /// The focus is what its setter last said, and a watcher tells a move without the lock —
+    /// a move to the scan root, or off it, counting as nowhere.
+    #[test]
+    fn a_focus_is_watched_by_generation_and_read_under_the_root() {
+        let root = Path::new("/scan");
+        let focus = Focus::new();
+        let mut watch = focus.watch_under(root);
+        assert!(!watch.refresh(), "nothing has moved");
+        assert_eq!(watch.current(), None);
+
+        focus.set(Some(root.join("a").join("b")));
+        focus.set(Some(root.join("a").join("b")));
+        assert_eq!(focus.generation(), 1, "the same folder again is no move");
+        assert!(watch.refresh());
+        assert_eq!(watch.current(), Some(root.join("a").join("b").as_path()));
+        assert!(!watch.refresh());
+        assert!(watch.toward(&root.join("a")), "on the way down to it");
+        assert!(
+            watch.toward(&root.join("a").join("b").join("c")),
+            "under it"
+        );
+        assert!(!watch.toward(&root.join("a").join("x")));
+        assert!(!watch.toward(&root.join("other")));
+
+        focus.set(Some(root.to_path_buf()));
+        assert!(watch.refresh());
+        assert_eq!(watch.current(), None, "the root is nowhere in particular");
+        focus.set(Some(PathBuf::from("/elsewhere")));
+        assert!(watch.refresh());
+        assert_eq!(watch.current(), None, "off the scan is nowhere");
+        assert!(!watch.toward(root));
+    }
 
     #[test]
     fn below_root_takes_off_a_leading_separator_and_nothing_else() {

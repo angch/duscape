@@ -18,6 +18,7 @@ use ::std::mem::ManuallyDrop;
 use ::std::path::{Path, PathBuf};
 use ::std::time::{Duration, Instant};
 
+use duscape_scan::Focus as ScanFocus;
 use duscape_scan::rescan::{Outcome, Rescanner, Rescans};
 use libduscape::format::copied_path;
 use libduscape::model::SizeKind;
@@ -469,6 +470,9 @@ pub struct Viewer {
     peek_left: Option<Instant>,
     /// The zoom level of each folder above this one, to restore on the way back up.
     zooms: Vec<usize>,
+    /// The folder shown, for the scan under way: the walk reads toward it first, and the
+    /// outline sends what is under it whole.
+    scan_focus: ScanFocus,
     pub scanning: bool,
     /// Counts scans started in this window, so that a scan's findings arriving after another
     /// scan has replaced it are dropped.
@@ -543,6 +547,7 @@ impl Viewer {
             peek: None,
             peek_left: None,
             zooms: Vec::new(),
+            scan_focus: ScanFocus::new(),
             scanning: true,
             scan_id,
             entries_scanned: 0,
@@ -590,6 +595,12 @@ impl Viewer {
 
     pub fn root(&self) -> &Path {
         &self.tree.path_in_filesystem
+    }
+
+    /// The folder shown, as the scan follows it: for [`crate::scan::spawn`].
+    #[must_use]
+    pub fn scan_focus(&self) -> ScanFocus {
+        self.scan_focus.clone()
     }
 
     // ---------------------------------------------------------------- layout
@@ -683,6 +694,8 @@ impl Viewer {
     }
 
     fn relayout(&mut self, steady: bool) {
+        // Wherever the user has gone, the walk goes there next.
+        self.scan_focus.set(Some(self.tree.get_current_path()));
         let from = if steady { self.tween_from() } else { None };
         self.end_tween();
         self.following = steady;

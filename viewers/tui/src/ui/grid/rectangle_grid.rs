@@ -26,7 +26,10 @@ fn draw_small_files_rect_on_grid(buf: &mut Buffer, rect: Rect) {
     draw_rect_on_grid(buf, (rect.x, rect.y), (rect.width, rect.height));
 }
 
-fn draw_empty_folder(buf: &mut Buffer, area: Rect) {
+/// A folder with nothing to draw: empty — or, while the scan runs, not read yet, or read but
+/// holding only files, which the outline does not carry: either way it is being scanned, and
+/// what it holds shows as the walk reaches it and when the scan ends.
+fn draw_empty_folder(buf: &mut Buffer, area: Rect, scanning: bool) {
     for x in area.x + 1..area.x + area.width {
         for y in area.y + 1..area.y + area.height {
             let cell = &mut buf[(x, y)];
@@ -34,8 +37,12 @@ fn draw_empty_folder(buf: &mut Buffer, area: Rect) {
             cell.set_style(Style::default().bg(Color::White).fg(Color::Black));
         }
     }
-    let empty_folder_line = "Folder is empty";
-    let text_length = empty_folder_line.len();
+    let empty_folder_line = if scanning {
+        "Scanning this folder…"
+    } else {
+        "Folder is empty"
+    };
+    let text_length = empty_folder_line.chars().count();
     let text_style = Style::default();
     let text_start_position =
         ((area.width - text_length as u16) as f64 / 2.0).ceil() as u16 + area.x;
@@ -114,6 +121,9 @@ pub struct RectangleGrid<'a> {
     focused: bool,
     /// The tiles inside the folder tiles, drawn in them, and the nesting that laid them out.
     nested: Option<(&'a Nested, &'a Nesting)>,
+    /// Whether the first scan is still running: a folder with nothing to draw is being
+    /// scanned, not empty.
+    scanning: bool,
 }
 
 impl<'a> RectangleGrid<'a> {
@@ -129,7 +139,13 @@ impl<'a> RectangleGrid<'a> {
             marked: &[],
             focused: true,
             nested: None,
+            scanning: false,
         }
+    }
+    /// Whether the first scan is still running (it is not unless told).
+    pub fn scanning(mut self, scanning: bool) -> Self {
+        self.scanning = scanning;
+        self
     }
     /// Whether the treemap has the keyboard (it does unless told).
     pub fn focused(mut self, focused: bool) -> Self {
@@ -153,7 +169,7 @@ impl<'a> Widget for RectangleGrid<'a> {
         // look for a file, a folder, and a folder holding its entries (filled only around them).
         let mut framed = Vec::new();
         if self.rectangles.is_empty() {
-            draw_empty_folder(buf, area);
+            draw_empty_folder(buf, area, self.scanning);
         } else {
             for (index, tile) in self.rectangles.iter().enumerate() {
                 // Everything below indexes the buffer directly, so a tile reaching past the edge

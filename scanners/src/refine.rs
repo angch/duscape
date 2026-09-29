@@ -17,10 +17,11 @@
 use ::std::collections::BTreeMap;
 use ::std::ffi::OsStr;
 use ::std::ops::Bound;
-use ::std::path::{Path, PathBuf};
+use ::std::path::Path;
 use ::std::sync::{Arc, Mutex};
 
 use crate::DirEntries;
+use crate::focus::Focus;
 pub use libduscape::scan::{Found, FoundFile};
 
 /// Files smaller than this are left out of the second pass too: a file this small is usually
@@ -122,7 +123,7 @@ impl SmallFiles {
 pub fn refine(
     small: SmallFiles,
     threads: usize,
-    focus: &Mutex<Option<PathBuf>>,
+    focus: &Focus,
     keep_going: &(dyn Fn() -> bool + Sync),
     mut deliver: impl FnMut(Vec<Found>, usize) -> bool,
 ) -> usize {
@@ -143,7 +144,7 @@ pub fn refine(
                 .spawn_scoped(scope, move || {
                     while still_going() {
                         let next = {
-                            let focus = focus.lock().ok().and_then(|focus| focus.clone());
+                            let focus = focus.get();
                             queue
                                 .lock()
                                 .ok()
@@ -251,7 +252,7 @@ mod tests {
         let mut small = noted(&["/a", "/home", "/home/u/x", "/home2", "/z", "/home/u"]);
         assert_eq!(small.len(), 6);
         let focus = Some(Path::new("/home/u"));
-        let order: Vec<PathBuf> = ::std::iter::from_fn(|| small.take(focus))
+        let order: Vec<::std::path::PathBuf> = ::std::iter::from_fn(|| small.take(focus))
             .map(|(dir, _)| dir.to_path_buf())
             .collect();
         let order: Vec<&str> = order.iter().map(|path| path.to_str().unwrap()).collect();

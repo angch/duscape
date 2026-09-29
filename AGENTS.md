@@ -130,12 +130,12 @@ out and painting.
 | Thread | Role |
 |--------|------|
 | `stdin_handler` | Reads crossterm events → `Instruction::Keypress` |
-| `hd_scanner` | Drives the walk (its own worker pool). Sends each directory to one `tree_builder` by path prefix, and feeds an `Outline` that sends **main** a folder-only view → `Instruction::AddScannedSummaries` (batched, ~4096 entries). Directories deeper than `Outline::DEFAULT_DEPTH` are rolled up into the frontier folder above them rather than sent, so main does O(visible) work, not O(directories). When the walk ends: merges the builders' trees, replays deferred shared blocks → `Instruction::ScanComplete(tree)`, then `StartUi` |
+| `hd_scanner` | Drives the walk (its own worker pool). Sends each directory to one `tree_builder` by path prefix, and feeds an `Outline` that sends **main** a folder-only view → `Instruction::AddScannedSummaries` (batched, ~4096 entries). Directories deeper than `Outline::DEFAULT_DEPTH` are rolled up into the frontier folder above them rather than sent, so main does O(visible) work, not O(directories) — except under the folder shown (`App::scan_focus`, a `scan::Focus` the walkers and the outline watch): the walk reads toward it first (`duscape_scan::focus`), the outline sends what is under it whole to `DEFAULT_DEPTH` below it, the folder itself with its files, and a batch holding any of it goes every `Outline::FOCUS_FLUSH`. When the walk ends: merges the builders' trees, replays deferred shared blocks → `Instruction::ScanComplete(tree)`, then `StartUi` |
 | `tree_builder_N` | Owns a private `FileTree` in deferred-sharing mode and adds whatever `hd_scanner` sends it. Never touches another thread's memory |
 | `event_executer` | Converts `Event` → `Instruction` (visual feedback). A clipboard flash gets a short-lived `clipboard_flash` thread that asks for a redraw when it expires; the flash carries its own deadline, so a lost redraw cannot leave it on screen |
 | `loading_loop` | Toggles loading indicator while scanning |
 | `ticker` | Sends `Instruction::Tick` with `try_send` (late ticks are dropped): every `ui::FRAME` (16 ms) while `App::ticker_pace` says the help line is sliding, else every `ui::IDLE_TICK` (250 ms), looking again one frame after each resting tick since a slide begins on one — twice per resting interval, not at frame rate. `App::tick` moves the help line (`ui::Ticker`/`Strip`) |
-| `refine_N` | The second pass (`duscape_scan::rescan::Refiner` → `refine::refine`, a few `refine_*` workers): FIEMAP on the small files the walk noted (`SmallFiles`, 4–64 KiB, `nlink == 1`, XFS/btrfs), directories under `App::refine_focus` (the folder shown) first → `Instruction::Refined(generation, Found, left)`; `FileTree::apply_found` charges them to the ledger. A new whole tree cancels it; folders rescanned meanwhile are skipped (`refine_skip`), since a folder rescan refines its own tree before grafting |
+| `refine_N` | The second pass (`duscape_scan::rescan::Refiner` → `refine::refine`, a few `refine_*` workers): FIEMAP on the small files the walk noted (`SmallFiles`, 4–64 KiB, `nlink == 1`, XFS/btrfs), directories under `App::scan_focus` (the folder shown) first → `Instruction::Refined(generation, Found, left)`; `FileTree::apply_found` charges them to the ledger. A new whole tree cancels it; folders rescanned meanwhile are skipped (`refine_skip`), since a folder rescan refines its own tree before grafting |
 | `rescan_N` | One per `r`/`R` (`duscape_scan::rescan::Rescanner`). A folder the whole scan would not enter (`walk_would_enter`: pseudo, network, `-x`, bind duplicate) or past `--max-depth` (counted from the scan root) is not rescanned (`Outcome::NotWalked`); a delete inside a folder being rescanned restarts that rescan. `parallel::build_tree` on the folder → `Instruction::Rescanned(id, Outcome)`. `App::rescan_done` grafts it (`FileTree::graft`, ancestors corrected by the difference) and leaks the old folder like `finish_scan` does. A rescan that another under way covers is not started; one the new rescan covers is cancelled and its result dropped |
 | `previewer` | Reads the file in hand for the preview: first 64 KB as text, or a PNG/JPEG decoded and scaled after a 100 ms debounce (a newer request supersedes it) → `Instruction::PreviewReady(generation, _)`; answers to an older generation are dropped |
 | **main** | App state mutations + ratatui rendering. During the scan it renders from the *outline*; on `ScanComplete` it swaps in the finished tree, keeping the current folder |
@@ -157,7 +157,9 @@ out and painting.
   that names its path cannot make one kind a failure) and keeps a few examples — 8 a directory,
   200 a scan — and
   `FileTree::add_dir_entries`/`merge_from` gather them into `FileTree::issues`), `Outline`/`DirSummary` (the
-  depth-capped live view), `Found`/`FoundFile`
+  depth-capped live view; `following` a `Focus`, exempt under the folder shown), `Found`/`FoundFile`;
+  `Focus`/`FocusWatch` — the folder shown, shared with whatever still reads the disk, a move told by
+  one atomic load
 - `model/files/hard_links.rs` — charges shared blocks to each folder once, over interned directory
   ids; two ledgers, one keyed on inode (hard links) and one on physical extent (reflinks)
 - `model/files/hash.rs` — the fast hasher behind the folder and inode maps
@@ -319,6 +321,10 @@ out and painting.
   `GetFileInformationByHandleEx(FileIdExtdDirectoryInfo)`. No listing carries a link count, so
   files in hard-link hot spots (or all files ≥ `--hard-link-threshold`) are sent with
   `LINKS_UNKNOWN` and the ledger dedupes them by file id — memory instead of a file open each
+- `focus.rs` — steering a walk toward the folder shown: `arrange` puts a worker's jobs toward
+  the focus (under it, or on the way down to it) where its stack pops them next, `take_toward` a
+  steal's pick from the shared queue; the macOS walker partitions its one queue as it fills
+  (`QueueState::toward`). With no focus, one atomic load a directory
 - `refine.rs` — the second pass (`SmallFiles`, `refine`)
 - `rescan.rs` — `Rescanner` and `Refiner`: rescans and the second pass on threads of their own,
   results through a callback, for any viewer
@@ -671,7 +677,12 @@ Exiting { app_loaded: bool }
   saturated the rendering thread, which back-pressured the dispatcher and slowed the walk. This is
   the goals' time to first paint: the treemap is up in the first batch, coarse, and filled in as
   the walk goes; a desktop viewer lays the view out once per burst of batches (`OUTLINE_MS`,
-  `outline_behind`) so a scan never crowds out input.
+  `outline_behind`) so a scan never crowds out input. A folder entered during the scan is
+  followed (`scan::Focus`, set by `App::render_and_update_board` and `Viewer::relayout`): the
+  walkers read toward it before anything else, the outline is exempt from its depth cap under
+  it and carries the folder's own files, and the treemap says "Scanning this folder…" rather
+  than "empty" while there is nothing to draw (the outline holds no files, so a folder of files
+  alone looks the same as one not read yet until the finished tree arrives).
 - **Parallel build, no shared memory**: each builder owns a tree; correctness rests on
   `HardLinks::charge` being order-independent, so deferring every charge to one final replay gives
   the same per-folder sizes as charging inline. Tested folder-by-folder against the inline tree
@@ -967,31 +978,31 @@ Regenerated by hand from `wc -l` when this file is touched; `make quality` print
 
 | File | Purpose |
 |------|---------|
-| `viewers/tui/src/lib.rs` | ~470 lines — which viewer (`front`), terminal setup, thread/channel setup |
-| `viewers/tui/src/app/mod.rs` | ~1300 lines — the TUI's state machine |
+| `viewers/tui/src/lib.rs` | ~480 lines — which viewer (`front`), terminal setup, thread/channel setup |
+| `viewers/tui/src/app/mod.rs` | ~1320 lines — the TUI's state machine |
 | `viewers/tui/src/preview.rs` | ~1300 lines — preview thread, kitty/sixel/half-block output, detection |
-| `viewers/windows/src/win/mod.rs` | ~1200 lines — the Windows window: input → `Viewer`, threads, messages |
-| `viewers/windows/src/win/paint.rs` | ~1240 lines — drawing by `Viewer::layout`: pixels into a DIB section, GDI text |
-| `viewers/shared/src/state.rs` | ~2250 lines — the desktop viewers' shared state, no toolkit |
+| `viewers/windows/src/win/mod.rs` | ~1260 lines — the Windows window: input → `Viewer`, threads, messages |
+| `viewers/windows/src/win/paint.rs` | ~1250 lines — drawing by `Viewer::layout`: pixels into a DIB section, GDI text |
+| `viewers/shared/src/state.rs` | ~2280 lines — the desktop viewers' shared state, no toolkit |
 | `viewers/shared/src/state/tween.rs` | ~180 lines — tiles sliding from one steady layout to the next |
-| `viewers/macos/src/mac/view.rs` | ~1500 lines — the macOS viewer's view, events and commands |
-| `viewers/linux/src/wayland.rs` | ~1000 lines — the Wayland backend: shm, xdg-shell, seat, clipboard |
-| `viewers/linux/src/app.rs` | ~1210 lines — the Linux viewer's loop, keys, mouse, dialogs, context menu, title bar |
-| `viewers/linux/src/draw.rs` | ~960 lines — the Linux viewer's painting: the tree, the nesting, the menu, the dialogs |
+| `viewers/macos/src/mac/view.rs` | ~1540 lines — the macOS viewer's view, events and commands |
+| `viewers/linux/src/wayland.rs` | ~1030 lines — the Wayland backend: shm, xdg-shell, seat, clipboard |
+| `viewers/linux/src/app.rs` | ~1240 lines — the Linux viewer's loop, keys, mouse, dialogs, context menu, title bar |
+| `viewers/linux/src/draw.rs` | ~980 lines — the Linux viewer's painting: the tree, the nesting, the menu, the dialogs |
 | `viewers/linux/src/x11.rs` | ~550 lines — the X11 backend: window, events, `PutImage`, keymap, clipboard |
 | `viewers/linux/src/xkb.rs` | ~360 lines — the xkb keymap reader |
 | `common/src/tiles/board.rs` | ~330 lines — tile nav/zoom, steady relayouts |
 | `common/src/tiles/treemap.rs` | ~560 lines — squarify, in a `Grid`; the steady layout (`Plan`) |
 | `common/src/tiles/nested.rs` | ~910 lines — the nesting, steady or not |
-| `common/src/model/files/file_tree.rs` | ~590 lines — folder tree, hard-link accounting, the build profile |
-| `scanners/src/lib.rs` | ~770 lines — walker selection, parallel build, fallback, `environment` |
-| `scanners/src/linux.rs` | ~700 lines — Linux `getdents64`/`statx` walker, inode order; `linux/` ~1150 more: mounts, filesystems, btrfs, reflinks, block prefetch, the `fstatat` fallback |
-| `scanners/src/macos.rs` | ~830 lines — macOS `getattrlistbulk` walker |
-| `scanners/src/windows.rs` | ~920 lines — Windows bulk-listing walker |
-| `viewers/tui/src/bench/mod.rs` | ~470 lines — `--benchmark` harness |
+| `common/src/model/files/file_tree.rs` | ~600 lines — folder tree, hard-link accounting, the build profile |
+| `scanners/src/lib.rs` | ~790 lines — walker selection, parallel build, fallback, `environment` |
+| `scanners/src/linux.rs` | ~720 lines — Linux `getdents64`/`statx` walker, inode order; `linux/` ~1190 more: mounts, filesystems, btrfs, reflinks, block prefetch, the `fstatat` fallback |
+| `scanners/src/macos.rs` | ~890 lines — macOS `getattrlistbulk` walker |
+| `scanners/src/windows.rs` | ~940 lines — Windows bulk-listing walker |
+| `viewers/tui/src/bench/mod.rs` | ~480 lines — `--benchmark` harness |
 | `viewers/dos/DUSCAPE.ASM` | ~4700 lines — the MS-DOS viewer, one instruction a line |
 | `viewers/dos/SOFTFP.ASM` | ~810 lines — IEEE doubles on a 286 |
 | `viewers/dos/PREVIEW.ASM` | ~1300 lines — its previews: text, blocks, the palette |
 | `scanners/src/mft.rs` | ~980 lines — NTFS read from its master file table: the parser, the tree, and the volume read |
 | `viewers/tui/src/ui/display.rs` | ~360 lines — the frame: what every mode shows, each mode's modal, the nesting's cache |
-| `viewers/tui/src/ui/grid/rectangle_grid.rs` | ~210 lines — the terminal's treemap: tiles, the nesting, corners, highlight frames |
+| `viewers/tui/src/ui/grid/rectangle_grid.rs` | ~220 lines — the terminal's treemap: tiles, the nesting, corners, highlight frames |

@@ -45,6 +45,7 @@ pub mod mft;
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod ntfs;
 
+pub mod focus;
 pub mod refine;
 pub mod rescan;
 
@@ -62,6 +63,7 @@ pub mod parallel {
 
     use super::{DirEntries, ScanOptions, scan_directories};
     use libduscape::model::{FileTree, Folder};
+    use libduscape::scan::Focus;
 
     /// Builders to run.
     ///
@@ -122,6 +124,7 @@ pub mod parallel {
         options: ScanOptions,
         shards: usize,
         depth: usize,
+        focus: &Focus,
         mut progress: impl FnMut(&DirEntries) -> bool,
     ) -> Option<(FileTree, u64, Timings, super::refine::SmallFiles)> {
         let shards = shards.max(1);
@@ -165,7 +168,7 @@ pub mod parallel {
         let mut failed = 0u64;
         let mut stopped = false;
         let mut small = super::refine::SmallFiles::default();
-        for directory in scan_directories(&root, options) {
+        for directory in scan_directories(&root, options, focus) {
             if !progress(&directory) {
                 stopped = true;
                 break;
@@ -309,7 +312,11 @@ pub fn walk_would_enter(scan_root: &Path, folder: &Path, options: ScanOptions) -
 /// well before the kernel does. On Windows it uses `windows`, which reads a directory's sizes
 /// in bulk rather than opening every file. Elsewhere it groups the `dua-core` walk, which reports a
 /// directory's entries consecutively.
-pub fn scan_directories(root: &Path, options: ScanOptions) -> impl Iterator<Item = DirEntries> {
+pub fn scan_directories(
+    root: &Path,
+    options: ScanOptions,
+    focus: &Focus,
+) -> impl Iterator<Item = DirEntries> {
     #[cfg(target_os = "macos")]
     {
         macos::walk_macos(
@@ -317,25 +324,32 @@ pub fn scan_directories(root: &Path, options: ScanOptions) -> impl Iterator<Item
             thread_count(options),
             options.max_depth,
             options.one_file_system,
+            focus,
         )
     }
     #[cfg(target_os = "linux")]
     {
         // From the device where that is allowed and asked for, else through the kernel.
         let device = if options.read_device {
-            ext4::walk_ext4(root, options)
+            ext4::walk_ext4(root, options, focus)
         } else {
             None
         };
         match device {
             Some(walk) => LinuxScan::Device(walk),
-            None => LinuxScan::Kernel(linux::walk_linux(root, thread_count(options), options)),
+            None => LinuxScan::Kernel(linux::walk_linux(
+                root,
+                thread_count(options),
+                options,
+                focus,
+            )),
         }
     }
     #[cfg(windows)]
     {
         // From the volume's master file table where the process may open the volume
-        // (elevated, NTFS) and asks for it, else through the filesystem.
+        // (elevated, NTFS) and asks for it, else through the filesystem. The table is read
+        // whole before anything is handed on, so the focus has nothing to steer there.
         let device = if options.read_device {
             mft::walk_mft(root, thread_count(options), options)
         } else {
@@ -343,13 +357,18 @@ pub fn scan_directories(root: &Path, options: ScanOptions) -> impl Iterator<Item
         };
         match device {
             Some(walk) => WindowsScan::Table(walk),
-            None => {
-                WindowsScan::Kernel(windows::walk_windows(root, thread_count(options), options))
-            }
+            None => WindowsScan::Kernel(windows::walk_windows(
+                root,
+                thread_count(options),
+                options,
+                focus,
+            )),
         }
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
+        // `dua-core` walks in its own order; the focus is not passed on.
+        let _ = focus;
         fallback::group_by_directory(root, options)
     }
 }
@@ -740,7 +759,7 @@ pub fn scan_into_tree(root: impl AsRef<Path>, options: ScanOptions) -> (FileTree
     let mut tree = FileTree::new(Folder::new(&root_path), root_path.clone());
     let mut failed_to_read = 0u64;
 
-    for directory in scan_directories(&root_path, options) {
+    for directory in scan_directories(&root_path, options, &Focus::default()) {
         failed_to_read += directory.failed;
         tree.add_dir_entries(directory);
     }

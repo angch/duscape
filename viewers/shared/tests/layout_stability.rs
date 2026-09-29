@@ -144,6 +144,7 @@ fn scan(root: &Path) -> (Vec<Vec<DirSummary>>, FileTree) {
         root.to_path_buf(),
         ScanOptions::default(),
         Arc::new(AtomicBool::new(true)),
+        duscape_scan::Focus::default(),
         move |summaries| drop(batch.send(summaries)),
         move |tree| drop(done.send(tree)),
     );

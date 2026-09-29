@@ -30,6 +30,7 @@ use clap::Parser;
 use cli::Opt;
 use duscape_scan::parallel;
 use error::Error;
+use libduscape::scan::Focus;
 use libduscape::{Outline, ScanOptions};
 
 use ::ratatui::backend::Backend;
@@ -276,6 +277,7 @@ fn start<B>(
                 instruction_sender.clone(),
                 running.clone(),
                 loaded.clone(),
+                app.scan_focus(),
             ),
         ),
         spawn(
@@ -393,16 +395,19 @@ fn scanner(
     instruction_sender: SyncSender<Instruction>,
     running: Arc<AtomicBool>,
     loaded: Arc<AtomicBool>,
+    focus: Focus,
 ) -> impl FnOnce() + Send + 'static {
     move || {
         let progress_sender = instruction_sender.clone();
         let progress_running = running.clone();
-        let mut outline = Outline::new(path.clone(), Outline::DEFAULT_DEPTH, SCAN_BATCH_SIZE);
+        let mut outline =
+            Outline::new(path.clone(), Outline::DEFAULT_DEPTH, SCAN_BATCH_SIZE).following(&focus);
         let built = parallel::build_tree(
             &path,
             scan_options,
             parallel::SHARDS,
             parallel::SHARD_DEPTH,
+            &focus,
             |directory| {
                 if !progress_running.load(Ordering::Acquire) {
                     return false;

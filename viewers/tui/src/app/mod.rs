@@ -25,6 +25,7 @@ use crate::preview::{
 use crate::state::UiEffects;
 use crate::ui::side_panel::{self, picture_area};
 use crate::ui::{Display, Strip};
+use duscape_scan::Focus as ScanFocus;
 use duscape_scan::refine::{Found, SmallFiles};
 use duscape_scan::rescan::{Outcome, Refiner, Rescanner, Rescans};
 
@@ -136,7 +137,9 @@ where
     refine_cancel: Option<Arc<AtomicBool>>,
     pub(crate) refining: Option<usize>,
     /// The folder the user is in, for the second pass to take first.
-    refine_focus: Arc<::std::sync::Mutex<Option<PathBuf>>>,
+    /// The folder shown, for whatever is still reading the disk: the scan (the walk reads
+    /// toward it first, the outline sends what is under it whole) and the second pass.
+    scan_focus: ScanFocus,
     /// Folders rescanned since the second pass began: they had a second pass of their own, and
     /// the whole tree's findings in them are about files that have been replaced.
     refine_skip: Vec<PathBuf>,
@@ -215,7 +218,7 @@ where
             refine_generation: 0,
             refine_cancel: None,
             refining: None,
-            refine_focus: Arc::new(::std::sync::Mutex::new(None)),
+            scan_focus: ScanFocus::new(),
             refine_skip: Vec::new(),
         }
     }
@@ -354,7 +357,7 @@ where
         refiner.spawn(
             self.refine_generation,
             small,
-            Arc::clone(&self.refine_focus),
+            self.scan_focus.clone(),
             Arc::clone(&cancel),
         );
         self.refine_cancel = Some(cancel);
@@ -557,14 +560,15 @@ where
         handle_instructions(self, receiver);
         self.display.clear();
     }
+    /// The folder shown, as the scan and the second pass follow it.
+    #[must_use]
+    pub fn scan_focus(&self) -> ScanFocus {
+        self.scan_focus.clone()
+    }
+
     pub fn render_and_update_board(&mut self) {
-        // Wherever the user has gone, the second pass goes there next.
-        let here = self.file_tree.get_current_path();
-        if let Ok(mut focus) = self.refine_focus.lock()
-            && focus.as_ref() != Some(&here)
-        {
-            *focus = Some(here);
-        }
+        // Wherever the user has gone, the walk and the second pass go there next.
+        self.scan_focus.set(Some(self.file_tree.get_current_path()));
         let current_folder = self.file_tree.get_current_folder();
         self.board.change_files(current_folder);
         self.render();
