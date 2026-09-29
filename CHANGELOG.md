@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `make setup-ubuntu` installs what `make static` needs on Ubuntu or Debian (`musl-tools`,
+  `build-essential`, the musl target); with `ZIG=1` also zig and `cargo-zigbuild`, for
+  `make static-aarch64` and `make static-windows`.
+- On Windows, a binary file's preview says where its blocks are, as it does on Linux: its runs
+  (`FSCTL_GET_RETRIEVAL_POINTERS`; resident in the MFT, sparse, compressed), the physical disk
+  with its model and bus (`SATA HDD`, `NVMe`…), the offset into it, and the volume — none of it
+  needing elevation. A volume over several disks names them. The Windows window draws it above
+  the hex dump, as the Linux and macOS windows do.
+
+### Fixed
+
+- The Linux and Windows windows no longer flash a treemap without labels before one with them
+  at every relayout. A layout's first paint may stop labelling tiles after 4 ms, but that time
+  was counted from the start of the paint, and filling a few thousand nested tiles used it up
+  before the labels: a frame whose every label cost 1 ms went out with half of them, to be
+  painted again in full 60 ms later. The budget now counts the time spent on labels alone.
+- The details panel under the list is more compact, so the preview gets the room: a binary
+  file's description is one paragraph wrapped to the panel instead of a line a fact, and the
+  name and summary sit closer. On the same file the hex dump showed 10 rows and now 13.
+
 ## [0.2.1] - 2026-09-27
 
 ### Changed
