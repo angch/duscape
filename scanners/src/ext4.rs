@@ -33,6 +33,7 @@ use libduscape::model::files::hash::FastMap;
 
 use super::{DirEntries, EntryMeta, ScanOptions};
 use crate::focus::Focus;
+use libduscape::nas;
 
 const SUPERBLOCK_OFFSET: u64 = 1024;
 const SUPERBLOCK_LEN: usize = 1024;
@@ -882,7 +883,16 @@ fn read_tree(
                                             shared_extent: 0,
                                         },
                                     );
-                                    if is_dir && descend {
+                                    // A NAS's snapshots and recycle bin: listed, not entered.
+                                    let left_out = is_dir && nas::left_out(name, options.snapshots);
+                                    if left_out {
+                                        directory.note(
+                                            "left out",
+                                            Some(name),
+                                            nas::left_out_note(name),
+                                        );
+                                    }
+                                    if is_dir && descend && !left_out {
                                         let path = pending.path.join(name);
                                         if mounts_ref.iter().any(|m| m.as_path() == path.as_path())
                                         {

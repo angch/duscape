@@ -27,6 +27,7 @@ use ::rustix::fs::{AtFlags, FileType, Mode, OFlags, RawDir, StatxFlags, openat};
 
 use super::{DirEntries, EntryMeta, ScanOptions};
 use crate::focus::{self, Focus, FocusWatch};
+use libduscape::nas;
 
 pub(crate) mod btrfs;
 mod crossing;
@@ -476,7 +477,12 @@ fn read_directory(
                     return;
                 }
             };
-            if let Some(child) = found.child {
+            // A NAS's snapshots and recycle bin, seen over the network: listed, not entered.
+            let name = OsStr::from_bytes(name_of(l).to_bytes());
+            let left_out = found.child.is_some() && nas::left_out(name, options.snapshots);
+            if left_out {
+                directory.note("left out", Some(name), nas::left_out_note(name));
+            } else if let Some(child) = found.child {
                 children.push(child);
             }
             if let Some(ancestor) = &found.loops_to {

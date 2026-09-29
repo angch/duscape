@@ -22,6 +22,7 @@ use ::std::thread::JoinHandle;
 
 use super::{DirEntries, EntryMeta, LINKS_UNKNOWN, ScanOptions};
 use crate::focus::{self, Focus, FocusWatch};
+use libduscape::nas;
 
 #[allow(non_snake_case, clippy::upper_case_acronyms)]
 mod ffi {
@@ -718,7 +719,12 @@ fn read_directory(
                         1
                     };
 
-                if is_dir && descend {
+                // A NAS's snapshots and recycle bin, seen over the network: listed, not entered.
+                let left_out = is_dir && nas::left_out(&name, options.snapshots);
+                if left_out {
+                    directory.note("left out", Some(&name), nas::left_out_note(&name));
+                }
+                if is_dir && descend && !left_out {
                     let path = job.path.join(&name);
                     let track = job.track
                         || (shared.stable_ids

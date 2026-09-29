@@ -2171,8 +2171,11 @@ pub fn describe(entry: &FileMetadata) -> String {
         (FileType::Folder, None) => "folder".to_string(),
         (FileType::File, _) => "file".to_string(),
     };
+    let nas = libduscape::nas::describe(&entry.name)
+        .map(|words| format!(" · {words}"))
+        .unwrap_or_default();
     format!(
-        "{} — {} ({:.1}%) · {kind}",
+        "{} — {} ({:.1}%) · {kind}{nas}",
         entry.name.to_string_lossy(),
         DisplaySize(entry.size as f64),
         entry.percentage * 100.0

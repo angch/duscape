@@ -68,8 +68,12 @@ pub struct ScanOptions {
     /// mount `-x` leaves is: a snapshot is a whole earlier copy of what the scan already walks —
     /// Synology keeps one per share per hour under `#snapshot` — so walking a few dozen of them
     /// walks the volume a few dozen times, and what they hold of their own (the blocks since
-    /// rewritten) is a small part of it. Named as the scan root, a snapshot is scanned. Nothing
-    /// else has such snapshots: the other walkers ignore this.
+    /// rewritten) is a small part of it. Named as the scan root, a snapshot is scanned.
+    ///
+    /// Over the network a NAS's share shows its snapshots as a plain folder (Synology's
+    /// `#snapshot`, QNAP's `@Recently-Snapshot`) and its recycle bin as another (`#recycle`,
+    /// `@Recycle`): every walker leaves those empty by name, and this walks them
+    /// ([`crate::nas::left_out`]).
     pub snapshots: bool,
 }
 

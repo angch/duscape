@@ -14,6 +14,7 @@ pub mod format;
 pub mod launch;
 pub mod metafiles;
 pub mod model;
+pub mod nas;
 pub mod os;
 pub mod placement;
 pub mod preview;

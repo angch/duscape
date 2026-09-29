@@ -20,7 +20,7 @@ fn render_currently_selected(
     let file_name = currently_selected.name.to_string_lossy();
     let size = DisplaySize(currently_selected.size as f64);
     let descendants = currently_selected.descendants;
-    let (style, lines) = match currently_selected.file_type {
+    let (style, mut lines) = match currently_selected.file_type {
         FileType::File => (
             Style::default().add_modifier(Modifier::BOLD),
             vec![
@@ -46,6 +46,10 @@ fn render_currently_selected(
             ],
         ),
     };
+    // A NAS's own folder says what it is, where there is room.
+    if let Some(what) = libduscape::nas::describe(&currently_selected.name) {
+        lines.insert(0, format!("{} — {what}", lines[0]));
+    }
     for line in lines {
         if (line.chars().count() as u16) < max_len {
             buf.set_string(1, y, line, style);

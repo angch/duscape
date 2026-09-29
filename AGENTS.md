@@ -220,6 +220,9 @@ out and painting.
   per tile were half the nesting's time
 - `delete.rs` — `remove` (from disk, a link itself never its target) and `refused` (NTFS metadata)
 - `metafiles.rs` — NTFS metadata names, for the Windows walker and for `delete`
+- `nas.rs` — the folders a NAS keeps for itself, by name (`KNOWN`: Synology's `#snapshot`,
+  `#recycle`, `@eaDir`, `@docker`…, QNAP's `@Recently-Snapshot`, `@Recycle`, `.@__thumb`…):
+  `left_out` (snapshots and recycle bins, unless `--snapshots`), `left_out_note`, `describe`
 - `preview.rs` — `read` (sniff the first 64 KiB: text lines, info, or a picture), `describe_picture`,
   `decode_picture` (bounded). Scaling and encoding for display are the viewer's. A binary file
   is `Contents::Binary`: `describe_binary` (its size, then `placement::describe`) and `hex_dump`
@@ -722,7 +725,13 @@ Exiting { app_loaded: bool }
   Deliberately unlike `du -x`.
 - **Snapshots**: a read-only btrfs subvolume inside the scan is left empty by default, as a mount
   `-x` refuses; `--snapshots` walks it, the extent ledger counting what it shares once. Named as
-  the scan root, it is scanned.
+  the scan root, it is scanned. Over the network a NAS's share shows its snapshots and its
+  recycle bin as plain folders (Synology's `#snapshot` and `#recycle`, QNAP's
+  `@Recently-Snapshot` and `@Recycle`): every walker leaves those empty by name
+  (`libduscape::nas::left_out`, a `left out` note in the directory, `walk_would_enter` refusing
+  a rescan of one), and `--snapshots` walks them. The NAS's other folders (`@docker`, `@eaDir`,
+  `.@__thumb`…) hold real space and are walked; `nas::describe` says what each is, in the
+  status line of every viewer.
 - **Bind mounts**: a mount root (`STATX_ATTR_MOUNT_ROOT`) is looked up in `/proc/self/mountinfo`
   by `stx_mnt_id` (`linux::mounts`); if an earlier mount of the same device shows the same
   directory at a path inside the scan — checked by device and inode — the mount is left empty.

@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A NAS share's snapshot and recycle-bin folders, as a network share shows them — Synology's
+  `#snapshot` and `#recycle`, QNAP's `@Recently-Snapshot` and `@Recycle` — are left empty by
+  name on every platform: listed, not entered, noted for `--issues`, and refused to a rescan.
+  `--snapshots` walks them, as it walks the btrfs snapshots on the NAS itself. Each snapshot is
+  a whole earlier copy of the share, so walking a share's `#snapshot` walked it once an hour of
+  retention. The NAS's other folders — Synology's `@docker`, `@appstore`, `@eaDir`,
+  `@synologydrive`, `@cloudstation`, `@database`, `@tmp`, QNAP's `.@__thumb`, `.qpkg` — hold real
+  space and are walked; every viewer's status line says what the one in hand is
+  (`libduscape::nas`).
 - `make setup-ubuntu` installs what `make static` needs on Ubuntu or Debian (`musl-tools`,
   `build-essential`, the musl target); with `ZIG=1` also zig and `cargo-zigbuild`, for
   `make static-aarch64` and `make static-windows`.

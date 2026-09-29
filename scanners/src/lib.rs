@@ -249,7 +249,7 @@ pub fn environment(root: &Path, options: ScanOptions) -> Vec<(&'static str, Stri
             if options.snapshots {
                 "walked (--snapshots)".to_string()
             } else {
-                "read-only btrfs snapshots are left empty (--snapshots walks them)".to_string()
+                "read-only btrfs snapshots, and a NAS's snapshot and recycle-bin folders by name, are left empty (--snapshots walks them)".to_string()
             },
         )))
         .collect();
@@ -294,6 +294,15 @@ fn walker_words(root: &Path, options: ScanOptions) -> String {
 /// On Linux it asks what the walk would at a mount point; elsewhere every folder is entered.
 #[must_use]
 pub fn walk_would_enter(scan_root: &Path, folder: &Path, options: ScanOptions) -> bool {
+    // A NAS's snapshots and recycle bin are left empty by name on every platform; the scan's
+    // own root is scanned whatever it is named.
+    if folder != scan_root
+        && folder
+            .file_name()
+            .is_some_and(|name| libduscape::nas::left_out(name, options.snapshots))
+    {
+        return false;
+    }
     #[cfg(target_os = "linux")]
     {
         linux::walk_would_enter(scan_root, folder, options)
@@ -324,6 +333,7 @@ pub fn scan_directories(
             thread_count(options),
             options.max_depth,
             options.one_file_system,
+            options.snapshots,
             focus,
         )
     }
@@ -655,11 +665,20 @@ fn descend_predicate(
     options: ScanOptions,
 ) -> impl Fn(&::dua_core::Entry) -> bool + Send + Sync + 'static {
     let max_depth = options.max_depth;
+    let snapshots = options.snapshots;
     let root_device = options
         .one_file_system
         .then(|| libduscape::os::volume_id(root).unwrap_or_default());
     move |entry| {
         if !max_depth.is_none_or(|max| entry.depth < max) {
+            return false;
+        }
+        // A NAS's snapshots and recycle bin, seen over the network: listed, not entered.
+        if entry
+            .path()
+            .file_name()
+            .is_some_and(|name| libduscape::nas::left_out(name, snapshots))
+        {
             return false;
         }
         match (root_device, &entry.metadata) {

@@ -23,6 +23,7 @@ use ::std::thread;
 
 use crate::focus::{Focus, FocusWatch};
 use crate::{DirEntries, EntryMeta};
+use libduscape::nas;
 
 /// An entry inside a directory, named relative to it.
 ///
@@ -590,6 +591,20 @@ impl Queue {
     }
 }
 
+/// A NAS's snapshots and recycle bin, seen over the network (`nas::left_out`): noted in the
+/// directory and named, so that the walk lists them and does not enter them.
+fn leave_out(entries: &mut DirEntries, snapshots: bool) -> Vec<OsString> {
+    let left_out: Vec<OsString> = entries
+        .iter()
+        .filter(|(name, meta)| meta.is_dir && nas::left_out(name, snapshots))
+        .map(|(name, _)| name.to_os_string())
+        .collect();
+    for name in &left_out {
+        entries.note("left out", Some(name), nas::left_out_note(name));
+    }
+    left_out
+}
+
 /// Walk `root` in parallel, yielding one message per directory read.
 ///
 /// Mount points other than the root are not entered, so each volume is visited at most once. That
@@ -603,6 +618,7 @@ pub fn walk_macos(
     threads: usize,
     max_depth: Option<usize>,
     one_file_system: bool,
+    snapshots: bool,
     focus: &Focus,
 ) -> impl Iterator<Item = DirEntries> {
     // Which filesystem the scan starts on. A mount point leading back to it is a second route to
@@ -648,7 +664,7 @@ pub fn walk_macos(
                         }
                         let stop;
                         match read_dir_bulk(&job.path, &mut size, &mut buffer) {
-                            Ok(read) => {
+                            Ok(mut read) => {
                                 // A directory whose opened inode differs from the one its parent
                                 // listed has something mounted over it.
                                 let mounted = read.inode != job.listed_inode && !job.firmlink;
@@ -666,11 +682,14 @@ pub fn walk_macos(
                                     queue.finish();
                                     continue;
                                 }
+                                let left_out = leave_out(&mut read.entries, snapshots);
                                 let children = if max_depth.is_none_or(|max| job.depth + 1 < max) {
                                     read.entries
                                         .iter()
                                         .zip(&read.listed)
-                                        .filter(|((_, meta), _)| meta.is_dir)
+                                        .filter(|((name, meta), _)| {
+                                            meta.is_dir && !left_out.iter().any(|n| n == name)
+                                        })
                                         .map(|((name, _), listed)| Job {
                                             path: read.entries.path.join(name),
                                             depth: job.depth + 1,
@@ -878,15 +897,22 @@ mod tests {
         ::std::fs::create_dir(mount.join("nested")).expect("create nested");
         ::std::fs::write(mount.join("nested/b.bin"), vec![0u8; 24 * 1024]).expect("write b.bin");
 
-        let total: u64 = walk_macos(&mount, 2, None, false, &crate::focus::Focus::default())
-            .flat_map(|directory| {
-                directory
-                    .entries()
-                    .iter()
-                    .map(|entry| entry.meta.size)
-                    .collect::<Vec<_>>()
-            })
-            .sum();
+        let total: u64 = walk_macos(
+            &mount,
+            2,
+            None,
+            false,
+            false,
+            &crate::focus::Focus::default(),
+        )
+        .flat_map(|directory| {
+            directory
+                .entries()
+                .iter()
+                .map(|entry| entry.meta.size)
+                .collect::<Vec<_>>()
+        })
+        .sum();
 
         assert!(
             total >= 64 * 1024,

@@ -1553,3 +1553,29 @@ fn the_details_follow_a_tile_the_pointer_rests_on_and_come_back_after_it_leaves(
     assert_ne!(viewer.shown_entry().map(|e| e.name.clone()), in_hand);
     assert_eq!(viewer.peek_due(), None);
 }
+
+/// The status line says what a NAS's own folder is, beside its name.
+#[test]
+fn a_nas_folder_is_described_in_the_status_line() {
+    let entry = FileMetadata {
+        name: OsString::from("#recycle"),
+        size: 4096,
+        descendants: Some(3),
+        percentage: 0.5,
+        file_type: FileType::Folder,
+    };
+    let words = describe(&entry);
+    assert!(
+        words.ends_with("folder, 3 items · Synology: the share's recycle bin"),
+        "{words}"
+    );
+    let plain = FileMetadata {
+        name: OsString::from("recycle"),
+        ..entry
+    };
+    assert!(
+        describe(&plain).ends_with("folder, 3 items"),
+        "{}",
+        describe(&plain)
+    );
+}

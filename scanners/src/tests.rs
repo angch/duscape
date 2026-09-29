@@ -1682,3 +1682,90 @@ fn the_walk_reads_toward_the_focus_first() {
     }
     assert_eq!(order.len(), 12, "every directory once");
 }
+
+/// A NAS's share over the network shows its snapshots and its recycle bin as plain folders —
+/// Synology's `#snapshot` and `#recycle`, QNAP's `@Recently-Snapshot` and `@Recycle`: every
+/// walker leaves them empty by name — listed as folders, not entered, noted for `--issues` —
+/// and `--snapshots` walks them; a rescan of one is refused as the walk refuses it, but named
+/// as the scan's root any is scanned. The NAS's other folders (`@docker`) are walked: they hold
+/// real space.
+#[test]
+fn a_nas_share_s_snapshots_and_recycle_bin_are_left_empty_by_name() {
+    let dir = temp_scan_dir("share_folders");
+    for path in [
+        "#snapshot/hourly/data.bin",
+        "#recycle/gone.bin",
+        "@Recently-Snapshot/hourly/data.bin",
+        "@Recycle/gone.bin",
+        "@docker/containers/data.bin",
+        "live/data.bin",
+    ] {
+        let file = dir.join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).expect("mkdir");
+        std::fs::write(&file, [7u8; 4096]).expect("write");
+    }
+    let options = |snapshots| ScanOptions {
+        snapshots,
+        read_device: false,
+        ..ScanOptions::default()
+    };
+    let read = |snapshots| -> Vec<crate::DirEntries> {
+        scan_directories(&dir, options(snapshots), &Focus::default()).collect()
+    };
+    let paths = |read: &[crate::DirEntries]| -> std::collections::BTreeSet<PathBuf> {
+        read.iter().map(|d| d.path.to_path_buf()).collect()
+    };
+    let left = read(false);
+    let seen = paths(&left);
+    assert!(seen.contains(&dir.join("live")), "{seen:?}");
+    assert!(seen.contains(&dir.join("@docker")), "real space: {seen:?}");
+    for name in ["#snapshot", "#recycle", "@Recently-Snapshot", "@Recycle"] {
+        assert!(
+            !seen.contains(&dir.join(name)),
+            "{name} is not entered: {seen:?}"
+        );
+    }
+    let root = left
+        .iter()
+        .find(|d| d.path.as_ref() == dir.as_path())
+        .expect("the root is read");
+    assert_eq!(
+        root.iter().filter(|(_, meta)| meta.is_dir).count(),
+        6,
+        "all are still listed as folders"
+    );
+    assert_eq!(root.failed, 0, "a note is not a failure");
+    let walked = paths(&read(true));
+    for name in ["#snapshot", "@Recently-Snapshot"] {
+        assert!(
+            walked.contains(&dir.join(name).join("hourly")),
+            "--snapshots walks {name}: {walked:?}"
+        );
+    }
+    for name in ["#snapshot", "#recycle", "@Recently-Snapshot", "@Recycle"] {
+        assert!(
+            !crate::walk_would_enter(&dir, &dir.join(name), options(false)),
+            "{name}"
+        );
+        assert!(
+            crate::walk_would_enter(&dir, &dir.join(name), options(true)),
+            "{name}"
+        );
+    }
+    assert!(crate::walk_would_enter(
+        &dir,
+        &dir.join("@docker"),
+        options(false)
+    ));
+    assert!(crate::walk_would_enter(
+        &dir,
+        &dir.join("live"),
+        options(false)
+    ));
+    let snapshot = dir.join("#snapshot");
+    assert!(
+        crate::walk_would_enter(&snapshot, &snapshot, options(false)),
+        "named as the scan's root, it is scanned"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
