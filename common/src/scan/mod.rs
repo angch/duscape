@@ -70,10 +70,9 @@ pub struct ScanOptions {
     /// walks the volume a few dozen times, and what they hold of their own (the blocks since
     /// rewritten) is a small part of it. Named as the scan root, a snapshot is scanned.
     ///
-    /// Over the network a NAS's share shows its snapshots as a plain folder (Synology's
-    /// `#snapshot`, QNAP's `@Recently-Snapshot`) and its recycle bin as another (`#recycle`,
-    /// `@Recycle`): every walker leaves those empty by name, and this walks them
-    /// ([`crate::nas::left_out`]).
+    /// Over the network a share shows its snapshots as a plain folder (Synology's `#snapshot`,
+    /// QNAP's `@Recently-Snapshot`, ZFS's `.zfs`, NetApp's `.snapshot`): every walker leaves
+    /// those empty by name, and this walks them ([`crate::nas::left_out`]).
     pub snapshots: bool,
 }
 

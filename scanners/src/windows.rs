@@ -719,7 +719,7 @@ fn read_directory(
                         1
                     };
 
-                // A NAS's snapshots and recycle bin, seen over the network: listed, not entered.
+                // A share's snapshots, seen over the network: listed, not entered.
                 let left_out = is_dir && nas::left_out(&name, options.snapshots);
                 if left_out {
                     directory.note("left out", Some(&name), nas::left_out_note(&name));

@@ -249,7 +249,7 @@ pub fn environment(root: &Path, options: ScanOptions) -> Vec<(&'static str, Stri
             if options.snapshots {
                 "walked (--snapshots)".to_string()
             } else {
-                "read-only btrfs snapshots, and a NAS's snapshot and recycle-bin folders by name, are left empty (--snapshots walks them)".to_string()
+                "read-only btrfs snapshots, and a share's snapshot folders by name, are left empty (--snapshots walks them)".to_string()
             },
         )))
         .collect();
@@ -294,8 +294,8 @@ fn walker_words(root: &Path, options: ScanOptions) -> String {
 /// On Linux it asks what the walk would at a mount point; elsewhere every folder is entered.
 #[must_use]
 pub fn walk_would_enter(scan_root: &Path, folder: &Path, options: ScanOptions) -> bool {
-    // A NAS's snapshots and recycle bin are left empty by name on every platform; the scan's
-    // own root is scanned whatever it is named.
+    // A share's snapshots are left empty by name on every platform; the scan's own root is
+    // scanned whatever it is named.
     if folder != scan_root
         && folder
             .file_name()
@@ -673,7 +673,7 @@ fn descend_predicate(
         if !max_depth.is_none_or(|max| entry.depth < max) {
             return false;
         }
-        // A NAS's snapshots and recycle bin, seen over the network: listed, not entered.
+        // A share's snapshots, seen over the network: listed, not entered.
         if entry
             .path()
             .file_name()

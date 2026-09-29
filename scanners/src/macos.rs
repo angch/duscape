@@ -591,8 +591,8 @@ impl Queue {
     }
 }
 
-/// A NAS's snapshots and recycle bin, seen over the network (`nas::left_out`): noted in the
-/// directory and named, so that the walk lists them and does not enter them.
+/// A share's snapshots, seen over the network (`nas::left_out`): noted in the directory and
+/// named, so that the walk lists them and does not enter them.
 fn leave_out(entries: &mut DirEntries, snapshots: bool) -> Vec<OsString> {
     let left_out: Vec<OsString> = entries
         .iter()

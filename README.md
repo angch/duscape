@@ -45,11 +45,13 @@ reasoning. The native windows came after, sharing everything but their drawing.
   filesystem and all its subvolumes (a Synology share is one), where `du -x` stops at each
 - **Snapshots left alone** — on Linux, read-only btrfs snapshots inside the folder (Synology's
   `#snapshot`, snapper's `.snapshots`) are not walked, since each is a whole earlier copy of what
-  is scanned; and on every platform a NAS share's snapshot and recycle-bin folders, as a network
-  share shows them (Synology's `#snapshot` and `#recycle`, QNAP's `@Recently-Snapshot` and
-  `@Recycle`), are left empty by name. `--snapshots` walks them, counting each shared block once.
-  The NAS's other folders (`@docker`, `@appstore`, `@eaDir`, `.@__thumb`…) hold real space and
-  are walked; the status line says what each is
+  is scanned; and on every platform a share's snapshot folders, as a network share shows them
+  (Synology's `#snapshot`, QNAP's `@Recently-Snapshot`, ZFS's `.zfs`, NetApp's `.snapshot`), are
+  left empty by name. `--snapshots` walks them, counting each shared block once where the walker
+  can see sharing; over the network it cannot, and a volume root then says how much more was
+  counted than the volume holds. A NAS's other folders — its recycle bins (`#recycle`,
+  `@Recycle`), `@docker`, `@appstore`, `@eaDir`, `.@__thumb`… — hold space and are walked; the
+  status line says what each is
 - **Reads the disk itself** — as root on ext4, the metadata comes straight off the block device
   in ordered sweeps rather than one `stat` per file (a cold scan in half the time); elevated on
   Windows, a whole NTFS volume can be read from its master file table, as WizTree does, where a

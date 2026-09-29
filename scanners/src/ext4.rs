@@ -883,7 +883,7 @@ fn read_tree(
                                             shared_extent: 0,
                                         },
                                     );
-                                    // A NAS's snapshots and recycle bin: listed, not entered.
+                                    // A share's snapshots, seen by name: listed, not entered.
                                     let left_out = is_dir && nas::left_out(name, options.snapshots);
                                     if left_out {
                                         directory.note(

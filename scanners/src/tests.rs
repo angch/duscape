@@ -1683,19 +1683,20 @@ fn the_walk_reads_toward_the_focus_first() {
     assert_eq!(order.len(), 12, "every directory once");
 }
 
-/// A NAS's share over the network shows its snapshots and its recycle bin as plain folders —
-/// Synology's `#snapshot` and `#recycle`, QNAP's `@Recently-Snapshot` and `@Recycle`: every
-/// walker leaves them empty by name — listed as folders, not entered, noted for `--issues` —
-/// and `--snapshots` walks them; a rescan of one is refused as the walk refuses it, but named
-/// as the scan's root any is scanned. The NAS's other folders (`@docker`) are walked: they hold
-/// real space.
+/// A share over the network shows its snapshots as plain folders — Synology's `#snapshot`,
+/// QNAP's `@Recently-Snapshot`, ZFS's `.zfs`: every walker leaves them empty by name — listed
+/// as folders, not entered, noted for `--issues` — and `--snapshots` walks them; a rescan of one
+/// is refused as the walk refuses it, but named as the scan's root any is scanned. A recycle
+/// bin (`#recycle`, `@Recycle`) and the NAS's other folders (`@docker`) are walked: they hold
+/// space.
 #[test]
-fn a_nas_share_s_snapshots_and_recycle_bin_are_left_empty_by_name() {
+fn a_share_s_snapshots_are_left_empty_by_name_and_its_recycle_bin_walked() {
     let dir = temp_scan_dir("share_folders");
     for path in [
         "#snapshot/hourly/data.bin",
-        "#recycle/gone.bin",
         "@Recently-Snapshot/hourly/data.bin",
+        ".zfs/snapshot/hourly/data.bin",
+        "#recycle/gone.bin",
         "@Recycle/gone.bin",
         "@docker/containers/data.bin",
         "live/data.bin",
@@ -1717,9 +1718,13 @@ fn a_nas_share_s_snapshots_and_recycle_bin_are_left_empty_by_name() {
     };
     let left = read(false);
     let seen = paths(&left);
-    assert!(seen.contains(&dir.join("live")), "{seen:?}");
-    assert!(seen.contains(&dir.join("@docker")), "real space: {seen:?}");
-    for name in ["#snapshot", "#recycle", "@Recently-Snapshot", "@Recycle"] {
+    for name in ["live", "@docker", "#recycle", "@Recycle"] {
+        assert!(
+            seen.contains(&dir.join(name)),
+            "{name} is space, walked: {seen:?}"
+        );
+    }
+    for name in ["#snapshot", "@Recently-Snapshot", ".zfs"] {
         assert!(
             !seen.contains(&dir.join(name)),
             "{name} is not entered: {seen:?}"
@@ -1731,7 +1736,7 @@ fn a_nas_share_s_snapshots_and_recycle_bin_are_left_empty_by_name() {
         .expect("the root is read");
     assert_eq!(
         root.iter().filter(|(_, meta)| meta.is_dir).count(),
-        6,
+        7,
         "all are still listed as folders"
     );
     assert_eq!(root.failed, 0, "a note is not a failure");
@@ -1742,7 +1747,8 @@ fn a_nas_share_s_snapshots_and_recycle_bin_are_left_empty_by_name() {
             "--snapshots walks {name}: {walked:?}"
         );
     }
-    for name in ["#snapshot", "#recycle", "@Recently-Snapshot", "@Recycle"] {
+    assert!(walked.contains(&dir.join(".zfs").join("snapshot").join("hourly")));
+    for name in ["#snapshot", "@Recently-Snapshot", ".zfs"] {
         assert!(
             !crate::walk_would_enter(&dir, &dir.join(name), options(false)),
             "{name}"
@@ -1752,16 +1758,12 @@ fn a_nas_share_s_snapshots_and_recycle_bin_are_left_empty_by_name() {
             "{name}"
         );
     }
-    assert!(crate::walk_would_enter(
-        &dir,
-        &dir.join("@docker"),
-        options(false)
-    ));
-    assert!(crate::walk_would_enter(
-        &dir,
-        &dir.join("live"),
-        options(false)
-    ));
+    for name in ["#recycle", "@Recycle", "@docker", "live"] {
+        assert!(
+            crate::walk_would_enter(&dir, &dir.join(name), options(false)),
+            "{name}"
+        );
+    }
     let snapshot = dir.join("#snapshot");
     assert!(
         crate::walk_would_enter(&snapshot, &snapshot, options(false)),

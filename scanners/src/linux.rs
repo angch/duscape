@@ -477,7 +477,7 @@ fn read_directory(
                     return;
                 }
             };
-            // A NAS's snapshots and recycle bin, seen over the network: listed, not entered.
+            // A share's snapshots, seen over the network: listed, not entered.
             let name = OsStr::from_bytes(name_of(l).to_bytes());
             let left_out = found.child.is_some() && nas::left_out(name, options.snapshots);
             if left_out {

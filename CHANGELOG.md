@@ -9,14 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- A NAS share's snapshot and recycle-bin folders, as a network share shows them — Synology's
-  `#snapshot` and `#recycle`, QNAP's `@Recently-Snapshot` and `@Recycle` — are left empty by
-  name on every platform: listed, not entered, noted for `--issues`, and refused to a rescan.
-  `--snapshots` walks them, as it walks the btrfs snapshots on the NAS itself. Each snapshot is
-  a whole earlier copy of the share, so walking a share's `#snapshot` walked it once an hour of
-  retention. The NAS's other folders — Synology's `@docker`, `@appstore`, `@eaDir`,
-  `@synologydrive`, `@cloudstation`, `@database`, `@tmp`, QNAP's `.@__thumb`, `.qpkg` — hold real
-  space and are walked; every viewer's status line says what the one in hand is
+- A share's snapshot folders, as a network share shows them — Synology's `#snapshot`, QNAP's
+  `@Recently-Snapshot`, ZFS's `.zfs`, NetApp's `.snapshot` and `~snapshot`, snapper's
+  `.snapshots` — are left empty by name on every platform: listed, not entered, noted for
+  `--issues`, and refused to a rescan. `--snapshots` walks them, as it walks the btrfs snapshots
+  on the NAS itself. Each snapshot is a whole earlier copy of the share, so walking a share's
+  `#snapshot` walked it once an hour of retention; and over the network no walker can see the
+  blocks a snapshot shares with the live files, so a scan of a volume root now says how much
+  more it counted than the volume holds, in the status line and the panel. The other folders a
+  NAS keeps — its recycle bins (`#recycle`, `@Recycle`, Samba's `.recycle`, Unraid's
+  `.Recycle.Bin`), Synology's `@docker`, `@appstore`, `@ActiveBackup`, `@iSCSI`, `@eaDir`…,
+  QNAP's `.qpkg`, `.system`, `.@__thumb`, `.streams`… — hold space and are walked, and every
+  viewer's status line says what the one in hand is; so for the metadata folders macOS and
+  Windows leave on any volume (`.Spotlight-V100`, `System Volume Information`, `$RECYCLE.BIN`…)
   (`libduscape::nas`).
 - `make setup-ubuntu` installs what `make static` needs on Ubuntu or Debian (`musl-tools`,
   `build-essential`, the musl target); with `ZIG=1` also zig and `cargo-zigbuild`, for

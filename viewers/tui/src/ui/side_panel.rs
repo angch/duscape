@@ -168,6 +168,9 @@ pub struct FolderDetails<'a> {
     pub scan_total: Option<u128>,
     /// The volume's used space and how much of it the scan did not reach, at a volume root.
     pub disk: Option<(u128, u128)>,
+    /// What the scan counted beyond the volume's used space: blocks shared between files the
+    /// walker could not see shared (a snapshot's with the live file's, over the network).
+    pub over: Option<u128>,
 }
 
 pub struct SidePanel<'a> {
@@ -348,18 +351,20 @@ impl Widget for SidePanel<'_> {
         if let Some((used, outside)) = folder.disk {
             let used = DisplaySize(used as f64);
             let outside = DisplaySize(outside as f64);
-            line(
-                buf,
-                area.y + 3,
-                &first_that_fits(
-                    &[
-                        format!("disk used {used}, {outside} not scanned"),
-                        format!("disk {used}, +{outside}"),
-                    ],
-                    width,
-                ),
-                details,
-            );
+            let lines = match folder.over {
+                Some(over) => {
+                    let over = DisplaySize(over as f64);
+                    [
+                        format!("disk used {used}, {over} counted twice (shared blocks)"),
+                        format!("disk {used}, {over} shared"),
+                    ]
+                }
+                None => [
+                    format!("disk used {used}, {outside} not scanned"),
+                    format!("disk {used}, +{outside}"),
+                ],
+            };
+            line(buf, area.y + 3, &first_that_fits(&lines, width), details);
         }
 
         let rows = usize::from(area.height.saturating_sub(HEADER_ROWS));
@@ -659,6 +664,7 @@ mod tests {
             descendants: 12_345,
             scan_total: Some(48 * 1024 * 1024),
             disk: None,
+            over: None,
         };
         let lines = rendered(SidePanel::new(details, &entries, Some(20), &[]), area);
 
@@ -695,6 +701,7 @@ mod tests {
             descendants: 3,
             scan_total: None,
             disk: None,
+            over: None,
         };
         let background = |focused: bool| {
             let mut buf = Buffer::empty(area);
@@ -720,6 +727,7 @@ mod tests {
             descendants: 12,
             scan_total: None,
             disk: None,
+            over: None,
         };
         let marked = [entries[2].name.clone()];
         let mut buf = Buffer::empty(area);
@@ -757,6 +765,7 @@ mod tests {
             descendants: 1,
             scan_total: None,
             disk: None,
+            over: None,
         };
         let lines = rendered(SidePanel::new(details, &entries, None, &[]), area);
         let row = &lines[usize::from(HEADER_ROWS)];

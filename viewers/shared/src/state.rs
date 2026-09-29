@@ -2129,6 +2129,12 @@ impl Viewer {
                 DisplaySize(outside as f64)
             ));
         }
+        if let Some(over) = self.tree.counted_beyond_volume() {
+            words.push(format!(
+                "{} more than the volume holds: shared blocks counted in full",
+                DisplaySize(over as f64)
+            ));
+        }
         let freed = self.tree.space_freed.get(self.tree.shown);
         if freed > 0 {
             words.push(format!("{} freed", DisplaySize(freed as f64)));

@@ -112,6 +112,9 @@ fn render_side_panel(
             .volume_used
             .zip(file_tree.outside_scan())
             .filter(|_| at_root && scanned),
+        over: file_tree
+            .counted_beyond_volume()
+            .filter(|_| at_root && scanned),
     };
     f.render_widget(
         SidePanel::new(

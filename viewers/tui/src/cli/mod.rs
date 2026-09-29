@@ -37,9 +37,9 @@ pub struct Opt {
     pub config: Option<PathBuf>,
     /// Walk into the snapshots inside the folder too: on Linux the read-only btrfs snapshots
     /// (Synology's `#snapshot`, snapper's `.snapshots`), each a whole earlier copy of what is
-    /// scanned, and everywhere a NAS share's snapshot and recycle-bin folders as a network share
-    /// shows them (Synology's `#snapshot` and `#recycle`, QNAP's `@Recently-Snapshot` and
-    /// `@Recycle`); by default they are left empty
+    /// scanned, and everywhere a share's snapshot folders as a network share shows them
+    /// (Synology's `#snapshot`, QNAP's `@Recently-Snapshot`, ZFS's `.zfs`, NetApp's `.snapshot`);
+    /// by default they are left empty
     #[arg(long)]
     pub snapshots: bool,
     /// Do not cross filesystem boundaries (like `du -x`; on btrfs, stays on the filesystem and
