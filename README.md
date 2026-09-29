@@ -104,7 +104,8 @@ cargo run --release --bin duscape -- ~    # the terminal viewer, or the window w
 cargo install --path viewers/tui          # duscape on your PATH
 ```
 
-The static release builds: `make static` (needs `musl-tools`; on a Mac, which has no `musl-gcc`,
+The static release builds: `make static` (needs `musl-tools` — on Ubuntu `make setup-ubuntu`
+installs it and the musl target, and `ZIG=1` adds zig and `cargo-zigbuild`; on a Mac, which has no `musl-gcc`,
 it cross-builds with `cargo-zigbuild` instead), `make static-aarch64` and `make static-windows`
 (need `cargo-zigbuild`); on a Mac, `make mac-app` builds `duscape` for both
 architectures in one file and `Duscape.app` around it (macOS links its system libraries

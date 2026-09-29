@@ -1,4 +1,4 @@
-.PHONY: build run install test test-fs quality coverage static static-aarch64 static-linux-gui static-linux-gui-aarch64 static-windows mac-universal mac-app pgo dos dos-tools dos-run
+.PHONY: build run install test test-fs quality coverage setup-ubuntu static static-aarch64 static-linux-gui static-linux-gui-aarch64 static-windows mac-universal mac-app pgo dos dos-tools dos-run
 
 build:
 	cargo build --workspace
@@ -48,6 +48,25 @@ coverage:
 # `make test-fs FS="btrfs snapshots"` runs just those.
 test-fs:
 	fixtures/fs/run.sh $(FS)
+
+# What `make static` needs on Ubuntu (or Debian): musl-gcc for jemalloc, which is C, a native
+# compiler and make for the build scripts, and the musl target in rustup. `make setup-ubuntu
+# ZIG=1` also fetches zig and cargo-zigbuild, what `static-aarch64` and `static-windows` need.
+# Rust itself is not installed here: https://rustup.rs
+ZIG_VERSION := 0.13.0
+setup-ubuntu:
+	sudo apt-get update
+	sudo apt-get install -y musl-tools build-essential curl
+	rustup target add x86_64-unknown-linux-musl
+	@if [ -n "$(ZIG)" ]; then \
+		rustup target add aarch64-unknown-linux-musl x86_64-pc-windows-gnu; \
+		command -v zig >/dev/null || { \
+			curl -sSfL https://ziglang.org/download/$(ZIG_VERSION)/zig-linux-x86_64-$(ZIG_VERSION).tar.xz | sudo tar -xJ -C /opt \
+			&& sudo ln -sf /opt/zig-linux-x86_64-$(ZIG_VERSION)/zig /usr/local/bin/zig; }; \
+		command -v cargo-zigbuild >/dev/null || cargo install cargo-zigbuild; \
+	fi
+	@if [ -n "$(ZIG)" ]; then echo "ready: make static, static-aarch64, static-windows"; \
+		else echo "ready: make static (ZIG=1 adds static-aarch64 and static-windows)"; fi
 
 # Fully static binary: on Linux, musl with jemalloc (needs musl-gcc); on Windows, MSVC with
 # crt-static (configured in .cargo/config.toml, needing only DLLs that come with Windows); on
