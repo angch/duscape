@@ -970,3 +970,52 @@ fn a_whole_rescan_does_not_count_earlier_frees_against_the_volume_again() {
         "the session's total carries over"
     );
 }
+
+/// The root of a network share, as `canonicalize` names it (`\\?\UNC\server\share`, no
+/// separator after the prefix), scanned: every directory under it lands in its own folder,
+/// not in a folder named `\` — which, on a mapped drive, held the whole scan while every
+/// real folder showed as empty. The tree gives its root the separator, and strips one that a
+/// walker's paths leave in front of a name.
+#[cfg(windows)]
+#[test]
+fn a_share_root_without_its_separator_still_places_every_directory() {
+    use ::std::path::Path;
+    use ::std::sync::Arc;
+
+    use crate::EntryMeta;
+    use crate::scan::DirEntries;
+
+    let bare = PathBuf::from(r"\\?\UNC\server\share");
+    let mut tree = FileTree::new(Folder::new(&bare), bare.clone());
+    assert_eq!(tree.path_in_filesystem, Path::new(r"\\?\UNC\server\share\"));
+
+    let file = |size| EntryMeta {
+        size,
+        apparent: size,
+        links: 1,
+        ..EntryMeta::default()
+    };
+    // The walker names its directories from the bare root: the root itself, then `sub`.
+    let mut root = DirEntries::new(Arc::from(bare.as_path()));
+    root.push(
+        OsString::from("sub").as_os_str(),
+        EntryMeta {
+            is_dir: true,
+            ..EntryMeta::default()
+        },
+    );
+    root.push(OsString::from("top.txt").as_os_str(), file(10));
+    tree.add_dir_entries(root);
+    let mut sub = DirEntries::new(Arc::from(bare.join("sub").as_path()));
+    sub.push(OsString::from("inner.txt").as_os_str(), file(100));
+    tree.add_dir_entries(sub);
+
+    let top = tree.get_current_folder();
+    assert!(
+        top.contents.get(&OsString::from(r"\")).is_none(),
+        "no folder named by the separator"
+    );
+    assert_eq!(top.sizes.disk, 110);
+    assert_eq!(folder_at(&tree, &["sub"]).sizes.disk, 100);
+    assert_eq!(tree.get_total_descendants(), 3);
+}

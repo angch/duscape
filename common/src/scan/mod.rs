@@ -6,6 +6,24 @@ use ::std::ffi::{OsStr, OsString};
 use ::std::path::{Path, PathBuf};
 use ::std::sync::Arc;
 
+/// A path from the scan root as `strip_prefix` gives it, less a leading separator.
+///
+/// The tree's root normally has its separator ([`crate::os::scan_root`]), so what is under
+/// it strips to names alone; a root without one — a share's as `canonicalize` names it,
+/// handed in by a caller that did not go through [`crate::os::canonical_root`] — leaves `\sub`
+/// for its `sub`, whose first component is a root, not a name. Cheap: a path with no root is
+/// returned as it is.
+#[must_use]
+pub fn below_root(relative: &Path) -> &Path {
+    if relative.has_root() {
+        relative
+            .strip_prefix(::std::path::MAIN_SEPARATOR_STR)
+            .unwrap_or(relative)
+    } else {
+        relative
+    }
+}
+
 /// Options controlling filesystem traversal.
 #[derive(Clone, Copy, Debug)]
 pub struct ScanOptions {
@@ -649,6 +667,21 @@ pub struct FoundFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    #[test]
+    fn below_root_takes_off_a_leading_separator_and_nothing_else() {
+        assert_eq!(below_root(Path::new("sub")), Path::new("sub"));
+        assert_eq!(below_root(Path::new("")), Path::new(""));
+        let rooted = format!("{}sub", ::std::path::MAIN_SEPARATOR);
+        assert_eq!(below_root(Path::new(&rooted)), Path::new("sub"));
+        let deeper = format!("{0}sub{0}inner", ::std::path::MAIN_SEPARATOR);
+        assert_eq!(
+            below_root(Path::new(&deeper)),
+            Path::new(&deeper[1..]),
+            "the components after the separator are kept"
+        );
+    }
 
     #[test]
     fn every_failure_is_counted_and_a_few_are_kept_whole() {

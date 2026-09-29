@@ -65,3 +65,41 @@ fn volume_used_is_reported_for_a_volume_root_only() {
 fn enabling_the_backup_privilege_does_not_fail() {
     let _ = crate::os::enable_backup_privilege();
 }
+
+/// `canonicalize` names the root of a network share `\\?\UNC\server\share`, a prefix and
+/// nothing after it; a scan root has the separator after its prefix, as a drive's does, so
+/// that what is under it strips to names alone.
+#[cfg(windows)]
+#[test]
+fn a_share_root_gets_its_separator_and_other_roots_are_left_alone() {
+    use ::std::path::{Component, Path, PathBuf};
+
+    let share = crate::os::scan_root(PathBuf::from(r"\\?\UNC\server\share"));
+    assert_eq!(share, Path::new(r"\\?\UNC\server\share\"));
+    assert!(
+        share.components().any(|c| matches!(c, Component::RootDir)),
+        "{share:?} has a root after its prefix"
+    );
+    assert_eq!(
+        Path::new(r"\\?\UNC\server\share\sub")
+            .strip_prefix(&share)
+            .expect("under the root"),
+        Path::new("sub")
+    );
+    for root in [r"\\?\C:\", r"C:\", r"C:\Users", r"\\?\UNC\server\share\sub"] {
+        assert_eq!(crate::os::scan_root(PathBuf::from(root)), Path::new(root));
+    }
+}
+
+/// On every platform, a root that resolves keeps resolving; one that does not is kept as given.
+#[test]
+fn canonical_root_resolves_what_exists_and_keeps_the_rest() {
+    let dir = std::env::temp_dir().join("duscape_os_canonical_root_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let expected = dir.canonicalize().expect("canonicalize temp dir");
+    assert_eq!(crate::os::canonical_root(&dir), expected);
+    let _ = std::fs::remove_dir_all(&dir);
+    let missing = dir.join("missing");
+    assert_eq!(crate::os::canonical_root(&missing), missing);
+}

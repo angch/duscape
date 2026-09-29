@@ -29,6 +29,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- On Windows, a mapped network drive scanned at its root (`T:\`) showed one folder named `\`
+  holding everything, and every real folder at 0 — in the list, from the first scan on, and
+  plainly after a rescan of everything; the treemap looked right since the tiles were nested
+  inside that one folder. `canonicalize` names a share's root `\\?\UNC\server\share` with
+  nothing after the prefix, so the paths under it, stripped of it, began with a separator that
+  became a folder's name. Every scan root now carries its separator, and the tree strips one
+  left in front of a name anyway.
+
 - The Linux and Windows windows no longer flash a treemap without labels before one with them
   at every relayout. A layout's first paint may stop labelling tiles after 4 ms, but that time
   was counted from the start of the paint, and filling a few thousand nested tiles used it up

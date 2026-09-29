@@ -790,7 +790,7 @@ mod volume {
     /// (elevated), and the tree and the volume are ones the table pays for — or why not. For
     /// the benchmark's report.
     pub fn would_read_device(root: &Path) -> Result<(), String> {
-        let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        let root = libduscape::os::canonical_root(root);
         chosen(&root).map(|_| ())
     }
 
@@ -919,7 +919,8 @@ mod volume {
     /// kernel walk should be used instead, and nothing has been read that matters. The table
     /// is read and parsed before this returns, so that a failure can still fall back.
     pub fn walk_mft(root: &Path, threads: usize, options: ScanOptions) -> Option<MftWalk> {
-        let root: PathBuf = root.canonicalize().ok()?;
+        root.canonicalize().ok()?;
+        let root: PathBuf = libduscape::os::canonical_root(root);
         let Chosen {
             mut volume,
             record: root_record,

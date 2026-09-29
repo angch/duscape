@@ -242,7 +242,11 @@ out and painting.
   since a file manager being started to answer can take seconds. Nothing waits on the window's
   thread, and every child is reaped by a thread that waits for it
 - `format/display_size.rs` — byte → human-readable (B/KB/MB/GB/TB)
-- `os/unix.rs`, `os/windows.rs` — `is_user_admin()`, `size_on_disk_fast()`, `volume_id()`, `link_count()`
+- `os/unix.rs`, `os/windows.rs` — `is_user_admin()`, `size_on_disk_fast()`, `volume_id()`, `link_count()`;
+  `os/mod.rs` — `canonical_root()`, what every scan root and `FileTree::new` go through: canonical,
+  and a network share's root (`\\?\UNC\server\share`, which `canonicalize` gives with nothing after
+  the prefix) with its separator, so paths under it strip to names; `scan::below_root` strips a
+  separator left in front of a name anyway
 - `os/volumes.rs` — `volumes()`: what is mounted, its device or label, filesystem, size and
   use — `/proc/self/mounts` sifted (block devices and the known network filesystems, one line
   a source, tested) and `statvfs`; `getmntinfo` on macOS; the drive letters on Windows. For

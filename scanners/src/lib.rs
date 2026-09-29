@@ -125,7 +125,7 @@ pub mod parallel {
         mut progress: impl FnMut(&DirEntries) -> bool,
     ) -> Option<(FileTree, u64, Timings, super::refine::SmallFiles)> {
         let shards = shards.max(1);
-        let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        let root = libduscape::os::canonical_root(root);
         let start = Instant::now();
 
         // A single builder sees the whole tree, so no hard link can span shards and it can charge
@@ -414,7 +414,7 @@ mod fallback {
         root: &Path,
         options: ScanOptions,
     ) -> impl Iterator<Item = DirEntries> {
-        let root_canon = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        let root_canon = libduscape::os::canonical_root(root);
         let root: Arc<Path> = Arc::from(root_canon.as_path());
         let descend = descend_predicate(&root, options);
         let mut walk = walk(
@@ -589,10 +589,7 @@ const MAX_DUA_THREADS: usize = 8;
 
 /// Walk `root` and yield each filesystem entry (or a read error marker).
 pub fn scan_folder(root: impl AsRef<Path>, options: ScanOptions) -> impl Iterator<Item = ScanItem> {
-    let root = root
-        .as_ref()
-        .canonicalize()
-        .unwrap_or_else(|_| root.as_ref().to_path_buf());
+    let root = libduscape::os::canonical_root(root.as_ref());
     let threads = dua_thread_count(options);
     let descend = descend_predicate(&root, options);
 
@@ -739,10 +736,7 @@ fn entry_size(metadata: &::dua_core::Metadata, apparent: bool) -> u64 {
 
 /// Walk `root` and populate a [`FileTree`]. Returns the tree and a count of read failures.
 pub fn scan_into_tree(root: impl AsRef<Path>, options: ScanOptions) -> (FileTree, u64) {
-    let root_path = root
-        .as_ref()
-        .canonicalize()
-        .unwrap_or_else(|_| root.as_ref().to_path_buf());
+    let root_path = libduscape::os::canonical_root(root.as_ref());
     let mut tree = FileTree::new(Folder::new(&root_path), root_path.clone());
     let mut failed_to_read = 0u64;
 

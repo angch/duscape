@@ -9,7 +9,7 @@ use ::std::time::Instant;
 
 use super::profile;
 
-use crate::scan::{DirEntries, DirSummary, EntryMeta, NamedEntry, SharedBlocks};
+use crate::scan::{DirEntries, DirSummary, EntryMeta, NamedEntry, SharedBlocks, below_root};
 
 /// How many leading path components `last` and `now` share, on their bytes: both are relative
 /// paths in the form `components()` yields, so a common byte prefix that ends at a separator
@@ -69,9 +69,7 @@ pub struct FileTree {
 
 impl FileTree {
     pub fn new(mut base_folder: Folder, path_in_filesystem: PathBuf) -> Self {
-        let path_in_filesystem = path_in_filesystem
-            .canonicalize()
-            .unwrap_or(path_in_filesystem);
+        let path_in_filesystem = crate::os::canonical_root(&path_in_filesystem);
         base_folder.dir = DirRef::ROOT;
         FileTree {
             base_folder,
@@ -201,7 +199,7 @@ impl FileTree {
     pub fn apply_found(&mut self, found: &[crate::scan::Found]) -> usize {
         let mut charged_files = 0;
         for directory in found {
-            let Ok(relative) = directory.dir.strip_prefix(&self.path_in_filesystem) else {
+            let Some(relative) = self.relative_to_root(&directory.dir) else {
                 continue;
             };
             let names: Vec<OsString> = relative
@@ -351,7 +349,7 @@ impl FileTree {
             entries,
         } = summary;
         let (dir_path, names, dir_entries) = dirs.into_parts();
-        let Ok(relative) = dir_path.strip_prefix(&self.path_in_filesystem) else {
+        let Some(relative) = self.relative_to_root(&dir_path) else {
             return;
         };
         let depth = relative.components().count();
@@ -464,6 +462,26 @@ impl FileTree {
             )
     }
 
+    /// `path` from the scan root: what `strip_prefix` leaves, less a leading separator
+    /// ([`below_root`]), and the root itself however it is spelt — a share's root bare,
+    /// `\?\UNC\server\share` as `canonicalize` names it, is not "under" the root as the tree
+    /// names it, with the separator, though it is the same directory. `None` for a path
+    /// outside the scan.
+    fn relative_to_root<'a>(&self, path: &'a Path) -> Option<&'a Path> {
+        match path.strip_prefix(&self.path_in_filesystem) {
+            Ok(relative) => Some(below_root(relative)),
+            Err(_) => {
+                let names =
+                    |p: &'a Path| p.components().filter(|c| !matches!(c, Component::RootDir));
+                let same_root = names(path).eq(self
+                    .path_in_filesystem
+                    .components()
+                    .filter(|c| !matches!(c, Component::RootDir)));
+                same_root.then(|| Path::new(""))
+            }
+        }
+    }
+
     /// Add every entry of one directory at once.
     ///
     /// Resolving `dir_path` is O(depth), and doing it once for the whole directory rather than
@@ -473,13 +491,13 @@ impl FileTree {
         let (dir_path, names, entries) = directory.into_parts();
         // A directory from outside the scanned tree has no place in it. Silently folding such a
         // path into the base folder, as skipping a component count would, invents entries.
-        let Ok(relative) = dir_path.strip_prefix(&self.path_in_filesystem) else {
+        let Some(relative) = self.relative_to_root(&dir_path) else {
             return;
         };
         self.add_relative_dir_entries(relative, names, entries);
     }
     pub fn add_entry(&mut self, meta: EntryMeta, entry_full_path: &Path) {
-        let Ok(relative) = entry_full_path.strip_prefix(&self.path_in_filesystem) else {
+        let Some(relative) = self.relative_to_root(entry_full_path) else {
             return;
         };
         let (Some(name), Some(parent)) = (relative.file_name(), relative.parent()) else {
