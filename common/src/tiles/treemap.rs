@@ -112,9 +112,7 @@ pub struct TreeMap {
     /// The rows laid out, each's direction and the children in it given a tile.
     rows: Vec<(bool, Vec<usize>)>,
     bounds: Area,
-    empty_space: RectFloat,
-    total_size: f64,
-    grid: Grid,
+    space: Space,
 }
 impl TreeMap {
     pub fn new(bounds: &Area) -> Self {
@@ -122,17 +120,14 @@ impl TreeMap {
     }
     /// A treemap over `bounds` in `grid`'s cells.
     pub fn with_grid(bounds: &Area, grid: Grid) -> Self {
-        let empty_space = RectFloat::new(bounds);
         TreeMap {
             tiles: vec![],
             unrenderable_tile_coordinates: None,
             hidden: Vec::new(),
             tile_entries: Vec::new(),
             rows: Vec::new(),
-            total_size: (empty_space.height * empty_space.width),
             bounds: *bounds,
-            empty_space,
-            grid,
+            space: Space::new(bounds, grid),
         }
     }
     pub fn populate_tiles(&mut self, children: Vec<&FileMetadata>) {
@@ -172,7 +167,7 @@ impl TreeMap {
         key: &mut dyn FnMut(usize) -> u64,
         plan: Option<&Plan>,
     ) -> Plan {
-        let fresh = TreeMap::with_grid(&self.bounds, self.grid);
+        let fresh = TreeMap::with_grid(&self.bounds, self.space.grid);
         if let Some(plan) = plan.filter(|plan| !plan.is_empty()) {
             let mut plan = plan.clone();
             // A planned entry grown too small for a tile is taken out of its row and laid out
@@ -186,7 +181,7 @@ impl TreeMap {
                             row.retain(|key| !keys.contains(key));
                         }
                         plan.rows.retain(|(_, row)| !row.is_empty());
-                        *self = TreeMap::with_grid(&self.bounds, self.grid);
+                        *self = TreeMap::with_grid(&self.bounds, self.space.grid);
                     }
                 }
             }
@@ -244,9 +239,12 @@ impl TreeMap {
                 continue;
             }
             row.sort_unstable();
-            let entries: Vec<usize> = row.iter().map(|&(_, index)| index).collect();
-            let files: Vec<&FileMetadata> = entries.iter().map(|&index| children[index]).collect();
-            self.lay_row(&entries, &files, Some(*horizontal));
+            let row = row
+                .iter()
+                .map(|&(_, index)| (index, children[index].percentage));
+            self.lay(children, |space, out| {
+                space.lay_row(row, Some(*horizontal), out);
+            });
         }
         if !self.hidden.is_empty() {
             // A planned entry too small now for a tile: the corner would open mid-board.
@@ -283,7 +281,7 @@ impl TreeMap {
     fn steady_shapes(&self) -> bool {
         self.tiles.iter().all(|tile| {
             let width = f64::from(tile.width);
-            let height = f64::from(tile.height) * self.grid.ratio;
+            let height = f64::from(tile.height) * self.space.grid.ratio;
             width.min(height) >= width.max(height) * STEADY_WORST_RATIO
         })
     }
@@ -311,32 +309,141 @@ impl TreeMap {
     /// whole, their siblings' room when some were not given to be laid out.
     #[must_use]
     pub fn leftover(&self) -> Area {
-        self.empty_space.round()
-    }
-    /// Lay out `row`, the children from `first` on.
-    fn layoutrow(&mut self, first: usize, row: &[&FileMetadata]) {
-        let entries: Vec<usize> = (first..first + row.len()).collect();
-        self.lay_row(&entries, row, None);
+        self.space.empty_space.round()
     }
 
-    /// Lay out `row`, children `entries`, along the empty space's shorter side, or across it
-    /// if `horizontal` says so (a plan's row, kept the way it ran).
-    fn lay_row(&mut self, entries: &[usize], row: &[&FileMetadata], horizontal: Option<bool>) {
-        let row_total = row.iter().fold(0.0, |acc, file_metadata| {
-            let size = file_metadata.percentage * self.total_size;
-            acc + size
-        });
+    /// Squarify `children` into the empty space, as tiles.
+    fn squarify(&mut self, children: &[&FileMetadata]) {
+        let shares: Vec<f64> = children.iter().map(|child| child.percentage).collect();
+        self.lay(children, |space, out| space.squarify(&shares, out));
+    }
+
+    /// Lay rows by `lay` into the empty space, the entries given a tile made tiles of
+    /// `children`, those not grown into the "small files" corner.
+    fn lay(&mut self, children: &[&FileMetadata], lay: impl FnOnce(&mut Space, &mut TileLay)) {
+        let mut space = self.space;
+        lay(
+            &mut space,
+            &mut TileLay {
+                map: self,
+                children,
+                laid: Vec::new(),
+            },
+        );
+        self.space = space;
+    }
+
+    /// Record that the tile at `x`, `y` was too small to draw, growing the "small files"
+    /// placeholder to cover it.
+    ///
+    /// A tile that rounds to zero cells still stands for real entries. When everything but one
+    /// huge entry falls below the minimum tile size, all of the hidden tiles round to nothing, and
+    /// dropping them would leave the board with no hint that anything else exists. So the
+    /// placeholder is kept, and pulled in from the board's edge far enough to be visible.
+    fn add_unrenderable_tile(&mut self, x: u16, y: u16) {
+        let grid = self.space.grid;
+        let right = self.bounds.x + self.bounds.width;
+        let bottom = self.bounds.y + self.bounds.height;
+        let x = x
+            .min(right.saturating_sub(grid.small_files_width))
+            .max(self.bounds.x);
+        let y = y
+            .min(bottom.saturating_sub(grid.small_files_height))
+            .max(self.bounds.y);
+        self.unrenderable_tile_coordinates = match self.unrenderable_tile_coordinates {
+            Some((current_x, current_y)) => Some((x.min(current_x), y.min(current_y))),
+            None => Some((x, y)),
+        };
+    }
+}
+
+/// What a row's entries are made into as [`Space`] lays them: a treemap's tiles and corner, or
+/// only where each lands ([`super::scatter`]).
+pub(crate) trait Lay {
+    /// Entry `entry` rounded to `area`, at least the grid's least tile.
+    fn tile(&mut self, entry: usize, area: Area);
+    /// Entry `entry` rounded to `area`, too small for a tile.
+    fn hidden(&mut self, entry: usize, area: Area);
+    /// The row just laid ran `horizontal`.
+    fn row(&mut self, horizontal: bool);
+}
+
+/// A [`TreeMap`]'s rows: the entries given a tile made tiles of `children`, each row noted.
+struct TileLay<'m, 'c, 'f> {
+    map: &'m mut TreeMap,
+    children: &'c [&'f FileMetadata],
+    /// The row's entries given a tile so far.
+    laid: Vec<usize>,
+}
+
+impl Lay for TileLay<'_, '_, '_> {
+    fn tile(&mut self, entry: usize, area: Area) {
+        self.map.tiles.push(Tile::at(&area, self.children[entry]));
+        self.map.tile_entries.push(entry);
+        self.laid.push(entry);
+    }
+    fn hidden(&mut self, entry: usize, area: Area) {
+        self.map.add_unrenderable_tile(area.x, area.y);
+        self.map.hidden.push(entry);
+    }
+    fn row(&mut self, horizontal: bool) {
+        if !self.laid.is_empty() {
+            self.map
+                .rows
+                .push((horizontal, ::std::mem::take(&mut self.laid)));
+        }
+    }
+}
+
+/// The squarify itself: the room still empty in the area, cut a row at a time by entries'
+/// shares of the whole, apart from what the rows are made into ([`Lay`]) — so a corner's tens
+/// of thousands of specks are laid by the same arithmetic as the tiles, without each being
+/// made a named tile first.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Space {
+    empty_space: RectFloat,
+    total_size: f64,
+    grid: Grid,
+}
+
+impl Space {
+    pub(crate) fn new(bounds: &Area, grid: Grid) -> Self {
+        let empty_space = RectFloat::new(bounds);
+        Space {
+            total_size: empty_space.height * empty_space.width,
+            empty_space,
+            grid,
+        }
+    }
+
+    /// Lay out `shares[..]`, entries `first` on, as one row.
+    fn lay_run(&mut self, first: usize, shares: &[f64], out: &mut impl Lay) {
+        let row = shares
+            .iter()
+            .enumerate()
+            .map(|(index, &share)| (first + index, share));
+        self.lay_row(row, None, out);
+    }
+
+    /// Lay out `row`, each entry and its share, along the empty space's shorter side, or
+    /// across it if `horizontal` says so (a plan's row, kept the way it ran).
+    fn lay_row<I>(&mut self, row: I, horizontal: Option<bool>, out: &mut impl Lay)
+    where
+        I: Iterator<Item = (usize, f64)> + Clone,
+    {
+        let row_total = row
+            .clone()
+            .fold(0.0, |acc, (_, share)| acc + share * self.total_size);
         let should_render_horizontally = horizontal
             .unwrap_or(self.empty_space.width <= self.empty_space.height * self.grid.ratio);
-        let mut laid = Vec::new();
         let mut progress_in_row = if should_render_horizontally {
             self.empty_space.x
         } else {
             self.empty_space.y
         };
         let mut length_of_row_second_side = 0.0;
-        for (&entry, file_metadata) in entries.iter().zip(row) {
-            let size = file_metadata.percentage * self.total_size;
+        for (entry, share) in row {
+            let size = share * self.total_size;
             // A row of nothing but empty entries (a share of 0 each) is laid out as nothing, where
             // it is: 0 / 0 made its place NaN, which rounds to the board's corner, and the "small
             // files" corner grew from there over every tile.
@@ -381,15 +488,11 @@ impl TreeMap {
             };
             progress_in_row += tile_length_first_side;
 
-            // Named only if it gets a tile: most of a big folder's entries go to the corner.
             let area = rect.round();
             if area.height < self.grid.min_height || area.width < self.grid.min_width {
-                self.add_unrenderable_tile(area.x, area.y);
-                self.hidden.push(entry);
+                out.hidden(entry, area);
             } else {
-                self.tiles.push(Tile::at(&area, file_metadata));
-                self.tile_entries.push(entry);
-                laid.push(entry);
+                out.tile(entry, area);
             }
 
             if tile_length_second_side > length_of_row_second_side {
@@ -397,9 +500,7 @@ impl TreeMap {
             }
         }
 
-        if !laid.is_empty() {
-            self.rows.push((should_render_horizontally, laid));
-        }
+        out.row(should_render_horizontally);
         if should_render_horizontally {
             self.empty_space.height -= length_of_row_second_side;
             self.empty_space.y += length_of_row_second_side;
@@ -408,33 +509,12 @@ impl TreeMap {
             self.empty_space.x += length_of_row_second_side;
         }
     }
-    /// Record that the tile at `x`, `y` was too small to draw, growing the "small files"
-    /// placeholder to cover it.
-    ///
-    /// A tile that rounds to zero cells still stands for real entries. When everything but one
-    /// huge entry falls below the minimum tile size, all of the hidden tiles round to nothing, and
-    /// dropping them would leave the board with no hint that anything else exists. So the
-    /// placeholder is kept, and pulled in from the board's edge far enough to be visible.
-    fn add_unrenderable_tile(&mut self, x: u16, y: u16) {
-        let right = self.bounds.x + self.bounds.width;
-        let bottom = self.bounds.y + self.bounds.height;
-        let x = x
-            .min(right.saturating_sub(self.grid.small_files_width))
-            .max(self.bounds.x);
-        let y = y
-            .min(bottom.saturating_sub(self.grid.small_files_height))
-            .max(self.bounds.y);
-        self.unrenderable_tile_coordinates = match self.unrenderable_tile_coordinates {
-            Some((current_x, current_y)) => Some((x.min(current_x), y.min(current_y))),
-            None => Some((x, y)),
-        };
-    }
 
-    /// The row's worst aspect ratio, `None` if one of it is not renderable; `sum` is its
-    /// children's sizes added in order.
+    /// The row's worst aspect ratio, `None` if one of it is not renderable; `row` is its
+    /// entries' shares and `sum` their sizes added in order.
     fn worst_in_renderable_row(
         &self,
-        row: &[&FileMetadata],
+        row: &[f64],
         sum: f64,
         length_of_row: f64,
         min_first_side: f64,
@@ -452,8 +532,8 @@ impl TreeMap {
             row
         };
         let mut worst_aspect_ratio = None;
-        for val in row.iter() {
-            let size = val.percentage * self.total_size;
+        for share in row {
+            let size = share * self.total_size;
             let first_side = (size / sum) * length_of_row;
             let second_side = size / first_side;
             if first_side >= min_first_side && second_side >= min_second_side {
@@ -479,27 +559,28 @@ impl TreeMap {
         worst_aspect_ratio
     }
 
-    /// Squarify `children` into the empty space: a row grows one child at a time while that
-    /// improves its worst aspect ratio, and is laid out when it would not.
+    /// Squarify entries by their `shares` of the whole into the empty space: a row grows one
+    /// entry at a time while that improves its worst aspect ratio, and is laid out when it
+    /// would not.
     ///
-    /// A loop over the children, not a recursion on the rest of them, so tens of thousands of
+    /// A loop over the entries, not a recursion on the rest of them, so tens of thousands of
     /// entries (a window's pixel grid) cost neither the stack nor a copy of the list a step.
-    /// Whether any child left is big enough for a tile is the largest left against the least
-    /// tile, from `largest_after`, where it was a scan of every child left at every step.
-    fn squarify(&mut self, children: &[&FileMetadata]) {
-        let mut largest_after = vec![0.0f64; children.len() + 1];
-        for (index, child) in children.iter().enumerate().rev() {
-            largest_after[index] = largest_after[index + 1].max(child.percentage * self.total_size);
+    /// Whether any entry left is big enough for a tile is the largest left against the least
+    /// tile, from `largest_after`, where it was a scan of every entry left at every step.
+    pub(crate) fn squarify(&mut self, shares: &[f64], out: &mut impl Lay) {
+        let mut largest_after = vec![0.0f64; shares.len() + 1];
+        for (index, share) in shares.iter().enumerate().rev() {
+            largest_after[index] = largest_after[index + 1].max(share * self.total_size);
         }
         let ratio = self.grid.ratio;
         let min_width = f64::from(self.grid.min_width);
         let min_height = f64::from(self.grid.min_height);
-        // The row is `children[row_start..next]`; its sizes added in order, as the layout of it
+        // The row is `shares[row_start..next]`; its sizes added in order, as the layout of it
         // adds them.
         let mut row_start = 0;
         let mut row_sum = 0.0;
         let mut next = 0;
-        // The row's worst ratio, when it is known: after a child is taken the row is the one
+        // The row's worst ratio, when it is known: after an entry is taken the row is the one
         // just measured with it, in the same empty space.
         let mut row_worst: Option<Option<f64>> = None;
         loop {
@@ -518,14 +599,14 @@ impl TreeMap {
                     )
                 };
 
-            let (row, rest) = (&children[row_start..next], &children[next..]);
+            let (row, rest) = (&shares[row_start..next], &shares[next..]);
             if rest.is_empty() {
-                self.layoutrow(row_start, row);
+                self.lay_run(row_start, row, out);
                 return;
             }
             if largest_after[next] < min_first_side * min_second_side {
-                self.layoutrow(row_start, row);
-                self.layoutrow(next, rest);
+                self.lay_run(row_start, row, out);
+                self.lay_run(next, rest, out);
                 return;
             }
             let current_row_worst_ratio = row_worst.unwrap_or_else(|| {
@@ -537,9 +618,9 @@ impl TreeMap {
                     min_second_side,
                 )
             });
-            let with_child = row_sum + rest[0].percentage * self.total_size;
+            let with_child = row_sum + rest[0] * self.total_size;
             let row_with_child_worst_ratio = self.worst_in_renderable_row(
-                &children[row_start..=next],
+                &shares[row_start..=next],
                 with_child,
                 length_of_row,
                 min_first_side,
@@ -547,16 +628,16 @@ impl TreeMap {
             );
 
             let take_child = match (current_row_worst_ratio, row_with_child_worst_ratio) {
-                // Renderable children are somewhere, but not the way the row is now nor with
-                // the next child in it: add it and keep looking. At worst the renderable
-                // children run out and the rest is laid out as one row (above).
+                // Renderable entries are somewhere, but not the way the row is now nor with
+                // the next entry in it: add it and keep looking. At worst the renderable
+                // entries run out and the rest is laid out as one row (above).
                 (None, None) => true,
-                // Only with the child is the row renderable: add it, and look for a better
+                // Only with the entry is the row renderable: add it, and look for a better
                 // ratio still.
                 (None, Some(_)) => true,
-                // The row is renderable as it is and the child would spoil it: lay it out.
+                // The row is renderable as it is and the entry would spoil it: lay it out.
                 (Some(_), None) => false,
-                // Add the child while it improves the worst ratio; lay the row out when it
+                // Add the entry while it improves the worst ratio; lay the row out when it
                 // stops.
                 (Some(current_ratio), Some(next_ratio)) => current_ratio < next_ratio,
             };
@@ -565,7 +646,7 @@ impl TreeMap {
                 next += 1;
                 row_worst = Some(row_with_child_worst_ratio);
             } else {
-                self.layoutrow(row_start, row);
+                self.lay_run(row_start, row, out);
                 row_start = next;
                 row_sum = 0.0;
                 row_worst = None;

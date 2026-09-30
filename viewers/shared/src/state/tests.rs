@@ -1589,3 +1589,22 @@ fn a_nas_folder_is_described_in_the_status_line() {
         describe(&file)
     );
 }
+
+#[test]
+fn a_specks_colour_is_its_tiles_whatever_came_before_it() {
+    // Runs of a kind, kinds apart only by case, and no extension beside an empty one.
+    let names = [
+        "Makefile", "notes.", "Makefile", "a.RS", "b.rs", "c.rs", "notes.", "d.txt", "e.rs",
+    ];
+    let mut colors = SpeckColors::default();
+    for depth in [0, 2, 0] {
+        for name in names {
+            let name = OsStr::new(name);
+            assert_eq!(
+                colors.file(name, depth),
+                entry_color(name, FileType::File, depth),
+                "{name:?} at {depth}"
+            );
+        }
+    }
+}

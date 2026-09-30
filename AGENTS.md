@@ -179,7 +179,9 @@ out and painting.
   same folder with new sizes keeps the last layout's rows by name (`Plan`), so while a scan
   runs a folder overtaking another grows in place instead of recutting the tiles after it; it
   lays out afresh when a tile would be thinner than 1:5, new entries take a quarter of the
-  area, or a planned entry is too small for a tile after three tries without it.
+  area, or a planned entry is too small for a tile after three tries without it. The
+  arithmetic is `Space` (the room left, cut a row at a time by shares), apart from what the
+  rows are made into (`Lay`): a `TreeMap`'s tiles and corner, or `scatter`'s motes.
   `viewers/shared/tests/layout_stability.rs` measures it (on `~`: 8% of tiles jumping per
   relayout → 2%, 14% of the area at the scan's end → 2%)
 - `tiles/board.rs` — `Board`: tile selection, zoom stack, navigation; `hidden`, the entries in
@@ -187,9 +189,13 @@ out and painting.
 - `tiles/dust.rs` — `scatter`: the "small files" corner filled in — its entries laid out again
   inside it in one-pixel cells with no least tile, as many as it has pixels, largest first and
   in proportion to each other, so a flat folder of 87k small files shows as specks, not a grey
-  box. The motes have no names and are no targets; `Viewer::dust` colours them by the rule
+  box. Laid by the treemap's own `Space` straight into motes, no `Tile` made of each (a
+  test holds them to where a treemap of stand-ins would put them): on `/usr` at
+  2560×1400 pt, 47k specks, a relayout 10.8 → 8.8 ms. The motes have no names and are no
+  targets; `Viewer::dust` colours them by the rule
   their tiles would have (`entry_color`: `tile_color` by name, `depth_shade` darker a level
-  in; a file's extension looked up once) and every desktop painter fills them in one pass.
+  in; a file's extension looked up once, and a run of one kind not looked up again: 8.8 →
+  8.3 ms; no extension is not an empty one, `Makefile` grey and `notes.` hashed) and every desktop painter fills them in one pass.
   Each corner comes as a `Speck` (where, the entry, its rank, its depth): the board's from
   `Board::scatter_corner`, each nested folder's from `nest_with`'s `speck` (`Nesting::dust`).
   A folder is ranked once for its tiles and its corner (`Ranking`: one pass over the folder,

@@ -55,6 +55,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A "small files" speck of a file with no extension (`Makefile`) and one ending in a dot
+  (`notes.`) took whichever colour of the two came first in the layout; each now has its tile's.
+
 - On Windows, a mapped network drive scanned at its root (`T:\`) showed one folder named `\`
   holding everything, and every real folder at 0 — in the list, from the first scan on, and
   plainly after a rescan of everything; the treemap looked right since the tiles were nested
@@ -75,6 +78,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.2.1] - 2026-09-27
 
 ### Changed
+
+- The "small files" corners' specks are laid out straight into place by the treemap's own
+  arithmetic, no named tile made of each, and a run of one kind of file is coloured without
+  looking its extension up again: a relayout of `/usr` at 2560×1400 pt, 47k specks, 10.8 → 8.3
+  ms, the tiles and specks exactly where they were.
 
 - `-x` on btrfs keeps to the filesystem and all its subvolumes, instead of stopping at every
   subvolume as `du -x` does: every btrfs subvolume has a device number of its own, and a Synology

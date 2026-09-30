@@ -13,6 +13,7 @@
 //!
 //! Kept free of any toolkit so that its tests run on the Linux CI like the rest of the workspace.
 
+use ::std::collections::HashMap;
 use ::std::ffi::{OsStr, OsString};
 use ::std::mem::ManuallyDrop;
 use ::std::path::{Path, PathBuf};
@@ -22,6 +23,7 @@ use duscape_scan::Focus as ScanFocus;
 use duscape_scan::rescan::{Outcome, Rescanner, Rescans};
 use libduscape::format::copied_path;
 use libduscape::model::SizeKind;
+use libduscape::model::files::hash::FastBuildHasher;
 use libduscape::tiles::{
     Area, Board, Expansion, FileMetadata, FileType, Grid, Inside, NestedTile, Nesting, Plans, Row,
     Speck, Tile, nest_steady, nest_with,
@@ -266,7 +268,10 @@ impl Layout {
 /// extension's worked out once for each, not once a speck.
 #[derive(Default)]
 struct SpeckColors {
-    by_extension: ::std::collections::HashMap<OsString, (f64, f64, f64)>,
+    by_extension: HashMap<OsString, (f64, f64, f64), FastBuildHasher>,
+    /// The last file speck's extension, its depth and colour: a corner's files come in runs of
+    /// a kind, and one compared costs less than one hashed and looked up.
+    last: Option<(OsString, usize, (f64, f64, f64))>,
 }
 
 impl SpeckColors {
@@ -275,16 +280,7 @@ impl SpeckColors {
         let color = if entry.file_type == FileType::Folder {
             entry_color(entry.name, entry.file_type, speck.depth)
         } else {
-            let extension = Path::new(entry.name).extension().unwrap_or_default();
-            let base = match self.by_extension.get(extension) {
-                Some(&color) => color,
-                None => {
-                    let color = tile_color(entry.name, entry.file_type);
-                    self.by_extension.insert(extension.to_os_string(), color);
-                    color
-                }
-            };
-            darker(base, depth_shade(speck.depth))
+            self.file(entry.name, speck.depth)
         };
         Dust {
             x: speck.area.x,
@@ -293,6 +289,40 @@ impl SpeckColors {
             height: speck.area.height,
             color,
         }
+    }
+
+    /// A file speck's colour, `depth` in.
+    fn file(&mut self, name: &OsStr, depth: usize) -> (f64, f64, f64) {
+        // None is not an empty extension: `Makefile` is grey, `notes.` hashes its "" as a
+        // kind; keyed alike, whichever came first coloured both.
+        let Some(extension) = Path::new(name).extension() else {
+            return entry_color(name, FileType::File, depth);
+        };
+        if let Some((last, last_depth, color)) = &self.last
+            && *last_depth == depth
+            && last == extension
+        {
+            return *color;
+        }
+        let base = match self.by_extension.get(extension) {
+            Some(&color) => color,
+            None => {
+                let color = tile_color(name, FileType::File);
+                self.by_extension.insert(extension.to_os_string(), color);
+                color
+            }
+        };
+        let color = darker(base, depth_shade(depth));
+        match &mut self.last {
+            Some((last, last_depth, last_color)) => {
+                last.clear();
+                last.push(extension);
+                *last_depth = depth;
+                *last_color = color;
+            }
+            None => self.last = Some((extension.to_os_string(), depth, color)),
+        }
+        color
     }
 }
 

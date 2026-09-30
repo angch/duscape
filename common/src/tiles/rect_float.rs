@@ -1,6 +1,6 @@
 use crate::tiles::Area;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct RectFloat {
     pub x: f64,
     pub y: f64,
