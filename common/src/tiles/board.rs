@@ -8,11 +8,28 @@ use crate::tiles::{
     FileMetadata, Grid, Plan, Share, Speck, Tile, TreeMap, files_in_folder, scatter,
 };
 
+/// The free space of a volume, shown as a tile beside its root's entries: how much, and its
+/// share of the board — free over free and used — which the entries' shares make room for.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FreeSpace {
+    pub bytes: u64,
+    pub share: f64,
+}
+
+/// The name of the free space's tile. A real entry so named at a volume's root would share it;
+/// the board tells the two apart by index ([`Board::free_tile`]), the listing never holds the
+/// free space, and a painter labels the tile by its name as it labels a file's.
+pub const FREE_SPACE_NAME: &str = "Free space";
+
 pub struct Board {
     pub tiles: Vec<Tile>,
     pub unrenderable_tile_coordinates: Option<(u16, u16)>,
     /// The entries that got no tile, by their index in `files`.
     hidden: Vec<usize>,
+    /// The volume's free space to show beside the entries, unzoomed; see [`Self::set_free_space`].
+    free: Option<FreeSpace>,
+    /// The free space's tile in `tiles`, when it got one.
+    free_index: Option<usize>,
     pub selected_index: Option<usize>, // None means nothing is selected
     pub previous_indices_and_zoom_level: Vec<(Option<usize>, usize)>, // Stack of previous stats
     pub zoom_level: usize,
@@ -37,6 +54,8 @@ impl Board {
             tiles: vec![],
             unrenderable_tile_coordinates: None,
             hidden: Vec::new(),
+            free: None,
+            free_index: None,
             files: files_in_folder(folder, 0, SizeKind::Disk),
             listing: files_in_folder(folder, 0, SizeKind::Disk),
             kind: SizeKind::Disk,
@@ -60,6 +79,55 @@ impl Board {
     pub fn show(&mut self, kind: SizeKind) {
         self.kind = kind;
     }
+    /// Show `free`, a volume's free space, as a tile of its own beside the folder's entries
+    /// from the next [`Self::change_files`] on, unzoomed only: the entries' shares shrink to
+    /// make its room, so the board shows the whole volume in proportion. `None` shows the
+    /// entries alone, as the board does by default. Not an entry: the listing never holds it,
+    /// the selection never lands on it, and a hit on it is nothing.
+    pub fn set_free_space(&mut self, free: Option<FreeSpace>) {
+        self.free = free.filter(|free| free.bytes > 0 && free.share > 0.0 && free.share < 1.0);
+    }
+    /// The free space's tile, when one is laid out: a painter colours and a viewer ignores it.
+    #[must_use]
+    pub fn free_tile(&self) -> Option<usize> {
+        self.free_index
+    }
+    /// Whether the tile at `index` is an entry's, which the selection may land on.
+    fn selectable(&self, index: usize) -> bool {
+        self.free_index != Some(index)
+    }
+    /// The first entry's tile, when there is one: where the selection goes from nothing.
+    fn select_first(&mut self) {
+        if let Some(index) = (0..self.tiles.len()).find(|&index| self.selectable(index)) {
+            self.set_selected_index(&index);
+        }
+    }
+    /// The free space's entry among `files`, when it is to be shown, the others' shares scaled
+    /// down to leave it its own.
+    fn add_free_space(free: Option<FreeSpace>, files: &mut Vec<FileMetadata>) {
+        let Some(free) = free else {
+            return;
+        };
+        for file in files.iter_mut() {
+            file.percentage *= 1.0 - free.share;
+        }
+        // In rank order: the files come largest first, and the layout counts on it — appended
+        // after them, the largest entry of all got no tile.
+        let at = files
+            .iter()
+            .position(|file| file.percentage < free.share)
+            .unwrap_or(files.len());
+        files.insert(
+            at,
+            FileMetadata {
+                name: FREE_SPACE_NAME.into(),
+                size: u128::from(free.bytes),
+                descendants: None,
+                percentage: free.share,
+                file_type: FileType::File,
+            },
+        );
+    }
     pub fn change_files(&mut self, folder: &Folder) {
         self.relist(folder);
         self.fill();
@@ -74,11 +142,19 @@ impl Board {
     }
     fn relist(&mut self, folder: &Folder) {
         self.listing = files_in_folder(folder, 0, self.kind);
+        self.refile(folder);
+    }
+    /// The entries on the board at the zoom: the listing, with the free space when it is to
+    /// be shown, or the zoom's fewer.
+    fn refile(&mut self, folder: &Folder) {
         self.files = if self.zoom_level == 0 {
             self.listing.clone()
         } else {
             files_in_folder(folder, self.zoom_level, self.kind)
         };
+        if self.zoom_level == 0 {
+            Self::add_free_space(self.free, &mut self.files);
+        }
     }
     /// Every entry of the folder on the board, largest first, including those the zoom leaves
     /// off it and those too small for a tile of their own.
@@ -162,6 +238,12 @@ impl Board {
         self.tiles = tree_map.tiles;
         self.unrenderable_tile_coordinates = tree_map.unrenderable_tile_coordinates;
         self.hidden = tree_map.hidden;
+        // By name, since the layout ranks the files: the free space may be the largest.
+        self.free_index = self.free.and_then(|_| {
+            self.tiles
+                .iter()
+                .position(|tile| tile.name == FREE_SPACE_NAME)
+        });
     }
     pub fn get_selected_index(&self) -> Option<usize> {
         self.selected_index
@@ -204,8 +286,9 @@ impl Board {
                     .tiles
                     .iter()
                     .enumerate()
-                    .filter(|(_, c)| {
-                        c.is_directly_right_of(currently_selected)
+                    .filter(|&(index, c)| {
+                        self.selectable(index)
+                            && c.is_directly_right_of(currently_selected)
                             && c.horizontally_overlaps_with(currently_selected)
                     })
                     // get the index of the tile with the most overlap with currently selected
@@ -216,7 +299,7 @@ impl Board {
                     None => self.reset_selected_index(), // move off the edge of the screen resets selection
                 }
             }
-            None => self.set_selected_index(&0),
+            None => self.select_first(),
         }
     }
     pub fn move_selected_left(&mut self) {
@@ -226,8 +309,9 @@ impl Board {
                     .tiles
                     .iter()
                     .enumerate()
-                    .filter(|(_, c)| {
-                        c.is_directly_left_of(currently_selected)
+                    .filter(|&(index, c)| {
+                        self.selectable(index)
+                            && c.is_directly_left_of(currently_selected)
                             && c.horizontally_overlaps_with(currently_selected)
                     })
                     // get the index of the tile with the most overlap with currently selected
@@ -238,7 +322,7 @@ impl Board {
                     None => self.reset_selected_index(), // move off the edge of the screen resets selection
                 }
             }
-            None => self.set_selected_index(&0),
+            None => self.select_first(),
         }
     }
     pub fn move_selected_down(&mut self) {
@@ -248,8 +332,9 @@ impl Board {
                     .tiles
                     .iter()
                     .enumerate()
-                    .filter(|(_, c)| {
-                        c.is_directly_below(currently_selected)
+                    .filter(|&(index, c)| {
+                        self.selectable(index)
+                            && c.is_directly_below(currently_selected)
                             && c.vertically_overlaps_with(currently_selected)
                     })
                     // get the index of the tile with the most overlap with currently selected
@@ -260,7 +345,7 @@ impl Board {
                     None => self.reset_selected_index(), // move off the edge of the screen resets selection
                 }
             }
-            None => self.set_selected_index(&0),
+            None => self.select_first(),
         }
     }
     pub fn move_selected_up(&mut self) {
@@ -270,8 +355,9 @@ impl Board {
                     .tiles
                     .iter()
                     .enumerate()
-                    .filter(|(_, c)| {
-                        c.is_directly_above(currently_selected)
+                    .filter(|&(index, c)| {
+                        self.selectable(index)
+                            && c.is_directly_above(currently_selected)
                             && c.vertically_overlaps_with(currently_selected)
                     })
                     // get the index of the tile with the most overlap with currently selected
@@ -282,26 +368,26 @@ impl Board {
                     None => self.reset_selected_index(), // move off the edge of the screen resets selection
                 }
             }
-            None => self.set_selected_index(&0),
+            None => self.select_first(),
         }
     }
     pub fn zoom_in(&mut self, folder: &Folder) {
         if self.zoom_level < self.files.len() {
             self.zoom_level += 1;
-            self.files = files_in_folder(folder, self.zoom_level, self.kind);
+            self.refile(folder);
             self.fill();
         }
     }
     pub fn zoom_out(&mut self, folder: &Folder) {
         if self.zoom_level > 0 {
             self.zoom_level -= 1;
-            self.files = files_in_folder(folder, self.zoom_level, self.kind);
+            self.refile(folder);
             self.fill();
         }
     }
     pub fn reset_zoom(&mut self, folder: &Folder) {
         self.zoom_level = 0;
-        self.files = files_in_folder(folder, self.zoom_level, self.kind);
+        self.refile(folder);
         self.fill();
     }
     pub fn reset_zoom_index(&mut self) {

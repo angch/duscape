@@ -566,7 +566,16 @@ pub fn paint(
         if let Some(info) = layout.info {
             draw_preview(&canvas, window, info);
         }
-        let crumbs = draw_path_bar(&canvas, window, layout.path_bar);
+        // The free-space toggle at the bar's right, at a volume's root, and the bar short of it.
+        let toggle = window.viewer.free_toggle();
+        let mut bar = layout.path_bar;
+        if toggle.is_some() {
+            bar.w = (layout.free_toggle.x - bar.x).max(0.0);
+        }
+        let crumbs = draw_path_bar(&canvas, window, bar);
+        if let Some((label, on)) = toggle {
+            draw_free_toggle(&canvas, window, layout.free_toggle, label, on);
+        }
         draw_chooser_button(&canvas, layout.chooser_button);
         draw_status(&canvas, window, layout.status);
 
@@ -1057,6 +1066,28 @@ fn draw_chooser_button(canvas: &Canvas, button: Rect) {
     canvas.frame(drive, DIM, 1);
     let light = Rect::new(drive.right() - 5.0, drive.bottom() - 5.0, 2.0, 2.0);
     canvas.fill(light, DIM);
+}
+
+/// The toggle at the path bar's right while the root of a volume is shown: a box, ticked when
+/// the free space is on the board, and its words.
+fn draw_free_toggle(canvas: &Canvas, window: &Window, rect: Rect, label: &str, on: bool) {
+    canvas.fill(rect, BAR);
+    let side = 12.0;
+    let r#box = Rect::new(rect.x + 10.0, rect.y + (rect.h - side) / 2.0, side, side);
+    canvas.frame(r#box, DIM, 1);
+    if on {
+        canvas.fill(
+            Rect::new(r#box.x + 3.0, r#box.y + 3.0, side - 6.0, side - 6.0),
+            DIM,
+        );
+    }
+    let words = Rect::new(
+        r#box.right() + 8.0,
+        rect.y,
+        (rect.right() - r#box.right() - 16.0).max(0.0),
+        rect.h,
+    );
+    canvas.text(words, label, DIM, window.fonts.ui, false);
 }
 
 fn draw_path_bar(canvas: &Canvas, window: &Window, bar: Rect) -> Vec<(Rect, usize)> {

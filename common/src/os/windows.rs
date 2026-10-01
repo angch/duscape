@@ -167,6 +167,18 @@ fn query_file_info(path: &::std::path::Path) -> Option<BY_HANDLE_FILE_INFORMATIO
 /// This is the figure Explorer and WizTree report as used. It counts what no directory walk can
 /// see: NTFS's own metadata files, shadow copies, and folders the scan was refused.
 pub fn volume_used(path: &::std::path::Path) -> Option<u64> {
+    volume_space(path).map(|(total, free)| total.saturating_sub(free))
+}
+
+/// Bytes free on the volume whose root is `path`, or `None` when `path` is not a volume root:
+/// what a view of the whole volume shows beside what is used.
+pub fn volume_free(path: &::std::path::Path) -> Option<u64> {
+    volume_space(path).map(|(_, free)| free)
+}
+
+/// The volume whose root is `path`: its bytes in all and its bytes free, or `None` when `path`
+/// is not a volume root.
+fn volume_space(path: &::std::path::Path) -> Option<(u64, u64)> {
     use ::std::os::windows::ffi::{OsStrExt, OsStringExt};
 
     #[link(name = "kernel32")]
@@ -209,7 +221,7 @@ pub fn volume_used(path: &::std::path::Path) -> Option<u64> {
             &raw mut free,
         )
     };
-    (ok != 0).then(|| total.saturating_sub(free))
+    (ok != 0).then_some((total, free))
 }
 
 /// Turn on `SeBackupPrivilege`, if this process holds it, and report whether it did.

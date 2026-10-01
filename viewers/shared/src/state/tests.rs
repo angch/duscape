@@ -1608,3 +1608,111 @@ fn a_specks_colour_is_its_tiles_whatever_came_before_it() {
         }
     }
 }
+
+/// What `viewer()` builds, with the volume's free space answered by `source`: the test's
+/// root is no volume's, so the OS would say none.
+fn viewer_with_free(source: fn(&Path) -> Option<u64>) -> Viewer {
+    let root = Path::new(ROOT);
+    let mut viewer = Viewer::new(root, SizeKind::Disk, 1);
+    viewer.set_volume_free_source(source);
+    let mut tree = FileTree::new(Folder::new(root), root.to_path_buf());
+    for (path, size, is_dir) in [
+        ("big", 0, true),
+        ("big/a", 600, false),
+        ("big/b", 300, false),
+        ("medium.txt", 400, false),
+        ("small", 0, true),
+        ("small/c", 100, false),
+        ("tiny.bin", 50, false),
+    ] {
+        tree.add_entry(meta(size, is_dir), &root.join(path));
+    }
+    viewer.resize(1200.0, 800.0);
+    viewer.finish_scan(tree);
+    viewer
+}
+
+fn as_much_free_as_used(_: &Path) -> Option<u64> {
+    Some(1450)
+}
+
+fn no_volume(_: &Path) -> Option<u64> {
+    None
+}
+
+/// At the root of a volume the free space is a tile of its share — half, here — beside the
+/// entries, on by default and offered as a toggle; it is no entry: not listed, not a target,
+/// never in hand. Off, or in a folder below the root, the entries have the board to themselves.
+#[test]
+fn free_space_is_shown_at_a_volumes_root_and_is_no_entry() {
+    let mut viewer = viewer_with_free(as_much_free_as_used);
+    assert_eq!(viewer.free_toggle(), Some(("Free space", true)));
+    let free = viewer.board.free_tile().expect("a free-space tile");
+    assert!((viewer.board.tiles[free].percentage - 0.5).abs() < 1e-9);
+    assert_eq!(viewer.board_color(free), FREE_SPACE_COLOR);
+    assert!(
+        !names(&viewer).iter().any(|name| name == "Free space"),
+        "the list holds entries alone: {:?}",
+        names(&viewer)
+    );
+    let (x, y) = center_of(&viewer, "Free space");
+    assert!(matches!(viewer.hit(x, y), Hit::Nothing));
+    assert!(viewer.click(x, y, Mods::default()).is_none());
+    assert_eq!(
+        selected(&viewer).as_deref(),
+        Some("big"),
+        "the entry placed in hand at the scan's end stays there"
+    );
+
+    // The keyboard never lands on it.
+    viewer.click(
+        center_of(&viewer, "big").0,
+        center_of(&viewer, "big").1,
+        Mods::default(),
+    );
+    for _ in 0..6 {
+        for direction in [
+            Direction::Right,
+            Direction::Down,
+            Direction::Left,
+            Direction::Up,
+        ] {
+            viewer.arrow(direction, false);
+            assert_ne!(selected(&viewer).as_deref(), Some("Free space"));
+        }
+    }
+
+    viewer.toggle_free_space();
+    assert_eq!(viewer.free_toggle(), Some(("Free space", false)));
+    assert!(viewer.board.free_tile().is_none());
+    viewer.toggle_free_space();
+    assert!(viewer.board.free_tile().is_some());
+
+    // Below the root there is no volume to show, and no toggle to offer.
+    viewer.select(Some("big".into()), true);
+    assert!(viewer.enter_selected());
+    assert_eq!(viewer.free_toggle(), None);
+    assert!(viewer.board.free_tile().is_none());
+    assert!(viewer.go_up());
+    assert_eq!(viewer.free_toggle(), Some(("Free space", true)));
+    assert!(viewer.board.free_tile().is_some());
+}
+
+/// A root that is no volume's — a folder — shows the entries alone and offers no toggle.
+#[test]
+fn no_free_space_is_shown_off_a_volumes_root() {
+    let viewer = viewer_with_free(no_volume);
+    assert_eq!(viewer.free_toggle(), None);
+    assert!(viewer.board.free_tile().is_none());
+    assert!(
+        (viewer
+            .board
+            .tiles
+            .iter()
+            .map(|tile| tile.percentage)
+            .sum::<f64>()
+            - 1.0)
+            .abs()
+            < 1e-9
+    );
+}

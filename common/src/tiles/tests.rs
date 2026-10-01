@@ -358,3 +358,80 @@ fn empty_files_beside_a_large_one_leave_it_its_tile() {
         );
     }
 }
+
+/// A volume's free space shown beside its root's entries: a tile of its share, the entries'
+/// shares scaled to leave it, no entry of the listing, no stop for the selection, and gone when
+/// the board zooms or is told to show the entries alone.
+#[test]
+fn free_space_takes_its_share_and_is_no_entry() {
+    use crate::tiles::{FREE_SPACE_NAME, FreeSpace};
+    let mut root = Folder::new(Path::new("/tmp/volume"));
+    root.add_file(std::path::PathBuf::from("a"), 600);
+    root.add_file(std::path::PathBuf::from("b"), 400);
+    let mut board = Board::new(&root);
+    board.change_area(&Area {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 24,
+    });
+    board.set_free_space(Some(FreeSpace {
+        bytes: 1000,
+        share: 0.5,
+    }));
+    board.change_files(&root);
+
+    assert_eq!(board.tiles.len(), 3);
+    let free = board.free_tile().expect("the free space has a tile");
+    assert_eq!(
+        free, 0,
+        "the largest share, so first: the layout counts on rank order"
+    );
+    assert_eq!(board.tiles[free].name, FREE_SPACE_NAME);
+    assert_eq!(board.tiles[free].size, 1000);
+    assert!((board.tiles[free].percentage - 0.5).abs() < 1e-9);
+    let entries: f64 = board
+        .tiles
+        .iter()
+        .enumerate()
+        .filter(|&(index, _)| index != free)
+        .map(|(_, tile)| tile.percentage)
+        .sum();
+    assert!((entries - 0.5).abs() < 1e-9, "the entries share the rest");
+    assert!(
+        board
+            .listing()
+            .iter()
+            .all(|entry| entry.name != FREE_SPACE_NAME),
+        "the listing holds entries alone"
+    );
+    assert_eq!(
+        board.tile_at(board.tiles[free].x, board.tiles[free].y),
+        Some(free),
+        "the tile is where it says, for a viewer to make nothing of"
+    );
+
+    // The selection never lands on it: from nothing, nor by moving.
+    board.move_selected_right();
+    assert_ne!(board.get_selected_index(), Some(free));
+    for _ in 0..8 {
+        board.move_selected_right();
+        assert_ne!(board.get_selected_index(), Some(free));
+        board.move_selected_down();
+        assert_ne!(board.get_selected_index(), Some(free));
+        board.move_selected_left();
+        assert_ne!(board.get_selected_index(), Some(free));
+        board.move_selected_up();
+        assert_ne!(board.get_selected_index(), Some(free));
+    }
+
+    board.zoom_in(&root);
+    assert!(board.free_tile().is_none(), "zoomed, the entries alone");
+    board.reset_zoom(&root);
+    assert!(board.free_tile().is_some());
+    board.set_free_space(None);
+    board.change_files(&root);
+    assert!(board.free_tile().is_none());
+    assert_eq!(board.tiles.len(), 2);
+    assert!((board.tiles.iter().map(|tile| tile.percentage).sum::<f64>() - 1.0).abs() < 1e-9);
+}

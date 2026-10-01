@@ -214,6 +214,7 @@ pub fn draw(frame: &Frame) -> Vec<(Rect, usize)> {
     }
     status(viewer, &pens);
     let crumbs = path_bar(viewer, &pens);
+    free_toggle(viewer, &pens);
     chooser_button(viewer.layout.chooser_button);
     crumbs
 }
@@ -680,8 +681,45 @@ fn status(viewer: &Viewer, pens: &Pens) {
 /// The breadcrumbs: the scan's root, then each folder down to the one shown. Every one but the
 /// last is a way back up. When they do not fit, the ones nearest the root after it give way
 /// to "…".
+/// The toggle at the path bar's right while the root of a volume is shown: a box, ticked when
+/// the free space is on the board, and its words.
+fn free_toggle(viewer: &Viewer, pens: &Pens) {
+    let Some((label, on)) = viewer.free_toggle() else {
+        return;
+    };
+    let rect = viewer.layout.free_toggle;
+    fill(
+        Rect::new(rect.x, rect.bottom() - 1.0, rect.w, 1.0),
+        &NSColor::separatorColor(),
+    );
+    let ink = NSColor::secondaryLabelColor();
+    let side = 12.0;
+    let tick = Rect::new(rect.x + 10.0, rect.y + (rect.h - side) / 2.0, side, side);
+    stroke(tick, &ink, 1.0);
+    if on {
+        fill(
+            Rect::new(tick.x + 3.0, tick.y + 3.0, side - 6.0, side - 6.0),
+            &ink,
+        );
+    }
+    let text_y = rect.y + (rect.h - 16.0) / 2.0;
+    pens.secondary.draw(
+        label,
+        Rect::new(
+            tick.right() + 8.0,
+            text_y + 1.0,
+            (rect.right() - tick.right() - 16.0).max(0.0),
+            15.0,
+        ),
+    );
+}
+
 fn path_bar(viewer: &Viewer, pens: &Pens) -> Vec<(Rect, usize)> {
-    let bar = viewer.layout.path_bar;
+    // Less the free-space toggle at its right, when that is up.
+    let mut bar = viewer.layout.path_bar;
+    if viewer.free_toggle().is_some() {
+        bar.w = (viewer.layout.free_toggle.x - bar.x).max(0.0);
+    }
     fill(
         Rect::new(bar.x, bar.bottom() - 1.0, bar.w, 1.0),
         &NSColor::separatorColor(),

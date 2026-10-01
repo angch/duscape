@@ -715,6 +715,11 @@ impl App {
         if self.viewer.layout.chooser_button.contains(x, y) {
             return self.open_chooser();
         }
+        if self.viewer.free_toggle().is_some() && self.viewer.layout.free_toggle.contains(x, y) {
+            self.viewer.toggle_free_space();
+            self.last_click = None;
+            return self.changed();
+        }
         if let Some(&(_, depth)) = self.crumbs.iter().find(|(rect, _)| rect.contains(x, y)) {
             self.viewer.go_to_depth(depth);
             self.last_click = None;

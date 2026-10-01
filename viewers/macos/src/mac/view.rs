@@ -181,6 +181,13 @@ define_class!(
                 self.open_chooser();
                 return;
             }
+            if self.with(|viewer| {
+                viewer.free_toggle().is_some() && viewer.layout.free_toggle.contains(x, y)
+            }) == Some(true)
+            {
+                self.update(|viewer| viewer.toggle_free_space());
+                return;
+            }
             let crumb = self
                 .ivars()
                 .crumbs

@@ -25,8 +25,8 @@ use libduscape::format::copied_path;
 use libduscape::model::SizeKind;
 use libduscape::model::files::hash::FastBuildHasher;
 use libduscape::tiles::{
-    Area, Board, Expansion, FileMetadata, FileType, Grid, Inside, NestedTile, Nesting, Plans, Row,
-    Speck, Tile, nest_steady, nest_with,
+    Area, Board, Expansion, FileMetadata, FileType, FreeSpace, Grid, Inside, NestedTile, Nesting,
+    Plans, Row, Speck, Tile, nest_steady, nest_with,
 };
 use libduscape::{
     DirSummary, DisplayCount, DisplaySize, FileOrFolder, FileToDelete, FileTree, Folder,
@@ -67,6 +67,8 @@ pub const FIRST_PASS_ROOM: usize = 1000;
 pub const PATH_BAR: f64 = 30.0;
 /// The button at the path bar's left that opens the chooser (what else to scan): a square.
 pub const CHOOSER_BUTTON: f64 = PATH_BAR;
+/// The width of the free-space toggle at the path bar's right ([`Layout::free_toggle`]).
+pub const FREE_TOGGLE: f64 = 120.0;
 pub const STATUS_BAR: f64 = 24.0;
 /// One row of the list.
 pub const ROW: f64 = 22.0;
@@ -120,6 +122,10 @@ pub struct Layout {
     pub chooser_button: Rect,
     /// The breadcrumbs, from the button to the right edge.
     pub path_bar: Rect,
+    /// At the path bar's right end, over it: the toggle for the volume's free space
+    /// ([`Viewer::free_toggle`]), drawn there only while the root of a volume is shown — a
+    /// painter then keeps the breadcrumbs and the size out from under it.
+    pub free_toggle: Rect,
     /// The list of the folder's entries, when the window is wide enough for a side panel.
     pub list: Option<Rect>,
     /// Under the list: the entry in hand, and its preview.
@@ -193,6 +199,12 @@ impl Layout {
                 CHOOSER_BUTTON.min(width),
                 top,
                 (width - CHOOSER_BUTTON).max(0.0),
+                PATH_BAR,
+            ),
+            free_toggle: Rect::new(
+                (width - FREE_TOGGLE).max(CHOOSER_BUTTON.min(width)),
+                top,
+                FREE_TOGGLE.min((width - CHOOSER_BUTTON).max(0.0)),
                 PATH_BAR,
             ),
             list,
@@ -415,6 +427,14 @@ pub struct Viewer {
     pub board: Board,
     pub layout: Layout,
     pub sidebar: bool,
+    /// Whether the volume's free space is shown as a tile beside its root's entries, where the
+    /// root of a volume is what is shown (on by default; `toggle_free_space`).
+    pub free_space: bool,
+    /// The volume's free bytes, where the scan root is a volume's root, as of the last relayout:
+    /// `None` elsewhere, and the toggle is not offered.
+    free_bytes: Option<u64>,
+    /// How the free bytes are asked for: the OS's, or a test's.
+    volume_free: fn(&Path) -> Option<u64>,
     /// Points at the top left to the viewer for a title bar of its own; see [`Layout::with_top`].
     pub top_inset: f64,
     /// Pixels per point, when the viewer has said: the treemap is then in pixel cells.
@@ -535,6 +555,9 @@ impl Viewer {
             board,
             layout: Layout::default(),
             sidebar: true,
+            free_space: true,
+            free_bytes: None,
+            volume_free: libduscape::os::volume_free,
             top_inset: 0.0,
             pixel_scale: None,
             nesting: Nesting::default(),
@@ -694,6 +717,44 @@ impl Viewer {
         self.scroll_to_selected();
     }
 
+    /// Show or hide the volume's free space beside its root's entries (on by default), where
+    /// the root of a volume is shown: the entries' tiles shrink to leave it its share, so the
+    /// treemap shows the whole volume in proportion.
+    pub fn toggle_free_space(&mut self) {
+        self.free_space = !self.free_space;
+        self.relayout(false);
+    }
+
+    /// The free-space toggle to draw at [`Layout::free_toggle`] — its words and whether it is
+    /// on — while the root of a volume is what is shown; `None` elsewhere, where there is no
+    /// free space to show and the path bar runs to the edge.
+    #[must_use]
+    pub fn free_toggle(&self) -> Option<(&'static str, bool)> {
+        (self.tree.current_folder_names.is_empty() && self.free_bytes.is_some())
+            .then_some(("Free space", self.free_space))
+    }
+
+    /// The free space's tile for the board, if one is to be shown now: the root of a volume,
+    /// the toggle on, and some space free. Its share is free over free and used, the used
+    /// being what the scan has found so far — the tile grows into its place as the scan goes.
+    fn free_space_tile(&self) -> Option<FreeSpace> {
+        if !self.free_space || !self.tree.current_folder_names.is_empty() {
+            return None;
+        }
+        let bytes = self.free_bytes.filter(|&bytes| bytes > 0)?;
+        let used = self.tree.get_current_folder_size() as f64;
+        Some(FreeSpace {
+            bytes,
+            share: bytes as f64 / (bytes as f64 + used),
+        })
+    }
+
+    /// Where the volume's free bytes come from, in place of the OS's answer: for tests, whose
+    /// roots are no volume's.
+    pub fn set_volume_free_source(&mut self, source: fn(&Path) -> Option<u64>) {
+        self.volume_free = source;
+    }
+
     pub fn toggle_sidebar(&mut self) {
         self.sidebar = !self.sidebar;
         let bounds = self.layout.bounds;
@@ -726,6 +787,10 @@ impl Viewer {
     fn relayout(&mut self, steady: bool) {
         // Wherever the user has gone, the walk goes there next.
         self.scan_focus.set(Some(self.tree.get_current_path()));
+        // The volume's free space beside the root's entries, where the root of a volume is
+        // what is shown and the toggle is on: asked for afresh, since a delete frees some.
+        self.free_bytes = (self.volume_free)(self.root());
+        self.board.set_free_space(self.free_space_tile());
         let from = if steady { self.tween_from() } else { None };
         self.end_tween();
         self.following = steady;
@@ -893,6 +958,10 @@ impl Viewer {
     /// swatch in the list is, so the two agree and neither changes as the listing re-sorts.
     #[must_use]
     pub fn board_color(&self, index: usize) -> (f64, f64, f64) {
+        // The free space is no entry: a dark, neutral tile, so the used space stands out.
+        if self.board.free_tile() == Some(index) {
+            return FREE_SPACE_COLOR;
+        }
         let tile = &self.board.tiles[index];
         entry_color(&tile.name, tile.file_type, 0)
     }
@@ -1469,6 +1538,10 @@ impl Viewer {
             return Hit::Nested(index);
         }
         if let Some(index) = self.board.tile_at(col, row) {
+            // The free space's tile is no entry: nothing to take in hand or preview.
+            if self.board.free_tile() == Some(index) {
+                return Hit::Nothing;
+            }
             return Hit::Tile(self.board.tiles[index].name.clone());
         }
         match self.board.unrenderable_tile_coordinates {
@@ -2268,6 +2341,10 @@ pub fn darker((r, g, b): (f64, f64, f64), shade: f64) -> (f64, f64, f64) {
 
 /// How much darker an entry `depth` levels into the nesting is than on the board: a step a
 /// level, to four, so the nesting reads as depth.
+/// The free space's tile: dark and neutral beside the entries' colours, so what is used stands
+/// out and what is free reads as room.
+pub const FREE_SPACE_COLOR: (f64, f64, f64) = (0.30, 0.34, 0.32);
+
 #[must_use]
 pub fn depth_shade(depth: usize) -> f64 {
     1.0 - 0.12 * depth.min(4) as f64
