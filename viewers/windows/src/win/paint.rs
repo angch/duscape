@@ -617,14 +617,10 @@ fn draw_treemap(canvas: &Canvas, window: &Window, layout: &Layout) {
         }
     }
     draw_nested(canvas, window, layout);
-    // The "small files" corner: from where the board says it starts to the treemap's far corner.
-    if let Some((sx, sy)) = board.unrenderable_tile_coordinates {
-        let corner = layout.cells_to_rect(
-            sx,
-            sy,
-            layout.cols.saturating_sub(sx),
-            layout.rows.saturating_sub(sy),
-        );
+    // The "small files" corner: from where the board says it starts to the entries' far
+    // corner, short of the free space's strip.
+    if let Some(corner) = board.corner() {
+        let corner = layout.cells_to_rect(corner.x, corner.y, corner.width, corner.height);
         canvas.fill(corner, rgb(60, 60, 60));
         canvas.frame(corner, BORDER, 1);
         // The label only where it fits, and not over the specks: a sliver of a corner is still

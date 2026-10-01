@@ -199,14 +199,9 @@ fn treemap(canvas: &mut Canvas, viewer: &Viewer, pens: &Pens) {
         }
     }
     // Entries too small for a tile of their own, as one marked corner.
-    if let Some((sx, sy)) = viewer.board.unrenderable_tile_coordinates {
+    if let Some(corner) = viewer.board.corner() {
         let rect = layout
-            .cells_to_rect(
-                sx,
-                sy,
-                layout.cols - sx.min(layout.cols),
-                layout.rows - sy.min(layout.rows),
-            )
+            .cells_to_rect(corner.x, corner.y, corner.width, corner.height)
             .inset(0.5, 0.5);
         canvas.fill(rect, SMALL_FILES, 1.0);
         if viewer.dust().is_empty() && rect.w >= 50.0 && rect.h >= 15.0 {

@@ -47,12 +47,62 @@ pub fn volume_used(path: &::std::path::Path) -> Option<u64> {
     if !is_mount_point(path) {
         return None;
     }
+    #[cfg(target_os = "macos")]
+    if path != ::std::path::Path::new("/")
+        && let Some(used) = apfs_volume_used(path)
+    {
+        return Some(used);
+    }
     let fs = ::rustix::fs::statvfs(path).ok()?;
     Some(
         fs.f_blocks
             .saturating_sub(fs.f_bfree)
             .saturating_mul(fs.f_frsize),
     )
+}
+
+/// The bytes the volume at `path` itself uses (`ATTR_VOL_SPACEUSED`, what `df` prints), where
+/// `statvfs` cannot say: on APFS every volume of a container reports the container's blocks and
+/// free blocks, so their difference is every volume's use — on `/System/Volumes/Preboot`, 805 GB
+/// of the data volume's beside its own 8 GB, all of it counted as not found by its scan. `/` is
+/// left to the container's figure: its scan reaches the data volume through the firmlinks and
+/// the other volumes mounted under it (`macos::walk_macos` enters every mount but its own
+/// device), so what it can find is nearly the container's whole use, and its own volume's 12 GB
+/// would leave the found 800 GB no room. `None` where the attribute is not answered.
+#[cfg(target_os = "macos")]
+fn apfs_volume_used(path: &::std::path::Path) -> Option<u64> {
+    use ::std::os::unix::ffi::OsStrExt;
+    #[repr(C, packed(4))]
+    struct Reply {
+        length: u32,
+        used: libc::off_t,
+    }
+    let path = ::std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut request = libc::attrlist {
+        bitmapcount: libc::ATTR_BIT_MAP_COUNT,
+        reserved: 0,
+        commonattr: 0,
+        volattr: libc::ATTR_VOL_INFO | libc::ATTR_VOL_SPACEUSED,
+        dirattr: 0,
+        fileattr: 0,
+        forkattr: 0,
+    };
+    let mut reply = Reply { length: 0, used: 0 };
+    // SAFETY: `path` is a NUL-terminated string, `request` a valid attribute list, and `reply`
+    // a buffer of the size given, which the call writes no further than.
+    let status = unsafe {
+        libc::getattrlist(
+            path.as_ptr(),
+            (&raw mut request).cast(),
+            (&raw mut reply).cast(),
+            ::std::mem::size_of::<Reply>(),
+            0,
+        )
+    };
+    let (length, used) = (reply.length, reply.used);
+    (status == 0 && length as usize >= ::std::mem::size_of::<Reply>())
+        .then(|| u64::try_from(used).ok())
+        .flatten()
 }
 
 /// A file whose unwritten length occupies nothing. Unix filesystems make the hole without

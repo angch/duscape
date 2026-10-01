@@ -103,3 +103,20 @@ fn canonical_root_resolves_what_exists_and_keeps_the_rest() {
     let missing = dir.join("missing");
     assert_eq!(crate::os::canonical_root(&missing), missing);
 }
+
+/// On APFS a volume's use is its own, not its container's: the preboot volume, which shares the
+/// system disk's container, uses a small part of what the container's blocks less its free
+/// blocks say. What `/` reports is the container's, since its scan reaches the other volumes.
+#[cfg(target_os = "macos")]
+#[test]
+fn an_apfs_volume_reports_its_own_use_not_its_containers() {
+    let preboot = std::path::Path::new("/System/Volumes/Preboot");
+    let (Some(own), Some(container)) = (
+        crate::os::volume_used(preboot),
+        crate::os::volume_used(std::path::Path::new("/")),
+    ) else {
+        // No preboot volume here (not a sealed-system Mac): nothing to compare.
+        return;
+    };
+    assert!(own > 0 && own < container, "{own} of {container}");
+}

@@ -430,11 +430,11 @@ pub struct Viewer {
     /// Whether the volume's free space is shown as a tile beside its root's entries, where the
     /// root of a volume is what is shown (on by default; `toggle_free_space`).
     pub free_space: bool,
-    /// The volume's free bytes, where the scan root is a volume's root, as of the last relayout:
-    /// `None` elsewhere, and the toggle is not offered.
-    free_bytes: Option<u64>,
-    /// How the free bytes are asked for: the OS's, or a test's.
-    volume_free: fn(&Path) -> Option<u64>,
+    /// The volume's free and used bytes, where the scan root is a volume's root, as of the
+    /// last relayout: `None` elsewhere, and the toggle is not offered.
+    free_bytes: Option<(u64, u64)>,
+    /// How the free and used bytes are asked for: the OS's, or a test's.
+    volume_free: fn(&Path) -> Option<(u64, u64)>,
     /// Points at the top left to the viewer for a title bar of its own; see [`Layout::with_top`].
     pub top_inset: f64,
     /// Pixels per point, when the viewer has said: the treemap is then in pixel cells.
@@ -557,7 +557,7 @@ impl Viewer {
             sidebar: true,
             free_space: true,
             free_bytes: None,
-            volume_free: libduscape::os::volume_free,
+            volume_free: volume_space,
             top_inset: 0.0,
             pixel_scale: None,
             nesting: Nesting::default(),
@@ -735,23 +735,34 @@ impl Viewer {
     }
 
     /// The free space's tile for the board, if one is to be shown now: the root of a volume,
-    /// the toggle on, and some space free. Its share is free over free and used, the used
-    /// being what the scan has found so far — the tile grows into its place as the scan goes.
+    /// the toggle on, and some space free. Its share is free over the volume's size, which the
+    /// volume knows before the scan starts, so the tile has its place and its area from the
+    /// first frame on; the used space the scan has not found yet is the unscanned share beside
+    /// it, which the entries grow into as the scan goes. Where the scan finds more than the
+    /// volume says is used (shared or compressed blocks counted in full), the entries have the
+    /// used share and there is none unscanned.
     fn free_space_tile(&self) -> Option<FreeSpace> {
         if !self.free_space || !self.tree.current_folder_names.is_empty() {
             return None;
         }
-        let bytes = self.free_bytes.filter(|&bytes| bytes > 0)?;
-        let used = self.tree.get_current_folder_size() as f64;
+        let (bytes, used) = self.free_bytes.filter(|&(bytes, _)| bytes > 0)?;
+        let total = bytes as f64 + used as f64;
+        // On disk whatever is shown: the volume counts blocks, and lengths set against them
+        // would call a folder of sparse files mostly unscanned, or a compressed one overfull.
+        let found = self.tree.get_current_folder().sizes.get(SizeKind::Disk);
+        let unscanned = used.saturating_sub(u64::try_from(found).unwrap_or(u64::MAX));
         Some(FreeSpace {
             bytes,
-            share: bytes as f64 / (bytes as f64 + used),
+            share: bytes as f64 / total,
+            unscanned,
+            unscanned_share: unscanned as f64 / total,
+            scanned: !self.scanning,
         })
     }
 
-    /// Where the volume's free bytes come from, in place of the OS's answer: for tests, whose
-    /// roots are no volume's.
-    pub fn set_volume_free_source(&mut self, source: fn(&Path) -> Option<u64>) {
+    /// Where the volume's free and used bytes come from, in place of the OS's answer: for
+    /// tests, whose roots are no volume's.
+    pub fn set_volume_free_source(&mut self, source: fn(&Path) -> Option<(u64, u64)>) {
         self.volume_free = source;
     }
 
@@ -958,9 +969,13 @@ impl Viewer {
     /// swatch in the list is, so the two agree and neither changes as the listing re-sorts.
     #[must_use]
     pub fn board_color(&self, index: usize) -> (f64, f64, f64) {
-        // The free space is no entry: a dark, neutral tile, so the used space stands out.
+        // The free space is no entry: a dark, neutral tile, so the used space stands out; the
+        // unscanned space likewise, a shade apart.
         if self.board.free_tile() == Some(index) {
             return FREE_SPACE_COLOR;
+        }
+        if self.board.unscanned_tile() == Some(index) {
+            return UNSCANNED_COLOR;
         }
         let tile = &self.board.tiles[index];
         entry_color(&tile.name, tile.file_type, 0)
@@ -1538,14 +1553,20 @@ impl Viewer {
             return Hit::Nested(index);
         }
         if let Some(index) = self.board.tile_at(col, row) {
-            // The free space's tile is no entry: nothing to take in hand or preview.
-            if self.board.free_tile() == Some(index) {
+            // The free and unscanned space's tiles are no entries: nothing to take in hand or
+            // preview.
+            if !self.board.selectable(index) {
                 return Hit::Nothing;
             }
             return Hit::Tile(self.board.tiles[index].name.clone());
         }
-        match self.board.unrenderable_tile_coordinates {
-            Some((sx, sy)) if col >= sx && row >= sy => Hit::SmallFiles,
+        match self.board.corner() {
+            Some(corner)
+                if (corner.x..corner.x + corner.width).contains(&col)
+                    && (corner.y..corner.y + corner.height).contains(&row) =>
+            {
+                Hit::SmallFiles
+            }
             _ => Hit::Nothing,
         }
     }
@@ -2344,6 +2365,8 @@ pub fn darker((r, g, b): (f64, f64, f64), shade: f64) -> (f64, f64, f64) {
 /// The free space's tile: dark and neutral beside the entries' colours, so what is used stands
 /// out and what is free reads as room.
 pub const FREE_SPACE_COLOR: (f64, f64, f64) = (0.30, 0.34, 0.32);
+/// The used space the scan has not found (yet): darker than the free space, and grey.
+pub const UNSCANNED_COLOR: (f64, f64, f64) = (0.22, 0.22, 0.24);
 
 #[must_use]
 pub fn depth_shade(depth: usize) -> f64 {
@@ -2418,3 +2441,12 @@ fn hsl(hue: f64, saturation: f64, lightness: f64) -> (f64, f64, f64) {
 mod tests;
 mod tween;
 pub use tween::TWEEN;
+
+/// The volume whose root is `path`: its free bytes and its used, or `None` when `path` is no
+/// volume's root. Both are asked, the used for the share of it the scan has not found yet.
+fn volume_space(path: &Path) -> Option<(u64, u64)> {
+    Some((
+        libduscape::os::volume_free(path)?,
+        libduscape::os::volume_used(path)?,
+    ))
+}

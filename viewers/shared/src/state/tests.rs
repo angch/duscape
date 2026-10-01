@@ -1611,7 +1611,7 @@ fn a_specks_colour_is_its_tiles_whatever_came_before_it() {
 
 /// What `viewer()` builds, with the volume's free space answered by `source`: the test's
 /// root is no volume's, so the OS would say none.
-fn viewer_with_free(source: fn(&Path) -> Option<u64>) -> Viewer {
+fn viewer_with_free(source: fn(&Path) -> Option<(u64, u64)>) -> Viewer {
     let root = Path::new(ROOT);
     let mut viewer = Viewer::new(root, SizeKind::Disk, 1);
     viewer.set_volume_free_source(source);
@@ -1632,12 +1632,63 @@ fn viewer_with_free(source: fn(&Path) -> Option<u64>) -> Viewer {
     viewer
 }
 
-fn as_much_free_as_used(_: &Path) -> Option<u64> {
-    Some(1450)
+/// As much free as used, and the scan has found all that is used.
+fn as_much_free_as_used(_: &Path) -> Option<(u64, u64)> {
+    Some((1450, 1450))
 }
 
-fn no_volume(_: &Path) -> Option<u64> {
+/// The volume says it uses more than the scan finds: 1450 found of 2900 used, 2900 free.
+fn half_unscanned(_: &Path) -> Option<(u64, u64)> {
+    Some((2900, 2900))
+}
+
+fn no_volume(_: &Path) -> Option<(u64, u64)> {
     None
+}
+
+/// The used space the scan has not found is a tile of its own before the free space, which
+/// is at the treemap's bottom right; neither is a target.
+#[test]
+fn unscanned_space_is_shown_beside_the_free_space() {
+    let viewer = viewer_with_free(half_unscanned);
+    let board = &viewer.board;
+    let free = &board.tiles[board.free_tile().expect("a free-space tile")];
+    let unscanned_index = board.unscanned_tile().expect("an unscanned tile");
+    let unscanned = &board.tiles[unscanned_index];
+    assert!((free.percentage - 0.5).abs() < 1e-9);
+    assert!((unscanned.percentage - 0.25).abs() < 1e-9);
+    assert_eq!(unscanned.size, 1450);
+    let right = board
+        .tiles
+        .iter()
+        .map(|tile| tile.x + tile.width)
+        .max()
+        .unwrap_or_default();
+    let bottom = board
+        .tiles
+        .iter()
+        .map(|tile| tile.y + tile.height)
+        .max()
+        .unwrap_or_default();
+    assert_eq!((free.x + free.width, free.y + free.height), (right, bottom));
+    assert_eq!(viewer.board_color(unscanned_index), UNSCANNED_COLOR);
+    assert_eq!(
+        unscanned.name, "Not seen by the scan",
+        "the scan is over: what is left, no walk saw"
+    );
+    let (x, y) = center_of(&viewer, "Not seen by the scan");
+    assert!(matches!(viewer.hit(x, y), Hit::Nothing));
+}
+
+/// What is unscanned is counted on disk whatever is shown: the volume counts blocks.
+#[test]
+fn unscanned_space_is_counted_on_disk_when_lengths_are_shown() {
+    let mut viewer = viewer_with_free(half_unscanned);
+    let on_disk = viewer.board.tiles[viewer.board.unscanned_tile().expect("unscanned")].size;
+    viewer.toggle_size();
+    assert!(viewer.showing_apparent());
+    let shown = viewer.board.tiles[viewer.board.unscanned_tile().expect("unscanned")].size;
+    assert_eq!(shown, on_disk);
 }
 
 /// At the root of a volume the free space is a tile of its share — half, here — beside the

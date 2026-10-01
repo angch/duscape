@@ -359,45 +359,70 @@ fn empty_files_beside_a_large_one_leave_it_its_tile() {
     }
 }
 
-/// A volume's free space shown beside its root's entries: a tile of its share, the entries'
-/// shares scaled to leave it, no entry of the listing, no stop for the selection, and gone when
-/// the board zooms or is told to show the entries alone.
-#[test]
-fn free_space_takes_its_share_and_is_no_entry() {
-    use crate::tiles::{FREE_SPACE_NAME, FreeSpace};
+/// A volume's free space shown beside its root's entries: a strip at the board's far side, the
+/// free space at its bottom right and the unscanned space before it, each of its share; the
+/// entries in the rest. No entry of the listing, no stop for the selection, and gone when the
+/// board zooms or is told to show the entries alone.
+/// A 400×200 pixel board of two entries at a volume's root, half of it free and a fifth of
+/// it unscanned.
+fn volume_board() -> (Folder, Board) {
+    use crate::tiles::FreeSpace;
     let mut root = Folder::new(Path::new("/tmp/volume"));
     root.add_file(std::path::PathBuf::from("a"), 600);
     root.add_file(std::path::PathBuf::from("b"), 400);
     let mut board = Board::new(&root);
+    board.set_grid(Grid::pixels(4));
     board.change_area(&Area {
         x: 0,
         y: 0,
-        width: 80,
-        height: 24,
+        width: 400,
+        height: 200,
     });
     board.set_free_space(Some(FreeSpace {
         bytes: 1000,
         share: 0.5,
+        unscanned: 400,
+        unscanned_share: 0.2,
+        scanned: false,
     }));
     board.change_files(&root);
+    (root, board)
+}
 
-    assert_eq!(board.tiles.len(), 3);
+fn cells(tile: &crate::tiles::Tile) -> f64 {
+    f64::from(tile.width) * f64::from(tile.height)
+}
+
+#[test]
+fn free_space_takes_its_share_and_is_no_entry() {
+    use crate::tiles::{FREE_SPACE_NAME, UNSCANNED_NAME};
+    let (root, mut board) = volume_board();
+
+    assert_eq!(board.tiles.len(), 4);
     let free = board.free_tile().expect("the free space has a tile");
+    let unscanned = board
+        .unscanned_tile()
+        .expect("the unscanned space has a tile");
+    let (f, u) = (&board.tiles[free], &board.tiles[unscanned]);
+    assert_eq!(f.name, FREE_SPACE_NAME);
+    assert_eq!(u.name, UNSCANNED_NAME);
+    assert_eq!(f.size, 1000);
+    assert_eq!(u.size, 400);
     assert_eq!(
-        free, 0,
-        "the largest share, so first: the layout counts on rank order"
+        (f.x + f.width, f.y + f.height),
+        (400, 200),
+        "the free space is at the bottom right"
     );
-    assert_eq!(board.tiles[free].name, FREE_SPACE_NAME);
-    assert_eq!(board.tiles[free].size, 1000);
-    assert!((board.tiles[free].percentage - 0.5).abs() < 1e-9);
-    let entries: f64 = board
-        .tiles
-        .iter()
-        .enumerate()
-        .filter(|&(index, _)| index != free)
-        .map(|(_, tile)| tile.percentage)
-        .sum();
-    assert!((entries - 0.5).abs() < 1e-9, "the entries share the rest");
+    let whole = 400.0 * 200.0;
+    assert!((cells(f) / whole - 0.5).abs() < 0.01, "{f:?}");
+    assert!((cells(u) / whole - 0.2).abs() < 0.01, "{u:?}");
+    assert_eq!((u.x, u.width, u.y + u.height), (f.x, f.width, f.y));
+    assert!(
+        board.tiles[..unscanned]
+            .iter()
+            .all(|tile| tile.x + tile.width <= f.x),
+        "the entries' tiles come first, left of the strip"
+    );
     assert!(
         board
             .listing()
@@ -406,12 +431,14 @@ fn free_space_takes_its_share_and_is_no_entry() {
         "the listing holds entries alone"
     );
     assert_eq!(
-        board.tile_at(board.tiles[free].x, board.tiles[free].y),
+        board.tile_at(f.x, f.y),
         Some(free),
         "the tile is where it says, for a viewer to make nothing of"
     );
 
     // The selection never lands on it: from nothing, nor by moving.
+    let free = board.free_tile().expect("the free space has a tile");
+    board.reset_selected_index();
     board.move_selected_right();
     assert_ne!(board.get_selected_index(), Some(free));
     for _ in 0..8 {
@@ -434,4 +461,58 @@ fn free_space_takes_its_share_and_is_no_entry() {
     assert!(board.free_tile().is_none());
     assert_eq!(board.tiles.len(), 2);
     assert!((board.tiles.iter().map(|tile| tile.percentage).sum::<f64>() - 1.0).abs() < 1e-9);
+}
+
+/// As the scan finds more, the free space keeps its place and its area; the entries grow into
+/// the unscanned space.
+#[test]
+fn free_space_keeps_its_place_as_the_scan_goes() {
+    use crate::tiles::FreeSpace;
+    let (mut root, mut board) = volume_board();
+    let before = cells(&board.tiles[board.free_tile().expect("a free space")]);
+    root.add_file(std::path::PathBuf::from("c"), 400);
+    board.set_free_space(Some(FreeSpace {
+        bytes: 1000,
+        share: 0.5,
+        unscanned: 0,
+        unscanned_share: 0.0,
+        scanned: true,
+    }));
+    board.change_files_steady(&root);
+    assert!(board.unscanned_tile().is_none());
+    let f = &board.tiles[board.free_tile().expect("still a free space")];
+    assert_eq!((f.x + f.width, f.y + f.height), (400, 200));
+    assert!((cells(f) - before).abs() / (400.0 * 200.0) < 0.01);
+}
+
+/// Before the scan has found anything the entries have no room: the free and unscanned space
+/// fill the board, and no corner opens over them.
+#[test]
+fn free_space_before_anything_is_found() {
+    use crate::tiles::FreeSpace;
+    let root = Folder::new(Path::new("/tmp/volume"));
+    let mut board = Board::new(&root);
+    board.set_grid(Grid::pixels(4));
+    board.change_area(&Area {
+        x: 0,
+        y: 0,
+        width: 300,
+        height: 400,
+    });
+    board.set_free_space(Some(FreeSpace {
+        bytes: 300,
+        share: 0.3,
+        unscanned: 700,
+        unscanned_share: 0.7,
+        scanned: false,
+    }));
+    board.change_files(&root);
+    assert_eq!(board.tiles.len(), 2);
+    assert!(board.corner().is_none());
+    let f = &board.tiles[board.free_tile().expect("a free space")];
+    let u = &board.tiles[board.unscanned_tile().expect("an unscanned space")];
+    // Taller than wide: the strip is the bottom, the free space at its right.
+    assert_eq!((f.x + f.width, f.y + f.height), (300, 400));
+    assert_eq!((u.x, u.y, u.height), (0, 0, 400));
+    assert_eq!(u.x + u.width, f.x);
 }
