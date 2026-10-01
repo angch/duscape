@@ -87,7 +87,9 @@ quit
 SCRIPT
 
 # A watchdog, as macOS has no timeout(1): an alert that never closes would otherwise hang here.
-DUSCAPE_MAC_SCRIPT="$work/script" "$app" "$fx" &
+# The scan of the fixture is saved like any other: into the work folder, not the user's cache,
+# where one was left behind each run.
+DUSCAPE_CACHE_DIR="$work/cache" DUSCAPE_MAC_SCRIPT="$work/script" "$app" "$fx" &
 pid=$!
 (sleep 120 && kill "$pid" 2>/dev/null && echo "FAIL timed out after 120s") &
 watchdog=$!

@@ -217,6 +217,14 @@ does not need one.
   the next cell; Linux the one after, on the spinning RAID above: the Saved stream and the
   recorder alone, a catch-up that always walks (no change log a user can read), no fill,
   since a cold walk there is half an hour and the file a second or two.
+- The saved scans' size, what is left to do (2026-10-01): the sweep removes what can never be
+  read again and keeps the rest within 256 MiB (`cache/sweep.rs`), but a scan of `/`, of `~` and
+  of `~/project` are three files where one would do — each a folder's whole listing, the
+  smaller ones inside the largest. Serving a folder from an ancestor's saved scan (its subtree
+  of the stream, the ancestor's stamp, the log replayed under the folder only) would make them
+  one; a feature of its own, since the catch-up and the fill would then write into the
+  ancestor's file. Smaller levers, unmeasured: `KEEP_FROM` (1 MiB) higher keeps fewer files one
+  by one at the fill's cost; deflate's best level instead of the default.
 - Risk: a size changed with no directory event (an `mmap` writer that has not closed, unmeasured)
   is stale until its folder is rescanned; the cache's own size (about 25 bytes an entry
   compactly, 200 MB for `~`) and its staleness after a volume is moved between machines

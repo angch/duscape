@@ -505,10 +505,17 @@ impl<I: Iterator<Item = DirEntries>> Recorder<I> {
         // 37), and the deflate runs on its own thread, so the walk does not pay for it.
         let mut file = GzEncoder::new(plain, Compression::default());
         let (sender, receiver) = std::sync::mpsc::sync_channel::<Message>(1024);
+        let recording = Recording::start();
         let cleanup = temp.clone();
+        let (sweep_dir, sweep_stamp, sweep_keep) =
+            (dir.to_path_buf(), stamp.clone(), key.file_name());
         std::thread::Builder::new()
             .name("scan_recorder".to_string())
             .spawn(move || {
+                let _recording = recording;
+                // First, while the walk runs and its records queue: a process that ends with
+                // its scan (`--benchmark`) is gone before the sweep after the save gets to run.
+                sweep(&sweep_dir, &sweep_stamp, &sweep_keep, ROOM);
                 let mut finished = false;
                 while let Ok(message) = receiver.recv() {
                     match message {
@@ -528,7 +535,10 @@ impl<I: Iterator<Item = DirEntries>> Recorder<I> {
                         }
                     }
                 }
-                if !finished {
+                if finished {
+                    // Again after the save, the new file's size counted in the room.
+                    sweep(&sweep_dir, &sweep_stamp, &sweep_keep, ROOM);
+                } else {
                     let _ = fs::remove_file(&cleanup);
                 }
             })
@@ -616,6 +626,53 @@ impl<I: Iterator<Item = DirEntries>> Recorder<I> {
     /// Stop recording; the writer thread removes the part file when the channel closes.
     fn abandon(&mut self) {
         self.writer = None;
+    }
+}
+
+/// Recordings whose writer thread has not ended, and the signal that one has.
+static RECORDINGS: (std::sync::Mutex<usize>, std::sync::Condvar) =
+    (std::sync::Mutex::new(0), std::sync::Condvar::new());
+
+/// One recording counted in [`RECORDINGS`] while its writer thread runs, however it ends.
+struct Recording;
+
+impl Recording {
+    fn start() -> Self {
+        if let Ok(mut count) = RECORDINGS.0.lock() {
+            *count += 1;
+        }
+        Recording
+    }
+}
+
+impl Drop for Recording {
+    fn drop(&mut self) {
+        if let Ok(mut count) = RECORDINGS.0.lock() {
+            *count = count.saturating_sub(1);
+        }
+        RECORDINGS.1.notify_all();
+    }
+}
+
+/// Wait, at most `limit`, for the saves under way to be written and swept: what a process that
+/// ends with its scan calls before it does (the terminal viewer, `--benchmark`). The writer is
+/// a thread of its own so that the scan does not wait for the deflate; a process gone before
+/// it ends left a part file and no save — every `--bench-stage cached` of a small tree did.
+/// A window, which outlives its scans, need not call it.
+pub fn wait_for_saves(limit: std::time::Duration) {
+    let deadline = std::time::Instant::now() + limit;
+    let Ok(mut count) = RECORDINGS.0.lock() else {
+        return;
+    };
+    while *count > 0 {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return;
+        }
+        match RECORDINGS.1.wait_timeout(count, left) {
+            Ok((next, _)) => count = next,
+            Err(_) => return,
+        }
     }
 }
 
@@ -1233,6 +1290,9 @@ fn age_words(seconds: u64) -> String {
         s => format!("{} days", s / 86400),
     }
 }
+
+mod sweep;
+pub use sweep::{ROOM, Removed, clear, sweep};
 
 #[cfg(test)]
 mod tests;

@@ -501,3 +501,184 @@ fn the_tree_holds_the_unlisted_sum_and_a_fill_puts_the_files_back() {
     assert!(!tree.fill(&to_fill[0], &list_std(&to_fill[0]).unwrap()));
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// A saved scan's file as the sweep sees it: the clear header for `root` and `stamp` in
+/// `version`'s format, and `bytes` of body.
+fn saved_file(dir: &Path, root: &str, stamp: &Stamp, version: u32, bytes: usize) -> PathBuf {
+    let key = key(Path::new(root));
+    let mut contents = encode_clear(&key, stamp);
+    contents[MAGIC.len()..MAGIC.len() + 4].copy_from_slice(&version.to_le_bytes());
+    contents.resize(contents.len() + bytes, 0);
+    let path = dir.join(key.file_name());
+    fs::write(&path, contents).expect("write a saved scan");
+    path
+}
+
+fn names(removed: &[Removed]) -> Vec<String> {
+    let mut names: Vec<String> = removed
+        .iter()
+        .map(|removed| {
+            removed
+                .path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+/// What can never be read again goes: an older format, a file that is no saved scan, one made
+/// under another system, one whose volume's log was reset. A newer format (another build's),
+/// another volume's, and what is not ours by name are left alone.
+#[test]
+fn the_sweep_removes_what_cannot_be_used_again() {
+    let dir = temp_dir("sweep-dead");
+    let now = stamp();
+    let current = saved_file(&dir, "/current", &now, VERSION, 10);
+    let older = saved_file(&dir, "/older", &now, VERSION - 1, 10);
+    let newer = saved_file(&dir, "/newer", &now, VERSION + 1, 10);
+    let updated = saved_file(
+        &dir,
+        "/updated",
+        &Stamp {
+            system: "an older kernel".into(),
+            ..now.clone()
+        },
+        VERSION,
+        10,
+    );
+    let reset = saved_file(
+        &dir,
+        "/reset",
+        &Stamp {
+            log_uuid: "another log".into(),
+            ..now.clone()
+        },
+        VERSION,
+        10,
+    );
+    let elsewhere = saved_file(
+        &dir,
+        "/elsewhere",
+        &Stamp {
+            device: 8,
+            log_uuid: "its own log".into(),
+            ..now.clone()
+        },
+        VERSION,
+        10,
+    );
+    fs::write(dir.join("garbage.scan"), b"not one").expect("write");
+    fs::write(dir.join("notes.txt"), b"not ours").expect("write");
+
+    let removed = sweep(&dir, &now, "none", u64::MAX);
+    let mut expected: Vec<String> = [&older, &updated, &reset]
+        .iter()
+        .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+        .chain(["garbage.scan".to_string()])
+        .collect();
+    expected.sort();
+    assert_eq!(names(&removed), expected);
+    for path in [&current, &newer, &elsewhere] {
+        assert!(path.exists(), "{} kept", path.display());
+    }
+    assert!(dir.join("notes.txt").exists());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Past the room, the least recently saved go first; the file just saved never does, however
+/// old its neighbours make it look.
+#[test]
+fn the_sweep_keeps_the_saved_scans_within_the_room() {
+    let dir = temp_dir("sweep-room");
+    let at = |saved_at| Stamp {
+        saved_at,
+        ..stamp()
+    };
+    let just_saved = saved_file(&dir, "/just-saved", &at(1), VERSION, 1000);
+    let oldest = saved_file(&dir, "/oldest", &at(2), VERSION, 1000);
+    let newest = saved_file(&dir, "/newest", &at(3), VERSION, 1000);
+    let size = fs::metadata(&oldest).unwrap().len();
+    let keep = just_saved
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+
+    let removed = sweep(&dir, &stamp(), &keep, 2 * size + size / 2);
+    assert_eq!(
+        names(&removed),
+        [oldest.file_name().unwrap().to_string_lossy()]
+    );
+    assert!(just_saved.exists() && newest.exists());
+
+    // Even when it alone is past the room.
+    let removed = sweep(&dir, &stamp(), &keep, 1);
+    assert_eq!(
+        names(&removed),
+        [newest.file_name().unwrap().to_string_lossy()]
+    );
+    assert!(just_saved.exists());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A recording whose process is gone is removed; one this process or another live one is
+/// making is left to finish.
+#[cfg(unix)]
+#[test]
+fn the_sweep_removes_recordings_cut_short() {
+    let dir = temp_dir("sweep-parts");
+    let mut gone = std::process::Command::new("true")
+        .spawn()
+        .expect("run true");
+    let gone = {
+        let pid = gone.id();
+        gone.wait().expect("wait for true");
+        pid
+    };
+    let cut_short = dir.join(format!("abc.scan.{gone}.part"));
+    let mine = dir.join(format!("abc.scan.{}.part", std::process::id()));
+    // Process 1 is always there, and not ours to signal: alive all the same.
+    let launchd = dir.join("abc.scan.1.part");
+    for path in [&cut_short, &mine, &launchd] {
+        fs::write(path, b"part").expect("write");
+    }
+    let removed = sweep(&dir, &stamp(), "none", u64::MAX);
+    assert_eq!(
+        names(&removed),
+        [cut_short.file_name().unwrap().to_string_lossy()]
+    );
+    assert!(mine.exists() && launchd.exists());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// `--clear-cache`: every saved scan goes, whatever its format, and nothing else.
+#[test]
+fn clearing_removes_every_saved_scan() {
+    let dir = temp_dir("clear");
+    saved_file(&dir, "/a", &stamp(), VERSION, 10);
+    saved_file(&dir, "/b", &stamp(), VERSION - 1, 10);
+    fs::write(dir.join("notes.txt"), b"not ours").expect("write");
+    let mine = dir.join(format!("abc.scan.{}.part", std::process::id()));
+    fs::write(&mine, b"part").expect("write");
+    assert_eq!(clear(&dir).len(), 2);
+    assert!(dir.join("notes.txt").exists() && mine.exists());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A save sweeps after it: a file of an older format beside it is gone once the new one is in.
+#[test]
+fn a_save_sweeps_the_directory() {
+    let root = temp_dir("sweep-save-root");
+    make_tree(&root);
+    let cache = temp_dir("sweep-save-cache");
+    let older = saved_file(&cache, "/older", &stamp(), VERSION - 1, 10);
+    save(&root, &cache);
+    settle(|| !older.exists());
+    let _ = fs::remove_dir_all(&root);
+    let _ = fs::remove_dir_all(&cache);
+}

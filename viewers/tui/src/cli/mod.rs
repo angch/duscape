@@ -95,6 +95,11 @@ pub struct Opt {
     /// up to date by the volume's change log) nor save this one
     #[arg(long)]
     pub no_cache: bool,
+    /// Remove every saved scan (macOS: `~/Library/Caches/duscape`) and say what that freed,
+    /// instead of scanning. They are also swept after every save: what can never be read again
+    /// goes, and the rest is kept within 256 MiB, the least recently saved out first
+    #[arg(long)]
+    pub clear_cache: bool,
 }
 
 impl Opt {

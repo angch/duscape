@@ -497,6 +497,11 @@ pub fn run(
                 }
             };
             result.report();
+            // Untimed: the save the stage made, written and swept before the next run reads
+            // it or the process ends (`cache::wait_for_saves`).
+            if *stage == BenchStage::Cached {
+                duscape_scan::cache::wait_for_saves(std::time::Duration::from_secs(60));
+            }
         }
     }
 }

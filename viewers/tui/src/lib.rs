@@ -176,6 +176,11 @@ fn try_main() -> Result<(), Error> {
         return Ok(());
     }
 
+    if opts.clear_cache {
+        clear_cache();
+        return Ok(());
+    }
+
     if opts.benchmark {
         let folder = opts.resolve_folder()?;
         bench::run(
@@ -219,6 +224,9 @@ fn try_main() -> Result<(), Error> {
         }
         Err(_) => return Err(Error::NoStdout),
     }
+    // The terminal is the shell's again: a save still being written finishes before the
+    // process ends, or it is lost and a part file left (`cache::wait_for_saves`).
+    duscape_scan::cache::wait_for_saves(std::time::Duration::from_secs(10));
     Ok(())
 }
 
@@ -479,4 +487,23 @@ fn ticker(
             park_timeout(ui::IDLE_TICK.saturating_sub(ui::FRAME));
         }
     }
+}
+
+/// `--clear-cache`: every saved scan removed, and what that freed said on stdout.
+fn clear_cache() {
+    let Some(dir) = duscape_scan::cache::directory() else {
+        println!("No cache directory: nothing saved.");
+        return;
+    };
+    let removed = duscape_scan::cache::clear(&dir);
+    let bytes: u64 = removed.iter().map(|removed| removed.bytes).sum();
+    for removed in &removed {
+        println!("removed {} ({})", removed.path.display(), removed.why);
+    }
+    println!(
+        "{} saved scans removed from {}, {} freed",
+        removed.len(),
+        dir.display(),
+        libduscape::DisplaySize(bytes as f64)
+    );
 }
