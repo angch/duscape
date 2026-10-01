@@ -1,25 +1,15 @@
-//! The application's icon, drawn by the treemap itself: a folder holding a few files, beside a
-//! few more, squarified at whatever size the platform asks for and coloured as the window
-//! colours tiles. A placeholder until there is a drawn one, but the app's own picture of a
-//! disk, and sharp at every size since it is laid out at that size rather than scaled.
+//! The application's icon: a six-tile mark matching the explainer's hero artwork, rendered at
+//! whatever size a platform asks for so its edges stay sharp rather than being scaled.
 
-use ::std::ffi::OsStr;
-
-use libduscape::tiles::{Area, FileMetadata, FileType, Grid, TreeMap};
-
-use crate::state::{darker, folder_color, tile_color};
-
-/// The entries drawn: (name, share, is a folder). The names only choose the colours.
-const TOP: [(&str, f64, bool); 6] = [
-    ("folder", 0.46, true),
-    ("disk.iso", 0.19, false),
-    ("server.log", 0.13, false),
-    ("photo.png", 0.10, false),
-    ("library.dll", 0.07, false),
-    ("main.rs", 0.05, false),
+const BACKGROUND: (f64, f64, f64) = (0.89, 0.89, 0.85);
+const HERO_COLORS: [(f64, f64, f64); 6] = [
+    (0.72, 0.89, 0.74),
+    (0.91, 0.73, 0.34),
+    (0.66, 0.84, 0.86),
+    (0.95, 0.49, 0.36),
+    (0.60, 0.71, 0.64),
+    (0.84, 0.93, 0.39),
 ];
-/// What the folder holds, drawn inside it under a band of its own colour.
-const INSIDE: [(&str, f64); 3] = [("song.mp3", 0.55), ("backup.gz", 0.28), ("util.c", 0.17)];
 
 /// Straight (not premultiplied) RGBA, `size` × `size`, rows top to bottom.
 #[must_use]
@@ -27,92 +17,62 @@ pub fn rgba(size: u32) -> Vec<u8> {
     let side = size.clamp(1, 1024) as usize;
     let mut pixels = vec![0u8; side * side * 4];
     let edge = side as u16;
-    // A gap between tiles, and round corners on the whole: at 16 pixels a gap of one and no
-    // rounding, so the tiles still read.
-    let gap = (side / 24).max(1) as u16;
+    let gap = (side / 48).max(1) as u16;
     let radius = if side >= 24 { side as f64 / 7.0 } else { 0.0 };
-    let dark = (0.08, 0.08, 0.09);
     let mut canvas = Paint {
         pixels: &mut pixels,
         side,
     };
-    canvas.fill(0, 0, edge, edge, dark);
-    let tiles = layout(
-        &TOP,
-        Area {
-            x: gap,
-            y: gap,
-            width: edge.saturating_sub(2 * gap),
-            height: edge.saturating_sub(2 * gap),
-        },
+    canvas.fill(0, 0, edge, edge, BACKGROUND);
+
+    let margin = gap;
+    let content_width = edge.saturating_sub(2 * margin);
+    let content_height = content_width;
+    let tile_width = content_width.saturating_sub(2 * gap);
+    let tile_height = content_height.saturating_sub(2 * gap);
+    let columns = [tile_width * 41 / 100, tile_width * 34 / 100];
+    let columns = [columns[0], columns[1], tile_width - columns[0] - columns[1]];
+    let rows = [tile_height * 26 / 100, tile_height * 46 / 100];
+    let rows = [rows[0], rows[1], tile_height - rows[0] - rows[1]];
+    let x = [
+        margin,
+        margin + columns[0] + gap,
+        margin + columns[0] + gap + columns[1] + gap,
+    ];
+    let y = [
+        margin,
+        margin + rows[0] + gap,
+        margin + rows[0] + gap + rows[1] + gap,
+    ];
+
+    canvas.fill(
+        x[0],
+        y[0],
+        columns[0],
+        rows[0] + gap + rows[1],
+        HERO_COLORS[0],
     );
-    for (index, (tile, name, folder)) in tiles.iter().enumerate() {
-        let kind = if *folder {
-            FileType::Folder
-        } else {
-            FileType::File
-        };
-        // The folder's blue by its place, as the icon has always been drawn.
-        let color = match kind {
-            FileType::Folder => folder_color(index as u64),
-            _ => tile_color(OsStr::new(name), kind),
-        };
-        // Each tile gives up its right and bottom edge to the gap.
-        let (w, h) = (
-            tile.width.saturating_sub(gap).max(1),
-            tile.height.saturating_sub(gap).max(1),
-        );
-        canvas.fill(tile.x, tile.y, w, h, color);
-        if *folder && w >= 6 * gap && h >= 6 * gap {
-            // The folder's own entries under its band, as in the window's nesting.
-            let band = (h / 5).max(gap);
-            let inside = Area {
-                x: tile.x + gap,
-                y: tile.y + band,
-                width: w.saturating_sub(gap),
-                height: h.saturating_sub(band),
-            };
-            let inner = layout(&INSIDE.map(|(name, share)| (name, share, false)), inside);
-            for (tile, name, _) in &inner {
-                let color = darker(tile_color(OsStr::new(name), FileType::File), 0.85);
-                canvas.fill(
-                    tile.x,
-                    tile.y,
-                    tile.width.saturating_sub(gap).max(1),
-                    tile.height.saturating_sub(gap).max(1),
-                    color,
-                );
-            }
-        }
-    }
+    canvas.fill(
+        x[1],
+        y[0],
+        columns[1] + gap + columns[2],
+        rows[0],
+        HERO_COLORS[1],
+    );
+    canvas.fill(
+        x[1],
+        y[1],
+        columns[1],
+        rows[1] + gap + rows[2],
+        HERO_COLORS[2],
+    );
+    canvas.fill(x[2], y[1], columns[2], rows[1], HERO_COLORS[3]);
+    canvas.fill(x[0], y[2], columns[0], rows[2], HERO_COLORS[4]);
+    canvas.fill(x[2], y[2], columns[2], rows[2], HERO_COLORS[5]);
     if radius > 0.0 {
         round_corners(&mut pixels, side, radius);
     }
     pixels
-}
-
-/// `entries` squarified in `area`, in square cells, largest first.
-fn layout(entries: &[(&'static str, f64, bool)], area: Area) -> Vec<(Area, &'static str, bool)> {
-    let files: Vec<FileMetadata> = entries
-        .iter()
-        .map(|&(_, share, _)| FileMetadata {
-            name: ::std::ffi::OsString::new(),
-            size: 0,
-            descendants: None,
-            percentage: share,
-            file_type: FileType::File,
-        })
-        .collect();
-    let mut map = TreeMap::with_grid(&area, Grid::pixels(1));
-    map.populate_tiles(files.iter().collect());
-    map.tiles
-        .iter()
-        .zip(map.tile_entries())
-        .map(|(tile, &entry)| {
-            let (name, _, folder) = entries[entry];
-            (tile.area(), name, folder)
-        })
-        .collect()
 }
 
 struct Paint<'a> {
@@ -237,7 +197,7 @@ pub fn icns(images: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ICNS_TYPES, ICO_SIZES, encode, icns, ico, png, rgba};
+    use super::{HERO_COLORS, ICNS_TYPES, ICO_SIZES, encode, icns, ico, png, rgba};
 
     /// `viewers/macos/duscape.icns`, which `Duscape.app` carries as its icon (`make mac-app`), is
     /// this module's drawing, as the Windows file is. `DUSCAPE_WRITE_ICON=1` writes it.
@@ -318,6 +278,20 @@ mod tests {
             colors.sort_unstable();
             colors.dedup();
             assert!(colors.len() >= 5, "{size}: {} colours", colors.len());
+        }
+    }
+
+    #[test]
+    fn the_hero_palette_is_present_in_the_icon() {
+        let pixels = rgba(64);
+        for (red, green, blue) in HERO_COLORS {
+            let color = [
+                (red * 255.0).round() as u8,
+                (green * 255.0).round() as u8,
+                (blue * 255.0).round() as u8,
+                255,
+            ];
+            assert!(pixels.chunks_exact(4).any(|pixel| pixel == color));
         }
     }
 

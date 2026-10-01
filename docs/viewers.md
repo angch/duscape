@@ -3,6 +3,9 @@
 The terminal viewer is the primary one. The same walker and model also drive three native
 windows and an MS-DOS port. `features.md` lists what each offers.
 
+For the shared scan pipeline, viewer/scanner internals, and the benchmark tradeoffs behind them,
+see the [interactive internals explainer](explainer/index.html).
+
 Each window is linked into `duscape` too, so a platform has one program: the terminal viewer
 in a terminal, the window from a desktop. `viewers/tui/src/front.rs` decides, in order: `--tui`
 or `--gui`; `--benchmark`, `--help` and `--version` are the terminal's; a name ending `-gui`,

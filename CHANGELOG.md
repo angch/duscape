@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The application icon now uses the six-tile mark from the architecture explainer, shared by the
+  terminal, Windows, macOS and Linux viewers. The checked-in Windows `.ico` and macOS `.icns`
+  are generated from the same drawing. `docs/explainer/index.html` is an interactive tour of
+  the scanner/viewer pipeline, platform internals, worker topology and the measurements behind
+  its performance tradeoffs.
 - On Windows, both executables carry their version (`VS_VERSIONINFO`, from the package's):
   Explorer's Details tab shows it, Task Manager names the process "duscape", and an installer
   has a file version to compare. Their manifests say `asInvoker`, so they start with the rights
