@@ -1,7 +1,7 @@
 //! The application's icon: a six-tile mark matching the explainer's hero artwork, rendered at
 //! whatever size a platform asks for so its edges stay sharp rather than being scaled.
 
-const BACKGROUND: (f64, f64, f64) = (0.89, 0.89, 0.85);
+const BACKGROUND: (f64, f64, f64) = (0.18, 0.23, 0.21);
 const HERO_COLORS: [(f64, f64, f64); 6] = [
     (0.72, 0.89, 0.74),
     (0.91, 0.73, 0.34),
@@ -17,7 +17,13 @@ pub fn rgba(size: u32) -> Vec<u8> {
     let side = size.clamp(1, 1024) as usize;
     let mut pixels = vec![0u8; side * side * 4];
     let edge = side as u16;
-    let gap = (side / 48).max(1) as u16;
+    // Wider gaps from 32 px, so the tiles read apart on a dark backing; below it a pixel or
+    // two is all a small icon has room for.
+    let gap = if side >= 32 {
+        (side / 24).max(3) as u16
+    } else {
+        (side / 32).max(1) as u16
+    };
     let radius = if side >= 24 { side as f64 / 7.0 } else { 0.0 };
     let mut canvas = Paint {
         pixels: &mut pixels,
@@ -25,7 +31,7 @@ pub fn rgba(size: u32) -> Vec<u8> {
     };
     canvas.fill(0, 0, edge, edge, BACKGROUND);
 
-    let margin = gap;
+    let margin = 2 * gap;
     let content_width = edge.saturating_sub(2 * margin);
     let content_height = content_width;
     let tile_width = content_width.saturating_sub(2 * gap);
@@ -69,6 +75,7 @@ pub fn rgba(size: u32) -> Vec<u8> {
     canvas.fill(x[2], y[1], columns[2], rows[1], HERO_COLORS[3]);
     canvas.fill(x[0], y[2], columns[0], rows[2], HERO_COLORS[4]);
     canvas.fill(x[2], y[2], columns[2], rows[2], HERO_COLORS[5]);
+    canvas.stroke(0, 0, edge, edge, gap);
     if radius > 0.0 {
         round_corners(&mut pixels, side, radius);
     }
@@ -93,6 +100,24 @@ impl Paint<'_> {
                 self.pixels[at..at + 4].copy_from_slice(&pixel);
             }
         }
+    }
+
+    /// A white frame of `thickness` just inside the rectangle: the icon's outline, which keeps
+    /// its edge on a dark taskbar or Dock.
+    fn stroke(&mut self, x: u16, y: u16, width: u16, height: u16, thickness: u16) {
+        let thickness = thickness.min(width).min(height);
+        let inner_height = height.saturating_sub(2 * thickness);
+        let white = (1.0, 1.0, 1.0);
+        self.fill(x, y, width, thickness, white);
+        self.fill(x, y + height - thickness, width, thickness, white);
+        self.fill(x, y + thickness, thickness, inner_height, white);
+        self.fill(
+            x + width - thickness,
+            y + thickness,
+            thickness,
+            inner_height,
+            white,
+        );
     }
 }
 
@@ -293,6 +318,17 @@ mod tests {
             ];
             assert!(pixels.as_chunks::<4>().0.contains(&color));
         }
+    }
+
+    #[test]
+    fn white_outline_frames_the_icon_without_outlining_its_tiles() {
+        let size = 64usize;
+        let pixels = rgba(size as u32);
+        let pixel = |x: usize, y: usize| &pixels[(y * size + x) * 4..][..4];
+        assert_eq!(pixel(32, 1), &[255, 255, 255, 255]);
+        assert_eq!(pixel(32, 4), &[46, 59, 54, 255]);
+        assert_eq!(pixel(12, 6), &[184, 227, 189, 255]);
+        assert_eq!(pixel(25, 12), &[46, 59, 54, 255]);
     }
 
     #[test]
