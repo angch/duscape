@@ -253,8 +253,34 @@ pub struct DirEntries {
     /// Files of this directory not in `entries`, as one sum: what a saved scan trimmed away
     /// (`duscape_scan::cache` keeps folders, hard-linked files and the largest files, and
     /// carries the rest of a folder as this), for the tree to hold until the folder is listed
-    /// again ([`crate::FileTree::fill`]). Zero from every walker.
+    /// again ([`crate::FileTree::fill`]). Zero from every walker that lists a directory whole;
+    /// a running total ([`Audience::View`]) carries what it has to say here.
     pub unlisted: Unlisted,
+    /// Whom this directory is for: the tree and the live view both, as every listing is, or
+    /// one of them. See [`Audience`].
+    pub audience: Audience,
+}
+
+/// Whom a [`DirEntries`] is for. A walker that lists directories hands each one on once, and
+/// the tree and the live view ([`Outline`]) both take it ([`Audience::Both`]). A walker that
+/// reads the disk in an order no listing can follow — the NTFS master file table, whose
+/// records come in table order with a directory's files scattered through the whole of it —
+/// has nothing to list until it has read everything, which on a system volume is a second or
+/// two with nothing on screen. So it hands the view *running totals* as it reads, a directory's
+/// files so far as its [`DirEntries::unlisted`] sum ([`Audience::View`]: the tree takes none of
+/// them, since the listing will come), and then the listing to the tree alone
+/// ([`Audience::Tree`]: the view has had it all as running totals, and would count it twice).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Audience {
+    /// A listing: the tree builds from it, and the view sums it.
+    #[default]
+    Both,
+    /// A running total so far, as `unlisted`, for the view alone; not a listing. `last` marks
+    /// the last of a flush — the totals as of now — which the outline sends on at once rather
+    /// than when a batch fills: nothing more comes for a while, and the first paint waits.
+    View { last: bool },
+    /// A listing for the tree alone: the view has had its totals already.
+    Tree,
 }
 
 /// Files a directory holds that are not listed one by one: how much they take, and how many.
@@ -507,6 +533,7 @@ impl DirEntries {
             extent_space: 0,
             issues: Issues::default(),
             unlisted: Unlisted::ZERO,
+            audience: Audience::default(),
         }
     }
 
@@ -522,6 +549,7 @@ impl DirEntries {
             extent_space: 0,
             issues: Issues::default(),
             unlisted: Unlisted::ZERO,
+            audience: Audience::default(),
         }
     }
 
@@ -626,11 +654,13 @@ impl DirSummary {
             }
         }
         dirs.failed = directory.failed;
+        // What the directory holds unlisted — a saved scan's trimmed files, or a running
+        // total's everything — is files of its own.
         Self {
             dirs,
-            files_size,
-            files_apparent,
-            entries: directory.len() as u64,
+            files_size: files_size.saturating_add(directory.unlisted.size),
+            files_apparent: files_apparent.saturating_add(directory.unlisted.apparent),
+            entries: (directory.len() as u64).saturating_add(directory.unlisted.count),
         }
     }
 
@@ -716,8 +746,16 @@ impl Outline {
     }
 
     /// Take one scanned directory in. Returns a batch of summaries when one is ready to send.
+    /// A listing for the tree alone ([`Audience::Tree`]) is not taken: the view has had it as
+    /// running totals, and would count it twice.
     pub fn add(&mut self, directory: &DirEntries) -> Option<Vec<DirSummary>> {
-        self.batched_entries += directory.len().max(1);
+        if directory.audience == Audience::Tree {
+            return None;
+        }
+        // A running total weighs what it stands for, as a listing weighs its entries: counted
+        // as one, the first batch of a table's totals waited for 4096 directories' worth.
+        let weight = directory.len() + usize::try_from(directory.unlisted.count).unwrap_or(0);
+        self.batched_entries += weight.max(1);
         let relative = below_root(
             directory
                 .path
@@ -755,12 +793,22 @@ impl Outline {
                 },
             );
             let slot = self.rolled.entry(frontier).or_insert((0, 0, 0, 0));
-            slot.0 = slot.0.saturating_add(disk);
-            slot.1 = slot.1.saturating_add(apparent);
-            slot.2 += directory.len() as u64;
+            slot.0 = slot
+                .0
+                .saturating_add(disk)
+                .saturating_add(directory.unlisted.size);
+            slot.1 = slot
+                .1
+                .saturating_add(apparent)
+                .saturating_add(directory.unlisted.apparent);
+            slot.2 += directory.len() as u64 + directory.unlisted.count;
             slot.3 += directory.failed;
         }
+        // Full, or the last running total of a flush (the totals as of now: nothing more comes
+        // for a while, and the first paint waits for the first batch), or `FOCUS_FLUSH` after
+        // the last under the focus.
         let due = self.batched_entries >= self.batch_size
+            || directory.audience == (Audience::View { last: true })
             || (focus.is_some() && self.last_batch.elapsed() >= Self::FOCUS_FLUSH);
         due.then(|| self.take_batch())
     }
@@ -917,6 +965,68 @@ impl FocusWatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A running total (`Audience::View`) is summed from its unlisted sum, as a directory sent
+    /// as it is and as one rolled up into the frontier; the listing that follows for the tree
+    /// alone (`Audience::Tree`) is not summed again.
+    #[test]
+    fn running_totals_are_summed_once_and_their_listing_not_at_all() {
+        let root = PathBuf::from(if cfg!(windows) { r"R:\" } else { "/R" });
+        let mut outline = Outline::new(root.clone(), 1, usize::MAX);
+        let mut shown = DirEntries::new(Arc::from(root.join("a").as_path()));
+        shown.unlisted = Unlisted {
+            size: 100,
+            apparent: 90,
+            count: 3,
+        };
+        shown.audience = Audience::View { last: false };
+        let mut deep = DirEntries::new(Arc::from(root.join("a").join("b").join("c").as_path()));
+        deep.unlisted = Unlisted {
+            size: 10,
+            apparent: 9,
+            count: 1,
+        };
+        deep.audience = Audience::View { last: true };
+        let mut listing = DirEntries::new(Arc::from(root.join("a").as_path()));
+        listing.push(
+            OsStr::new("f"),
+            EntryMeta {
+                size: 100,
+                apparent: 90,
+                links: 1,
+                ..EntryMeta::default()
+            },
+        );
+        listing.audience = Audience::Tree;
+        assert!(outline.add(&shown).is_none());
+        let mut batch = outline
+            .add(&deep)
+            .expect("the last total of a flush sends the batch at once");
+        assert!(outline.add(&listing).is_none());
+        assert!(outline.finish().is_empty());
+        batch.sort_by(|x, y| x.dirs.path.cmp(&y.dirs.path));
+        assert_eq!(batch.len(), 2, "the folder shown and the frontier under it");
+        assert_eq!(&*batch[0].dirs.path, root.join("a").as_path());
+        assert_eq!(
+            (
+                batch[0].files_size,
+                batch[0].files_apparent,
+                batch[0].entries
+            ),
+            (100, 90, 3),
+            "the running total once; the listing, for the tree, not at all"
+        );
+        assert_eq!(&*batch[1].dirs.path, root.join("a").join("b").as_path());
+        assert_eq!(
+            (
+                batch[1].files_size,
+                batch[1].files_apparent,
+                batch[1].entries
+            ),
+            (10, 9, 1),
+            "rolled up into the frontier folder"
+        );
+    }
 
     /// An outline of a share given its root bare, as `canonicalize` names it, with the focus
     /// on the root as the tree names it: the root is nowhere in particular, so it is outlined

@@ -291,7 +291,7 @@ mod tests {
                 (blue * 255.0).round() as u8,
                 255,
             ];
-            assert!(pixels.chunks_exact(4).any(|pixel| pixel == color));
+            assert!(pixels.as_chunks::<4>().0.contains(&color));
         }
     }
 

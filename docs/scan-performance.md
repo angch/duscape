@@ -3262,6 +3262,83 @@ got 0.5 GB/s on one cold run (`C:\Windows`: 4.4 s to read and parse) where the d
 3 GB/s; overlapped reads would take the cold `C:\` from 3.1 s towards 2 s. The sample is one
 machine's predictor, and its threshold is set from two volumes.
 
+### First paint (2026-10-01)
+
+`duscape --gui C:\` elevated showed an empty window for three seconds: the table has to be
+read whole before a single directory can be listed — a directory's files are scattered through
+it — so the first batch the window got came after the read, the assembly and the first emitted
+batch, while the kernel walk's first batch comes in under 100 ms. The walk's time was never the
+problem; the time to first paint was, which the goals put first. Measured with the window's own
+timeline (`DUSCAPE_PAINT_TIMES=1`, `passes::trace`, which also turns the build profile on so the
+`mft:` lines come with it) and `--benchmark --bench-stage sharded --bench-profile C:\`, both
+from an administrator's terminal (the relaunch through UAC drops the environment and stderr):
+
+```powershell
+$env:DUSCAPE_PAINT_TIMES = '1'
+cmd /c ".\target\release\duscape.exe --gui C:\ 2> timeline.txt"
+```
+
+(Through `cmd`: Windows PowerShell 5.1's own `2>` wraps a native command's stderr in an error
+record and keeps the first line only.)
+
+| window timeline, `C:\` elevated, warm | before | after |
+| --- | --- | --- |
+| window shown | 32 ms | 36 ms |
+| first paint (empty, "Scanning…") | 38 ms | 43 ms |
+| first outline batch | 3125 ms | 952 ms |
+| first tiles laid out | 3239 ms | 1057 ms |
+| finished tree | 5956 ms | 4348 ms |
+
+What changed, in the order it was found:
+
+**Running totals** (`mft::Running`, `mft::Charges`, `Audience` in the scan protocol). The table
+is read on a thread of its own (`mft_reader`) and the view gets running totals as it is read:
+each parser charges its chunk's files to their directory's record (`Charges::of`), and every
+`LIVE_EVERY` (250 ms) each directory's total since last time goes out as one `DirEntries` of
+`Audience::View`, the sizes as its `unlisted` sum, at the path the directory's and its
+ancestors' records give. A directory whose ancestors are not all read yet waits for a later
+flush; where the listing will not go (`--max-depth`, a snapshot folder left out by name, a
+link) nothing is charged, so the totals are what the listing adds up to, hard links counted
+once a name as the outline counts them (`mft::tests::running_totals_add_up_to_the_listing`
+holds them to the listing's sums). The listing that follows is `Audience::Tree`, which the
+outline skips, so nothing is counted twice; the tree builders never see a `View` directory.
+
+**The records are in no tree order.** The first version resolved a directory's place by walking
+its records to the root, and its first four flushes resolved 5, 185, 11 and 11 directories with
+109k waiting, then 139k at once at 2.1 s: on this upgraded Windows `C:\Windows` itself is a late
+record (a feature update makes the folder anew), and every chain through it waited for that one
+chunk. So the top levels' places are *seeded* through the kernel (`mft_seeder`: a bulk listing
+gives each child's file reference, hence its record; breadth first to `SEED_DEPTH` 6, beside the
+flush and the read, 54k places by the end), and the second flush resolves 20k directories at
+0.75 s on the reader's clock.
+
+**The flushes off the reading thread.** Resolving a place every flush cost 1.65 s over eight
+flushes; resolved once and kept, 0.45 s — still a quarter of the read (2.65 s against 2.13 s
+without them, `DUSCAPE_NO_LIVE_TOTALS`). On a thread of their own (`mft_live`, the charges over
+an unbounded channel so the read never waits) they cost the read nothing: 2.121 s with them,
+2.127 s without. The last total of a flush is marked (`Audience::View { last: true }`) and the
+outline sends the batch on at once; a time rule tried first sent a batch of one summary, the
+first total alone, and held the other 345 for the next flush.
+
+**The volume's first I/O.** The probe before the read (`chosen`) cost 0.4–0.75 s, all of it one
+8 MiB read: a volume handle's *first read* costs 0.4–0.8 s whatever its size — a first read of
+4 KiB took 390–811 ms, the same handle's next 8 MiB 5.6 ms, a fresh unbuffered handle 390 ms
+again — and the volume's flush (`FlushFileBuffers`, 0.4 s on an idle volume) is the same kind of
+cost on a write handle. The probe now samples 1024 records spread over the table through
+`FSCTL_GET_NTFS_FILE_RECORD`, which shows no such cost (2.6–12 ms; the ratio for this `C:\`
+reads 4.1 a directory against the slice's 2.2, nearer the true 5.4, still under `TABLE_UP_TO`),
+and one handle opened for reading and writing serves the probe, the flush and the read. The
+cost then moves to the table's first chunk: flush 0.4 s, then 0.45 s before the first chunk's
+bytes arrive, and the two do not overlap — a read of one sector issued beside the flush took
+0.46–0.74 s and both were done by 0.84–1.11 s, as in series. Those 0.85 s are what is left
+before the first running total, and the seeding is what runs beside them. Not tried: no flush
+at all (the table lags the filesystem by seconds without it, "The master file table" above), or
+whether the first read's cost is that flush done by the volume itself.
+
+Where it stands: the first tiles at about 1.05 s and growing every 250 ms as the table is read,
+the whole scan 4.3–4.6 s, the read itself unchanged. The probe's cost is gone from the declining
+case too: a volume the gate leaves to the walk (`D:\`) paid it before walking.
+
 ## macOS: what is left, and where the floor is (2026-09-29)
 
 The question was how to bring the macOS scan near what Linux and Windows get — 4.2M entries in

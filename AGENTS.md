@@ -132,6 +132,9 @@ out and painting.
 | `stdin_handler` | Reads crossterm events → `Instruction::Keypress` |
 | `hd_scanner` | Drives the walk (its own worker pool). Sends each directory to one `tree_builder` by path prefix, and feeds an `Outline` that sends **main** a folder-only view → `Instruction::AddScannedSummaries` (batched, ~4096 entries). Directories deeper than `Outline::DEFAULT_DEPTH` are rolled up into the frontier folder above them rather than sent, so main does O(visible) work, not O(directories) — except under the folder shown (`App::scan_focus`, a `scan::Focus` the walkers and the outline watch): the walk reads toward it first (`duscape_scan::focus`), the outline sends what is under it whole to `DEFAULT_DEPTH` below it, the folder itself with its files, and a batch holding any of it goes every `Outline::FOCUS_FLUSH`. When the walk ends: merges the builders' trees, replays deferred shared blocks → `Instruction::ScanComplete(tree)`, then `StartUi` |
 | `tree_builder_N` | Owns a private `FileTree` in deferred-sharing mode and adds whatever `hd_scanner` sends it. Never touches another thread's memory |
+| `mft_reader` | Windows, elevated, a volume root: flushes the volume and reads the NTFS master file table (`mft::walk_mft`, `Reading::run`), handing each chunk's `Charges` (made on the parsers' threads) to `mft_live` and, once the table is read whole, the listing to `hd_scanner` as `Audience::Tree`. A read that fails part way reports through the walk and the kernel walk takes over |
+| `mft_live` | The view's *running totals* while the table is read (`mft::Running`): each directory's files so far, as one `DirEntries` of `Audience::View` with the sizes in its `unlisted`, every `LIVE_EVERY` (250 ms), the last of a flush marked so the outline sends the batch at once — so the treemap is up and growing from the first chunk, not after the last. On the reading thread the flushes were a quarter of the read; here they cost it nothing (measured both ways, `DUSCAPE_NO_LIVE_TOTALS`) |
+| `mft_seeder` | Lists the top `SEED_DEPTH` (6) levels through the kernel, breadth first, beside the flush and the read, and seeds `Running` with each directory's record and place: the table's records are in no tree order (an upgraded Windows's `C:\Windows` is a late record, and every chain through it waited for its chunk), and through the kernel the levels the view shows are known in milliseconds. Ends with the read |
 | `event_executer` | Converts `Event` → `Instruction` (visual feedback). A clipboard flash gets a short-lived `clipboard_flash` thread that asks for a redraw when it expires; the flash carries its own deadline, so a lost redraw cannot leave it on screen |
 | `loading_loop` | Toggles loading indicator while scanning |
 | `ticker` | Sends `Instruction::Tick` with `try_send` (late ticks are dropped): every `ui::FRAME` (16 ms) while `App::ticker_pace` says the help line is sliding, else every `ui::IDLE_TICK` (250 ms), looking again one frame after each resting tick since a slide begins on one — twice per resting interval, not at frame rate. `App::tick` moves the help line (`ui::Ticker`/`Strip`) |
@@ -162,7 +165,11 @@ out and painting.
   `FileTree::add_dir_entries`/`merge_from` gather them into `FileTree::issues`), `Outline`/`DirSummary` (the
   depth-capped live view; `following` a `Focus`, exempt under the folder shown), `Found`/`FoundFile`;
   `Focus`/`FocusWatch` — the folder shown, shared with whatever still reads the disk, a move told by
-  one atomic load
+  one atomic load; `Audience` — whom a `DirEntries` is for: `Both` (a listing, as every walker
+  hands one on), `View` (a running total so far, as its `unlisted` sum, for the outline alone:
+  `build_tree` passes it to `progress` and no builder) or `Tree` (a listing the outline skips,
+  having had its totals) — how the NTFS table reader shows the volume while it reads
+  (`DirSummary::of` counts `unlisted` as files of the directory's own)
 - `model/files/hard_links.rs` — charges shared blocks to each folder once, over interned directory
   ids; two ledgers, one keyed on inode (hard links) and one on physical extent (reflinks)
 - `model/files/hash.rs` — the fast hasher behind the folder and inode maps
@@ -330,7 +337,24 @@ out and painting.
   directories are small enough for the table to pay (`TABLE_UP_TO` entries a directory: the walk
   costs a handle per directory, the table a record per file); else the kernel walk.
   `--no-device-read` opts out. The parser and the tree run and are tested on every platform;
-  only `mft::volume` is Windows
+  only `mft::volume` is Windows. The table is read on its own thread (`mft_reader`), and
+  since nothing can be *listed* until it is read whole (a directory's files are scattered
+  through it: 1.7 s on this `C:\`, then 0.9 s to assemble, with nothing on screen before
+  this), the view gets *running totals* meanwhile (`Running`, `Charges`, on `mft_live`): each
+  chunk's files charged to their directory's record on the parser's thread, and every
+  `LIVE_EVERY` (the first chunk's at once) each directory's total since last time handed on as
+  one `DirEntries` of `Audience::View` — the sizes as its `unlisted`, the flush's last marked
+  — at the path its ancestors' records give (resolved once and kept), a directory whose
+  ancestors are not all read yet waiting for a later flush, and nothing charged where the
+  listing would not go (`--max-depth`, a snapshot folder left out by name, a link). The top
+  levels' places come from the kernel's listing (`mft_seeder`, `Running::seed`), since the
+  records are in no tree order. The listing that follows is `Audience::Tree`, which the
+  outline skips; the tests hold the totals to the listing's sums, hard links and NTFS's own
+  files included. The gate's sample is fetched by `FSCTL_GET_NTFS_FILE_RECORD`, 1024 records
+  spread over the table, not read as a slice: a volume handle's first read costs 0.4–0.8 s
+  whatever its size, as the volume's flush does, and the two do not overlap — the 0.85 s
+  before the first running total on this `C:\` is those two, measured on 2026-10-01
+  (`docs/scan-performance.md`, "First paint")
 - `windows.rs` — Windows walker: one handle per directory, entries read in bulk with
   `GetFileInformationByHandleEx(FileIdExtdDirectoryInfo)`. No listing carries a link count, so
   files in hard-link hot spots (or all files ≥ `--hard-link-threshold`) are sent with
@@ -1080,7 +1104,7 @@ Regenerated by hand from `wc -l` when this file is touched; `make quality` print
 | `viewers/tui/src/lib.rs` | ~480 lines — which viewer (`front`), terminal setup, thread/channel setup |
 | `viewers/tui/src/app/mod.rs` | ~1320 lines — the TUI's state machine |
 | `viewers/tui/src/preview.rs` | ~1300 lines — preview thread, kitty/sixel/half-block output, detection |
-| `viewers/windows/src/win/mod.rs` | ~1260 lines — the Windows window: input → `Viewer`, threads, messages |
+| `viewers/windows/src/win/mod.rs` | ~1290 lines — the Windows window: input → `Viewer`, threads, messages, the start-up timeline |
 | `viewers/windows/src/win/paint.rs` | ~1250 lines — drawing by `Viewer::layout`: pixels into a DIB section, GDI text |
 | `viewers/shared/src/state.rs` | ~2290 lines — the desktop viewers' shared state, no toolkit |
 | `viewers/shared/src/state/tween.rs` | ~180 lines — tiles sliding from one steady layout to the next |
@@ -1102,11 +1126,11 @@ Regenerated by hand from `wc -l` when this file is touched; `make quality` print
 | `viewers/dos/DUSCAPE.ASM` | ~4700 lines — the MS-DOS viewer, one instruction a line |
 | `viewers/dos/SOFTFP.ASM` | ~810 lines — IEEE doubles on a 286 |
 | `viewers/dos/PREVIEW.ASM` | ~1300 lines — its previews: text, blocks, the palette |
-| `scanners/src/mft.rs` | ~980 lines — NTFS read from its master file table: the parser, the tree, and the volume read |
+| `scanners/src/mft.rs` | ~1630 lines — NTFS read from its master file table: the parser, the running totals for the view, the tree, and the volume read (its probe, the live and seeding threads) |
 | `scanners/src/cache.rs` | ~1230 lines — the saved scan: the trimmed format, the recorder, the stream as saved, the replay with the log's changes applied |
 | `scanners/src/fsevents.rs` | ~410 lines — macOS's change log through CoreServices, `dlopen`ed |
 | `scanners/src/fill.rs` | ~170 lines — the fill pass over the folders a saved scan trimmed |
 | `viewers/tui/src/ui/display.rs` | ~360 lines — the frame: what every mode shows, each mode's modal, the nesting's cache |
 | `viewers/tui/src/ui/grid/rectangle_grid.rs` | ~220 lines — the terminal's treemap: tiles, the nesting, corners, highlight frames |
-| `common/src/scan/mod.rs` | ~1070 lines — the scan protocol: options, entries, issues, the outline, the focus |
+| `common/src/scan/mod.rs` | ~1250 lines — the scan protocol: options, entries, whom they are for, issues, the outline, the focus |
 | `common/src/nas.rs` | ~190 lines — the folders a NAS (or macOS, Windows) keeps for itself, by name: left out, described |

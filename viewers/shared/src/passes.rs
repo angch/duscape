@@ -27,6 +27,21 @@ pub fn paint_times() -> bool {
     *ON.get_or_init(|| ::std::env::var_os("DUSCAPE_PAINT_TIMES").is_some())
 }
 
+/// Under `DUSCAPE_PAINT_TIMES`, a line on stderr saying `what` happened and when, in
+/// milliseconds since the first call — the viewer's start, so a window calls it first thing:
+/// the start-up's timeline (the window shown, its first paint, the scan's first batch, the
+/// finished tree), which is how the time to first paint is measured.
+pub fn trace(what: &str) {
+    static STARTED: ::std::sync::OnceLock<Instant> = ::std::sync::OnceLock::new();
+    let started = *STARTED.get_or_init(Instant::now);
+    if paint_times() {
+        eprintln!(
+            "{:>8.1} ms  {what}",
+            started.elapsed().as_secs_f64() * 1000.0
+        );
+    }
+}
+
 /// One paint's labels: all of them, or those it has time for within [`LABEL_DEADLINE`] of
 /// labelling.
 pub struct LabelBudget {

@@ -26,7 +26,7 @@ use clap::Parser;
 use duscape_scan::rescan::{Outcome, Rescanner};
 use duscape_viewer::chooser::{Chooser, Target};
 use duscape_viewer::menu::{Action, Entry, Platform};
-use duscape_viewer::passes::{Paints, paint_times};
+use duscape_viewer::passes::{Paints, paint_times, trace};
 use duscape_viewer::scan;
 use duscape_viewer::state::{
     Direction, Hit, IDLE, Jump, Mods, Preview, ROW, Rect, Viewer, drop_later,
@@ -84,6 +84,11 @@ const PEEK_TIMER: usize = 4;
 const OUTLINE_MS: u32 = 100;
 /// How many rows one notch of the wheel scrolls the list.
 const WHEEL_ROWS: isize = 3;
+
+/// For the start-up timeline under `DUSCAPE_PAINT_TIMES` (`passes::trace`): whether the first
+/// paint, and the first batch of the live outline, have been noted.
+static FIRST_PAINT: AtomicBool = AtomicBool::new(false);
+static FIRST_BATCH: AtomicBool = AtomicBool::new(false);
 
 /// What a thread off the window's reports.
 enum AppMsg {
@@ -233,6 +238,12 @@ impl Window {
                 if scan_id != self.viewer.scan_id {
                     return;
                 }
+                if !FIRST_BATCH.swap(true, Ordering::Relaxed) {
+                    trace(&format!(
+                        "first outline batch, {} summaries",
+                        summaries.len()
+                    ));
+                }
                 self.viewer.absorb_summaries(summaries);
                 if !self.outline_behind {
                     self.outline_behind = true;
@@ -247,7 +258,9 @@ impl Window {
                     return;
                 }
                 self.outline_caught_up(hwnd);
+                trace("finished tree");
                 self.viewer.finish_scan(*tree);
+                trace("finished tree laid out");
             }
             AppMsg::Rescanned(scan_id, id, outcome) => {
                 if scan_id != self.viewer.scan_id {
@@ -919,6 +932,9 @@ fn dispatch(window: &mut Window, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
             if !complete {
                 second_pass_after_idle(hwnd);
             }
+            if !FIRST_PAINT.swap(true, Ordering::Relaxed) {
+                trace("first paint");
+            }
             // How long a frame takes, on stderr (redirect it: the window has no console), to
             // check that a change keeps the painting fast.
             if paint_times() {
@@ -955,7 +971,14 @@ fn dispatch(window: &mut Window, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
         WM_CHAR => window.on_char(hwnd, wparam as u16),
         WM_TIMER if wparam == OUTLINE_TIMER => {
             window.outline_caught_up(hwnd);
+            let started = Instant::now();
             window.viewer.catch_up();
+            if paint_times() {
+                trace(&format!(
+                    "outline laid out in {:.2} ms",
+                    started.elapsed().as_secs_f64() * 1000.0
+                ));
+            }
             window.changed(hwnd);
         }
         WM_TIMER if wparam == SECOND_PASS_TIMER => {
@@ -1165,6 +1188,12 @@ fn starting_root(
 }
 
 pub fn run_with(folder: Option<PathBuf>, options: ScanOptions, no_elevate: bool) {
+    // First, so the timeline under `DUSCAPE_PAINT_TIMES` counts from here.
+    trace("the window's start");
+    // The scan's own profile lines (the table reader's flushes and running totals) go with it.
+    if paint_times() {
+        libduscape::model::files::profile::enable();
+    }
     // SAFETY: called before any window exists.
     unsafe { SetProcessDPIAware() };
     let Some((root, given, notice)) = starting_root(folder, no_elevate) else {
@@ -1253,6 +1282,7 @@ pub fn run_with(folder: Option<PathBuf>, options: ScanOptions, no_elevate: bool)
             0
         });
         ShowWindow(hwnd, SW_SHOW);
+        trace("window shown");
 
         let mut msg: MSG = ::std::mem::zeroed();
         while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {

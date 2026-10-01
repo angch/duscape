@@ -2,9 +2,9 @@ use ::std::collections::BTreeMap;
 use ::std::path::PathBuf;
 use ::std::sync::Arc;
 
-use super::{Catalog, Parsed, ROOT_RECORD, data_runs, parse_file_record};
+use super::{Catalog, Charges, Parsed, ROOT_RECORD, Running, data_runs, parse_file_record};
 use crate::ntfs::decode_runs;
-use crate::{DirEntries, EntryMeta};
+use crate::{Audience, DirEntries, EntryMeta, Unlisted};
 
 const CHECK: u16 = 0x0007;
 const CLUSTER: u64 = 4096;
@@ -481,4 +481,222 @@ fn a_reparse_tag_in_the_name_marks_a_link() {
     ))
     .expect("in use");
     assert!(placeholder.is_dir && !placeholder.link);
+}
+
+/// Every directory's total from `totals`, summed by path.
+fn totals_by_path(totals: &[DirEntries]) -> BTreeMap<PathBuf, Unlisted> {
+    let mut sums: BTreeMap<PathBuf, Unlisted> = BTreeMap::new();
+    for total in totals {
+        assert!(
+            matches!(total.audience, Audience::View { .. }),
+            "a running total is the view's"
+        );
+        assert!(total.is_empty(), "a running total lists nothing");
+        let sum = sums.entry(total.path.to_path_buf()).or_default();
+        sum.size += total.unlisted.size;
+        sum.apparent += total.unlisted.apparent;
+        sum.count += total.unlisted.count;
+    }
+    sums
+}
+
+/// What the listing's files add up to in each directory: what the running totals are to reach.
+fn listing_sums(listing: &[DirEntries]) -> BTreeMap<PathBuf, Unlisted> {
+    listing
+        .iter()
+        .map(|directory| {
+            let mut sum = Unlisted::ZERO;
+            for (_, meta) in directory.iter().filter(|(_, meta)| !meta.is_dir) {
+                sum.add(meta);
+            }
+            (directory.path.to_path_buf(), sum)
+        })
+        .collect()
+}
+
+fn running(max_depth: Option<usize>, snapshots: bool) -> Running {
+    Running::new(
+        Arc::from(root().as_path()),
+        ROOT_RECORD,
+        max_depth,
+        snapshots,
+        CLUSTER,
+    )
+}
+
+/// The table read in two chunks: after the first the directories read so far have their totals,
+/// and after the second every directory's totals add up to what the listing lists — hard links
+/// counted once per name, NTFS's own files by their clusters, a file whose name is in an
+/// extension record charged once its base record is read.
+#[test]
+fn running_totals_add_up_to_the_listing() {
+    let table = volume();
+    let (first, second) = table.split_at(66);
+    let mut so_far: Vec<Option<Parsed>> = first.to_vec();
+    so_far.resize_with(table.len(), || None);
+
+    let mut running = running(None, false);
+    running.take(Charges::of(first, CLUSTER));
+    let early = totals_by_path(&running.flush());
+    assert_eq!(
+        early.get(&root()),
+        Some(&Unlisted {
+            size: 8 * CLUSTER,
+            apparent: 0,
+            count: 1
+        }),
+        "$MFT by its clusters, at once"
+    );
+    assert_eq!(
+        early.get(&root().join("docs")),
+        Some(&Unlisted {
+            size: 0,
+            apparent: 10,
+            count: 1
+        }),
+        "a.txt, resident"
+    );
+    assert!(running.is_empty(), "everything so far was placed");
+
+    running.take(Charges::of(second, CLUSTER));
+    let late = running.flush();
+    assert!(running.is_empty(), "the whole table is read: nothing waits");
+    let mut sums = early;
+    for (path, sum) in totals_by_path(&late) {
+        let slot = sums.entry(path).or_default();
+        slot.size += sum.size;
+        slot.apparent += sum.apparent;
+        slot.count += sum.count;
+    }
+    let listing = listing_sums(&walk(None));
+    assert_eq!(sums, listing);
+    assert_eq!(
+        listing.get(&root().join("docs")),
+        Some(&Unlisted {
+            size: 4 * CLUSTER,
+            apparent: 9110,
+            count: 3
+        }),
+        "a.txt, big.bin from its extension record, also.txt"
+    );
+}
+
+/// A directory's total waits until its own record is read, since its name and place are in it,
+/// while the root's goes on; once read, the total comes in full.
+#[test]
+fn a_total_waits_for_its_directory_record() {
+    let table = volume();
+    let (first, second) = table.split_at(66);
+    let mut so_far: Vec<Option<Parsed>> = (0..66).map(|_| None).collect();
+    so_far.extend(second.iter().cloned());
+
+    let mut running = running(None, false);
+    running.take(Charges::of(second, CLUSTER));
+    let early = totals_by_path(&running.flush());
+    assert!(
+        early.contains_key(&root()),
+        "the root needs no record: {early:?}"
+    );
+    assert!(
+        !early.contains_key(&root().join("docs")),
+        "docs's record is not read yet"
+    );
+    assert!(!running.is_empty(), "docs's total waits");
+
+    running.take(Charges::of(first, CLUSTER));
+    let late = totals_by_path(&running.flush());
+    assert_eq!(
+        late.get(&root().join("docs")),
+        Some(&Unlisted {
+            size: 4 * CLUSTER,
+            apparent: 9110,
+            count: 3
+        })
+    );
+    assert!(running.is_empty());
+}
+
+/// Where the listing would not go, nothing is charged: a folder past `--max-depth`, and a
+/// share's snapshot folder left out by name unless `--snapshots`.
+#[test]
+fn what_the_listing_leaves_out_is_not_totalled() {
+    let root_ref = u64::from(ROOT_RECORD);
+    let mut table = volume();
+    table[72] = parse_file_record(&record(72, 1, 2, 0, &[file_name(root_ref, 3, "#snapshot")]));
+    table[73] = parse_file_record(&record(
+        73,
+        1,
+        0,
+        0,
+        &[file_name(72, 1, "s.bin"), data_resident(5)],
+    ));
+
+    let mut shallow = running(Some(1), false);
+    shallow.take(Charges::of(&table, CLUSTER));
+    let totals = totals_by_path(&shallow.flush());
+    assert!(totals.contains_key(&root()));
+    assert!(
+        !totals.contains_key(&root().join("docs")),
+        "--max-depth 1 lists the root's entries alone"
+    );
+    assert!(shallow.is_empty(), "dropped, not waiting");
+
+    let mut left_out = running(None, false);
+    left_out.take(Charges::of(&table, CLUSTER));
+    let totals = totals_by_path(&left_out.flush());
+    assert!(totals.contains_key(&root().join("docs")));
+    assert!(
+        !totals.contains_key(&root().join("#snapshot")),
+        "a snapshot folder is left out by name"
+    );
+
+    let mut walked = running(None, true);
+    walked.take(Charges::of(&table, CLUSTER));
+    let totals = totals_by_path(&walked.flush());
+    assert_eq!(
+        totals.get(&root().join("#snapshot")),
+        Some(&Unlisted {
+            size: 0,
+            apparent: 5,
+            count: 1
+        }),
+        "--snapshots walks it"
+    );
+}
+
+/// A directory's place seeded from the kernel's listing — its record and path — lets its total
+/// go to the view before its own record is read from the table.
+#[test]
+fn a_seeded_directory_needs_no_record_of_its_own() {
+    let table = volume();
+    let (first, second) = table.split_at(66);
+    let mut so_far: Vec<Option<Parsed>> = (0..66).map(|_| None).collect();
+    so_far.extend(second.iter().cloned());
+
+    let mut running = running(None, false);
+    running.seed(64, Some((Arc::from(root().join("docs").as_path()), 1)));
+    running.take(Charges::of(second, CLUSTER));
+    let early = totals_by_path(&running.flush());
+    assert_eq!(
+        early.get(&root().join("docs")),
+        Some(&Unlisted {
+            size: 4 * CLUSTER,
+            apparent: 9100,
+            count: 2
+        }),
+        "big.bin and also.txt, from the second chunk: docs's record is not read, but its place is known"
+    );
+    assert!(running.is_empty());
+
+    running.take(Charges::of(first, CLUSTER));
+    let late = totals_by_path(&running.flush());
+    assert_eq!(
+        late.get(&root().join("docs")),
+        Some(&Unlisted {
+            size: 0,
+            apparent: 10,
+            count: 1
+        }),
+        "a.txt alone, from the first chunk"
+    );
 }

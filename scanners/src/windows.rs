@@ -244,6 +244,10 @@ mod links {
     }
 }
 
+/// A directory listed in bulk — each entry's name, file reference and whether it is a
+/// directory — for the table reader's seeding of its directories' places (`mft::volume`).
+pub(crate) use metafiles::list as list_entries;
+
 /// NTFS's metadata files, sized from their MFT records (see [`crate::ntfs`]).
 ///
 /// Reading a record takes the volume opened for reading, which only an administrator may do, so
@@ -377,7 +381,7 @@ mod metafiles {
     }
 
     /// A directory's entries as names, file references and whether each is a directory.
-    fn list(path: &Path) -> Vec<(OsString, u64, bool)> {
+    pub(crate) fn list(path: &Path) -> Vec<(OsString, u64, bool)> {
         let mut found = Vec::new();
         let Some(handle) = Handle::open(path, ffi::FILE_LIST_DIRECTORY, true) else {
             return found;

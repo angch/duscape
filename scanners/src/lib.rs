@@ -65,7 +65,7 @@ pub mod parallel {
     use ::std::thread;
     use ::std::time::{Duration, Instant};
 
-    use super::{DirEntries, ScanOptions, scan_directories};
+    use super::{Audience, DirEntries, ScanOptions, scan_directories};
     use libduscape::model::{FileTree, Folder};
     use libduscape::scan::Focus;
 
@@ -187,6 +187,11 @@ pub mod parallel {
             if !progress(&directory) {
                 stopped = true;
                 break;
+            }
+            // A running total is the live view's alone (`progress` has had it); the listing
+            // for the tree comes later.
+            if matches!(directory.audience, Audience::View { .. }) {
+                continue;
             }
             from_saved_scan |= owes_catch_up(&directory);
             failed += directory.failed;
@@ -383,21 +388,24 @@ pub fn scan_directories(
     #[cfg(windows)]
     {
         // From the volume's master file table where the process may open the volume
-        // (elevated, NTFS) and asks for it, else through the filesystem. The table is read
-        // whole before anything is handed on, so the focus has nothing to steer there.
+        // (elevated, NTFS) and asks for it, else through the filesystem. The table's listing
+        // comes once it is read whole, so the focus has nothing to steer there; the running
+        // totals it hands the view meanwhile come in the table's order.
+        let threads = thread_count(options);
         let device = if options.read_device {
-            mft::walk_mft(root, thread_count(options), options)
+            mft::walk_mft(root, threads, options)
         } else {
             None
         };
         match device {
-            Some(walk) => WindowsScan::Table(walk),
-            None => WindowsScan::Kernel(windows::walk_windows(
-                root,
-                thread_count(options),
+            Some(walk) => WindowsScan::Table {
+                walk,
+                root: root.to_path_buf(),
+                threads,
                 options,
                 focus,
-            )),
+            },
+            None => WindowsScan::Kernel(windows::walk_windows(root, threads, options, focus)),
         }
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
@@ -590,20 +598,52 @@ impl Iterator for MacosScan<'_> {
     }
 }
 
-/// The Windows walk: from the volume's table, or through the filesystem.
+/// The Windows walk: from the volume's table, or through the filesystem. The table's walk is
+/// read on a thread of its own and can fail part way (an I/O error reading the table), having
+/// handed the view running totals but the tree nothing: then the kernel walk takes over from
+/// the start, as it would have had the table declined up front. What the view has by then is
+/// counted again as the walk lists it, until the finished tree takes the view's place.
 #[cfg(windows)]
-enum WindowsScan {
-    Table(mft::MftWalk),
+enum WindowsScan<'a> {
+    Table {
+        walk: mft::MftWalk,
+        root: ::std::path::PathBuf,
+        threads: usize,
+        options: ScanOptions,
+        focus: &'a Focus,
+    },
     Kernel(windows::WindowsWalk),
 }
 
 #[cfg(windows)]
-impl Iterator for WindowsScan {
+impl Iterator for WindowsScan<'_> {
     type Item = DirEntries;
     fn next(&mut self) -> Option<DirEntries> {
-        match self {
-            WindowsScan::Table(walk) => walk.next(),
-            WindowsScan::Kernel(walk) => walk.next(),
+        loop {
+            match self {
+                WindowsScan::Table { walk, .. } => match walk.next() {
+                    Some(Ok(directory)) => return Some(directory),
+                    None => return None,
+                    Some(Err(error)) => {
+                        eprintln!(
+                            "duscape: reading the volume's table failed, walking instead: {error}"
+                        );
+                        let WindowsScan::Table {
+                            root,
+                            threads,
+                            options,
+                            focus,
+                            ..
+                        } = self
+                        else {
+                            unreachable!("matched above");
+                        };
+                        let walk = windows::walk_windows(root.as_path(), *threads, *options, focus);
+                        *self = WindowsScan::Kernel(walk);
+                    }
+                },
+                WindowsScan::Kernel(walk) => return walk.next(),
+            }
         }
     }
 }
@@ -983,6 +1023,10 @@ pub fn scan_into_tree(root: impl AsRef<Path>, options: ScanOptions) -> (FileTree
     let mut failed_to_read = 0u64;
 
     for directory in scan_directories(&root_path, options, &Focus::default()) {
+        // A running total is for a live view, which this has none of.
+        if matches!(directory.audience, Audience::View { .. }) {
+            continue;
+        }
         failed_to_read += directory.failed;
         tree.add_dir_entries(directory);
     }

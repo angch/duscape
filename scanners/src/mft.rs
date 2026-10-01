@@ -15,6 +15,14 @@
 //! through the ledger. NTFS's own files at the root and under `$Extend` are sized as
 //! [`crate::ntfs`] sizes them, by the clusters their runs occupy.
 //!
+//! Nothing can be listed until the table is read whole — a directory's files are scattered
+//! through it — which on a system volume is a second or two with nothing on screen. So while it
+//! is read the live view gets *running totals* (`Running`, on a thread of its own): each
+//! directory's files so far, every quarter second, as a [`DirEntries`] for the view alone
+//! (`Audience::View`), at the place its records give — the top levels' places seeded through
+//! the kernel, since the records are in no tree order. The listing that follows is the tree's
+//! alone (`Audience::Tree`). `docs/scan-performance.md`, "First paint", has the measurements.
+//!
 //! The MFT on disk lags the filesystem's memory by however long NTFS holds its metadata before
 //! writing it: the last seconds of writes are not in it yet. A rescan (`r`) goes through the
 //! kernel, so what is looked at closely is current. A volume that will not open — unelevated,
@@ -27,7 +35,9 @@ use ::std::ffi::OsString;
 use ::std::path::Path;
 use ::std::sync::Arc;
 
-use super::{DirEntries, EntryMeta};
+use libduscape::model::files::hash::FastMap;
+
+use super::{Audience, DirEntries, EntryMeta, Unlisted};
 use crate::ntfs::{self, Run, u16_at, u32_at, u64_at};
 
 const FILE_NAME: u32 = 0x30;
@@ -65,7 +75,7 @@ pub struct Name {
 }
 
 /// What one in-use file record says, before its extension records are merged in.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Parsed {
     pub number: u32,
     pub sequence: u16,
@@ -267,6 +277,28 @@ fn os_name(name: &[u16]) -> OsString {
     }
 }
 
+/// Which of record `number`'s `names` are entries: one per name, except a DOS name beside a
+/// Win32 one in the same directory — that is one entry under its short name. Two Win32 names in
+/// one directory are two hard links, and both are listed, as the kernel lists them. The root's
+/// own `.` is nobody's entry.
+fn kept_names(number: u32, names: &[Name]) -> impl Iterator<Item = &Name> {
+    names.iter().filter(move |name| {
+        if name.parent == number && number == ROOT_RECORD {
+            return false;
+        }
+        name.namespace != NAMESPACE_DOS
+            || !names
+                .iter()
+                .any(|other| other.parent == name.parent && other.namespace != NAMESPACE_DOS)
+    })
+}
+
+/// Whether an entry named in `parent` by record `number` is one of NTFS's own files, sized by
+/// its clusters: the root's first records, and `$Extend`'s.
+fn is_system_file(number: u32, parent: u32) -> bool {
+    (parent == ROOT_RECORD && number <= LAST_SYSTEM_RECORD) || parent == EXTEND_RECORD
+}
+
 /// The identity the kernel walk gives a file: its reference, folded with the volume's serial as
 /// `windows::read_directory` folds a listing's id, so a rescan through the kernel grafts into a
 /// table's tree with the same ids.
@@ -300,23 +332,7 @@ impl Catalog {
         }
         let mut children: Vec<Vec<Entry>> = (0..count).map(|_| Vec::new()).collect();
         for parsed in records.into_iter().flatten() {
-            // One entry per name, except a DOS name beside a Win32 one in the same directory:
-            // that is one entry under its short name. Two Win32 names in one directory are two
-            // hard links, and both are listed, as the kernel lists them. The root's own `.` is
-            // nobody's entry.
-            let kept: Vec<&Name> = parsed
-                .names
-                .iter()
-                .filter(|name| {
-                    if name.parent == parsed.number && parsed.number == ROOT_RECORD {
-                        return false;
-                    }
-                    name.namespace != NAMESPACE_DOS
-                        || !parsed.names.iter().any(|other| {
-                            other.parent == name.parent && other.namespace != NAMESPACE_DOS
-                        })
-                })
-                .collect();
+            let kept: Vec<&Name> = kept_names(parsed.number, &parsed.names).collect();
             if kept.is_empty() {
                 continue;
             }
@@ -385,6 +401,9 @@ impl Catalog {
             let name_bytes = entries.iter().map(|e| e.name.len()).sum();
             let mut directory =
                 DirEntries::with_capacity(Arc::clone(&pending.path), entries.len(), name_bytes);
+            // The live view has had this directory as running totals while the table was
+            // read (`Running`); the listing is the tree's alone.
+            directory.audience = Audience::Tree;
             // As the kernel walkers count it (`job.depth + 1 < max`): `--max-depth 1` is the
             // root's entries alone.
             let descend = max_depth.is_none_or(|max| pending.depth + 1 < max);
@@ -428,6 +447,332 @@ impl Catalog {
     }
 }
 
+/// What one chunk of records, as parsed, adds toward the live view: each file's sizes under the
+/// directory record its name is in; the directories among them, by record, with the name and
+/// parent the view resolves places by; and the names an extension record carries for a base
+/// record elsewhere in the table, to be charged with that record's data once both are read.
+/// Made on the parser's thread ([`Charges::of`]), so the thread reading the table only hands
+/// them on, and the view's own thread takes them in ([`Running::take`]).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Charges {
+    /// Directory record → what its files in this chunk add.
+    pub files: Vec<(u32, Unlisted)>,
+    /// The directories in this chunk, by record.
+    pub dirs: Vec<(u32, DirRecord)>,
+    /// Base record → the names an extension record of it carries.
+    pub spilled: Vec<(u32, Vec<Name>)>,
+    /// Base records with data and no name of their own — their names are in an extension
+    /// record — kept whole for when those names come.
+    pub nameless: Vec<Parsed>,
+}
+
+/// A directory's record as the view needs it: its name, and the directory it is in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirRecord {
+    pub parent: u32,
+    pub name: Box<[u16]>,
+}
+
+impl Charges {
+    /// The charges `chunk` makes. A directory charges nothing but is noted, with its Win32 name
+    /// and parent (a junction is not: nothing is under it); a file is charged to each directory
+    /// it is named in, hard links counted in full as the outline counts them; NTFS's own files
+    /// by their clusters as the listing sizes them.
+    #[must_use]
+    pub fn of(chunk: &[Option<Parsed>], cluster_bytes: u64) -> Charges {
+        let mut files: FastMap<u32, Unlisted> = FastMap::default();
+        let mut dirs = Vec::new();
+        let mut spilled = Vec::new();
+        let mut nameless = Vec::new();
+        for parsed in chunk.iter().flatten() {
+            if parsed.base.is_some_and(|base| base != parsed.number) {
+                if let Some(base) = parsed.base
+                    && !parsed.names.is_empty()
+                {
+                    spilled.push((base, parsed.names.clone()));
+                }
+                continue;
+            }
+            if parsed.is_dir && !parsed.link {
+                if let Some(named) = win32_name(&parsed.names) {
+                    dirs.push((
+                        parsed.number,
+                        DirRecord {
+                            parent: named.parent,
+                            name: named.name.clone(),
+                        },
+                    ));
+                }
+                continue;
+            }
+            if parsed.names.is_empty() {
+                if parsed.data.is_some() {
+                    nameless.push(parsed.clone());
+                }
+                continue;
+            }
+            for name in kept_names(parsed.number, &parsed.names) {
+                let (size, apparent) = sizes_of(parsed, name.parent, cluster_bytes);
+                let slot = files.entry(name.parent).or_default();
+                slot.size = slot.size.saturating_add(size);
+                slot.apparent = slot.apparent.saturating_add(apparent);
+                slot.count += 1;
+            }
+        }
+        Charges {
+            files: files.into_iter().collect(),
+            dirs,
+            spilled,
+            nameless,
+        }
+    }
+}
+
+/// The Win32 name among `names`, or the one name there is: a directory has one, in one parent.
+fn win32_name(names: &[Name]) -> Option<&Name> {
+    names
+        .iter()
+        .find(|name| name.namespace != NAMESPACE_DOS)
+        .or(names.first())
+}
+
+/// A file's sizes as the listing will give them for its name in `parent`.
+fn sizes_of(parsed: &Parsed, parent: u32, cluster_bytes: u64) -> (u64, u64) {
+    if is_system_file(parsed.number, parent) {
+        (parsed.clusters.saturating_mul(cluster_bytes), 0)
+    } else {
+        parsed.data.unwrap_or((0, 0))
+    }
+}
+
+/// How the view resolves a directory record to its place in the scan.
+enum Place {
+    /// Its path.
+    At(Arc<Path>),
+    /// An ancestor's record is not read yet: later.
+    Unknown,
+    /// The listing will not have it — past `--max-depth`, under a folder left out by name, or
+    /// under a link — so the view is not to either.
+    Excluded,
+}
+
+/// The live view's share of the table as it is read: every file's sizes charged to its
+/// directory's record as its chunk is parsed, and every so often ([`Running::flush`]) each
+/// directory's total since last time handed on as one [`DirEntries`] for the view alone
+/// (`Audience::View`, the sizes as its `unlisted`), at the path its ancestors' records give —
+/// a directory whose ancestors are not all read yet waits for a later flush.
+///
+/// The records come in table order, a directory's files scattered through the whole of it, so
+/// nothing can be *listed* until the table is read whole: a second or two on a system volume
+/// with nothing on screen. The totals run up from the first chunk, so the treemap is up at
+/// once and its tiles grow as the table is read — the view the kernel walk gives, by other
+/// means. The records are in no tree order either (on an upgraded Windows `C:\Windows` itself
+/// is a late record), so the top levels' places are *seeded* through the kernel's listing
+/// ([`Running::seed`]) rather than waited for.
+///
+/// Where the listing would stop — `--max-depth`, a snapshot folder left out by name, a link —
+/// nothing is charged, so the totals are what the listing will add up to, hard links counted in
+/// full as the outline counts them. A file whose names are in an extension record is charged
+/// when that record and its base are both read. What never resolves (an orphaned record, a
+/// chain through a junction) is dropped with the view; the finished tree takes its place anyway.
+pub struct Running {
+    root: Arc<Path>,
+    root_record: u32,
+    max_depth: Option<usize>,
+    snapshots: bool,
+    cluster_bytes: u64,
+    /// Directory record → its name and parent, from the chunks read so far.
+    dirs: FastMap<u32, DirRecord>,
+    /// Base records with data and no names, by record, for the names an extension brings.
+    nameless: FastMap<u32, Parsed>,
+    /// Directory record → what its files have added since it was last handed on.
+    pending: FastMap<u32, Unlisted>,
+    /// Names from extension records, waiting for their base record to be read.
+    spilled: Vec<(u32, Vec<Name>)>,
+    /// Each directory record's place once resolved — its path and depth, or `None` where the
+    /// listing will not go — so a directory charged in every chunk is resolved once, not once
+    /// a flush: resolved every time, eight flushes of a 2.46M-record table cost 1.65 s (the
+    /// chain of records to the root, a name made of each step).
+    places: FastMap<u32, Option<(Arc<Path>, usize)>>,
+}
+
+impl Running {
+    #[must_use]
+    pub fn new(
+        root: Arc<Path>,
+        root_record: u32,
+        max_depth: Option<usize>,
+        snapshots: bool,
+        cluster_bytes: u64,
+    ) -> Self {
+        Self {
+            root,
+            root_record,
+            max_depth,
+            snapshots,
+            cluster_bytes,
+            dirs: FastMap::default(),
+            nameless: FastMap::default(),
+            pending: FastMap::default(),
+            spilled: Vec::new(),
+            places: FastMap::default(),
+        }
+    }
+
+    /// Take one chunk's charges in.
+    pub fn take(&mut self, charges: Charges) {
+        for (directory, unlisted) in charges.files {
+            self.charge(directory, unlisted);
+        }
+        for (record, dir) in charges.dirs {
+            self.dirs.insert(record, dir);
+        }
+        for parsed in charges.nameless {
+            self.nameless.insert(parsed.number, parsed);
+        }
+        self.spilled.extend(charges.spilled);
+    }
+
+    fn charge(&mut self, directory: u32, unlisted: Unlisted) {
+        let slot = self.pending.entry(directory).or_default();
+        slot.size = slot.size.saturating_add(unlisted.size);
+        slot.apparent = slot.apparent.saturating_add(unlisted.apparent);
+        slot.count += unlisted.count;
+    }
+
+    /// Whether anything waits to be handed on.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty() && self.spilled.is_empty()
+    }
+
+    /// How many directories' totals wait for an ancestor's record: for the profile.
+    #[must_use]
+    pub fn waiting(&self) -> usize {
+        self.pending.len()
+    }
+
+    /// A directory's place known from elsewhere — the kernel's listing of its parent, which
+    /// says its record — before its record is read from the table: `Some` its path and depth,
+    /// `None` a folder the listing will not enter. Records are in no tree order: on an
+    /// upgraded Windows `C:\Windows` itself is a late record (a feature update makes it anew),
+    /// and every chain through it waited for that one chunk — four flushes of 2.46M records
+    /// resolved 5, 185, 11 and 11 directories, then 139k at once.
+    pub fn seed(&mut self, record: u32, place: Option<(Arc<Path>, usize)>) {
+        self.places.entry(record).or_insert(place);
+    }
+
+    /// Hand on every directory's total since the last flush whose place is known. What is not
+    /// known yet stays for the next flush; what the listing will not have is dropped.
+    pub fn flush(&mut self) -> Vec<DirEntries> {
+        // Names an extension record carried, now that their base record may be read.
+        let spilled = ::std::mem::take(&mut self.spilled);
+        for (base, names) in spilled {
+            let Some(record) = self.nameless.get(&base) else {
+                self.spilled.push((base, names));
+                continue;
+            };
+            let charges: Vec<(u32, Unlisted)> = kept_names(base, &names)
+                .map(|name| {
+                    let (size, apparent) = sizes_of(record, name.parent, self.cluster_bytes);
+                    (
+                        name.parent,
+                        Unlisted {
+                            size,
+                            apparent,
+                            count: 1,
+                        },
+                    )
+                })
+                .collect();
+            for (directory, unlisted) in charges {
+                self.charge(directory, unlisted);
+            }
+        }
+        let mut out = Vec::new();
+        let pending = ::std::mem::take(&mut self.pending);
+        for (directory, unlisted) in pending {
+            match self.place(directory) {
+                Place::At(path) => {
+                    let mut total = DirEntries::new(path);
+                    total.unlisted = unlisted;
+                    total.audience = Audience::View { last: false };
+                    out.push(total);
+                }
+                Place::Unknown => {
+                    self.pending.insert(directory, unlisted);
+                }
+                Place::Excluded => {}
+            }
+        }
+        out
+    }
+
+    /// Where directory record `directory` is, from its and its ancestors' records: as the
+    /// listing walks down, left out where it would not go. Resolved once and kept (`places`),
+    /// each ancestor on the way too; a chain cut short by a record not read yet keeps nothing,
+    /// and is walked again at the next flush from where its known part ends.
+    fn place(&mut self, directory: u32) -> Place {
+        // Deeper than any real tree: a parent reference that loops.
+        const MOST_STEPS: usize = 1024;
+        if let Some(known) = self.places.get(&directory) {
+            return match known {
+                Some((path, depth)) => self.within_depth(Arc::clone(path), *depth),
+                None => Place::Excluded,
+            };
+        }
+        // Up from the directory to the first record whose place is known — the root's is —
+        // collecting the records on the way with their names.
+        let mut chain: Vec<(u32, OsString)> = Vec::new();
+        let mut at = directory;
+        let base: Option<(Arc<Path>, usize)> = loop {
+            if at == self.root_record {
+                break Some((Arc::clone(&self.root), 0));
+            }
+            if let Some(known) = self.places.get(&at) {
+                break known.clone();
+            }
+            let Some(record) = self.dirs.get(&at) else {
+                return Place::Unknown;
+            };
+            if chain.len() > MOST_STEPS {
+                break None;
+            }
+            let name = os_name(&record.name);
+            if libduscape::nas::left_out(&name, self.snapshots).is_some() {
+                break None;
+            }
+            chain.push((at, name));
+            at = record.parent;
+        };
+        let Some((mut path, mut depth)) = base else {
+            // Under a folder left out, or a loop: nothing under it is the listing's.
+            for (record, _) in chain {
+                self.places.insert(record, None);
+            }
+            return Place::Excluded;
+        };
+        // Down the chain, each step's path made once from its parent's.
+        for (record, name) in chain.into_iter().rev() {
+            path = Arc::from(path.join(name).as_path());
+            depth += 1;
+            self.places.insert(record, Some((Arc::clone(&path), depth)));
+        }
+        self.within_depth(path, depth)
+    }
+
+    /// A resolved directory's place, unless it is past `--max-depth`: as the listing counts it,
+    /// `--max-depth 1` is the root's entries alone, so a folder `max` deep is listed but not
+    /// entered, and its files are nobody's.
+    fn within_depth(&self, path: Arc<Path>, depth: usize) -> Place {
+        if self.max_depth.is_some_and(|max| depth >= max) {
+            Place::Excluded
+        } else {
+            Place::At(path)
+        }
+    }
+}
+
 #[cfg(windows)]
 pub use volume::{MftWalk, walk_mft, would_read_device};
 
@@ -439,11 +784,14 @@ mod volume {
     use ::std::os::windows::io::AsRawHandle;
     use ::std::path::{Component, Path, PathBuf, Prefix};
     use ::std::sync::Arc;
-    use ::std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+    use ::std::sync::atomic::{AtomicBool, Ordering};
+    use ::std::sync::mpsc::{Receiver, sync_channel};
     use ::std::thread::JoinHandle;
-    use ::std::time::Instant;
+    use ::std::time::{Duration, Instant};
 
-    use super::{Catalog, Parsed, data_runs, parse_file_record_in_place};
+    use super::{
+        Audience, Catalog, Charges, Parsed, Running, data_runs, parse_file_record_in_place,
+    };
     use crate::ntfs::{self, Run};
     use crate::{DirEntries, ScanOptions};
 
@@ -514,8 +862,12 @@ mod volume {
 
     /// An NTFS volume open for reading, and where its table is.
     struct Volume {
+        /// Open for reading and, elevated, writing — one handle for the probe, the flush and
+        /// the read: a volume handle's first I/O costs 0.4–0.8 s (see `entries_per_directory`),
+        /// and a handle each paid it three times over.
         file: File,
-        device: String,
+        /// Whether `file` may be flushed: opened for writing.
+        writable: bool,
         /// Whether NTFS was asked to write its metadata out first, so the table is current.
         flushed: bool,
         cluster_bytes: u64,
@@ -536,7 +888,16 @@ mod volume {
                 _ => return None,
             };
             let device = format!(r"\\.\{letter}:");
-            let file = File::open(&device).ok()?;
+            // For writing too where allowed, so the flush needs no handle of its own; nothing
+            // is ever written through it.
+            let (file, writable) = match ::std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&device)
+            {
+                Ok(file) => (file, true),
+                Err(_) => (File::open(&device).ok()?, false),
+            };
             // `NTFS_VOLUME_DATA_BUFFER`: total clusters at 16, bytes per cluster at 44, bytes
             // per file record at 48, the table's valid data length at 56.
             // ReFS and FAT refuse the call.
@@ -552,7 +913,7 @@ mod volume {
                 && valid_bytes > 0)
                 .then_some(Volume {
                     file,
-                    device,
+                    writable,
                     flushed: false,
                     cluster_bytes,
                     record_bytes,
@@ -567,16 +928,12 @@ mod volume {
         /// administrator may have; nothing is written by this process. Only once the table is
         /// going to be read: a flush of a large volume can take longer than a walk of a small
         /// tree, so the gate's probe must not pay it.
-        fn flush(&mut self) {
-            let Ok(writable) = ::std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(&self.device)
-            else {
-                return;
-            };
+        fn flush(&self) -> bool {
+            if !self.writable {
+                return false;
+            }
             // SAFETY: the handle is open; the call has no other preconditions.
-            self.flushed = unsafe { FlushFileBuffers(writable.as_raw_handle()) } != 0;
+            unsafe { FlushFileBuffers(self.file.as_raw_handle()) != 0 }
         }
 
         /// A record as the filesystem returns it — the table's own, before its runs are known.
@@ -639,42 +996,44 @@ mod volume {
         }
 
         /// Entries a directory holds on this volume, on average — files over directories among
-        /// the base records in a slice from the middle of the table's first run. What decides
-        /// between the table and the walk: see [`chosen`].
-        fn entries_per_directory(&self, runs: &[(u64, u64)]) -> Option<f64> {
-            const SAMPLE: u64 = 8 << 20;
-            let record_bytes = self.record_bytes as u64;
-            let &(offset, length) = runs.first()?;
-            let sample = SAMPLE.min(length).min(self.valid_bytes) / record_bytes * record_bytes;
-            let start = offset + (length - sample) / 2 / record_bytes * record_bytes;
-            let mut buffer = vec![0u8; usize::try_from(sample).ok()?];
-            let mut got = 0usize;
-            while got < buffer.len() {
-                let read = self
-                    .file
-                    .seek_read(&mut buffer[got..], start + got as u64)
-                    .ok()?;
-                if read == 0 {
-                    break;
-                }
-                got += read;
+        /// the base records in a sample of `SAMPLE_RECORDS` spread evenly over the table. What
+        /// decides between the table and the walk: see [`chosen`].
+        ///
+        /// Fetched one by one with `FSCTL_GET_NTFS_FILE_RECORD`, not read from the volume: a
+        /// volume handle's *first read* costs 0.4–0.8 s whatever its size (4 KiB: 390–811 ms;
+        /// the same handle's next 8 MiB: 5.6 ms; a fresh unbuffered handle: 390 ms again —
+        /// 2026-10-01, `docs/scan-performance.md`), and the probe runs before anything is on
+        /// screen, so an 8 MiB slice read here was 0.4 s of the first paint. The ioctl shows no
+        /// such cost (the table's runs come through it in 0.1 ms), and the first read is paid
+        /// once, by the table's first chunk, after the window is up.
+        fn entries_per_directory(&self) -> Option<f64> {
+            const SAMPLE_RECORDS: u64 = 1024;
+            let count = self.valid_bytes / self.record_bytes as u64;
+            if count == 0 {
+                return None;
             }
+            let stride = (count / SAMPLE_RECORDS).max(1);
             let (mut files, mut directories) = (0u64, 0u64);
-            for record in buffer[..got].chunks_exact(self.record_bytes) {
-                // The flags and the base reference are in the first sector, clear of the fixups.
-                if &record[0..4] != b"FILE" {
-                    continue;
+            let mut number = stride / 2;
+            while number < count {
+                // A record not in use comes back as the in-use one below it, which
+                // `fetch_record` declines; the flags and the base reference are in the first
+                // sector, clear of the fixups.
+                if let Some(record) = self.fetch_record(number)
+                    && record.len() >= 0x28
+                    && &record[0..4] == b"FILE"
+                {
+                    let flags = u16::from_le_bytes([record[0x16], record[0x17]]);
+                    let base = u64_le(&record, 0x20);
+                    if flags & 0x0001 != 0 && ntfs::record_number(base) == 0 {
+                        if flags & 0x0002 != 0 {
+                            directories += 1;
+                        } else {
+                            files += 1;
+                        }
+                    }
                 }
-                let flags = u16::from_le_bytes([record[0x16], record[0x17]]);
-                let base = u64_le(record, 0x20);
-                if flags & 0x0001 == 0 || ntfs::record_number(base) != 0 {
-                    continue;
-                }
-                if flags & 0x0002 != 0 {
-                    directories += 1;
-                } else {
-                    files += 1;
-                }
+                number += stride;
             }
             (files + directories > 0).then(|| files as f64 / directories.max(1) as f64)
         }
@@ -743,14 +1102,27 @@ mod volume {
         if !is_volume_root {
             return Err("not a volume root".to_string());
         }
+        let began = Instant::now();
         let volume = Volume::open(root)
             .ok_or_else(|| "the volume does not open (not NTFS, or not elevated)".to_string())?;
+        let opened = began.elapsed();
         let runs = volume
             .table_runs()
             .ok_or_else(|| "the table's runs could not be read".to_string())?;
+        let runs_read = began.elapsed();
         let ratio = volume
-            .entries_per_directory(&runs)
+            .entries_per_directory()
             .ok_or_else(|| "the table could not be sampled".to_string())?;
+        // The probe runs before anything is on screen, so its cost is the first paint's.
+        if libduscape::model::files::profile::enabled() {
+            eprintln!(
+                "  mft: the volume opened in {:.1} ms, its table's {} runs read by {:.1} ms, sampled by {:.1} ms",
+                opened.as_secs_f64() * 1000.0,
+                runs.len(),
+                runs_read.as_secs_f64() * 1000.0,
+                began.elapsed().as_secs_f64() * 1000.0
+            );
+        }
         // Printed under `--benchmark --bench-profile`, with the build profile.
         if libduscape::model::files::profile::enabled() {
             eprintln!(
@@ -798,47 +1170,70 @@ mod volume {
         chosen(&root).map(|_| ())
     }
 
-    /// The walk of an NTFS volume from its table, one [`DirEntries`] per directory.
+    /// What the thread reading the table hands the walk.
+    enum Report {
+        /// Directories: running totals for the view while the table is read, then the listing
+        /// for the tree.
+        Directories(Vec<DirEntries>),
+        /// The read failed part way; the kernel walk is to take over.
+        Failed(String),
+    }
+
+    /// The walk of an NTFS volume from its table, one [`DirEntries`] per directory: the view's
+    /// running totals as the table is read, then the tree's listing. `Err` once, if the read
+    /// failed part way (`Report::Failed`): the caller walks through the kernel instead.
     pub struct MftWalk {
-        batches: Receiver<Vec<DirEntries>>,
+        reports: Receiver<Report>,
         current: ::std::vec::IntoIter<DirEntries>,
-        emitter: Option<JoinHandle<()>>,
+        /// Set to stop the reader between chunks, when the walk is dropped before it ends.
+        stop: Arc<AtomicBool>,
+        reader: Option<JoinHandle<()>>,
     }
 
     impl Iterator for MftWalk {
-        type Item = DirEntries;
-        fn next(&mut self) -> Option<DirEntries> {
+        type Item = Result<DirEntries, String>;
+        fn next(&mut self) -> Option<Result<DirEntries, String>> {
             loop {
                 if let Some(next) = self.current.next() {
-                    return Some(next);
+                    return Some(Ok(next));
                 }
-                self.current = self.batches.recv().ok()?.into_iter();
+                match self.reports.recv().ok()? {
+                    Report::Directories(batch) => self.current = batch.into_iter(),
+                    Report::Failed(error) => return Some(Err(error)),
+                }
             }
         }
     }
 
     impl Drop for MftWalk {
         fn drop(&mut self) {
-            drop(::std::mem::replace(&mut self.batches, sync_channel(1).1));
-            if let Some(emitter) = self.emitter.take() {
-                let _ = emitter.join();
+            self.stop.store(true, Ordering::Release);
+            drop(::std::mem::replace(&mut self.reports, sync_channel(1).1));
+            if let Some(reader) = self.reader.take() {
+                let _ = reader.join();
             }
         }
     }
 
-    /// Read and parse the whole table: every record, by number.
+    /// Read and parse the whole table: every record, by number. `live` sees each chunk's
+    /// charges toward the view as the chunk lands, with the table as read so far; `stop` ends
+    /// the read between chunks.
     fn read_table(
         volume: &Volume,
         runs: Vec<(u64, u64)>,
         threads: usize,
+        stop: &AtomicBool,
+        mut live: impl FnMut(Charges),
     ) -> Result<Vec<Option<Parsed>>, String> {
         let record_bytes = volume.record_bytes;
+        let cluster_bytes = volume.cluster_bytes;
         let count = usize::try_from(volume.valid_bytes / record_bytes as u64)
             .map_err(|_| "too many records".to_string())?;
         let chunk_bytes = CHUNK - CHUNK % record_bytes;
         let mut records: Vec<Option<Parsed>> = (0..count).map(|_| None).collect();
         let (chunks, chunk_inbox) = sync_channel::<(usize, Vec<u8>)>(threads * 2);
-        let (parsed_out, parsed_inbox) = sync_channel::<(usize, Vec<Option<Parsed>>)>(threads * 2);
+        let (parsed_out, parsed_inbox) =
+            sync_channel::<(usize, Vec<Option<Parsed>>, Charges)>(threads * 2);
         let chunk_inbox = ::std::sync::Mutex::new(chunk_inbox);
         ::std::thread::scope(|scope| -> Result<(), String> {
             let workers: Vec<_> = (0..threads)
@@ -854,7 +1249,14 @@ mod volume {
                                 .chunks_exact_mut(record_bytes)
                                 .map(parse_file_record_in_place)
                                 .collect();
-                            if out.send((first, parsed)).is_err() {
+                            // The view's charges here, on the parser's thread, so the reading
+                            // thread only merges them between reads.
+                            let charges = if live_totals_off() {
+                                Charges::default()
+                            } else {
+                                Charges::of(&parsed, cluster_bytes)
+                            };
+                            if out.send((first, parsed, charges)).is_err() {
                                 return;
                             }
                         }
@@ -862,14 +1264,16 @@ mod volume {
                 })
                 .collect();
             drop(parsed_out);
-            let place = |records: &mut Vec<Option<Parsed>>,
-                         (start, parsed): (usize, Vec<Option<Parsed>>)| {
-                for (index, record) in parsed.into_iter().enumerate() {
-                    if let Some(slot) = records.get_mut(start + index) {
-                        *slot = record;
+            let mut place =
+                |records: &mut Vec<Option<Parsed>>,
+                 (start, parsed, charges): (usize, Vec<Option<Parsed>>, Charges)| {
+                    for (index, record) in parsed.into_iter().enumerate() {
+                        if let Some(slot) = records.get_mut(start + index) {
+                            *slot = record;
+                        }
                     }
-                }
-            };
+                    live(charges);
+                };
             // Read on this thread, collecting what the workers hand back between reads so that
             // neither side waits on the other for long.
             let mut read_all = || -> Result<(), String> {
@@ -877,6 +1281,9 @@ mod volume {
                 for &(offset, length) in &runs {
                     let mut at = 0u64;
                     while at < length {
+                        if stop.load(Ordering::Acquire) {
+                            return Err("the scan was stopped".to_string());
+                        }
                         let take = usize::try_from((length - at).min(chunk_bytes as u64))
                             .map_err(|_| "chunk".to_string())?;
                         let mut buffer = vec![0u8; take];
@@ -919,65 +1326,310 @@ mod volume {
         Ok(records)
     }
 
+    /// How often the running totals go to the view while the table is read: the first chunk's
+    /// at once, so the treemap is up as soon as the root's folders are read, then no oftener
+    /// than this — a flush resolves every directory charged since the last by its records, on
+    /// the reading thread, between two reads of the table.
+    const LIVE_EVERY: Duration = Duration::from_millis(250);
+
+    /// How deep the kernel's listing goes for the directories' records (`seed_places`): the
+    /// outline's own depth, below which the view rolls folders up into the one above anyway.
+    /// Breadth first, so the levels the view shows come first; it stops when the table is read.
+    const SEED_DEPTH: usize = 6;
+
+    /// A directory's record and its place, from the kernel's listing of its parent.
+    type Seed = (u32, Option<(Arc<Path>, usize)>);
+
+    /// `DUSCAPE_NO_LIVE_TOTALS`: the table read with no running totals to the view, as it was
+    /// before 2026-10-01 — the baseline their cost is measured against (`--bench-profile`'s
+    /// `mft:` line), never the default.
+    fn live_totals_off() -> bool {
+        static OFF: ::std::sync::OnceLock<bool> = ::std::sync::OnceLock::new();
+        *OFF.get_or_init(|| ::std::env::var_os("DUSCAPE_NO_LIVE_TOTALS").is_some())
+    }
+
+    /// List the tree under `root` through the kernel, a level at a time to `SEED_DEPTH`, and
+    /// send each directory's record with its place (`Running::seed`): the table's records are in
+    /// no tree order, and a chain of them to the root resolves only once every one is read —
+    /// through the kernel the top levels are known in milliseconds, so the totals under them
+    /// resolve from the first chunk. A listing costs a handle a directory (about 12 µs on a
+    /// system volume), the whole tree seconds, so it runs beside the volume's flush and the
+    /// read and ends with them (`done`), having covered the levels that matter most.
+    fn seed_places(
+        root: Arc<Path>,
+        snapshots: bool,
+        stop: &AtomicBool,
+        done: &AtomicBool,
+        seeds: &::std::sync::mpsc::SyncSender<Vec<Seed>>,
+    ) {
+        // Elevated, so every folder lists, as the kernel walk's does.
+        let _ = libduscape::os::enable_backup_privilege();
+        let mut level: Vec<Arc<Path>> = vec![root];
+        let mut depth = 0usize;
+        while !level.is_empty() && depth < SEED_DEPTH {
+            let mut next = Vec::new();
+            for path in level {
+                if stop.load(Ordering::Acquire) || done.load(Ordering::Acquire) {
+                    return;
+                }
+                let mut batch: Vec<Seed> = Vec::new();
+                for (name, reference, is_dir) in crate::windows::list_entries(&path) {
+                    if !is_dir {
+                        continue;
+                    }
+                    let Ok(record) = u32::try_from(ntfs::record_number(reference)) else {
+                        continue;
+                    };
+                    if libduscape::nas::left_out(&name, snapshots).is_some() {
+                        batch.push((record, None));
+                        continue;
+                    }
+                    let child: Arc<Path> = Arc::from(path.join(&name).as_path());
+                    batch.push((record, Some((Arc::clone(&child), depth + 1))));
+                    next.push(child);
+                }
+                if !batch.is_empty() && seeds.send(batch).is_err() {
+                    return;
+                }
+            }
+            level = next;
+            depth += 1;
+        }
+    }
+
+    /// The reading thread's work: the volume flushed, the table read with the view's running
+    /// totals going out as it is, then the listing. What `walk_mft` decided on, and where the
+    /// reports go.
+    struct Reading {
+        volume: Volume,
+        runs: Vec<(u64, u64)>,
+        root: Arc<Path>,
+        root_record: u32,
+        serial: u64,
+        ratio: f64,
+        threads: usize,
+        options: ScanOptions,
+        stop: Arc<AtomicBool>,
+        sender: ::std::sync::mpsc::SyncSender<Report>,
+    }
+
+    /// What the live totals' thread reports at its end: how many flushes, what they took, how
+    /// many places the kernel's listing seeded.
+    type LiveReport = (u32, Duration, usize);
+
+    /// The view's running totals, on a thread of their own (`mft_live`): the chunks' charges
+    /// and the kernel's seeds come in, and every `LIVE_EVERY` each directory's total since last
+    /// time goes out, the last of them marked so the outline sends the batch at once. On the
+    /// reading thread the flushes — resolving 340k places, half a second in all — were a
+    /// quarter of the read (2.65 s against 2.13 s without them); here they cost it nothing.
+    /// Ends when the charges' channel does (the table read, or the scan stopped), with the
+    /// last totals, every place known by then.
+    fn live_totals(
+        mut running: Running,
+        charges: ::std::sync::mpsc::Receiver<Charges>,
+        seeds: ::std::sync::mpsc::Receiver<Vec<Seed>>,
+        sender: ::std::sync::mpsc::SyncSender<Report>,
+        started: Instant,
+    ) -> LiveReport {
+        let mut seeded = 0usize;
+        let mut flushes = 0u32;
+        let mut took = Duration::ZERO;
+        let mut last: Option<Instant> = None;
+        let mut dirty = false;
+        let flush = |running: &mut Running, flushes: &mut u32, took: &mut Duration| -> bool {
+            let began = Instant::now();
+            let mut totals = running.flush();
+            *took += began.elapsed();
+            *flushes += 1;
+            if libduscape::model::files::profile::enabled() {
+                eprintln!(
+                    "  mft: running totals {} at {:.3}s: {} directories to the view, {} waiting for a record, {:.1} ms",
+                    *flushes,
+                    started.elapsed().as_secs_f64(),
+                    totals.len(),
+                    running.waiting(),
+                    began.elapsed().as_secs_f64() * 1000.0
+                );
+            }
+            if let Some(total) = totals.last_mut() {
+                total.audience = Audience::View { last: true };
+            }
+            totals.is_empty() || sender.send(Report::Directories(totals)).is_ok()
+        };
+        loop {
+            let wait = match last {
+                Some(last) if dirty => LIVE_EVERY.saturating_sub(last.elapsed()),
+                _ => Duration::from_millis(50),
+            };
+            match charges.recv_timeout(wait) {
+                Ok(charges) => {
+                    running.take(charges);
+                    dirty = true;
+                }
+                Err(::std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(::std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+            while let Ok(batch) = seeds.try_recv() {
+                seeded += batch.len();
+                for (record, place) in batch {
+                    running.seed(record, place);
+                }
+            }
+            if dirty && last.is_none_or(|last| last.elapsed() >= LIVE_EVERY) {
+                if !flush(&mut running, &mut flushes, &mut took) {
+                    return (flushes, took, seeded);
+                }
+                last = Some(Instant::now());
+                dirty = false;
+            }
+        }
+        // The table is read: every directory's place is known, so the last totals go whole.
+        while let Ok(batch) = seeds.try_recv() {
+            seeded += batch.len();
+            for (record, place) in batch {
+                running.seed(record, place);
+            }
+        }
+        flush(&mut running, &mut flushes, &mut took);
+        (flushes, took, seeded)
+    }
+
+    impl Reading {
+        fn run(mut self) {
+            let started = Instant::now();
+            // The directories' places through the kernel, beside the flush and the read.
+            let (seed_sender, seeds) = ::std::sync::mpsc::sync_channel::<Vec<Seed>>(256);
+            let seeding_done = Arc::new(AtomicBool::new(false));
+            let seeder = {
+                let root = Arc::clone(&self.root);
+                let stop = Arc::clone(&self.stop);
+                let done = Arc::clone(&seeding_done);
+                let snapshots = self.options.snapshots;
+                ::std::thread::Builder::new()
+                    .name("mft_seeder".to_string())
+                    .spawn(move || seed_places(root, snapshots, &stop, &done, &seed_sender))
+            };
+            // The view's running totals, on their thread; the charges' channel is unbounded,
+            // so the read never waits on a flush.
+            let (charges_sender, charges) = ::std::sync::mpsc::channel::<Charges>();
+            let live = if live_totals_off() {
+                drop((charges, seeds));
+                None
+            } else {
+                let running = Running::new(
+                    Arc::clone(&self.root),
+                    self.root_record,
+                    self.options.max_depth,
+                    self.options.snapshots,
+                    self.volume.cluster_bytes,
+                );
+                let sender = self.sender.clone();
+                ::std::thread::Builder::new()
+                    .name("mft_live".to_string())
+                    .spawn(move || live_totals(running, charges, seeds, sender, started))
+                    .ok()
+            };
+            // The flush, then the read, whose first chunk pays the handle's first-read cost
+            // (0.4–0.8 s, see `entries_per_directory`): the two do not overlap — tried side by
+            // side on 2026-10-01, the read of one sector took 0.46–0.74 s and both were done
+            // by 0.84–1.11 s, as one after the other — so the seeding is what runs beside them.
+            let runs = ::std::mem::take(&mut self.runs);
+            self.volume.flushed = self.volume.flush();
+            let flush_took = started.elapsed();
+            let read = read_table(&self.volume, runs, self.threads, &self.stop, |charges| {
+                let _ = charges_sender.send(charges);
+            });
+            // The live thread's cue that the table is read, and the seeder's.
+            drop(charges_sender);
+            seeding_done.store(true, Ordering::Release);
+            let records = match read {
+                Ok(records) => records,
+                Err(_) if self.stop.load(Ordering::Acquire) => return,
+                Err(error) => {
+                    let _ = self.sender.send(Report::Failed(error));
+                    return;
+                }
+            };
+            let read_took = started.elapsed();
+            let catalog = Catalog::assemble(records, self.serial, self.volume.cluster_bytes);
+            let assembled = started.elapsed();
+            // The last totals have gone out meanwhile; the seeder ends with the live thread,
+            // whose seeds' channel it sends into.
+            let (flushes, live_took, seeded) =
+                live.and_then(|live| live.join().ok()).unwrap_or_default();
+            if let Ok(seeder) = seeder {
+                let _ = seeder.join();
+            }
+            if libduscape::model::files::profile::enabled() {
+                eprintln!(
+                    "  mft: {} of table{} in {:.3}s, read and parsed by {:.3}s ({flushes} running totals to the view, {:.3}s of it on their thread; {seeded} places seeded through the kernel), {} directories assembled by {:.3}s; {:.1} entries a directory in the sample",
+                    libduscape::DisplaySize(self.volume.valid_bytes as f64),
+                    if self.volume.flushed {
+                        " flushed"
+                    } else {
+                        " not flushed"
+                    },
+                    flush_took.as_secs_f64(),
+                    read_took.as_secs_f64(),
+                    live_took.as_secs_f64(),
+                    catalog.directories(),
+                    assembled.as_secs_f64(),
+                    self.ratio
+                );
+            }
+            catalog.emit(
+                self.root_record,
+                self.root,
+                self.options.max_depth,
+                self.options.snapshots,
+                |batch| self.sender.send(Report::Directories(batch)).is_ok(),
+            );
+        }
+    }
+
     /// Walk `root` from its volume's table, if the volume is NTFS and opens; `None` means the
-    /// kernel walk should be used instead, and nothing has been read that matters. The table
-    /// is read and parsed before this returns, so that a failure can still fall back.
+    /// kernel walk should be used instead, and nothing has been read that matters. The decision
+    /// is made before this returns; the table is read on a thread of its own (`mft_reader`),
+    /// the view's running totals coming as it goes and the tree's listing once it is read
+    /// whole, so the window shows the root's folders within the first chunk rather than after
+    /// the last. A read that fails part way is reported through the walk (`Err`), and the
+    /// caller walks through the kernel instead.
     pub fn walk_mft(root: &Path, threads: usize, options: ScanOptions) -> Option<MftWalk> {
         root.canonicalize().ok()?;
         let root: PathBuf = libduscape::os::canonical_root(root);
         let Chosen {
-            mut volume,
+            volume,
             record: root_record,
             serial,
             runs,
             ratio,
         } = chosen(&root).ok()?;
-        let started = Instant::now();
-        volume.flush();
-        let threads = threads.clamp(1, 8);
-        let records = match read_table(&volume, runs, threads) {
-            Ok(records) => records,
-            Err(error) => {
-                eprintln!("duscape: reading the volume's table failed, walking instead: {error}");
-                return None;
-            }
-        };
-        let read_took = started.elapsed();
-        let catalog = Catalog::assemble(records, serial, volume.cluster_bytes);
-        if libduscape::model::files::profile::enabled() {
-            eprintln!(
-                "  mft: {} of table{} read and parsed in {:.3}s, {} directories assembled by {:.3}s; {:.1} entries a directory in the sample",
-                libduscape::DisplaySize(volume.valid_bytes as f64),
-                if volume.flushed {
-                    " (flushed)"
-                } else {
-                    " (not flushed)"
-                },
-                read_took.as_secs_f64(),
-                catalog.directories(),
-                started.elapsed().as_secs_f64(),
-                ratio
-            );
-        }
         let root: Arc<Path> = Arc::from(root.as_path());
-        let (sender, batches): (SyncSender<Vec<DirEntries>>, Receiver<Vec<DirEntries>>) =
-            sync_channel(64);
-        let emitter = ::std::thread::Builder::new()
-            .name("mft_emitter".to_string())
-            .spawn(move || {
-                catalog.emit(
-                    root_record,
-                    root,
-                    options.max_depth,
-                    options.snapshots,
-                    |batch| sender.send(batch).is_ok(),
-                );
-            })
+        let threads = threads.clamp(1, 8);
+        let stop = Arc::new(AtomicBool::new(false));
+        let reader_stop = Arc::clone(&stop);
+        let (sender, reports) = sync_channel::<Report>(64);
+        let reading = Reading {
+            volume,
+            runs,
+            root,
+            root_record,
+            serial,
+            ratio,
+            threads,
+            options,
+            stop: reader_stop,
+            sender,
+        };
+        let reader = ::std::thread::Builder::new()
+            .name("mft_reader".to_string())
+            .spawn(move || reading.run())
             .ok()?;
         Some(MftWalk {
-            batches,
+            reports,
             current: Vec::new().into_iter(),
-            emitter: Some(emitter),
+            stop,
+            reader: Some(reader),
         })
     }
 }
