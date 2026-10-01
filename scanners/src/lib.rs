@@ -25,6 +25,8 @@ use libduscape::model::{FileTree, Folder};
 pub use libduscape::scan::*;
 
 #[cfg(target_os = "macos")]
+mod disk_image;
+#[cfg(target_os = "macos")]
 pub mod macos;
 
 #[cfg(target_os = "linux")]

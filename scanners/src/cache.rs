@@ -43,7 +43,12 @@ use flate2::write::GzEncoder;
 use libduscape::scan::{DirEntries, EntryMeta, ScanOptions, Unlisted};
 
 const MAGIC: &[u8; 12] = b"DUSCAPE-SCAN";
-const VERSION: u32 = 2;
+/// Bumped when what a recorded stream means changes, so a file made before is walked afresh
+/// rather than shown: 3 when the macOS walker began keying APFS clones (`shared_extent`) and
+/// leaving a disk image's volume out where the scan counts its image — a version-2 file has
+/// neither, and a catch-up re-lists only the folders that changed, so it would have kept both
+/// overcounts until each folder did.
+const VERSION: u32 = 3;
 /// A record's first byte: a directory, or the footer that ends the stream.
 const DIRECTORY: u8 = 0;
 const FOOTER: u8 = 1;

@@ -3626,6 +3626,59 @@ NORET=1 BUF=8388608 ./searchfs_probe / 20000          # the whole volume, ~2 min
 BACK=1000000 ./fsevents_probe ~ 0                     # the last million events
 ```
 
+## macOS: clones, disk images, and what `/` cannot see (2026-10-01)
+
+The window's "Not seen by the scan" tile at `/` read 51.4 GiB. It was a net figure: the scan was
+counting 41 GiB twice, which hid a part of what it could not see.
+
+| Volume (container disk3) | APFS: in use | `/` found, before | after |
+|---|---|---|---|
+| System | 11.8 GiB | 11.8 | 11.8 |
+| Data | 793.0 | 702.6 (719.2 as root) | 688.2 |
+| Preboot | 8.4 | 27.7 | 14.8 |
+| Recovery (not mounted) | 1.2 | — | — |
+| iOS simulator volume (container disk5, a `.dmg` on Data) | — | 21.6 | 0, noted |
+| `/` in all | 814.6 | 763.5 | 714.3–715.2 |
+
+- **Clones.** `getattrlistbulk` answers `ATTR_CMNEXT_CLONEID` and `ATTR_CMNEXT_EXT_FLAGS` under
+  `FSOPT_ATTR_CMN_EXTENDED` (the comment that said it reported no sharing was wrong for the bulk
+  call). `cp -c` clones share an id and carry `EF_SHARES_ALL_BLOCKS` (0x40) until one is written
+  to, when it gets an id of its own and both lose the flag. An ordinary file's id is its inode.
+  The system's clones on Preboot (`Cryptexes/OS` and `Cryptexes/Incoming/OS`, the cryptex's
+  `os.dmg` and `os.clone.dmg`) carry no flags and share an id that is not their inode; keyed on
+  the id either way. Data lost 14.4 GiB of clones (pnpm's store and every `node_modules` cloned
+  from it, uv's caches, Telegram's copies of downloads, Xcode's app installs), Preboot 12.9.
+- **What clones leave.** Preboot is still 14.8 against 8.4: the unpacked cryptex files share
+  *ranges* of `os.dmg`. A 398 MiB dyld cache's compressed data (its resource fork, through
+  `F_LOG2PHYS_EXT`; the data fork answers `ENOTSUP`, compressed) lies wholly inside the image's
+  7,221 extents. No per-file attribute says so; finding it would be an extent map a file.
+- **Disk images.** The simulator's runtime is mounted from
+  `/System/Library/AssetsV2/…/iOSSimulatorRuntime_Cryptex.dmg`, on Data, which the scan counts as
+  a file; its volume was walked too. IOKit's registry has the image above the volume's device
+  (`DiskImageURL` for the system's, `image-path` for `hdiutil`'s). Left out, `/` walks 728k fewer
+  entries.
+- **What `/` cannot see**, now that nothing hides it (99 GiB unprivileged): purgeable space,
+  40.2 GiB (available for important use less available; Time Machine's four local snapshots are
+  most of it); folders refused, 16.6 GiB of them root's and the rest behind Full Disk Access,
+  which root does not pass (`~/.Trash`, `~/Library/Group Containers`, Spotlight's index); the
+  Recovery volume; APFS's metadata.
+- **Cost**, `--benchmark /`, 6 workers, warm, alternating: the walk 37.3–39.0 s for 10.59M
+  entries (272–284k/s) after, 40.2–42.9 s for 11.32M (264–282k/s) before — the rate unchanged,
+  the scan shorter by the simulator's entries; `sharded` 38.8–39.2 s after (828k clones through
+  the ledger), 41.9–42.7 before. `pipeline` and `sharded` identical on `~/project` (121.1 GiB,
+  147,703 clones). On `~/project` (3.2M entries), hyperfine, 8 runs a side: the walk 9.83 ± 0.20
+  s before, 9.72 ± 0.25 after; `sharded` 9.49 ± 0.15 before and 9.95 ± 0.29 after when the new
+  binary ran second, 9.23 ± 0.11 after and 9.17 ± 0.21 before when it ran first — the second
+  of a pair is the slower, whichever it is, and the CPU time is the same (user 1.29–1.35 s).
+  The ledger's share of it: 0.016 s of builder time (`--bench-profile`). The bench-matrix files
+  `docs/benchmarks/handles-20261001-before-clones.md` and `…-clones.md` were run in that order
+  (before, then after), so their `sharded` rows (9.10, 10.06) carry the same order effect.
+- **The saved scan grows.** A clone is kept one by one in it, as hard-linked files are (summed
+  into its folder's `Unlisted` it would be counted in full again): `~/project`'s file 10 → 14 MB
+  for 147,703 clones, about 27 bytes each; `/`'s 61 MB for 830k, read back whole in 0.90 s
+  (`--bench-stage saved`, 3.1M entries). The file's format is version 3: a version-2 file has
+  no clone keys and the simulator's volume in it, and is walked afresh once.
+
 ## A spinning RAID, twelve minutes in: zelda (2026-09-29)
 
 A look at the other kind of disk, to inform the saved scan on Linux. `zelda`: Ubuntu, kernel

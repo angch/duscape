@@ -160,8 +160,12 @@ out and painting.
   `DirEntries::fail(action, name, error)`, never `failed += 1`, so that `--issues` can say why:
   `Issues` counts every one by kind and by the name of the folder holding it (`folders`: a
   Synology NAS's million `@eaDir` failures in one line; 64 kinds and 64 names at most, the rest as `Issues::OTHER`, so an error
-  that names its path cannot make one kind a failure) and keeps a few examples — 8 a directory,
-  200 a scan — and
+  that names its path cannot make one kind a failure; which 64 names get lines of their own
+  follows arrival, so it varies between runs), by *where* (`scan/places.rs`, `Places`: every
+  failure counted at its path, the deepest paths counted at their parents once there are more
+  than 4096, so the totals stay whole; the report a tree under the paths' common root whose 60
+  lines go to the folders holding most, largest first and not depth first, a folder of one
+  folder sharing its line), and keeps a few examples — 8 a directory, 200 a scan — and
   `FileTree::add_dir_entries`/`merge_from` gather them into `FileTree::issues`), `Outline`/`DirSummary` (the
   depth-capped live view; `following` a `Focus`, exempt under the folder shown), `Found`/`FoundFile`;
   `Focus`/`FocusWatch` — the folder shown, shared with whatever still reads the disk, a move told by
@@ -291,9 +295,25 @@ out and painting.
 - `lib.rs` — `scan_directories()`: per-directory batches, the seam every walker plugs into;
   `parallel::build_tree()`: the app's tree build — shard by path prefix, merge, replay;
   `walk_would_enter`, `thread_count`, `scan_into_tree`, the `dua-core` `fallback`
-- `macos.rs` — macOS walker on `getattrlistbulk(2)` (see `docs/scan-performance.md`). It knows
+- `macos.rs` — macOS walker on `getattrlistbulk(2)` (see `docs/scan-performance.md`). APFS clones
+  go through the ledger as reflinks do: the bulk call also asks `ATTR_CMNEXT_CLONEID` and
+  `ATTR_CMNEXT_EXT_FLAGS` (`FSOPT_ATTR_CMN_EXTENDED`), and a file whose blocks are a clone's —
+  `EF_SHARES_ALL_BLOCKS`, or a clone id that is not its own inode, which is how the system's own
+  clones on Preboot show, with no flags — gets `shared_extent` from the id and the device
+  (`clone_identity`); no cost to the walk's rate, measured. A mount that is a disk image's
+  volume, its image inside the scan, is left empty and noted (`disk_image.rs`). It knows
   nothing of Linux filesystems, by choice: `linux/` and `ext4.rs` are Linux-only, and an ext4 or
   btrfs USB drive on a Mac is walked through its driver like any folder (`docs/features.md`)
+- `disk_image.rs` — macOS: whether a mounted volume is read from a disk image the scan counts as
+  a file (`counted_by_the_scan`): the device's `image-path` (attached by `hdiutil` or the
+  Finder) or `DiskImageURL` (by the system: the iOS simulator's runtime) up IOKit's registry,
+  IOKit and CoreFoundation `dlopen`ed when a mount is first crossed; paths compared with
+  firmlinks undone (`real_path`, `ATTR_CMNEXT_NOFIRMLINKPATH`), so a scan of `/` and of
+  `/System/Volumes/Data` agree. `walk_would_enter` on macOS does not ask it, so a rescan of such
+  a volume walks it (as it walks a share): owed. So is the Linux rule: a loop device's volume
+  from a file inside the scan (`/sys/block/loopN/loop/backing_file`, which `placement.rs` reads
+  already) is walked there and counted twice; it wants `make test-fs`, whose fixtures are loop
+  images
 - `ext4.rs` — as root on ext4, the walk read from the block device: directory blocks and inodes
   swept in device order a generation at a time, every run advised before any is read, parsed and
   batched on several threads; one `DirEntries` per directory like any walker. Declines up front
@@ -375,7 +395,9 @@ out and painting.
   `Cache`): `Recorder`, a tee on whatever walker ran, writing each `DirEntries` *trimmed*
   (folders, hard-linked and shared-extent files, and files of `KEEP_FROM` = 1 MiB and up
   kept one by one; the rest of each folder as one `Unlisted` sum — about one entry in fifty
-  kept, 3–4 bytes an entry deflated, so a terabyte's file is 10–30 MB) as tagged records
+  kept, 3–4 bytes an entry deflated, so a terabyte's file is 10–30 MB; APFS clones are kept
+  one by one too, about 27 bytes each, since summed they would be counted in full again: `/` on
+  a Mac with 830k clones is 61 MB, read back whole in 0.9 s) as tagged records
   naming each directory by its parent's record index, deflated on a thread of its own
   (`scan_recorder`), to `~/Library/Caches/duscape/<key>.scan`, renamed into place only when
   the stream ends; the key and stamp in the clear at the front (`peek`), the counts and
@@ -793,8 +815,9 @@ Exiting { app_loaded: bool }
   `Board::show` pick which is displayed; the ledger charges both kinds to the same ancestors and
   identifies files by the disk size. `ScanOptions::show_apparent_size` only sets the initial view.
 - **Sizes are not additive**: a folder's size counts each distinct *set of blocks* once, so hard
-  links and XFS/btrfs reflinks both make it smaller than the sum of its entries. See
-  `docs/scan-performance.md`.
+  links, XFS/btrfs reflinks and APFS clones all make it smaller than the sum of its entries. See
+  `docs/scan-performance.md` and `docs/sizes.md` (what is still counted twice: a file sharing
+  ranges of another, as Preboot's cryptexes share their image's).
 - **Zoom as filter**: Zoom level controls which nested folders are rendered.
 - **Modal via enum**: `UiMode` variant change = modal open/close; no separate stack.
 - **Config merging**: CLI `--apparent-size` ORs with config file setting.
@@ -1142,7 +1165,8 @@ Regenerated by hand from `wc -l` when this file is touched; `make quality` print
 | `common/src/model/files/file_tree.rs` | ~630 lines — folder tree, hard-link accounting, the build profile |
 | `scanners/src/lib.rs` | ~810 lines — walker selection, parallel build, fallback, `environment` |
 | `scanners/src/linux.rs` | ~720 lines — Linux `getdents64`/`statx` walker, inode order; `linux/` ~1190 more: mounts, filesystems, btrfs, reflinks, block prefetch, the `fstatat` fallback |
-| `scanners/src/macos.rs` | ~920 lines — macOS `getattrlistbulk` walker |
+| `scanners/src/macos.rs` | ~1140 lines — macOS `getattrlistbulk` walker, APFS clones |
+| `scanners/src/disk_image.rs` | ~330 lines — macOS: a mounted disk image's file, through IOKit |
 | `scanners/src/windows.rs` | ~940 lines — Windows bulk-listing walker |
 | `viewers/tui/src/bench/mod.rs` | ~480 lines — `--benchmark` harness |
 | `viewers/dos/DUSCAPE.ASM` | ~4700 lines — the MS-DOS viewer, one instruction a line |
@@ -1154,5 +1178,6 @@ Regenerated by hand from `wc -l` when this file is touched; `make quality` print
 | `scanners/src/fill.rs` | ~170 lines — the fill pass over the folders a saved scan trimmed |
 | `viewers/tui/src/ui/display.rs` | ~360 lines — the frame: what every mode shows, each mode's modal, the nesting's cache |
 | `viewers/tui/src/ui/grid/rectangle_grid.rs` | ~220 lines — the terminal's treemap: tiles, the nesting, corners, highlight frames |
-| `common/src/scan/mod.rs` | ~1250 lines — the scan protocol: options, entries, whom they are for, issues, the outline, the focus |
+| `common/src/scan/mod.rs` | ~1270 lines — the scan protocol: options, entries, whom they are for, issues, the outline, the focus |
+| `common/src/scan/places.rs` | ~290 lines — `--issues`' failures by where, rolled up into a tree |
 | `common/src/nas.rs` | ~190 lines — the folders a NAS (or macOS, Windows) keeps for itself, by name: left out, described |

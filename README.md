@@ -166,7 +166,9 @@ duscape --issues /volume1
 It prints where it runs — the walker, and on Linux the kernel, whether it has `statx`, the
 filesystem and who is asking — then every kind of failure with the system's error and a count,
 where they gather by the name of the folder holding them (a Synology NAS shows over a million in
-`@eaDir` folders, its metadata, which only root may look into), and examples of where. That output is what to send with a problem report.
+`@eaDir` folders, its metadata, which only root may look into), where they are as a tree of the
+folders holding them — every failure counted, the lines going to the folders that hold the most —
+and examples. That output is what to send with a problem report.
 
 Old kernels are fine: before Linux 4.11 there is no `statx`, the call duscape sizes entries with
 (Synology's DSM runs 4.4, for one), and every entry used to fail; it now asks `fstatat` there

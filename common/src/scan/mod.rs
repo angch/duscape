@@ -8,6 +8,9 @@ use ::std::sync::atomic::{AtomicU64, Ordering};
 use ::std::sync::{Arc, Mutex};
 use ::std::time::{Duration, Instant};
 
+mod places;
+pub use places::Places;
+
 /// A path from the scan root as `strip_prefix` gives it, less a leading separator.
 ///
 /// The tree's root normally has its separator ([`crate::os::scan_root`]), so what is under
@@ -333,6 +336,8 @@ pub struct Issues {
     /// How many in folders of each name — the name of the folder holding what failed: on a
     /// Synology NAS, a million-odd in folders called `@eaDir`, which no list of examples shows.
     pub folders: ::std::collections::BTreeMap<String, u64>,
+    /// How many under each folder, every failure counted where it is ([`Places`]).
+    pub places: Places,
 }
 
 impl Issues {
@@ -365,6 +370,7 @@ impl Issues {
             |name| name.to_string_lossy().into_owned(),
         );
         self.count_folder(folder, 1);
+        self.places.add(&issue.path, 1);
         if self.examples.len() < kept {
             self.examples.push(issue);
         }
@@ -400,6 +406,7 @@ impl Issues {
         for (name, count) in other.folders {
             self.count_folder(name, count);
         }
+        self.places.merge(other.places);
         let room = Self::KEPT.saturating_sub(self.examples.len());
         self.examples.extend(other.examples.into_iter().take(room));
     }
@@ -432,9 +439,12 @@ impl Issues {
             let rest: u64 = folders[10..].iter().map(|(_, count)| **count).sum();
             let _ = writeln!(out, "  {rest:>10}  in {} other names", folders.len() - 10);
         }
+        // Where they are, every one counted: the examples below are only the first few hundred.
+        let _ = writeln!(out, "Where, by folder:");
+        out.push_str(&self.places.report());
         let _ = writeln!(
             out,
-            "Where{}:",
+            "Examples{}:",
             if total > self.examples.len() as u64 {
                 format!(
                     ", the first {} (at most {} a folder)",
@@ -1155,7 +1165,7 @@ mod tests {
             .expect("the list kind");
         assert!(stat < list, "{report}");
         assert!(
-            report.contains("Where, the first 200 (at most 8 a folder):"),
+            report.contains("Examples, the first 200 (at most 8 a folder):"),
             "{report}"
         );
     }
@@ -1254,7 +1264,7 @@ mod tests {
         );
         assert!(
             one.report()
-                .contains("Where:\n  /x: open: Permission denied"),
+                .contains("Examples:\n  /x: open: Permission denied"),
             "{}",
             one.report()
         );

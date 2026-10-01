@@ -23,6 +23,31 @@ Two things follow that are worth knowing:
 
 `scan-performance.md` covers the details and the reasoning.
 
+## Clones on macOS
+
+An APFS clone — what `cp -c`, the Finder's Duplicate, pnpm's store and uv's cache make — is a
+second file sharing the first one's blocks. Like a hard link it is counted once: files that are
+pure clones of each other share a *clone id*, and duscape keys their blocks by it, so a folder
+holding three clones of a 100 MB file is 100 MB. Once a clone is written to, it gets an id of its
+own and is counted in full beside the original, though most of its blocks may still be shared:
+the same rule as reflinks on Linux, which overstates rather than understates. On one Mac the rule
+took 14.4 GiB off the data volume (pnpm stores, Python caches, Telegram's copies of downloads,
+Xcode's app installs) and 12.9 GiB off `/System/Volumes/Preboot`.
+
+What it cannot see is blocks shared with *part* of another file. The system's cryptexes on
+Preboot are unpacked from a disk image (`os.dmg`) by sharing ranges of it: the unpacked files'
+compressed data lies inside the image's own extents (checked with `F_LOG2PHYS_EXT`), and no
+per-file identity says so. Preboot reads 14.8 GiB on a volume using 8.4.
+
+## Disk images
+
+A disk image mounted inside the scan, from an image file the scan also counts, would be counted
+twice: once as the file, once as the volume's contents. On macOS the volume is left empty, and
+`--issues` says which file it was counted as. The iOS simulator's runtime is one: 21.6 GiB
+mounted at `/Library/Developer/CoreSimulator/Volumes/…` from a `.dmg` under
+`/System/Library/AssetsV2`. An image the scan does not reach — on a share, or outside the folder
+scanned — is the only way to its files, and its volume is walked.
+
 ## Filesystems and mount points
 
 By default the scan crosses mount points, like `du`. Pass `-x` / `--one-file-system` to keep it on
@@ -73,6 +98,18 @@ volume, the title shows the volume's used space and the part of it the scan did 
 ```
 Total: 315.8G (2058004 files), freed: 0, disk used: 424.4G, 108.6G outside the scan
 ```
+
+On macOS the volume's own use is asked of APFS (`ATTR_VOL_SPACEUSED`), since every volume of a
+container reports the container's blocks, except at `/`: its scan reaches the data volume and the
+other volumes mounted under it, so the container's use is what it can find. What `/` does not find
+on a typical Mac, measured on 2026-10-01 (814.6 GiB in use, 715 found unprivileged):
+
+- Time Machine's local snapshots and other purgeable space — what the system says it could free
+  (40 GiB there). Blocks only a snapshot holds are in use and in no folder.
+- Folders the scan is refused: as root, the ones behind Full Disk Access (`~/.Trash`, Mail,
+  Messages, `~/Library/Group Containers`, Spotlight's index); unprivileged, root's too (16.6 GiB
+  more of them). `duscape --issues` shows where, by folder.
+- The Recovery volume, which is not mounted, and APFS's own metadata.
 
 It appears for a drive root on Windows, and on Unix for a mount point scanned with `-x` (without
 it, the scan may cross into other filesystems and the two stop being comparable). It is not shown

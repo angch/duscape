@@ -61,6 +61,13 @@ const ATTR_CMN_ERROR: libc::attrgroup_t = 0x2000_0000;
 /// Marks a directory that macOS transparently redirects onto the data volume
 /// (`<sys/stat.h>`'s `SF_FIRMLINK`, absent from `libc`).
 const SF_FIRMLINK: u32 = 0x0080_0000;
+/// A file that shares all of its blocks with another, a pure clone (`<sys/stat.h>`'s
+/// `EF_SHARES_ALL_BLOCKS`, absent from `libc`).
+const EF_SHARES_ALL_BLOCKS: u64 = 0x40;
+/// The extended common attributes asked for (in the fork group, under
+/// `FSOPT_ATTR_CMN_EXTENDED`): which data stream a file's blocks are, and whether all of them are
+/// shared with another file.
+const CLONE_ATTRIBUTES: libc::attrgroup_t = libc::ATTR_CMNEXT_CLONEID | libc::ATTR_CMNEXT_EXT_FLAGS;
 /// Larger buffers mean fewer `getattrlistbulk` calls per directory. Big directories are the ones
 /// worth optimising; small ones fit in one call either way.
 const BUFFER_BYTES: usize = 128 * 1024;
@@ -113,8 +120,33 @@ fn requested_attributes() -> libc::attrlist {
         fileattr: libc::ATTR_FILE_LINKCOUNT
             | libc::ATTR_FILE_ALLOCSIZE
             | libc::ATTR_FILE_DATALENGTH,
-        forkattr: 0,
+        // APFS clones: see [`clone_identity`].
+        forkattr: CLONE_ATTRIBUTES,
     }
+}
+
+/// An identity for a file's blocks when it is a pure clone — every block shared with another
+/// file, as `cp -c` and the Finder's duplicate make — or `0`: what [`EntryMeta::shared_extent`]
+/// is for reflinks, so the ledger counts the blocks once wherever the copies are.
+///
+/// Files that are pure clones of each other share a clone id (`ATTR_CMNEXT_CLONEID`, "which
+/// data stream"); a file written to after cloning gets an id of its own, so the same id is the
+/// same blocks. An ordinary file's id is its own inode number, which is how a clone is told
+/// apart: `EF_SHARES_ALL_BLOCKS` says so for clones `cp -c` made, but the system's own on
+/// `/System/Volumes/Preboot` (its cryptexes' `OS` and `Incoming/OS`, 11 GiB each) carry no
+/// flags at all, only an id that is not their inode. A clone whose twins are gone, or one
+/// partly written since, is keyed alone and counted in full, as partly shared reflinks are.
+/// The id is a volume's, so the device is folded in: a scan of `/` covers several volumes.
+/// Without this Preboot read as 27.7 GiB on a volume using 8.4.
+fn clone_identity(clone_id: u64, flags: u64, inode: u64, device: u64) -> u64 {
+    if clone_id == 0 || (flags & EF_SHARES_ALL_BLOCKS == 0 && clone_id == inode) {
+        return 0;
+    }
+    let mut identity: u64 = 0xcbf2_9ce4_8422_2325;
+    for value in [clone_id, device] {
+        identity = (identity ^ value).wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    identity.max(1)
 }
 
 /// Which size the scan asks for, decided per filesystem; the other one is not requested at all.
@@ -157,7 +189,7 @@ impl SizeAttribute {
 
 /// Whether the filesystem mounted at `path` is on another machine: SMB, NFS, AFP, WebDAV and the
 /// like, which the kernel marks by leaving out `MNT_LOCAL`. Unknown counts as local.
-fn is_remote(path: &Path) -> bool {
+pub(crate) fn is_remote(path: &Path) -> bool {
     use ::std::os::unix::ffi::OsStrExt;
     let Ok(path) = ::std::ffi::CString::new(path.as_os_str().as_bytes()) else {
         return false;
@@ -220,14 +252,14 @@ struct ParsedRecord {
 ///
 /// Attributes appear in the fixed order of their bits — common attributes first, then file
 /// attributes — so each field sits at a position determined by the request.
-fn parse_record(record: &[u8], length_for_disk: bool) -> Option<ParsedRecord> {
+fn parse_record(record: &[u8], length_for_disk: bool, device: u64) -> Option<ParsedRecord> {
     let mut cursor = Cursor { bytes: record };
     let _length = cursor.u32()?;
     let returned_common = cursor.u32()?;
     let _volume = cursor.u32()?;
     let _directory = cursor.u32()?;
     let returned_file = cursor.u32()?;
-    let _fork = cursor.u32()?;
+    let returned_extended = cursor.u32()?;
     if returned_common & REQUIRED_COMMON != REQUIRED_COMMON {
         return None;
     }
@@ -259,6 +291,17 @@ fn parse_record(record: &[u8], length_for_disk: bool) -> Option<ParsedRecord> {
         0
     };
     let size = if length_for_disk { length } else { allocated };
+    // Last in the record, in bit order: the clone id, then the flags. Read only when both came
+    // back (a filesystem that is not APFS answers neither) and only for a file, and a record cut
+    // short of them is a file not known to be a clone, not one unreadable.
+    let shared_extent = if object_type != VDIR
+        && returned_extended & CLONE_ATTRIBUTES == CLONE_ATTRIBUTES
+        && let (Some(clone_id), Some(flags)) = (cursor.u64(), cursor.u64())
+    {
+        clone_identity(clone_id, flags, inode, device)
+    } else {
+        0
+    };
 
     if error != 0 {
         return None;
@@ -282,9 +325,7 @@ fn parse_record(record: &[u8], length_for_disk: bool) -> Option<ParsedRecord> {
                 inode,
                 links,
                 is_dir: object_type == VDIR,
-                // APFS clones share blocks the way reflinks do, but `getattrlistbulk` does not
-                // report sharing and there is no cheap per-file equivalent of FIEMAP here.
-                shared_extent: 0,
+                shared_extent,
             },
         },
         firmlink: flags & SF_FIRMLINK != 0,
@@ -349,7 +390,7 @@ fn read_dir_bulk(
                 (&raw mut attributes).cast(),
                 buffer.0.as_mut_ptr().cast(),
                 buffer.0.len(),
-                u64::from(libc::FSOPT_PACK_INVAL_ATTRS),
+                u64::from(libc::FSOPT_PACK_INVAL_ATTRS | libc::FSOPT_ATTR_CMN_EXTENDED),
             )
         };
         if count == 0 {
@@ -388,7 +429,7 @@ fn read_dir_bulk(
             {
                 return read_dir_stat(path, inode, device);
             }
-            match parse_record(&buffer.0[offset..offset + length], length_for_disk) {
+            match parse_record(&buffer.0[offset..offset + length], length_for_disk, device) {
                 Some(record) => {
                     entries.push(record.entry);
                     listed.push(ListedAs {
@@ -626,12 +667,33 @@ pub fn list_one(
     Ok(read.entries)
 }
 
+/// The directory for a mount at `path` that is a disk image's volume, its image under the scan
+/// (`real_root`, as [`crate::disk_image::real_path`] gives it): empty, and noted, so `--issues`
+/// says why. `None` for any other mount, which is walked.
+fn image_left_out(path: &Path, real_root: &Path) -> Option<DirEntries> {
+    let image = crate::disk_image::counted_by_the_scan(path, real_root)?;
+    let mut left = DirEntries::new(Arc::from(path));
+    left.note(
+        "image",
+        None,
+        format!(
+            "a disk image's volume, counted as its file {}",
+            image.display()
+        ),
+    );
+    Some(left)
+}
+
 /// Walk `root` in parallel, yielding one message per directory read.
 ///
-/// Mount points other than the root are not entered, so each volume is visited at most once. That
-/// matters most on `/`: macOS mounts the data volume at `/System/Volumes/Data` *and* grafts it into
-/// `/` through firmlinks, so a walk that follows both counts nearly every file on the machine
-/// twice. Firmlinks are followed, since they are the only route to what they point at.
+/// Mount points are entered, as `du` enters them, except: under `-x`; a network share (no
+/// `MNT_LOCAL`); a mount of the root's own device, a second route to files already counted — on
+/// `/`, macOS mounts the data volume at `/System/Volumes/Data` *and* grafts it into `/` through
+/// firmlinks, so a walk that followed both would count nearly every file on the machine twice;
+/// and a disk image's volume whose image the scan counts as a file ([`image_left_out`]). So a
+/// scan of `/` covers the volume group and the other volumes mounted under it (Preboot, VM,
+/// what is under `/Volumes`), which `os::volume_used` counts on at `/`. Firmlinks are followed,
+/// since they are the only route to what they point at.
 ///
 /// The iterator ends when the whole tree has been read. Dropping it early stops the workers.
 pub fn walk_macos(
@@ -647,6 +709,9 @@ pub fn walk_macos(
     let root_device = ::std::fs::metadata(root)
         .map(|metadata| ::std::os::unix::fs::MetadataExt::dev(&metadata))
         .unwrap_or_default();
+    // The root as it is on its volume, to tell whether a disk image is inside the scan.
+    let real_root: Arc<Path> =
+        Arc::from(crate::disk_image::real_path(root).unwrap_or_else(|| root.to_path_buf()));
     let queue = Arc::new(Queue {
         state: Mutex::new(QueueState {
             pending: vec![Job {
@@ -670,6 +735,7 @@ pub fn walk_macos(
         .map(|_| {
             let queue = Arc::clone(&queue);
             let sender = sender.clone();
+            let real_root = Arc::clone(&real_root);
             thread::Builder::new()
                 .name("macos_scanner".to_string())
                 .spawn(move || {
@@ -701,6 +767,17 @@ pub fn walk_macos(
                                     && (one_file_system || already_counted || is_remote(&job.path))
                                 {
                                     queue.finish();
+                                    continue;
+                                }
+                                // A disk image's volume whose image the scan counts as a file:
+                                // walked, its blocks were counted twice (`disk_image`).
+                                if mounted && let Some(left) = image_left_out(&job.path, &real_root)
+                                {
+                                    let stop = sender.send(left).is_err();
+                                    queue.finish();
+                                    if stop {
+                                        break;
+                                    }
                                     continue;
                                 }
                                 let descend = max_depth.is_none_or(|max| job.depth + 1 < max);
@@ -943,6 +1020,145 @@ mod tests {
             "FAT32 volume scanned as {total} bytes; the two files hold 64 KiB. \
              `msdosfs` reports ATTR_FILE_ALLOCSIZE as zero while claiming to return it, \
              so the walk must fall back to ATTR_FILE_DATALENGTH there."
+        );
+    }
+
+    /// A clone is keyed by its data stream where the flags say so or its id is not its inode;
+    /// an ordinary file, whose id is its inode, is not; the device is part of the key.
+    #[test]
+    fn a_clone_is_told_by_its_flags_or_an_id_not_its_inode() {
+        use super::{EF_SHARES_ALL_BLOCKS, clone_identity};
+        assert_eq!(clone_identity(7, 0, 7, 1), 0, "an ordinary file");
+        assert_eq!(clone_identity(0, EF_SHARES_ALL_BLOCKS, 7, 1), 0, "no id");
+        let flagged = clone_identity(7, EF_SHARES_ALL_BLOCKS, 7, 1);
+        assert_ne!(flagged, 0, "a clone `cp -c` made, still the original");
+        assert_eq!(
+            clone_identity(7, 0, 9, 1),
+            flagged,
+            "a clone with no flags kept"
+        );
+        assert_ne!(
+            clone_identity(7, 0, 9, 2),
+            flagged,
+            "the same id on another volume"
+        );
+    }
+
+    /// Three pure clones of a file count its blocks once; a clone written to since is counted
+    /// in full beside them, as partly shared reflinks are.
+    #[test]
+    fn clones_are_counted_once() {
+        use ::std::ffi::CString;
+        use ::std::os::unix::ffi::OsStrExt;
+        let dir = ::std::env::temp_dir().join("duscape_clones_test");
+        let _ = ::std::fs::remove_dir_all(&dir);
+        ::std::fs::create_dir_all(dir.join("a")).expect("create a");
+        ::std::fs::create_dir_all(dir.join("b")).expect("create b");
+        let original = dir.join("a/original.bin");
+        let bytes: Vec<u8> = (0..1u32 << 20).map(|index| (index * 7 + 3) as u8).collect();
+        ::std::fs::write(&original, &bytes).expect("write the original");
+        let clone = |to: &Path| {
+            let from = CString::new(original.as_os_str().as_bytes()).expect("a path");
+            let to = CString::new(to.as_os_str().as_bytes()).expect("a path");
+            // SAFETY: two NUL-terminated paths; the call reads them and nothing else.
+            unsafe { libc::clonefile(from.as_ptr(), to.as_ptr(), 0) == 0 }
+        };
+        if !clone(&dir.join("a/one.bin")) {
+            // The temporary folder is not on APFS: there are no clones to count.
+            let _ = ::std::fs::remove_dir_all(&dir);
+            return;
+        }
+        assert!(clone(&dir.join("b/two.bin")));
+        let (tree, failed) = crate::scan_into_tree(&dir, crate::ScanOptions::default());
+        assert_eq!(failed, 0);
+        let one_copy = tree.get_total_size();
+        assert!(
+            (1 << 20..(1 << 20) + (1 << 16)).contains(&one_copy),
+            "three clones of a MiB count one: {one_copy}"
+        );
+
+        assert!(clone(&dir.join("b/written.bin")));
+        let mut written = ::std::fs::OpenOptions::new()
+            .append(true)
+            .open(dir.join("b/written.bin"))
+            .expect("open the clone");
+        ::std::io::Write::write_all(&mut written, b"more").expect("write to the clone");
+        drop(written);
+        let (tree, _) = crate::scan_into_tree(&dir, crate::ScanOptions::default());
+        assert!(
+            tree.get_total_size() >= 2 * one_copy,
+            "a clone written to is its own file: {}",
+            tree.get_total_size()
+        );
+
+        // Written over in place, its length the same: the size guard cannot tell it from its
+        // twins, the clone id does (APFS gives the written copy an id of its own).
+        assert!(clone(&dir.join("b/overwritten.bin")));
+        let mut overwritten = ::std::fs::OpenOptions::new()
+            .write(true)
+            .open(dir.join("b/overwritten.bin"))
+            .expect("open the clone");
+        ::std::io::Write::write_all(&mut overwritten, &[0xa5; 4096]).expect("write over it");
+        drop(overwritten);
+        let (again, _) = crate::scan_into_tree(&dir, crate::ScanOptions::default());
+        let _ = ::std::fs::remove_dir_all(&dir);
+        assert!(
+            again.get_total_size() >= tree.get_total_size() + one_copy,
+            "a clone written over is its own file: {} after {}",
+            again.get_total_size(),
+            tree.get_total_size()
+        );
+    }
+
+    /// A disk image's volume mounted inside the scan, from an image inside it too, is left
+    /// empty and noted: the image counts its blocks. Ignored by default because it creates and
+    /// mounts a disk image; `cargo test -p duscape-scan --lib -- --ignored disk_image`.
+    #[test]
+    #[ignore = "creates and mounts a disk image with hdiutil"]
+    fn a_disk_image_mounted_inside_the_scan_is_counted_once() {
+        let dir = ::std::env::temp_dir().join("duscape_disk_image_test");
+        let _ = ::std::fs::remove_dir_all(&dir);
+        ::std::fs::create_dir_all(dir.join("mounted")).expect("create the mount point");
+        let image = dir.join("volume.dmg");
+        let created = Command::new("hdiutil")
+            .args(["create", "-size", "16m", "-fs", "APFS", "-volname", "DSIMG"])
+            .arg(&image)
+            .output()
+            .expect("run hdiutil create");
+        assert!(
+            created.status.success(),
+            "hdiutil create failed: {created:?}"
+        );
+        let attached = Command::new("hdiutil")
+            .args(["attach", "-nobrowse", "-mountpoint"])
+            .arg(dir.join("mounted"))
+            .arg(&image)
+            .output()
+            .expect("run hdiutil attach");
+        assert!(
+            attached.status.success(),
+            "hdiutil attach failed: {attached:?}"
+        );
+        let _attached = Attached {
+            device: attached_device(&attached.stdout).expect("hdiutil attach reported a disk"),
+            image: image.clone(),
+        };
+        ::std::fs::write(dir.join("mounted/inside.bin"), vec![1u8; 1 << 20]).expect("write");
+
+        let mut noted = Vec::new();
+        let mut inside = 0;
+        for directory in walk_macos(&dir, 2, None, false, false, &crate::focus::Focus::default()) {
+            if directory.path.ends_with("mounted") {
+                inside += directory.iter().count();
+                noted.extend(directory.issues.examples.iter().map(|issue| issue.action));
+            }
+        }
+        assert_eq!(inside, 0, "the volume is not walked");
+        assert_eq!(noted, ["image"], "and the scan says why");
+        assert_eq!(
+            crate::disk_image::backing_file(&dir.join("mounted"))
+                .and_then(|path| path.canonicalize().ok()),
+            image.canonicalize().ok()
         );
     }
 }
