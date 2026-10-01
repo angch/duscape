@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- Embedded in duscape-windows.exe by build.rs: the window alone, a windows-subsystem program,
+     which the installer's Start menu shortcut starts so that no Windows before 11 24H2 flashes
+     a console (duscape.exe's `consoleAllocationPolicy` is ignored there). -->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <!-- asInvoker: the program starts with the rights it is given, and asks for more only when a
+       whole volume wants them (`duscape_windows::elevate`, through the shell's `runas`). Said
+       outright, so no installer-detection heuristic elevates it on its name. -->
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+</assembly>

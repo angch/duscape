@@ -488,6 +488,7 @@ dependencies = [
  "clap",
  "duscape-scan",
  "duscape-viewer",
+ "embed-manifest",
  "image",
  "libduscape",
  "windows-sys 0.59.0",

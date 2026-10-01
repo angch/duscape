@@ -420,10 +420,13 @@ shared `Viewer`, not in `win/`:
   paints are in full, as it does for the Linux viewer
 - `resources.rs` — the binaries' own resources, written without a resource compiler (the zig
   cross-build has none) and `include!`d by this crate's `build.rs` and the TUI's: the icon
-  (`duscape.ico`, `RT_ICON` a size and the `RT_GROUP_ICON` Explorer reads) as a `.res` file for
-  `link.exe` on MSVC; on GNU one COFF object with a `.rsrc` resource tree, the manifest in it
-  too (a second `.rsrc` object does not link), so `duscape.exe` on GNU does not use
-  `embed-manifest`. `duscape.ico` is `duscape_viewer::icon` at ten sizes, PNG-compressed and
+  (`duscape.ico`, `RT_ICON` a size and the `RT_GROUP_ICON` Explorer reads) and the version
+  (`RT_VERSION`, from the package's: Explorer's Details tab, Task Manager's name for the
+  process, the file version an installer compares) as a `.res` file for `link.exe` on MSVC; on
+  GNU one COFF object with a `.rsrc` resource tree, the manifest in it too (a second `.rsrc`
+  object does not link), so neither binary on GNU uses `embed-manifest`. Both manifests
+  (`viewers/tui/windows.manifest`, `duscape-windows.manifest`) say `asInvoker`: the program
+  raises itself through `runas` when a volume wants it, never at its start. `duscape.ico` is `duscape_viewer::icon` at ten sizes, PNG-compressed and
   checked in; `icon::tests::the_icon_file_is_the_one_drawn` fails when the drawing changed and
   the file did not (`DUSCAPE_WRITE_ICON=1` writes it). `src/resources_tests.rs` tests the
   writer on every platform
@@ -994,8 +997,10 @@ A `v*` tag runs `deploy.yml`. It builds `duscape-<tag>-<target>.tar.gz` for
 `x86_64-unknown-linux-musl` (`musl-gcc`) and `aarch64-unknown-linux-musl` (`cargo zigbuild`,
 zig 0.13.0), and `duscape-<tag>-x86_64-pc-windows-gnu.zip` (`cargo zigbuild`, against the
 Universal C Runtime: only DLLs Windows 10 carries), each `duscape` being the terminal viewer and
-the window. The Linux binaries are fully static, so they have no glibc floor and run on Alpine
-and busybox; the job checks it, and that `duscape.exe` is console subsystem. macOS is not in
+the window; the zip has `duscape-windows.exe` beside it, the window alone and windows subsystem,
+for a shortcut to start with no console flashing before Windows 11 24H2. The Linux binaries are
+fully static, so they have no glibc floor and run on Alpine and busybox; the job checks it, and
+that `duscape.exe` is console subsystem and `duscape-windows.exe` is not. macOS is not in
 it: linking AppKit needs a Mac, where `make mac-app` makes the universal binary and
 `Duscape.app` (`viewers/macos/Info.plist`) — a bare binary opened from Finder runs in Terminal,
 so Finder's way to the window is the bundle. One job then publishes every archive: matrix jobs

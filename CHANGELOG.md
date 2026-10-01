@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- On Windows, both executables carry their version (`VS_VERSIONINFO`, from the package's):
+  Explorer's Details tab shows it, Task Manager names the process "duscape", and an installer
+  has a file version to compare. Their manifests say `asInvoker`, so they start with the rights
+  they are given and ask for more only when a whole volume wants them. `duscape-windows.exe`
+  (the window alone, a windows-subsystem program) now ships in the release zip beside
+  `duscape.exe`: a shortcut to it opens the window with no console flashing first, on Windows
+  before 11 24H2 too. The groundwork for an installer.
 - A share's snapshot folders, as a network share shows them — Synology's `#snapshot`, QNAP's
   `@Recently-Snapshot`, ZFS's `.zfs`, NetApp's `.snapshot` and `~snapshot`, snapper's
   `.snapshots` — are left empty by name on every platform: listed, not entered, noted for

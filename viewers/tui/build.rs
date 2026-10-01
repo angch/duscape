@@ -1,6 +1,7 @@
 //! Windows, with the window built in: embed `windows.manifest` in the binaries, so Explorer
 //! starts `duscape.exe` with no console (`consoleAllocationPolicy`, see the manifest), and the
-//! app's icon (`../windows/duscape.ico`, drawn by `duscape_viewer::icon`) as the `.exe`'s own.
+//! app's icon (`../windows/duscape.ico`, drawn by `duscape_viewer::icon`) as the `.exe`'s own,
+//! with the package's version.
 //! macOS, with the window built in: link no framework the binary names no symbol of, so AppKit
 //! is loaded when the window starts (`duscape_mac`'s `appkit::load`), not by every terminal run.
 
@@ -21,10 +22,10 @@ fn main() {
             // The manifest by linker options, the icon as a resource file.
             embed_manifest::embed_manifest_file("windows.manifest")
                 .expect("embedding windows.manifest in the binaries");
-            embed_resources(icon, None);
+            embed_resources(icon, "duscape", None);
         } else {
             // One resource object for both: a second would not link.
-            embed_resources(icon, Some(Path::new("windows.manifest")));
+            embed_resources(icon, "duscape", Some(Path::new("windows.manifest")));
         }
     }
 }

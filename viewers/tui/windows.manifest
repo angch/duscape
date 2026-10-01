@@ -5,6 +5,16 @@
      no console flashing first (`src/front.rs`). Windows 11 24H2 and Server 2025 on; older Windows
      ignores it and makes the console, which `front.rs` lets go of. -->
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <!-- asInvoker: the program starts with the rights it is given, and asks for more only when a
+       whole volume wants them (`duscape_windows::elevate`, through the shell's `runas`). Said
+       outright, so no installer-detection heuristic elevates it on its name. -->
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
   <application>
     <windowsSettings>
       <consoleAllocationPolicy xmlns="http://schemas.microsoft.com/SMI/2024/WindowsSettings">detached</consoleAllocationPolicy>

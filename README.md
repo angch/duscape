@@ -97,7 +97,9 @@ both the terminal viewer and the window:
   static. They need no particular glibc, or any glibc, and no system library for the window: they
   run on old distributions, Alpine and busybox alike, on Wayland or X11.
 - **Windows**, x86_64: `duscape-<version>-x86_64-pc-windows-gnu.zip`, needing only DLLs that come
-  with Windows 10 and later.
+  with Windows 10 and later. `duscape.exe` is both viewers; `duscape-windows.exe` is the window
+  alone, which opens with no console flashing first on any Windows — the one to make a shortcut
+  to.
 
 ```bash
 tar -xzf duscape-*-x86_64-unknown-linux-musl.tar.gz

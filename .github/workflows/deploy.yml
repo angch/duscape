@@ -33,9 +33,13 @@ jobs:
             lg_page: 16
           # Against the Universal C Runtime, which Windows 10 and later carry: `duscape.exe`
           # needs no DLL that does not come with Windows.
+          # With `duscape-windows.exe` beside it, the window alone as a windows-subsystem
+          # program: what a Start menu shortcut starts, so that no Windows before 11 24H2
+          # flashes a console (`duscape.exe`'s manifest asks for none only from 24H2).
           - target: x86_64-pc-windows-gnu
             cargo: cargo zigbuild
             exe: .exe
+            also: -p duscape-windows
     steps:
       - uses: actions/checkout@v7
 
@@ -74,7 +78,7 @@ jobs:
           CC_x86_64_unknown_linux_musl: musl-gcc
         run: |
           if [ -n "${{ matrix.lg_page }}" ]; then export JEMALLOC_SYS_WITH_LG_PAGE=${{ matrix.lg_page }}; fi
-          ${{ matrix.cargo }} -p duscape --release --locked --target ${{ matrix.target }}
+          ${{ matrix.cargo }} -p duscape ${{ matrix.also }} --release --locked --target ${{ matrix.target }}
 
       - name: Check the binary is static
         if: endsWith(matrix.target, '-musl')
@@ -82,10 +86,11 @@ jobs:
           file target/${{ matrix.target }}/release/duscape | tee /dev/stderr \
             | grep -qE 'static-pie linked|statically linked'
 
-      - name: Check the binary is a console program
+      - name: Check duscape.exe is a console program and duscape-windows.exe is not
         if: matrix.exe == '.exe'
         run: |
           file target/${{ matrix.target }}/release/duscape.exe | tee /dev/stderr | grep -q '(console)'
+          file target/${{ matrix.target }}/release/duscape-windows.exe | tee /dev/stderr | grep -q '(GUI)'
 
       # Only the native target can run on the runner.
       - name: Smoke test
@@ -100,8 +105,9 @@ jobs:
           STAGE="$(mktemp -d)"
           cp target/${{ matrix.target }}/release/duscape${{ matrix.exe }} LICENSE "$STAGE"/
           if [ "${{ matrix.exe }}" = ".exe" ]; then
+            cp target/${{ matrix.target }}/release/duscape-windows.exe "$STAGE"/
             ARCHIVE="duscape-${VERSION}-${{ matrix.target }}.zip"
-            (cd "$STAGE" && zip -q "$OLDPWD/$ARCHIVE" duscape.exe LICENSE)
+            (cd "$STAGE" && zip -q "$OLDPWD/$ARCHIVE" duscape.exe duscape-windows.exe LICENSE)
           else
             ARCHIVE="duscape-${VERSION}-${{ matrix.target }}.tar.gz"
             JEMALLOC_SYS="$(cargo metadata --format-version 1 --filter-platform ${{ matrix.target }} \

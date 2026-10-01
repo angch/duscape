@@ -21,6 +21,10 @@ duscape-scan = { workspace = true }
 duscape-viewer = { path = "../shared", version = "0.2.1" }
 clap = { workspace = true }
 
+# Windows: the manifest (`build.rs`), on MSVC by linker options.
+[build-dependencies]
+embed-manifest = "1.5.1"
+
 [dev-dependencies]
 image = { workspace = true }
 
