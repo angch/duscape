@@ -301,9 +301,12 @@ fn start<B>(
     app.start(instruction_receiver);
     running.store(false, Ordering::Release);
 
-    for thread in threads {
-        thread.join().unwrap();
-    }
+    // Not joined: the process is ending, and its exit ends them. Joined, a quit during the scan
+    // waited for the walk to stop — each worker finishing the directory it is in, every entry
+    // stat'ed, on a cold disk one read at a time — before the terminal was the shell's again:
+    // two seconds measured on `/` (XFS) after the confirm, nothing on screen. A save still being
+    // written is waited for by `try_main` (`cache::wait_for_saves`), after the terminal is back.
+    drop(threads);
 }
 
 /// A named thread. Every thread of the app has a name, for what `top` and a debugger show.

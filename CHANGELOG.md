@@ -67,6 +67,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Quitting the terminal viewer during a scan no longer leaves the screen blank for seconds
+  before the shell's prompt comes back: it waited for the walk to stop, each worker first
+  finishing the directory it was in, on a cold disk a read at a time (0.4–4 s measured on `/`,
+  XFS). The terminal is now the shell's at once; what is left, a few tenths of a second, is
+  the kernel finishing the reads already under way before the process can end.
 - A "small files" speck of a file with no extension (`Makefile`) and one ending in a dot
   (`notes.`) took whichever colour of the two came first in the layout; each now has its tile's.
 

@@ -901,6 +901,13 @@ Exiting { app_loaded: bool }
 - **ManuallyDrop on FileTree**: Avoids slow recursive drop on exit: freeing millions of nodes is
   work nobody waits for, so quitting is immediate; the TUI leaks a replaced tree, a desktop
   viewer hands it to `drop_later`'s thread.
+- **Threads are not joined at quit**: the TUI's `start` lets its threads go when the app's
+  loop ends, and the process's exit ends them. Joined, a quit during the scan waited for the
+  walk to stop (a worker checks `stop` between directories, so each finished the one it was in,
+  cold, a `statx` at a time) before the terminal was restored: up to 4 s on `/`. The desktop
+  viewers never joined theirs. What a quit still waits for is the kernel: a thread blocked in a
+  disk read (`D`) ends only when the read does, so the process lingers a few tenths of a second
+  after the terminal is back — checking `stop` more often would not shorten that.
 - **Folders know their ledger id**: `Folder::dir` is the folder in `HardLinks`, given when a
   directory's path is first resolved (`HardLinks::child(parent)`, no hashing) and `NONE` until
   then. Deferred sightings carry ids, not paths; a merge renumbers the folders it moves in
