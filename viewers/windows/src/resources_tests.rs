@@ -201,13 +201,25 @@ fn the_version_resource_gives_the_numbers_and_the_strings_explorer_shows() {
 
 #[test]
 fn the_copyright_is_the_licence_files() {
-    let licence = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../LICENSE"))
-        .expect("LICENSE");
-    let line = licence
+    // Every copyright line of LICENSE, in the exes' version and in the installer's: the MIT
+    // licence asks for its notice in every copy, and a fork adds a line rather than replacing one.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let licence = fs::read_to_string(root.join("LICENSE")).expect("LICENSE");
+    let lines: Vec<&str> = licence
         .lines()
-        .find(|line| line.starts_with("Copyright"))
-        .expect("a copyright line");
-    assert!(COPYRIGHT.starts_with(line), "{COPYRIGHT:?} is not {line:?}");
+        .filter(|line| line.starts_with("Copyright"))
+        .collect();
+    assert!(
+        lines.len() >= 2,
+        "the original author's line and the fork's"
+    );
+    let parts: Vec<&str> = COPYRIGHT.split("; ").collect();
+    assert_eq!(parts[..lines.len()], lines[..], "{COPYRIGHT:?}");
+    let installer = fs::read_to_string(root.join("installer/duscape.nsi")).expect("duscape.nsi");
+    assert!(
+        installer.contains(&format!("\"LegalCopyright\" \"{COPYRIGHT}\"")),
+        "the installer's LegalCopyright is not {COPYRIGHT:?}"
+    );
 }
 
 #[test]

@@ -116,8 +116,9 @@ impl Version {
     }
 }
 
-/// The copyright line of the repository's `LICENSE` (a test holds it to the file).
-const COPYRIGHT: &str = "Copyright (c) 2020 Aram Drevekenin; MIT licence";
+/// The copyright lines of the repository's `LICENSE`, the installer's too (a test holds both
+/// to the file).
+const COPYRIGHT: &str = "Copyright (c) 2020 Aram Drevekenin; Copyright (c) 2026 Ang Chin Han and duscape contributors; MIT licence";
 
 /// A `VS_VERSIONINFO`: the fixed numbers, then the strings (US English, Unicode) and the
 /// translation that says which table of strings to read.

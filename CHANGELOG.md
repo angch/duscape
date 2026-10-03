@@ -71,6 +71,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its Cancel row, or Esc, is back to the scan as it was. On Windows the scan replaced now
   stops, as it did on macOS and Linux.
 
+### Changed
+
+- `LICENSE` names the fork beside diskonaut's author, whose notice stays: "Copyright (c) 2026
+  Ang Chin Han and duscape contributors". The exes' version and the installer carry both lines,
+  a test holding them to the file.
+
 ### Fixed
 
 - Quitting the terminal viewer during a scan no longer leaves the screen blank for seconds
