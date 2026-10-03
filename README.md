@@ -126,7 +126,12 @@ it cross-builds with `cargo-zigbuild` instead), `make static-aarch64` and `make 
 (need `cargo-zigbuild`); on a Mac, `make mac-app` builds `duscape` for both
 architectures in one file and `Duscape.app` around it (macOS links its system libraries
 dynamically, always; nothing else). On Windows, `.\make <target>` runs the Makefile's targets
-without make installed (it reads the Makefile and uses Git's bash).
+without make installed (it reads the Makefile and uses Git's bash): `.\make setup-windows`
+fetches what Windows development needs beside Rust and Git (zig and NSIS into `target/tools`,
+checked against pinned hashes, and the cargo tools CI uses), and `.\make installer` builds
+`target/installer/duscape-<version>-x86_64-setup.exe` — duscape for the user who runs it, no
+administrator asked, in Settings → Apps and the Start menu, with PATH and an Explorer "Open in
+duscape" as options.
 
 The terminal viewer wants a terminal of roughly 50×15 cells at least.
 

@@ -25,6 +25,8 @@ duscape/
 ├── docs/              # features.md (every feature, per viewer), sizes.md (how sizes are counted),
 │                      #   terminal.md, viewers.md, benchmarking.md, scan-performance.md (the measurements),
 │                      #   probes/ (bench-matrix.sh and .ps1, drop-cache.ps1, bench-diskus.sh, the C/Python probes behind the measurements)
+├── installer/         # duscape.nsi (the Windows installer, NSIS) and path.ps1 (its PATH edit);
+│                      #   `make installer`
 ├── example/config.toml
 └── Cargo.toml         # Workspace root
 ```
@@ -94,6 +96,19 @@ On Windows without `make`: `.\make <target>` runs the same Makefile — `make.cm
 `make.ps1`, which reads it and runs each recipe line in Git for Windows's bash (`MAKE_SHELL`
 names another). It interprets the subset of make this file uses and stops on anything else, so
 a recipe is written once. `.\make -n <target>` prints what it would run.
+
+**Windows setup and installer**: `.\make setup-windows` is `setup-ubuntu`'s counterpart — zig
+(the version `deploy.yml` pins) and NSIS into `target/tools`, each zip checked against a SHA-256
+pinned in the Makefile, then `cargo-zigbuild`, `typos`, `cargo-deny`, `cargo-llvm-cov`; Rust
+with the MSVC build tools and Git for Windows come first, by hand. `.\make installer` builds
+the release's GNU exes with zig and `installer/duscape.nsi` around them, to
+`target/installer/duscape-<version>-x86_64-setup.exe`. The installer is per user
+(`%LOCALAPPDATA%\Programs\duscape`, `HKCU` only, no elevation: the window elevates itself when a
+volume wants it), with the Start menu shortcut on `duscape-windows.exe` (no console flash before
+11 24H2), and the PATH and Explorer menu as ticked options. Its paths use backslashes: Windows's
+makensis does not find `File "dir/name"`. The PATH edit is PowerShell (`path.ps1`), not NSIS,
+whose strings stop at 1024 characters and would cut a long PATH short. Not yet in `deploy.yml`,
+and not signed.
 
 **Static release binaries** (what `deploy.yml` ships; see "Releases" below):
 ```bash

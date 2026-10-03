@@ -1,4 +1,4 @@
-.PHONY: build run install test test-fs quality coverage setup-ubuntu static static-aarch64 static-linux-gui static-linux-gui-aarch64 static-windows mac-universal mac-app pgo dos dos-tools dos-run
+.PHONY: build run install test test-fs quality coverage setup-ubuntu setup-windows installer static static-aarch64 static-linux-gui static-linux-gui-aarch64 static-windows mac-universal mac-app pgo dos dos-tools dos-run
 
 build:
 	cargo build --workspace
@@ -67,6 +67,41 @@ setup-ubuntu:
 	fi
 	@if [ -n "$(ZIG)" ]; then echo "ready: make static, static-aarch64, static-windows"; \
 		else echo "ready: make static (ZIG=1 adds static-aarch64 and static-windows)"; fi
+
+# What Windows development needs, beside Rust (https://rustup.rs, with the MSVC build tools it
+# asks for) and Git for Windows (whose bash runs these recipes): `.\make setup-windows`.
+# zig and NSIS go to target/tools, each zip checked against the hash pinned here, as the DOS
+# tools go to target/dos: nothing installed for the whole machine, no administrator asked, and
+# the versions CI uses (zig as deploy.yml pins it; NSIS 3.10, whose zip SourceForge lists by
+# MD5 e3e2803a13ead75e4471a51069d04c20, the SHA-256 below taken from that file). Then the
+# cargo tools: cargo-zigbuild (the release's GNU build, `make installer`), typos and cargo-deny
+# (CI's checks), cargo-llvm-cov (`make coverage`).
+TOOLS := target/tools
+ZIG_WINDOWS := zig-windows-x86_64-$(ZIG_VERSION)
+ZIG_WINDOWS_SHA256 := d859994725ef9402381e557c60bb57497215682e355204d754ee3df75ee3c158
+NSIS_VERSION := 3.10
+NSIS_SHA256 := fcdce3229717a2a148e7cda0ab5bdb667f39d8fb33ede1da8dabc336bd5ad110
+setup-windows:
+	rustup target add x86_64-pc-windows-gnu
+	rustup component add llvm-tools-preview
+	mkdir -p $(TOOLS)
+	@test -x $(TOOLS)/$(ZIG_WINDOWS)/zig.exe || { 		curl -sSfL https://ziglang.org/download/$(ZIG_VERSION)/$(ZIG_WINDOWS).zip -o $(TOOLS)/zig.zip 		&& echo "$(ZIG_WINDOWS_SHA256)  $(TOOLS)/zig.zip" | sha256sum -c - 		&& unzip -q $(TOOLS)/zig.zip -d $(TOOLS) && rm $(TOOLS)/zig.zip; }
+	@test -x $(TOOLS)/nsis-$(NSIS_VERSION)/makensis.exe || { 		curl -sSfL "https://downloads.sourceforge.net/project/nsis/NSIS%203/$(NSIS_VERSION)/nsis-$(NSIS_VERSION).zip" -o $(TOOLS)/nsis.zip 		&& echo "$(NSIS_SHA256)  $(TOOLS)/nsis.zip" | sha256sum -c - 		&& unzip -q $(TOOLS)/nsis.zip -d $(TOOLS) && rm $(TOOLS)/nsis.zip; }
+	@command -v cargo-zigbuild >/dev/null || cargo install cargo-zigbuild --locked
+	@command -v typos >/dev/null || cargo install typos-cli --locked
+	@command -v cargo-deny >/dev/null || cargo install cargo-deny --locked
+	@command -v cargo-llvm-cov >/dev/null || cargo install cargo-llvm-cov --locked
+	@echo "ready: make installer, static-windows, coverage; zig and NSIS in $(TOOLS)"
+
+# The Windows installer, target/installer/duscape-<version>-x86_64-setup.exe: the release's
+# exes (the GNU build by zig, as deploy.yml makes them) in installer/duscape.nsi. zig and
+# makensis from target/tools when `setup-windows` put them there, else from the PATH (Linux:
+# zig as `setup-ubuntu ZIG=1` installs it, `apt install nsis`).
+installer:
+	PATH="$$PWD/$(TOOLS)/$(ZIG_WINDOWS):$$PWD/$(TOOLS)/nsis-$(NSIS_VERSION):$$PATH" cargo zigbuild -p duscape -p duscape-windows --release --locked --target x86_64-pc-windows-gnu
+	mkdir -p target/installer
+	PATH="$$PWD/$(TOOLS)/nsis-$(NSIS_VERSION):$$PATH" makensis -NOCD -V2 -DVERSION=$(VERSION) -DBIN=target/x86_64-pc-windows-gnu/release -DSETUP=target/installer/duscape-$(VERSION)-x86_64-setup.exe installer/duscape.nsi
+	@echo "built target/installer/duscape-$(VERSION)-x86_64-setup.exe"
 
 # Fully static binary: on Linux, musl with jemalloc (needs musl-gcc); on Windows, MSVC with
 # crt-static (configured in .cargo/config.toml, needing only DLLs that come with Windows); on

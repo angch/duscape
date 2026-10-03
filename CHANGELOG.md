@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (the window alone, a windows-subsystem program) now ships in the release zip beside
   `duscape.exe`: a shortcut to it opens the window with no console flashing first, on Windows
   before 11 24H2 too. The groundwork for an installer.
+- A Windows installer (`installer/duscape.nsi`, `make installer`): per user, no administrator
+  asked, in Settings → Apps and the Start menu; the PATH and an Explorer "Open in duscape" on
+  folders and drives as options; an uninstall that takes all of it back, PATH included.
+  `make setup-windows` fetches what building it needs (zig and NSIS, hash-checked, into
+  `target/tools`) and the cargo tools CI uses.
+
 - A share's snapshot folders, as a network share shows them — Synology's `#snapshot`, QNAP's
   `@Recently-Snapshot`, ZFS's `.zfs`, NetApp's `.snapshot` and `~snapshot`, snapper's
   `.snapshots` — are left empty by name on every platform: listed, not entered, noted for
