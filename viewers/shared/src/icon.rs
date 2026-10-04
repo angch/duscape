@@ -188,6 +188,11 @@ pub fn ico(images: &[(u32, Vec<u8>)]) -> Vec<u8> {
     out
 }
 
+/// The sizes of the Linux icon theme's PNG files
+/// (`packaging/linux/icons/hicolor/<n>x<n>/apps/`), what menus, docks and app stores pick
+/// from: the hicolor theme's usual sizes, 16 to 512.
+pub const HICOLOR_SIZES: [u32; 8] = [16, 24, 32, 48, 64, 128, 256, 512];
+
 /// The images the macOS icon file holds: (type, size in pixels) — each point size at 1x and
 /// 2x, 16 to 512 points, what Finder, the Dock and Launchpad pick from.
 pub const ICNS_TYPES: [(&[u8; 4], u32); 10] = [
@@ -222,7 +227,7 @@ pub fn icns(images: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{HERO_COLORS, ICNS_TYPES, ICO_SIZES, encode, icns, ico, png, rgba};
+    use super::{HERO_COLORS, HICOLOR_SIZES, ICNS_TYPES, ICO_SIZES, encode, icns, ico, png, rgba};
 
     /// `viewers/macos/duscape.icns`, which `Duscape.app` carries as its icon (`make mac-app`), is
     /// this module's drawing, as the Windows file is. `DUSCAPE_WRITE_ICON=1` writes it.
@@ -282,6 +287,34 @@ mod tests {
             "{} is not the icon drawn: DUSCAPE_WRITE_ICON=1 cargo test -p duscape-viewer              the_icon_file_is_the_one_drawn writes it",
             path.display()
         );
+    }
+
+    /// The Linux icon theme's PNG files (`packaging/linux/icons`), which the `.desktop` file
+    /// names by the app's ID, are this module's drawing at each of [`HICOLOR_SIZES`], as the
+    /// Windows and macOS files are. `DUSCAPE_WRITE_ICON=1` writes them.
+    #[test]
+    fn the_linux_icons_are_the_ones_drawn() {
+        let best = image::codecs::png::CompressionType::Best;
+        let root = ::std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../packaging/linux/icons/hicolor");
+        for size in HICOLOR_SIZES {
+            let drawn = encode(size, best);
+            let path = root
+                .join(format!("{size}x{size}"))
+                .join("apps")
+                .join(format!("{}.png", crate::APP_ID));
+            if ::std::env::var_os("DUSCAPE_WRITE_ICON").is_some() {
+                ::std::fs::create_dir_all(path.parent().unwrap()).expect("the icon's folder");
+                ::std::fs::write(&path, &drawn).expect("writing the icon file");
+            }
+            let committed = ::std::fs::read(&path).unwrap_or_default();
+            assert!(
+                committed == drawn,
+                "{} is not the icon drawn: DUSCAPE_WRITE_ICON=1 cargo test -p duscape-viewer \
+                 the_linux_icons_are_the_ones_drawn writes it",
+                path.display()
+            );
+        }
     }
 
     #[test]

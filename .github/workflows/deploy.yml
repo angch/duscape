@@ -1,6 +1,10 @@
 name: Deploy
 
 # Fires automatically on every v* tag push.
+# The binaries built here are the canonical ones (docs/packaging.md): every package published —
+# the tarballs and zip, the deb and rpm, the Windows installer, and a Snap or Flatpak if one is
+# ever made — holds these files byte for byte, never a build of its own, so a self-update can
+# fetch any of them from the release and check it against SHA256SUMS and its attestation.
 # Can also be triggered manually via Actions → "Run workflow" for a smoke build
 # (the GitHub Release step is skipped on manual runs). Nothing is published to crates.io.
 on:
@@ -11,6 +15,8 @@ on:
 
 permissions:
   contents: write # required to create GitHub Releases
+  id-token: write # the release's build-provenance attestations
+  attestations: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -103,24 +109,132 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME:-dev}"
           STAGE="$(mktemp -d)"
+          mkdir -p out
           cp target/${{ matrix.target }}/release/duscape${{ matrix.exe }} LICENSE "$STAGE"/
           if [ "${{ matrix.exe }}" = ".exe" ]; then
             cp target/${{ matrix.target }}/release/duscape-windows.exe "$STAGE"/
             ARCHIVE="duscape-${VERSION}-${{ matrix.target }}.zip"
-            (cd "$STAGE" && zip -q "$OLDPWD/$ARCHIVE" duscape.exe duscape-windows.exe LICENSE)
+            (cd "$STAGE" && zip -q "$OLDPWD/out/$ARCHIVE" duscape.exe duscape-windows.exe LICENSE)
           else
             ARCHIVE="duscape-${VERSION}-${{ matrix.target }}.tar.gz"
             JEMALLOC_SYS="$(cargo metadata --format-version 1 --filter-platform ${{ matrix.target }} \
               | jq -r '.packages[] | select(.name == "tikv-jemalloc-sys") | .manifest_path')"
             cp "$(dirname "$JEMALLOC_SYS")/jemalloc/COPYING" "$STAGE/LICENSE-jemalloc"
-            tar -czf "$ARCHIVE" -C "$STAGE" duscape LICENSE LICENSE-jemalloc
+            # The desktop files as they go under a prefix: `cp -r share ~/.local/` with
+            # `duscape` on the PATH puts the window in the app menu, with its icon on Wayland
+            # (docs/packaging.md).
+            install -Dm644 packaging/linux/io.github.angch.duscape.desktop "$STAGE/share/applications/io.github.angch.duscape.desktop"
+            install -Dm644 packaging/linux/io.github.angch.duscape.metainfo.xml "$STAGE/share/metainfo/io.github.angch.duscape.metainfo.xml"
+            cp -r packaging/linux/icons "$STAGE/share/icons"
+            tar -czf "out/$ARCHIVE" -C "$STAGE" duscape LICENSE LICENSE-jemalloc share
+            # What the deb and rpm take (packaging/linux/nfpm.yaml): the same files, and both
+            # licences in one for Debian's copyright file.
+            mkdir -p target/package
+            cp "$STAGE/duscape" "$STAGE/LICENSE" "$STAGE/LICENSE-jemalloc" target/package/
+            { cat LICENSE; echo; echo "--- jemalloc (BSD-2-Clause), linked into the binary ---"; echo; cat "$STAGE/LICENSE-jemalloc"; } > target/package/copyright
           fi
-          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+
+      # The deb and rpm around the binary just built (nfpm, pinned by hash), one an architecture.
+      - name: Package deb and rpm
+        if: endsWith(matrix.target, '-musl')
+        run: |
+          curl -sSfLO https://github.com/goreleaser/nfpm/releases/download/v2.47.0/nfpm_2.47.0_Linux_x86_64.tar.gz
+          echo "0660ca602b2d2d2ae4781a06c692b3eeb9d437ffea05b831d76e41f4a3188783  nfpm_2.47.0_Linux_x86_64.tar.gz" | sha256sum -c -
+          tar -xzf nfpm_2.47.0_Linux_x86_64.tar.gz nfpm
+          export DUSCAPE_VERSION="$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "duscape") | .version')"
+          export NFPM_ARCH="$(case "${{ matrix.target }}" in aarch64-*) echo arm64;; *) echo amd64;; esac)"
+          ./nfpm package --config packaging/linux/nfpm.yaml --packager deb --target out/
+          ./nfpm package --config packaging/linux/nfpm.yaml --packager rpm --target out/
+          ls -l out
+
+      # The deb installs, its binary is the tarball's and runs, and the desktop files it put in
+      # place pass the validators the distributions use.
+      - name: Check the deb
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          sudo apt-get install -y desktop-file-utils appstream
+          sudo dpkg -i out/*.deb
+          cmp /usr/bin/duscape target/package/duscape
+          duscape --version
+          desktop-file-validate /usr/share/applications/io.github.angch.duscape.desktop
+          appstreamcli validate --no-net /usr/share/metainfo/io.github.angch.duscape.metainfo.xml
+
+      # The installer around the exes in the zip (installer/duscape.nsi), by Ubuntu's makensis.
+      - name: Package the Windows installer
+        if: matrix.exe == '.exe'
+        run: |
+          sudo apt-get update && sudo apt-get install -y nsis
+          VERSION="${GITHUB_REF_NAME:-dev}"
+          PACKAGE_VERSION="$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "duscape") | .version')"
+          makensis -NOCD -V2 -DVERSION="$PACKAGE_VERSION" -DBIN=target/${{ matrix.target }}/release \
+            -DSETUP="out/duscape-${VERSION}-x86_64-setup.exe" installer/duscape.nsi
+          ls -l out
 
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.target }}
-          path: ${{ env.ARCHIVE }}
+          path: out/*
+          if-no-files-found: error
+
+  # macOS: `duscape` for both architectures in one file, and Duscape.app around it (`make
+  # mac-app`: lipo, the icon, Info.plist, signed ad hoc). Only a Mac links AppKit's world, so
+  # this is the one job off Linux. The tarball's binary is the one inside the signed app,
+  # byte for byte: `codesign --force` on the bundle rewrites its executable's signature, so
+  # `target/universal/duscape` is not what ships. Not notarised: there is no Developer ID, so
+  # Gatekeeper asks before the first start of a downloaded copy (docs/packaging.md).
+  build-macos:
+    name: Build (universal-apple-darwin)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - name: Build cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: universal-apple-darwin
+
+      - name: Build Duscape.app
+        run: make mac-app
+
+      # Both architectures; AppKit not in the load commands (it is `dlopen`ed when the window
+      # starts, `mac/appkit.rs`: linked, every terminal start loaded fifteen frameworks); the
+      # bundle's signature whole.
+      - name: Check the app
+        run: |
+          APP=target/universal/Duscape.app
+          BIN=$APP/Contents/MacOS/duscape
+          lipo -archs "$BIN" | tee /dev/stderr | grep -q 'x86_64 arm64\|arm64 x86_64'
+          otool -L "$BIN" | tee /dev/stderr
+          # Not `! … | grep`: `set -e` ignores a command whose status is inverted.
+          if otool -L "$BIN" | grep -q AppKit; then echo "AppKit is linked"; exit 1; fi
+          codesign --verify --strict --verbose=2 "$APP"
+          "$BIN" --version
+          arch -x86_64 "$BIN" --version || echo "(no Rosetta on this runner: the x86_64 half not run)"
+          "$BIN" --benchmark --bench-stage sharded /usr
+
+      - name: Package archives
+        run: |
+          VERSION="${GITHUB_REF_NAME:-dev}"
+          mkdir -p out
+          STAGE="$(mktemp -d)"
+          cp target/universal/Duscape.app/Contents/MacOS/duscape LICENSE "$STAGE"/
+          tar -czf "out/duscape-${VERSION}-universal-apple-darwin.tar.gz" -C "$STAGE" duscape LICENSE
+          # ditto keeps the bundle's signature and attributes, which zip may not.
+          ditto -c -k --keepParent target/universal/Duscape.app "out/Duscape-${VERSION}-macos.zip"
+          # The bare binary, unpacked, runs outside the bundle it was signed in.
+          mkdir -p check && tar -xzf "out/duscape-${VERSION}-universal-apple-darwin.tar.gz" -C check
+          cmp check/duscape target/universal/Duscape.app/Contents/MacOS/duscape
+          check/duscape --version
+          ls -l out
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: universal-apple-darwin
+          path: out/*
           if-no-files-found: error
 
   # One job publishes every archive: two matrix jobs creating the same release race each other.
@@ -128,7 +242,7 @@ jobs:
   github-release:
     name: GitHub Release
     runs-on: ubuntu-latest
-    needs: build
+    needs: [build, build-macos]
     if: github.event_name == 'push'
     steps:
       - uses: actions/download-artifact@v8
@@ -136,11 +250,24 @@ jobs:
           path: dist
           merge-multiple: true
 
+      # What a download (and a self-update) checks: every file's hash, and GitHub's attestation
+      # that this workflow built it from this commit (`gh attestation verify <file> -R angch/duscape`).
+      - name: Checksums
+        run: cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS
+
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/*
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
           files: |
             dist/*.tar.gz
             dist/*.zip
+            dist/*.deb
+            dist/*.rpm
+            dist/*-setup.exe
+            dist/SHA256SUMS
           fail_on_unmatched_files: true
           generate_release_notes: true

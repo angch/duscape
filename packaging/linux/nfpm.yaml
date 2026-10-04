@@ -1,0 +1,73 @@
+# The deb and rpm (nfpm), around the binary CI built for the tarball — never a build of their
+# own: the GitHub release's binaries are the canonical ones (docs/packaging.md), so a package and
+# the tarball beside it hold the same file, byte for byte. deploy.yml runs it in the job that
+# built the binary, with:
+#   DUSCAPE_VERSION  the workspace's version (a package version must be one; the tag may not be)
+#   NFPM_ARCH        amd64 or arm64 (nfpm names it per packager: x86_64/aarch64 for rpm)
+# and the tarball's files copied to target/package/ first: duscape, LICENSE, LICENSE-jemalloc,
+# and copyright (the two licences in one, Debian's way). A fixed folder, since nfpm expands
+# environment variables in `version` and `arch` but not in a file's `src`.
+# The binary is static, so there is no Depends: one package an architecture serves every
+# Debian, Ubuntu, Fedora, RHEL and openSUSE release.
+name: duscape
+version: ${DUSCAPE_VERSION}
+arch: ${NFPM_ARCH}
+platform: linux
+section: utils
+priority: optional
+maintainer: Ang Chin Han <ang.chin.han@gmail.com>
+vendor: Ang Chin Han
+homepage: https://github.com/angch/duscape
+license: MIT
+description: |-
+  See where your disk space went, as a treemap that fills in while it scans.
+  One program that is both a terminal viewer and a Wayland or X11 window, on a
+  parallel directory walker: drill into folders, preview files, and delete what
+  you no longer need.
+
+# What it calls when present, and does without when not: opening files and showing them in the
+# file manager (xdg-utils), the terminal viewer's clipboard (wl-clipboard or xclip; the window
+# owns X11's itself), the window's fonts by name (fontconfig's fc-match; else well-known paths).
+recommends:
+  - xdg-utils
+suggests:
+  - wl-clipboard
+  - xclip
+  - fontconfig
+
+contents:
+  - src: target/package/duscape
+    dst: /usr/bin/duscape
+    file_info:
+      mode: 0755
+  - src: packaging/linux/io.github.angch.duscape.desktop
+    dst: /usr/share/applications/io.github.angch.duscape.desktop
+    file_info:
+      mode: 0644
+  - src: packaging/linux/io.github.angch.duscape.metainfo.xml
+    dst: /usr/share/metainfo/io.github.angch.duscape.metainfo.xml
+    file_info:
+      mode: 0644
+  # A tree keeps its files' modes: a CI checkout's 0644 (a Windows drive under WSL gives 0777).
+  - src: packaging/linux/icons/hicolor
+    dst: /usr/share/icons/hicolor
+    type: tree
+  # Every notice the binary carries: duscape's and jemalloc's (docs/packaging.md, "Licences").
+  # Debian keeps them in one copyright file, the rpm distributions under licenses/.
+  - src: target/package/copyright
+    dst: /usr/share/doc/duscape/copyright
+    file_info:
+      mode: 0644
+    packager: deb
+  - src: target/package/LICENSE
+    dst: /usr/share/licenses/duscape/LICENSE
+    packager: rpm
+    type: license
+    file_info:
+      mode: 0644
+  - src: target/package/LICENSE-jemalloc
+    dst: /usr/share/licenses/duscape/LICENSE-jemalloc
+    packager: rpm
+    type: license
+    file_info:
+      mode: 0644

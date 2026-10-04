@@ -71,6 +71,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its Cancel row, or Esc, is back to the scan as it was. On Windows the scan replaced now
   stops, as it did on macOS and Linux.
 
+- Linux desktop integration (`packaging/linux/`): a `.desktop` file, AppStream metadata and the
+  treemap icon at 16 to 512 pixels, all named by the app ID `io.github.angch.duscape`, which
+  the window now sets as its Wayland app ID and X11 class (it was `duscape-linux`). On Wayland
+  the window gets its icon and name. The Linux tarballs carry them as `share/`, for
+  `cp -r share ~/.local/`. `docs/packaging.md` records why the static binary stays the Linux
+  release — measured again against glibc, `opt-level = 3` and `x86-64-v3`, none reliably
+  faster — and what deb/rpm, Flatpak and Snap would take.
+- The release's binaries are the canonical ones: every package is made from them in the job that
+  built them, never rebuilt. Releases now carry a deb and an rpm for x86_64 and aarch64 (nfpm,
+  the static binary inside, no dependencies), the Windows installer (the zip's two exes), a
+  `SHA256SUMS` over every file, and a build-provenance attestation for each — what a manual
+  self-update, sketched in `docs/packaging.md`, would check.
+- macOS is built by CI too (`build-macos` on `macos-latest`): releases carry
+  `Duscape-<tag>-macos.zip` (the app) and `duscape-<tag>-universal-apple-darwin.tar.gz` (the
+  same binary, from inside the signed bundle), for Apple silicon and Intel in one file. Signed
+  ad hoc, not notarised. `docs/packaging.md` lists what getting into Debian itself would take.
+
 ### Changed
 
 - `LICENSE` names the fork beside diskonaut's author, whose notice stays: "Copyright (c) 2026
@@ -79,6 +96,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- On big-endian Linux (s390x), btrfs's compressed sizes, read as root, were byte-swapped:
+  the extent items' fields were read in the CPU's byte order, where btrfs stores them
+  little-endian. Found by running the tests on s390x under QEMU
+  (`docs/probes/cross-arch-tests.sh`, which also runs them on 32-bit i686 and armv7: all pass).
+- On Windows, `--issues`' tree of where failures are wrote its root with backslashes and the
+  folders under it with slashes (`\Data`, then `private/var/db/`); it uses the platform's
+  separator throughout, and its tests, which expected slashes, pass on Windows again.
 - Quitting the terminal viewer during a scan no longer leaves the screen blank for seconds
   before the shell's prompt comes back: it waited for the walk to stop, each worker first
   finishing the directory it was in, on a cold disk a read at a time (0.4–4 s measured on `/`,

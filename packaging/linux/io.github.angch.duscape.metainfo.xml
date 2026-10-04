@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AppStream metadata: what GNOME Software, KDE Discover and Flathub show for duscape. The id,
+     the launchable and the icons are the app's ID (`duscape_viewer::APP_ID`); the newest
+     release is the workspace's version. Both are tested (viewers/shared/tests/packaging.rs). -->
+<component type="desktop-application">
+  <id>io.github.angch.duscape</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <name>duscape</name>
+  <summary>See where your disk space went</summary>
+  <developer id="io.github.angch">
+    <name>Ang Chin Han</name>
+  </developer>
+  <description>
+    <p>
+      duscape shows where your disk space went: pick a folder, watch a treemap of it fill in
+      live as it is scanned, drill into folders, and delete what you no longer need. It is one
+      program that is both a terminal viewer and a native window, on the same scanner and the
+      same sizes.
+    </p>
+    <ul>
+      <li>A treemap that updates while the scan is still running, nested down to the files</li>
+      <li>A list beside it, as a tree, largest first</li>
+      <li>Previews of text, pictures and binary files</li>
+      <li>Delete, or move to the Trash, what is marked, and see the space freed</li>
+      <li>Hard links and shared blocks counted once; on-disk or apparent sizes</li>
+      <li>Snapshots, network mounts and pseudo-filesystems left alone unless asked</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.angch.duscape.desktop</launchable>
+  <icon type="stock">io.github.angch.duscape</icon>
+  <url type="homepage">https://github.com/angch/duscape</url>
+  <url type="bugtracker">https://github.com/angch/duscape/issues</url>
+  <url type="vcs-browser">https://github.com/angch/duscape</url>
+  <categories>
+    <category>System</category>
+    <category>Filesystem</category>
+  </categories>
+  <keywords>
+    <keyword>disk</keyword>
+    <keyword>usage</keyword>
+    <keyword>space</keyword>
+    <keyword>treemap</keyword>
+    <keyword>du</keyword>
+  </keywords>
+  <provides>
+    <binary>duscape</binary>
+  </provides>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.2.1" date="2026-09-27"/>
+  </releases>
+</component>

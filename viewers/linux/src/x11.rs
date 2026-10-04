@@ -212,7 +212,9 @@ impl X11 {
             window,
             AtomEnum::WM_CLASS,
             AtomEnum::STRING,
-            b"duscape-linux\0duscape-linux\0",
+            // Instance and class both the app's ID: what a desktop matches to the `.desktop`
+            // file (its `StartupWMClass`) for the window's icon and name.
+            format!("{0}\0{0}\0", duscape_viewer::APP_ID).as_bytes(),
         )
         .map_err(|error| error.to_string())?;
         // The app's icon, a treemap, at the sizes window lists and task bars pick from.

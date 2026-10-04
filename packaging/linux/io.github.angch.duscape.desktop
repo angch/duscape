@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=duscape
+GenericName=Disk Usage Analyzer
+Comment=See where your disk space went, as a treemap that fills in while it scans
+Exec=duscape --gui %f
+Icon=io.github.angch.duscape
+Terminal=false
+Categories=System;Filesystem;
+Keywords=disk;usage;space;storage;treemap;du;cleanup;
+StartupWMClass=io.github.angch.duscape
+StartupNotify=false

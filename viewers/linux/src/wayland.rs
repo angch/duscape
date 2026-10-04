@@ -889,7 +889,7 @@ impl Wayland {
         let xdg_surface = wm_base.get_xdg_surface(&surface, &qh, ());
         let toplevel = xdg_surface.get_toplevel(&qh, ());
         toplevel.set_title(title.to_string());
-        toplevel.set_app_id("duscape-linux".to_string());
+        toplevel.set_app_id(duscape_viewer::APP_ID.to_string());
         toplevel.set_min_size(min.0 as i32, min.1 as i32);
         if let Some(manager) = &state.decoration_manager {
             let decoration = manager.get_toplevel_decoration(&toplevel, &qh, ());

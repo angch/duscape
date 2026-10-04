@@ -24,9 +24,13 @@ duscape/
 │   └── dos/           # not a crate: the MS-DOS treemap in 16-bit FASM assembly, `make dos`
 ├── docs/              # features.md (every feature, per viewer), sizes.md (how sizes are counted),
 │                      #   terminal.md, viewers.md, benchmarking.md, scan-performance.md (the measurements),
-│                      #   probes/ (bench-matrix.sh and .ps1, drop-cache.ps1, bench-diskus.sh, the C/Python probes behind the measurements)
+│                      #   packaging.md (static binary first; deb/rpm, Flatpak, Snap weighed),
+│                      #   probes/ (bench-matrix.sh and .ps1, drop-cache.ps1, bench-diskus.sh, cross-arch-tests.sh
+│                      #   (32-bit and big-endian under QEMU), the C/Python probes behind the measurements)
 ├── installer/         # duscape.nsi (the Windows installer, NSIS) and path.ps1 (its PATH edit);
 │                      #   `make installer`
+├── packaging/linux/   # the .desktop file, AppStream metadata and hicolor icons, by the app ID;
+│                      #   in the Linux tarballs as share/ (docs/packaging.md: why static first)
 ├── example/config.toml
 └── Cargo.toml         # Workspace root
 ```
@@ -578,8 +582,11 @@ shared `Viewer`, not in `win/`:
   the `.exe`s carry it as a resource (`viewers/windows/resources.rs`); X11 as `_NET_WM_ICON`
   (16–128 px); macOS as the application icon image (Dock, switcher), set once launching is done, and
   `Duscape.app`'s file icon, `viewers/macos/duscape.icns` (`icns`, checked in and tested like the
-  `.ico`; `make mac-app` copies it, `Info.plist` names it). Not Wayland, which takes
-  an icon from a `.desktop` file
+  `.ico`; `make mac-app` copies it, `Info.plist` names it). Wayland takes it from the
+  `.desktop` file of the window's app ID: `packaging/linux/icons`, the PNG files at `HICOLOR_SIZES`,
+  tested the same way. `APP_ID` (`lib.rs`, `io.github.angch.duscape`) is that ID, the Wayland
+  app ID and X11 class the Linux window sets, and the name of every file in `packaging/linux`
+  (`tests/packaging.rs` holds them to it and the metadata's newest release to the version)
 - `passes.rs` — a layout's paints, first in a hurry and then in full, for every viewer:
   `LABEL_DEADLINE` and `LabelBudget` (which tiles a paint has time to label), `Paints` (which
   layout was painted in full, whether a second pass is owed, and `second_pass`, what a viewer
@@ -999,6 +1006,13 @@ Exiting { app_loaded: bool }
 - **musl**: the release is built for musl, and `libc` types differ there. `ioctl`'s request is
   `c_ulong` on glibc but `c_int` on musl, so request constants are `libc::Ioctl`. CI tests
   `x86_64-unknown-linux-musl` on every push (`test-musl`).
+- **Byte order**: what a filesystem stores is little-endian on every machine — ext4, NTFS, btrfs —
+  and is read with `from_le_bytes`; only what the kernel fills in itself (an ioctl's own
+  structs, such as btrfs's search header) is in the CPU's order, `from_ne_bytes`. Mixing them
+  up passes on x86 and fails on big-endian s390x: btrfs's extent items were read in the CPU's
+  order until 2026-10-04 (11.6 exabytes for 108 KB). CI is x86 alone, so
+  `docs/probes/cross-arch-tests.sh` runs the core and scanner tests on i686, armv7 and s390x
+  under QEMU, no root; run it after touching a parser (`docs/packaging.md`).
 
 ---
 
@@ -1093,6 +1107,13 @@ measured and none helped — read the 2026-09-24 section before trying them agai
   (`Viewer::finish_second_pass`), not a slower frame
 
 ### Releases
+**The binaries `deploy.yml` builds are the canonical ones** (`docs/packaging.md`): every package
+holds them byte for byte, never a build of its own — the deb and rpm (`packaging/linux/nfpm.yaml`)
+and the Windows installer (`installer/duscape.nsi`, Ubuntu's makensis) are made in the job that
+built the binary, from the same files as the tarball or zip. The release adds `SHA256SUMS` and
+a build-provenance attestation per file, what a manual self-update would check. Keep the asset
+names stable: they are what such an updater asks for. macOS is built there too, on
+`macos-latest` (`build-macos`), so every platform's download is a CI build.
 A `v*` tag runs `deploy.yml`. It builds `duscape-<tag>-<target>.tar.gz` for
 `x86_64-unknown-linux-musl` (`musl-gcc`) and `aarch64-unknown-linux-musl` (`cargo zigbuild`,
 zig 0.13.0), and `duscape-<tag>-x86_64-pc-windows-gnu.zip` (`cargo zigbuild`, against the
@@ -1100,10 +1121,15 @@ Universal C Runtime: only DLLs Windows 10 carries), each `duscape` being the ter
 the window; the zip has `duscape-windows.exe` beside it, the window alone and windows subsystem,
 for a shortcut to start with no console flashing before Windows 11 24H2. The Linux binaries are
 fully static, so they have no glibc floor and run on Alpine and busybox; the job checks it, and
-that `duscape.exe` is console subsystem and `duscape-windows.exe` is not. macOS is not in
-it: linking AppKit needs a Mac, where `make mac-app` makes the universal binary and
-`Duscape.app` (`viewers/macos/Info.plist`) — a bare binary opened from Finder runs in Terminal,
-so Finder's way to the window is the bundle. One job then publishes every archive: matrix jobs
+that `duscape.exe` is console subsystem and `duscape-windows.exe` is not. macOS has a job of
+its own on `macos-latest` (linking AppKit needs a Mac): `make mac-app` makes the universal
+binary and `Duscape.app` (`viewers/macos/Info.plist`) — a bare binary opened from Finder runs
+in Terminal, so Finder's way to the window is the bundle — then checks both architectures, no
+AppKit in the load commands, the signature, and a scan; it ships
+`duscape-<tag>-universal-apple-darwin.tar.gz` (the binary taken from inside the signed bundle,
+since `codesign` on the bundle rewrites it) and `Duscape-<tag>-macos.zip` (`ditto`, which keeps
+the signature). Signed ad hoc, not notarised: Gatekeeper asks before a downloaded copy's first
+start. One job then publishes every archive: matrix jobs
 that each create the release race. The repository's Actions permission must allow actions from
 outside it (`actions/checkout`…): set to local actions only, every run fails to start.
 The version is the workspace's (`Cargo.toml`), with the path dependencies' `version` beside it.

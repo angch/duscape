@@ -97,6 +97,11 @@ both the terminal viewer and the window:
 - **Linux**, x86_64 and aarch64: `duscape-<version>-<arch>-unknown-linux-musl.tar.gz`, fully
   static. They need no particular glibc, or any glibc, and no system library for the window: they
   run on old distributions, Alpine and busybox alike, on Wayland or X11.
+- **macOS** 11 and later, Apple silicon and Intel in one file: `Duscape-<version>-macos.zip`
+  (the app, for Finder and the Dock) or `duscape-<version>-universal-apple-darwin.tar.gz` (the
+  same binary bare, for a terminal). They are signed ad hoc, not notarised, so macOS asks before
+  the first start of a downloaded copy: open it with right-click → Open, or clear the quarantine
+  with `xattr -d com.apple.quarantine Duscape.app`.
 - **Windows**, x86_64: `duscape-<version>-x86_64-pc-windows-gnu.zip`, needing only DLLs that come
   with Windows 10 and later. `duscape.exe` is both viewers; `duscape-windows.exe` is the window
   alone, which opens with no console flashing first on any Windows — the one to make a shortcut
@@ -105,7 +110,12 @@ both the terminal viewer and the window:
 ```bash
 tar -xzf duscape-*-x86_64-unknown-linux-musl.tar.gz
 ./duscape ~
+install -Dm755 duscape ~/.local/bin/duscape   # optional: on the PATH,
+cp -r share ~/.local/                         # and the window in the app menu, with its icon
 ```
+
+The static binary is the Linux release by choice: [`docs/packaging.md`](docs/packaging.md) says
+why, what it measured, and what a deb, rpm, Flatpak or Snap would take.
 
 Releases up to 0.2.0 came out under the old name: `diskonaut-angch-<version>-…` tarballs for
 Linux, the window as a separate `diskonaut-linux` beside the terminal viewer, and nothing for
