@@ -259,9 +259,13 @@ jobs:
         with:
           subject-path: dist/*
 
+      # A tag with a pre-release part (`v0.2.2-rc.1`) is a prerelease, never the latest: the
+      # latest release is what a download page, and a self-update, take to be current.
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          make_latest: ${{ !contains(github.ref_name, '-') }}
           files: |
             dist/*.tar.gz
             dist/*.zip
