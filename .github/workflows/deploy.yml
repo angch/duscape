@@ -145,6 +145,11 @@ jobs:
           export NFPM_ARCH="$(case "${{ matrix.target }}" in aarch64-*) echo arm64;; *) echo amd64;; esac)"
           ./nfpm package --config packaging/linux/nfpm.yaml --packager deb --target out/
           ./nfpm package --config packaging/linux/nfpm.yaml --packager rpm --target out/
+          # A pre-release's package version is `0.3.0~rc.1` (the `~` sorts it before 0.3.0, in
+          # dpkg and rpm alike), and nfpm names the files by it; but GitHub turns `~` into `.`
+          # on upload, so SHA256SUMS named files no download has (v0.3.0-rc.1). Name them as
+          # GitHub would, before the sums: the version inside the package keeps its `~`.
+          for file in out/*~*; do [ -e "$file" ] && mv "$file" "${file//\~/.}"; done
           ls -l out
 
       # The deb installs, its binary is the tarball's and runs, and the desktop files it put in
