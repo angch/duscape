@@ -989,7 +989,8 @@ fn found_small_files_are_charged_once_and_only_to_the_files_they_name() {
     assert_eq!(tree.get_total_size(), 12288);
 }
 
-/// What every entry of every folder costs: two sizes must not make it grow.
+/// What every entry of every folder costs: two sizes must not make it grow. Sixteen bytes on
+/// 32-bit targets as well (i686 and armv7, run under QEMU on 2026-10-04).
 #[test]
 fn a_tree_entry_holds_both_sizes_in_sixteen_bytes() {
     assert_eq!(::std::mem::size_of::<FileOrFolder>(), 16);

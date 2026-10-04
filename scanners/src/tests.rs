@@ -888,7 +888,8 @@ mod linux_walker {
     #[test]
     fn btrfs_extent_items_are_summed_as_stored() {
         use crate::linux::btrfs::extents::parse;
-        // header: transid, objectid, offset, type, len; then the item.
+        // header, in the CPU's byte order: transid, objectid, offset, type, len; then the item,
+        // little-endian as btrfs stores it (`parse`'s two byte orders).
         fn item(offset: u64, extent: &[u8]) -> Vec<u8> {
             let mut out = Vec::new();
             for value in [1u64, 257, offset] {
@@ -901,15 +902,15 @@ mod linux_walker {
         }
         // generation, ram_bytes, compression, encryption, other_encoding(2), type
         fn head(ram: u64, compression: u8, kind: u8) -> Vec<u8> {
-            let mut out = 7u64.to_ne_bytes().to_vec();
-            out.extend_from_slice(&ram.to_ne_bytes());
+            let mut out = 7u64.to_le_bytes().to_vec();
+            out.extend_from_slice(&ram.to_le_bytes());
             out.extend_from_slice(&[compression, 0, 0, 0, kind]);
             out
         }
         fn regular(ram: u64, compression: u8, bytenr: u64, disk: u64, num: u64) -> Vec<u8> {
             let mut out = head(ram, compression, 1);
             for value in [bytenr, disk, 0, num] {
-                out.extend_from_slice(&value.to_ne_bytes());
+                out.extend_from_slice(&value.to_le_bytes());
             }
             out
         }

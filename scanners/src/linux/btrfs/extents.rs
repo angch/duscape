@@ -92,6 +92,11 @@ pub(crate) struct Parsed {
 }
 
 /// Sum what the extent items in `buffer` occupy.
+///
+/// Two byte orders: each item's header (`struct btrfs_ioctl_search_header`) is filled in by the
+/// kernel in the CPU's, but the item after it is copied as btrfs stores it, little-endian
+/// (`struct btrfs_file_extent_item`, `__le64` fields). Read the item's fields in the CPU's order
+/// and a big-endian machine (s390x) gets every size byte-swapped.
 pub(crate) fn parse(buffer: &[u8], items: u32) -> Option<Parsed> {
     let u64_at = |at: usize| -> Option<u64> {
         Some(u64::from_ne_bytes(buffer.get(at..at + 8)?.try_into().ok()?))
@@ -105,7 +110,7 @@ pub(crate) fn parse(buffer: &[u8], items: u32) -> Option<Parsed> {
         let item = buffer.get(at + HEADER..at + HEADER + len)?;
         at += HEADER + len;
         last = Some(offset);
-        let ram_bytes = u64::from_ne_bytes(item.get(8..16)?.try_into().ok()?);
+        let ram_bytes = u64::from_le_bytes(item.get(8..16)?.try_into().ok()?);
         let compression = *item.get(16)?;
         let kind = *item.get(20)?;
         if kind == 0 {
@@ -114,7 +119,7 @@ pub(crate) fn parse(buffer: &[u8], items: u32) -> Option<Parsed> {
             continue;
         }
         let field = |index: usize| -> Option<u64> {
-            Some(u64::from_ne_bytes(
+            Some(u64::from_le_bytes(
                 item.get(EXTENT_HEAD + index * 8..EXTENT_HEAD + index * 8 + 8)?
                     .try_into()
                     .ok()?,
