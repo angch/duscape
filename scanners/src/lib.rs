@@ -354,10 +354,10 @@ pub fn walk_would_enter(scan_root: &Path, folder: &Path, options: ScanOptions) -
 /// Walk `root`, yielding the contents of one directory at a time.
 ///
 /// On macOS this uses `macos`, which asks the kernel only for the attributes disk usage needs.
-/// On Linux it uses [`linux`], which owns its own thread pool because `dua-core`'s stops scaling
+/// On Linux it uses `linux`, which owns its own thread pool because `dua-core`'s stops scaling
 /// well before the kernel does. On Windows it uses `windows`, which reads a directory's sizes
 /// in bulk rather than opening every file. Elsewhere it uses the portable walk on `std::fs`
-/// ([`portable`]), a directory listed whole at a time.
+/// (`portable`), a directory listed whole at a time.
 pub fn scan_directories(
     root: &Path,
     options: ScanOptions,

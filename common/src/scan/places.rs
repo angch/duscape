@@ -138,7 +138,7 @@ impl Places {
     }
 
     /// The report's lines: under the common root, its folders by how many failed in each, most
-    /// first, in at most [`Self::LINES`]. The lines go to the folders holding the most, wherever
+    /// first, in at most `Self::LINES`. The lines go to the folders holding the most, wherever
     /// they are — opened largest first, not depth first, so one deep corner cannot take them
     /// all — and a folder holding one folder alone shares its line (`private/var/`).
     #[must_use]

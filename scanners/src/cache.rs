@@ -4,7 +4,7 @@
 //! Where the metadata cannot be read off the device — APFS through a FileVault, which is every
 //! Mac — a first scan costs the kernel's floor (`docs/scan-performance.md`, "macOS: what is
 //! left"). Every scan after it need not: the volume keeps a log of which directories changed
-//! (FSEvents on macOS, [`crate::fsevents`]), so the saved stream of [`DirEntries`] can be
+//! (FSEvents on macOS, `crate::fsevents`), so the saved stream of [`DirEntries`] can be
 //! replayed with the changed directories read afresh, the directories gone dropped with what
 //! was under them, the directories new walked, and the ledger rebuilt by the tree as on any
 //! scan. The save is a tee on whatever walker ran ([`Recorder`]); the replay is a walker of its

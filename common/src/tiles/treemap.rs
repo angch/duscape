@@ -158,8 +158,8 @@ impl TreeMap {
     /// and shrink in place rather than being cut again, so a folder overtaking another does not
     /// send the tiles after it across the board. Entries the plan did not have are laid out
     /// after its rows, in what they leave. The plan is dropped, and the children squarified
-    /// afresh, when a tile would be worse than [`STEADY_WORST_RATIO`], a planned entry would
-    /// get no tile, or the new entries take more than [`STEADY_NEW_SHARE`]. `key` names child
+    /// afresh, when a tile would be worse than `STEADY_WORST_RATIO`, a planned entry would
+    /// get no tile, or the new entries take more than `STEADY_NEW_SHARE`. `key` names child
     /// `i` for the plan, stably across layouts (its name's hash). Returns this layout's plan.
     pub fn populate_steady(
         &mut self,
