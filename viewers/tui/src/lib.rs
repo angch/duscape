@@ -155,6 +155,12 @@ impl Drop for TerminalGuard {
 fn try_main() -> Result<(), Error> {
     let opts = Opt::parse();
 
+    // Before the config file: a broken one must not keep the licences from being read.
+    if opts.licenses {
+        print_licenses();
+        return Ok(());
+    }
+
     let config_path = opts
         .config
         .clone()
@@ -493,6 +499,15 @@ fn ticker(
 }
 
 /// `--clear-cache`: every saved scan removed, and what that freed said on stdout.
+/// `--licenses`: what an About box says, then the licences in full.
+fn print_licenses() {
+    for line in libduscape::about::lines() {
+        println!("{line}");
+    }
+    println!();
+    println!("{}", libduscape::about::licenses());
+}
+
 fn clear_cache() {
     let Some(dir) = duscape_scan::cache::directory() else {
         println!("No cache directory: nothing saved.");

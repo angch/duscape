@@ -98,6 +98,7 @@ Section "duscape" SectionProgram
   File "${BIN}\duscape.exe"
   File "${BIN}\duscape-windows.exe"
   File "/oname=LICENSE.txt" "LICENSE"
+  File "THIRD-PARTY-LICENSES.txt"
   WriteUninstaller "$INSTDIR\uninstall.exe"
   !insertmacro RemoveExtras
 
@@ -160,6 +161,7 @@ Section "Uninstall"
   !insertmacro RemoveExtras
   !insertmacro EditPath remove
   Delete "$INSTDIR\LICENSE.txt"
+  Delete "$INSTDIR\THIRD-PARTY-LICENSES.txt"
   Delete "$INSTDIR\uninstall.exe"
   ; Not /r: only what was put there, so a folder chosen by mistake keeps whatever else it holds.
   RMDir "$INSTDIR"

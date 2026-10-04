@@ -202,6 +202,16 @@ fn menu_bar(mtm: MainThreadMarker, app: &NSApplication) -> Retained<NSMenu> {
         "",
         command,
     );
+    // duscape's licence and every third party's, in full (the About panel has the copyright,
+    // from Info.plist, and Credits.html's links).
+    add(
+        mtm,
+        &app_menu,
+        "Licences…",
+        sel!(showLicences:),
+        "",
+        command,
+    );
     separator(mtm, &app_menu);
     let services = submenu(mtm, &app_menu, "Services");
     app.setServicesMenu(Some(&services));

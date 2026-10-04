@@ -80,6 +80,8 @@ const PLATFORM: Platform = Platform {
     quick_look: false,
     pathname: false,
     trash: true,
+    // No menu bar or window menu to hold them: the context menu does (and F1, About).
+    about: true,
 };
 
 /// The key that does what a menu item does, shown beside it.
@@ -585,6 +587,7 @@ impl App {
             keys::KP_ADD => self.viewer.zoom_in(),
             keys::KP_SUBTRACT => self.viewer.zoom_out(),
             keys::KP_0 => self.viewer.reset_zoom(),
+            keys::F1 => self.show_about(),
             keys::F5 => self.viewer.rescan_all(),
             _ => match (control, ch) {
                 (true, Some('c' | 'C')) => return self.copy_paths(shift),
@@ -1121,6 +1124,14 @@ impl App {
                 None
             }
             Action::Trash | Action::Delete => return self.remove(action == Action::Delete),
+            Action::About => {
+                self.show_about();
+                None
+            }
+            Action::Licences => libduscape::about::licenses_file()
+                .map_err(|error| error.to_string())
+                .and_then(|path| libduscape::launch::open(&path))
+                .err(),
             // Not offered here (`PLATFORM`).
             Action::QuickLook | Action::CopyPathname => None,
         };
@@ -1128,6 +1139,19 @@ impl App {
             self.viewer.say(error);
         }
         self.changed();
+    }
+
+    /// About duscape, in the window's notice dialog: `libduscape::about`'s lines.
+    fn show_about(&mut self) {
+        let mut lines = libduscape::about::lines();
+        let title = lines.remove(0);
+        lines.push(String::new());
+        lines.push("The licences in full: Licences… in the right-click menu.".to_string());
+        self.dialog = Dialog::Notice {
+            title,
+            detail: lines.join("\n"),
+        };
+        self.dirty = true;
     }
 }
 

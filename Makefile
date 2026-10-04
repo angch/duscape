@@ -1,4 +1,4 @@
-.PHONY: build run install test test-fs quality coverage setup-ubuntu setup-windows installer static static-aarch64 static-linux-gui static-linux-gui-aarch64 static-windows mac-universal mac-app pgo dos dos-tools dos-run
+.PHONY: build run install test test-fs quality coverage setup-ubuntu setup-windows installer third-party static static-aarch64 static-linux-gui static-linux-gui-aarch64 static-windows mac-universal mac-app pgo dos dos-tools dos-run
 
 build:
 	cargo build --workspace
@@ -75,7 +75,7 @@ setup-ubuntu:
 # the versions CI uses (zig as deploy.yml pins it; NSIS 3.10, whose zip SourceForge lists by
 # MD5 e3e2803a13ead75e4471a51069d04c20, the SHA-256 below taken from that file). Then the
 # cargo tools: cargo-zigbuild (the release's GNU build, `make installer`), typos and cargo-deny
-# (CI's checks), cargo-llvm-cov (`make coverage`).
+# (CI's checks), cargo-llvm-cov (`make coverage`), cargo-about (`make third-party`).
 TOOLS := target/tools
 ZIG_WINDOWS := zig-windows-x86_64-$(ZIG_VERSION)
 ZIG_WINDOWS_SHA256 := d859994725ef9402381e557c60bb57497215682e355204d754ee3df75ee3c158
@@ -91,6 +91,7 @@ setup-windows:
 	@command -v typos >/dev/null || cargo install typos-cli --locked
 	@command -v cargo-deny >/dev/null || cargo install cargo-deny --locked
 	@command -v cargo-llvm-cov >/dev/null || cargo install cargo-llvm-cov --locked
+	@command -v cargo-about >/dev/null || cargo install cargo-about --locked --features cli
 	@echo "ready: make installer, static-windows, coverage; zig and NSIS in $(TOOLS)"
 
 # The Windows installer, target/installer/duscape-<version>-x86_64-setup.exe: the release's
@@ -102,6 +103,26 @@ installer:
 	mkdir -p target/installer
 	PATH="$$PWD/$(TOOLS)/nsis-$(NSIS_VERSION):$$PATH" makensis -NOCD -V2 -DVERSION=$(VERSION) -DBIN=target/x86_64-pc-windows-gnu/release -DSETUP=target/installer/duscape-$(VERSION)-x86_64-setup.exe installer/duscape.nsi
 	@echo "built target/installer/duscape-$(VERSION)-x86_64-setup.exe"
+
+# THIRD-PARTY-LICENSES.txt: the notices of every crate compiled into a shipped binary, on any
+# release target, then Rust's standard library, musl and jemalloc (packaging/about/). Embedded
+# in the binaries (`duscape --licenses`, the windows' About) and shipped beside them. Checked
+# in, and regenerated in CI to fail if it is stale: run this after changing a dependency.
+# Offline (after fetching what Cargo.lock names, every target's crates) and failing on any
+# licence it cannot identify, so the file is the same everywhere;
+# written with -o, not to stdout, which cargo-about refuses under PowerShell (its encoding);
+# carriage returns dropped, since a crate's licence with CRLF line ends came out with them on
+# Linux and without on Windows.
+# The workspace's own crates are duscape's (LICENSE), and named with the version, which would
+# make the file change on every release: filtered out. Needs cargo-about (`setup-windows`, or
+# `cargo install cargo-about --locked --features cli`).
+WORKSPACE_CRATES := duscape|libduscape|duscape-scan|duscape-viewer|duscape-linux|duscape-mac|duscape-windows
+third-party:
+	mkdir -p target
+	cargo fetch --locked
+	cargo about generate --offline --fail --manifest-path viewers/tui/Cargo.toml --config packaging/about/about.toml --all-features packaging/about/third-party.hbs -o target/third-party-unfiltered.txt
+	grep -vE '^  ($(WORKSPACE_CRATES)) ' target/third-party-unfiltered.txt | tr -d '\r' > THIRD-PARTY-LICENSES.txt
+	@echo "THIRD-PARTY-LICENSES.txt: $$(grep -cE '^  [a-z0-9_-]+ [0-9]' THIRD-PARTY-LICENSES.txt) crates"
 
 # Fully static binary: on Linux, musl with jemalloc (needs musl-gcc); on Windows, MSVC with
 # crt-static (configured in .cargo/config.toml, needing only DLLs that come with Windows); on
@@ -159,6 +180,8 @@ mac-app: mac-universal
 	mkdir -p $(MAC_APP)/Contents/MacOS $(MAC_APP)/Contents/Resources
 	cp target/universal/duscape $(MAC_APP)/Contents/MacOS/duscape
 	cp viewers/macos/duscape.icns $(MAC_APP)/Contents/Resources/duscape.icns
+	cp viewers/macos/Credits.html $(MAC_APP)/Contents/Resources/Credits.html
+	cp LICENSE THIRD-PARTY-LICENSES.txt $(MAC_APP)/Contents/Resources/
 	sed 's/@VERSION@/$(VERSION)/g' viewers/macos/Info.plist > $(MAC_APP)/Contents/Info.plist
 	codesign --force --sign - $(MAC_APP)
 

@@ -375,6 +375,23 @@ define_class!(
             }
         }
 
+        /// The app menu's Licences…: duscape's licence and every third party's
+        /// (`libduscape::about::licenses`), written to a text file and opened as a double-click
+        /// would open it (TextEdit), since they are too long for a panel.
+        #[unsafe(method(showLicences:))]
+        fn show_licences(&self, _sender: Option<&AnyObject>) {
+            match libduscape::about::licenses_file() {
+                Ok(path) => {
+                    if let Some(url) = NSURL::from_file_path(&path) {
+                        NSWorkspace::sharedWorkspace().openURL(&url);
+                    }
+                }
+                Err(error) => {
+                    self.update(|viewer| viewer.say(format!("Could not open the licences: {error}")));
+                }
+            }
+        }
+
         #[unsafe(method(enclosingFolder:))]
         fn enclosing_folder(&self, _sender: Option<&AnyObject>) {
             self.update(Viewer::go_up);
@@ -1497,6 +1514,8 @@ const PLATFORM: Platform = Platform {
     quick_look: true,
     pathname: true,
     trash: true,
+    // In the app menu instead (`mac/mod.rs`).
+    about: false,
 };
 
 /// The context menu, as `Viewer::context_menu` has it: each item sent along the responder chain
@@ -1525,6 +1544,9 @@ fn context_menu(mtm: MainThreadMarker, entries: &[Entry]) -> Retained<NSMenu> {
             Action::RescanAll => sel!(rescanEverything:),
             Action::Trash => sel!(moveToTrash:),
             Action::Delete => sel!(deleteImmediately:),
+            // Not offered here (`PLATFORM`), but the app menu's actions if they were.
+            Action::About => sel!(orderFrontStandardAboutPanel:),
+            Action::Licences => sel!(showLicences:),
         };
         // SAFETY: each action is a method of `DiskView`, found along the responder chain.
         let item = unsafe {

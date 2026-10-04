@@ -88,6 +88,8 @@ by copying it.
 | Volume used vs. what the scan found | yes, in the title | yes, under the path, with freed space and unreadable entries | yes, in the status bar | yes, in the status bar |
 | Configurable keys | yes (`config.toml`) | — | — | — |
 | Benchmark harness | yes (`--benchmark`) | — | — | — |
+| About (version, copyrights, licence, links) | `--licenses` (with the licences), `--version` | the window menu (Alt+Space, the title bar's icon): About duscape… | the app menu: About duscape (the copyright from `Info.plist`, links from `Credits.html`) | the right-click menu (the whole menu when nothing is in hand), and F1 |
+| The licences in full: duscape's and every third party's | `--licenses` | the window menu: Licences…, opened in the default text viewer | the app menu: Licences…, in TextEdit | the right-click menu: Licences…, by `xdg-open` |
 
 The MS-DOS viewer (`viewers/dos/`, 16-bit assembly for a 286 with no coprocessor) shares no
 code, so it is not in the table. It has the scan (DOS

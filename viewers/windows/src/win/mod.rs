@@ -52,15 +52,16 @@ use windows_sys::Win32::UI::Shell::{
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CREATESTRUCTW, CS_DBLCLKS, CW_USEDEFAULT, CreateIconIndirect, CreatePopupMenu,
     CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow, DispatchMessageW, GWLP_USERDATA,
-    GetClientRect, GetMessageW, GetSystemMetrics, GetWindowLongPtrW, HICON, ICON_BIG, ICON_SMALL,
-    ICONINFO, IDC_ARROW, IDI_APPLICATION, IDYES, KillTimer, LoadCursorW, LoadIconW, MB_ICONERROR,
-    MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_YESNO, MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG,
-    MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassW, SM_CXICON, SM_CXSMICON, SW_SHOW,
-    SYSTEM_METRICS_INDEX, SendMessageW, SetProcessDPIAware, SetTimer, SetWindowLongPtrW,
-    SetWindowTextW, ShowWindow, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage,
-    WM_APP, WM_CHAR, WM_CREATE, WM_DESTROY, WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
-    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONUP, WM_SETICON, WM_SIZE, WM_TIMER,
-    WM_XBUTTONUP, WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+    GetClientRect, GetMessageW, GetSystemMenu, GetSystemMetrics, GetWindowLongPtrW, HICON,
+    ICON_BIG, ICON_SMALL, ICONINFO, IDC_ARROW, IDI_APPLICATION, IDYES, KillTimer, LoadCursorW,
+    LoadIconW, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_YESNO, MF_GRAYED,
+    MF_SEPARATOR, MF_STRING, MSG, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassW,
+    SM_CXICON, SM_CXSMICON, SW_SHOW, SYSTEM_METRICS_INDEX, SendMessageW, SetProcessDPIAware,
+    SetTimer, SetWindowLongPtrW, SetWindowTextW, ShowWindow, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+    TrackPopupMenu, TranslateMessage, WM_APP, WM_CHAR, WM_CREATE, WM_DESTROY, WM_KEYDOWN,
+    WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONUP,
+    WM_SETICON, WM_SIZE, WM_SYSCOMMAND, WM_TIMER, WM_XBUTTONUP, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+    WS_VISIBLE,
 };
 
 use crate::cli::Opt;
@@ -506,8 +507,8 @@ impl Window {
                 self.delete(hwnd);
                 None
             }
-            // Not offered here (`PLATFORM`).
-            Action::QuickLook | Action::CopyPathname => None,
+            // Not offered here (`PLATFORM`); About and Licences are on the window menu.
+            Action::QuickLook | Action::CopyPathname | Action::About | Action::Licences => None,
         };
         if let Some(error) = failed {
             self.viewer.say(error);
@@ -717,6 +718,8 @@ const PLATFORM: Platform = Platform {
     quick_look: false,
     pathname: false,
     trash: false,
+    // On the window menu instead (`add_window_menu_items`).
+    about: false,
 };
 
 /// The key that does what a menu item does, shown beside it.
@@ -857,7 +860,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         // SAFETY: the message's own arguments, passed on unchanged.
         return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
     }
-    if !handles(msg) {
+    if !handles(msg, wparam) {
         // Straight to the system, outside the guard: `DefWindowProcW` runs the frame's own
         // loops in here — dragging an edge, the title bar or a system-menu command — and the
         // WM_SIZE and WM_PAINT they send arrive re-entrantly. Behind the guard those were
@@ -884,9 +887,56 @@ const HANDLED: [u32; 11] = [
     WM_TIMER,
 ];
 
-/// Whether [`dispatch`] does anything with `msg`.
-fn handles(msg: u32) -> bool {
+/// The window menu's own items (Alt+Space, the title bar's icon): ids below 0xF000, the
+/// system's, with the low four bits clear, which the system uses.
+const SC_ABOUT: usize = 0x1010;
+const SC_LICENCES: usize = 0x1020;
+
+/// Whether [`dispatch`] does anything with `msg`: one of [`HANDLED`], or one of our window-menu
+/// commands. Any other `WM_SYSCOMMAND` — move, size, maximise, whose loops send WM_SIZE and
+/// WM_PAINT back re-entrantly — is the system's, outside the guard.
+fn handles(msg: u32, wparam: WPARAM) -> bool {
     HANDLED.contains(&msg)
+        || (msg == WM_SYSCOMMAND && matches!(wparam & 0xFFF0, SC_ABOUT | SC_LICENCES))
+}
+
+/// Add About and Licences to the window menu, below the system's own items.
+fn add_window_menu_items(hwnd: HWND) {
+    // SAFETY: `hwnd` is this thread's window; the menu is the system's copy for it, and the
+    // strings are NUL-terminated and alive for each call.
+    unsafe {
+        let menu = GetSystemMenu(hwnd, 0);
+        if menu.is_null() {
+            return;
+        }
+        AppendMenuW(menu, MF_SEPARATOR, 0, null_mut());
+        let about = wide("About duscape…");
+        AppendMenuW(menu, MF_STRING, SC_ABOUT, about.as_ptr());
+        let licences = wide("Licences…");
+        AppendMenuW(menu, MF_STRING, SC_LICENCES, licences.as_ptr());
+    }
+}
+
+/// About duscape: `libduscape::about`'s lines, in a message box.
+fn show_about(hwnd: HWND) {
+    let mut text = libduscape::about::lines().join("\n");
+    text.push_str("\n\nThe licences in full: Licences… on this menu.");
+    message(hwnd, &text, MB_OK | MB_ICONINFORMATION);
+}
+
+/// The licences in full, too long for a message box: written to a text file and opened with
+/// the system's viewer for it.
+fn show_licences(hwnd: HWND) {
+    let opened = libduscape::about::licenses_file()
+        .map_err(|error| error.to_string())
+        .and_then(|path| libduscape::launch::open(&path));
+    if let Err(error) = opened {
+        message(
+            hwnd,
+            &format!("Could not open the licences: {error}"),
+            MB_OK | MB_ICONERROR,
+        );
+    }
 }
 
 /// Run `handler` with an exclusive `&mut Window`, behind the re-entrancy guard, then the reports
@@ -923,6 +973,12 @@ fn run_handler(state: *mut Window, handler: impl FnOnce(&mut Window) -> LRESULT)
 
 fn dispatch(window: &mut Window, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
+        // Only ours reach here (`handles`); the system's go to it unguarded.
+        WM_SYSCOMMAND => match wparam & 0xFFF0 {
+            SC_ABOUT => show_about(hwnd),
+            SC_LICENCES => show_licences(hwnd),
+            _ => {}
+        },
         WM_SIZE => window.on_size(hwnd),
         WM_PAINT => {
             let started = Instant::now();
@@ -1276,6 +1332,7 @@ pub fn run_with(folder: Option<PathBuf>, options: ScanOptions, no_elevate: bool)
                 SendMessageW(hwnd, WM_SETICON, which as WPARAM, icon as LPARAM);
             }
         }
+        add_window_menu_items(hwnd);
         // Through the guard like any handler: both re-enter the window procedure.
         run_handler(state, |window| {
             window.hwnd = hwnd as usize;

@@ -110,11 +110,12 @@ jobs:
           VERSION="${GITHUB_REF_NAME:-dev}"
           STAGE="$(mktemp -d)"
           mkdir -p out
-          cp target/${{ matrix.target }}/release/duscape${{ matrix.exe }} LICENSE "$STAGE"/
+          # LICENSE, and the notices of everything else the binary contains (`make third-party`).
+          cp target/${{ matrix.target }}/release/duscape${{ matrix.exe }} LICENSE THIRD-PARTY-LICENSES.txt "$STAGE"/
           if [ "${{ matrix.exe }}" = ".exe" ]; then
             cp target/${{ matrix.target }}/release/duscape-windows.exe "$STAGE"/
             ARCHIVE="duscape-${VERSION}-${{ matrix.target }}.zip"
-            (cd "$STAGE" && zip -q "$OLDPWD/out/$ARCHIVE" duscape.exe duscape-windows.exe LICENSE)
+            (cd "$STAGE" && zip -q "$OLDPWD/out/$ARCHIVE" duscape.exe duscape-windows.exe LICENSE THIRD-PARTY-LICENSES.txt)
           else
             ARCHIVE="duscape-${VERSION}-${{ matrix.target }}.tar.gz"
             JEMALLOC_SYS="$(cargo metadata --format-version 1 --filter-platform ${{ matrix.target }} \
@@ -126,12 +127,12 @@ jobs:
             install -Dm644 packaging/linux/io.github.angch.duscape.desktop "$STAGE/share/applications/io.github.angch.duscape.desktop"
             install -Dm644 packaging/linux/io.github.angch.duscape.metainfo.xml "$STAGE/share/metainfo/io.github.angch.duscape.metainfo.xml"
             cp -r packaging/linux/icons "$STAGE/share/icons"
-            tar -czf "out/$ARCHIVE" -C "$STAGE" duscape LICENSE LICENSE-jemalloc share
+            tar -czf "out/$ARCHIVE" -C "$STAGE" duscape LICENSE LICENSE-jemalloc THIRD-PARTY-LICENSES.txt share
             # What the deb and rpm take (packaging/linux/nfpm.yaml): the same files, and both
             # licences in one for Debian's copyright file.
             mkdir -p target/package
-            cp "$STAGE/duscape" "$STAGE/LICENSE" "$STAGE/LICENSE-jemalloc" target/package/
-            { cat LICENSE; echo; echo "--- jemalloc (BSD-2-Clause), linked into the binary ---"; echo; cat "$STAGE/LICENSE-jemalloc"; } > target/package/copyright
+            cp "$STAGE/duscape" "$STAGE/LICENSE" "$STAGE/LICENSE-jemalloc" "$STAGE/THIRD-PARTY-LICENSES.txt" target/package/
+            { cat LICENSE; echo; echo "--- jemalloc (BSD-2-Clause), linked into the binary ---"; echo; cat "$STAGE/LICENSE-jemalloc"; echo; cat THIRD-PARTY-LICENSES.txt; } > target/package/copyright
           fi
 
       # The deb and rpm around the binary just built (nfpm, pinned by hash), one an architecture.
@@ -226,8 +227,8 @@ jobs:
           VERSION="${GITHUB_REF_NAME:-dev}"
           mkdir -p out
           STAGE="$(mktemp -d)"
-          cp target/universal/Duscape.app/Contents/MacOS/duscape LICENSE "$STAGE"/
-          tar -czf "out/duscape-${VERSION}-universal-apple-darwin.tar.gz" -C "$STAGE" duscape LICENSE
+          cp target/universal/Duscape.app/Contents/MacOS/duscape LICENSE THIRD-PARTY-LICENSES.txt "$STAGE"/
+          tar -czf "out/duscape-${VERSION}-universal-apple-darwin.tar.gz" -C "$STAGE" duscape LICENSE THIRD-PARTY-LICENSES.txt
           # ditto keeps the bundle's signature and attributes, which zip may not.
           ditto -c -k --keepParent target/universal/Duscape.app "out/Duscape-${VERSION}-macos.zip"
           # The bare binary, unpacked, runs outside the bundle it was signed in.

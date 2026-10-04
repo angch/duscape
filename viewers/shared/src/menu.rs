@@ -36,6 +36,11 @@ pub enum Action {
     Trash,
     /// Delete the targets for good, after asking.
     Delete,
+    /// About duscape: `libduscape::about`'s lines. Offered where the window has no other
+    /// place for it ([`Platform::about`]).
+    About,
+    /// The licences in full, `libduscape::about::licenses`, in the system's text viewer.
+    Licences,
 }
 
 /// A line of the menu.
@@ -74,6 +79,10 @@ pub struct Platform {
     pub pathname: bool,
     /// A Trash to move entries to; without one, deleting is for good.
     pub trash: bool,
+    /// About and Licences in this menu, last, and as the whole menu when nothing is targeted:
+    /// for a window with no menu bar or window menu to hold them (Linux). Windows has its window
+    /// menu, macOS its app menu.
+    pub about: bool,
 }
 
 impl Viewer {
@@ -93,7 +102,11 @@ impl Viewer {
         let marked = self.marked.len();
         let in_hand = self.cursor_entry().map(|row| &row.entry);
         if marked == 0 && in_hand.is_none() {
-            return Vec::new();
+            return if platform.about {
+                about_items()
+            } else {
+                Vec::new()
+            };
         }
         let many = (marked > 1).then(|| DisplayCount(marked as u64).to_string());
         let loaded = !self.scanning;
@@ -155,6 +168,62 @@ impl Viewer {
         } else {
             menu.push(item(Action::Delete, format!("Delete{what}…"), loaded));
         }
+        if platform.about {
+            menu.push(Entry::Separator);
+            menu.extend(about_items());
+        }
         menu
+    }
+}
+
+/// About duscape… and Licences…, always there to choose.
+fn about_items() -> Vec<Entry> {
+    [
+        (Action::About, "About duscape…"),
+        (Action::Licences, "Licences…"),
+    ]
+    .into_iter()
+    .map(|(action, label)| Entry::Item {
+        action,
+        label: label.to_string(),
+        enabled: true,
+    })
+    .collect()
+}
+
+#[cfg(test)]
+mod about_tests {
+    use super::{Action, Entry, Platform};
+    use crate::state::Viewer;
+
+    fn platform(about: bool) -> Platform {
+        Platform {
+            reveal: "Show in File Manager",
+            quick_look: false,
+            pathname: false,
+            trash: true,
+            about,
+        }
+    }
+
+    fn actions(entries: &[Entry]) -> Vec<Action> {
+        entries.iter().filter_map(Entry::chosen).collect()
+    }
+
+    /// With nothing targeted the menu is About and Licences alone where the platform asks for
+    /// them (the Linux window: no other place to hold them), and nothing where it does not.
+    #[test]
+    fn about_and_licences_are_the_menu_when_nothing_is_targeted() {
+        // Nothing scanned yet, so nothing in hand or marked.
+        let viewer = Viewer::new(
+            &::std::env::temp_dir(),
+            libduscape::model::SizeKind::Apparent,
+            1,
+        );
+        assert_eq!(
+            actions(&viewer.context_menu(&platform(true))),
+            [Action::About, Action::Licences]
+        );
+        assert!(viewer.context_menu(&platform(false)).is_empty());
     }
 }

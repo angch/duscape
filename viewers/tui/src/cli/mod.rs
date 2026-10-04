@@ -100,6 +100,10 @@ pub struct Opt {
     /// goes, and the rest is kept within 256 MiB, the least recently saved out first
     #[arg(long)]
     pub clear_cache: bool,
+    /// Print who made duscape, its licence, and the licences of everything it contains, instead
+    /// of scanning
+    #[arg(long)]
+    pub licenses: bool,
 }
 
 impl Opt {

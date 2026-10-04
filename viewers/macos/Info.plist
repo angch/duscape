@@ -22,6 +22,10 @@
     <string>@VERSION@</string>
     <key>LSMinimumSystemVersion</key>
     <string>11.0</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright (c) 2020 Aram Drevekenin; Copyright (c) 2026 Ang Chin Han and duscape contributors. MIT licence.</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.utilities</string>
     <key>NSHighResolutionCapable</key>
     <true/>
 </dict>

@@ -18,3 +18,24 @@ jobs:
 
       - name: Run cargo deny
         run: cargo deny check licenses
+
+  # THIRD-PARTY-LICENSES.txt is checked in and embedded in the binaries; regenerated here,
+  # it must come out the same, or a dependency changed without it (`make third-party`).
+  # cargo-about pinned: another version may word the file differently.
+  third-party:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-about
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about@0.9.2
+
+      - name: Regenerate THIRD-PARTY-LICENSES.txt
+        run: make third-party
+
+      - name: Check it is the one checked in
+        run: git diff --exit-code THIRD-PARTY-LICENSES.txt

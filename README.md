@@ -145,6 +145,11 @@ duscape" as options.
 
 The terminal viewer wants a terminal of roughly 50×15 cells at least.
 
+`duscape --licenses` prints who made duscape, its licence, and the licences of everything its
+binaries contain (`THIRD-PARTY-LICENSES.txt`, shipped beside them too); in the windows, About
+and Licences are on the window menu (Windows), the app menu (macOS) and the right-click menu or
+F1 (Linux).
+
 ## Sizes, hard links and mount points
 
 A folder's size is the space held under it: each distinct file counted once, however many names

@@ -5,7 +5,7 @@
 #   DUSCAPE_VERSION  the workspace's version (a package version must be one; the tag may not be)
 #   NFPM_ARCH        amd64 or arm64 (nfpm names it per packager: x86_64/aarch64 for rpm)
 # and the tarball's files copied to target/package/ first: duscape, LICENSE, LICENSE-jemalloc,
-# and copyright (the two licences in one, Debian's way). A fixed folder, since nfpm expands
+# THIRD-PARTY-LICENSES.txt, and copyright (all three in one, Debian's way). A fixed folder, since nfpm expands
 # environment variables in `version` and `arch` but not in a file's `src`.
 # The binary is static, so there is no Depends: one package an architecture serves every
 # Debian, Ubuntu, Fedora, RHEL and openSUSE release.
@@ -67,6 +67,12 @@ contents:
       mode: 0644
   - src: target/package/LICENSE-jemalloc
     dst: /usr/share/licenses/duscape/LICENSE-jemalloc
+    packager: rpm
+    type: license
+    file_info:
+      mode: 0644
+  - src: target/package/THIRD-PARTY-LICENSES.txt
+    dst: /usr/share/licenses/duscape/THIRD-PARTY-LICENSES.txt
     packager: rpm
     type: license
     file_info:

@@ -39,6 +39,24 @@ fn the_desktop_file_is_named_by_the_app_id_and_names_it() {
     assert_eq!(desktop_value(&desktop, "MimeType"), None);
 }
 
+/// The macOS About panel's copyright (Info.plist's `NSHumanReadableCopyright`) is LICENSE's
+/// copyright lines, both, as the other viewers' About says.
+#[test]
+fn the_macos_copyright_is_the_licences() {
+    let plist =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../macos/Info.plist"))
+            .expect("Info.plist");
+    let copyright = plist
+        .split("<key>NSHumanReadableCopyright</key>")
+        .nth(1)
+        .and_then(|rest| rest.split("<string>").nth(1))
+        .and_then(|rest| rest.split("</string>").next())
+        .expect("NSHumanReadableCopyright");
+    for line in libduscape::about::copyrights() {
+        assert!(copyright.contains(line), "{copyright:?} lacks {line:?}");
+    }
+}
+
 #[test]
 fn the_metadata_names_the_app_id_and_this_version() {
     let metainfo = read(&format!("{APP_ID}.metainfo.xml"));

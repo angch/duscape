@@ -1037,6 +1037,7 @@ const DESKTOP: crate::menu::Platform = crate::menu::Platform {
     quick_look: false,
     pathname: false,
     trash: true,
+    about: false,
 };
 
 fn menu_labels(menu: &[crate::menu::Entry]) -> Vec<String> {

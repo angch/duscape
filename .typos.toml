@@ -12,4 +12,6 @@ AGAI = "AGAI"
 ETO_CLIPPED = "ETO_CLIPPED"
 
 [files]
-extend-exclude = ["trayd/", "target/", "**/*.snap"]
+# THIRD-PARTY-LICENSES.txt is generated (`make third-party`): crate names and others' notices,
+# kept as their authors wrote them.
+extend-exclude = ["trayd/", "target/", "**/*.snap", "THIRD-PARTY-LICENSES.txt"]

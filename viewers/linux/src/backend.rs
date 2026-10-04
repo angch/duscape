@@ -33,6 +33,7 @@ pub mod keys {
     pub const KP_ADD: u32 = 0xffab;
     pub const KP_SUBTRACT: u32 = 0xffad;
     pub const KP_0: u32 = 0xffb0;
+    pub const F1: u32 = 0xffbe;
     pub const F5: u32 = 0xffc2;
     pub const DELETE: u32 = 0xffff;
     pub const ISO_LEFT_TAB: u32 = 0xfe20;

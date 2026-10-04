@@ -2,11 +2,13 @@
 //! ([`FileTree`]), the squarified treemap and its selection ([`Board`]), the protocol a scanner
 //! delivers ([`scan`]), deleting from disk ([`delete`]), reading a file for a preview
 //! ([`preview`]), the native clipboard ([`clipboard`]), handing an entry to the desktop
-//! ([`launch`]) and formatting.
+//! ([`launch`]), formatting, and what every viewer says about duscape itself ([`about`]: the
+//! version, the copyrights, the licences).
 //!
 //! The walkers are in `duscape-scan`, which depends on this crate. `docs/features.md` has the
 //! whole map, and which viewer offers what.
 
+pub mod about;
 pub mod clipboard;
 pub mod delete;
 pub mod error;

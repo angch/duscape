@@ -230,6 +230,7 @@ fn keysym_from_name(name: &str) -> u32 {
         "KP_Add" => keys::KP_ADD,
         "KP_Subtract" => keys::KP_SUBTRACT,
         "KP_0" => keys::KP_0,
+        "F1" => keys::F1,
         "F5" => keys::F5,
         _ => 0,
     }
@@ -260,6 +261,7 @@ fn us_fallback(evdev: u32) -> Option<(u32, u32)> {
         43 => (u32::from(b'\\'), u32::from(b'|')),
         44..=53 => letter(ROW_Z[(evdev - 44) as usize]),
         57 => (0x20, 0),
+        59 => (keys::F1, 0),
         63 => (keys::F5, 0),
         74 => (keys::KP_SUBTRACT, 0),
         78 => (keys::KP_ADD, 0),
