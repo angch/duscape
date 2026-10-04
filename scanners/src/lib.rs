@@ -1,13 +1,22 @@
-//! The scanners: one native directory walker per platform, and what drives them.
+//! The scanners: one native directory walker per platform, and what drives them. These docs
+//! name the walker of the platform they were built for — another platform's module is not
+//! compiled here — and the portable one every platform has:
 //!
-//! * `linux` — `getdents64` and `statx` on its own thread pool, with the FIEMAP reflink probe and
-//!   btrfs compression; pseudo, network and bind-mounted filesystems are refused at their mount
-//!   points.
-//! * `macos` — `getattrlistbulk(2)`.
-//! * `windows` — one handle per directory, entries in bulk from
-//!   `GetFileInformationByHandleEx(FileIdExtdDirectoryInfo)`; NTFS metadata files when elevated
-//!   ([`ntfs`]).
-//! * a portable walk on `std::fs` everywhere else (`portable`).
+#![cfg_attr(
+    target_os = "linux",
+    doc = "* [`linux`] — `getdents64` and `statx` on its own thread pool, with the FIEMAP reflink \
+           probe and btrfs compression; pseudo, network and bind-mounted filesystems are \
+           refused at their mount points."
+)]
+#![cfg_attr(target_os = "macos", doc = "* [`macos`] — `getattrlistbulk(2)`.")]
+#![cfg_attr(
+    windows,
+    doc = "* [`windows`] — one handle per directory, entries in bulk from \
+           `GetFileInformationByHandleEx(FileIdExtdDirectoryInfo)`; NTFS metadata files when \
+           elevated ([`ntfs`])."
+)]
+//! * [`portable`] — a walk on `std::fs`: the walker where there is no native one, and the
+//!   benchmark's baseline.
 //!
 //! Every walker yields the same thing, one [`DirEntries`] per directory ([`scan_directories`]),
 //! and [`parallel::build_tree`] turns that into a [`FileTree`] on several threads. [`refine`] is
@@ -353,11 +362,27 @@ pub fn walk_would_enter(scan_root: &Path, folder: &Path, options: ScanOptions) -
 
 /// Walk `root`, yielding the contents of one directory at a time.
 ///
-/// On macOS this uses `macos`, which asks the kernel only for the attributes disk usage needs.
-/// On Linux it uses `linux`, which owns its own thread pool because `dua-core`'s stops scaling
-/// well before the kernel does. On Windows it uses `windows`, which reads a directory's sizes
-/// in bulk rather than opening every file. Elsewhere it uses the portable walk on `std::fs`
-/// (`portable`), a directory listed whole at a time.
+/// Each platform has its own walker, and these docs name the one of the platform they were
+/// built for (a module of another platform is not compiled here, so not linked):
+#[cfg_attr(
+    target_os = "macos",
+    doc = "on macOS, [`macos`], which asks the kernel only for the attributes disk usage needs."
+)]
+#[cfg_attr(
+    target_os = "linux",
+    doc = "on Linux, [`linux`], which owns its own thread pool because `dua-core`'s stopped \
+           scaling well before the kernel does."
+)]
+#[cfg_attr(
+    windows,
+    doc = "on Windows, [`windows`], which reads a directory's sizes in bulk rather than opening \
+           every file."
+)]
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "linux", windows)),
+    doc = "here, with no native walker, the portable walk on `std::fs` ([`portable`]), a \
+           directory listed whole at a time."
+)]
 pub fn scan_directories(
     root: &Path,
     options: ScanOptions,
@@ -667,12 +692,9 @@ impl Iterator for LinuxScan {
 }
 
 /// The portable walk on `std::fs` (`portable.rs`): the platforms with no native walker, and the
-/// benchmark's baseline. Compiled everywhere, so it cannot rot unnoticed.
-#[cfg_attr(
-    any(target_os = "macos", target_os = "linux", windows),
-    allow(dead_code)
-)]
-mod portable;
+/// benchmark's baseline. Public, and so compiled and documented everywhere: it cannot rot
+/// unnoticed.
+pub mod portable;
 pub use portable::scan_folder;
 
 /// Workers for the walker the app actually uses: `--threads`, else `default_scan_threads`.

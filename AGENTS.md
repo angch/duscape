@@ -1016,6 +1016,14 @@ Exiting { app_loaded: bool }
 - **musl**: the release is built for musl, and `libc` types differ there. `ioctl`'s request is
   `c_ulong` on glibc but `c_int` on musl, so request constants are `libc::Ioctl`. CI tests
   `x86_64-unknown-linux-musl` on every push (`test-musl`).
+- **Docs per platform**: a module exists on its platform alone, and so do its docs and its
+  links: a doc comment in code every platform compiles names another platform's module only in
+  a `#[cfg_attr(target_os = "…", doc = "…")]` line (`scanners/src/lib.rs`'s walker list and
+  `scan_directories`, `cache.rs`'s FSEvents), so Linux's docs never mention the macOS walker. A
+  public doc does not link a private item: the item is made public if it is part of what the
+  doc explains (`Places::LINES`, the treemap's `STEADY_*`, `portable`), else the pointer goes in
+  a `//` comment rustdoc does not read (`windows.rs`'s `links`, `macos.rs`'s
+  `image_left_out`). The doc job runs `cargo doc -D warnings` for Linux, Windows and macOS.
 - **Byte order**: what a filesystem stores is little-endian on every machine — ext4, NTFS, btrfs —
   and is read with `from_le_bytes`; only what the kernel fills in itself (an ioctl's own
   structs, such as btrfs's search header) is in the CPU's order, `from_ne_bytes`. Mixing them

@@ -690,12 +690,14 @@ fn image_left_out(path: &Path, real_root: &Path) -> Option<DirEntries> {
 /// `MNT_LOCAL`); a mount of the root's own device, a second route to files already counted — on
 /// `/`, macOS mounts the data volume at `/System/Volumes/Data` *and* grafts it into `/` through
 /// firmlinks, so a walk that followed both would count nearly every file on the machine twice;
-/// and a disk image's volume whose image the scan counts as a file (`image_left_out`). So a
+/// and a disk image's volume whose image the scan counts as a file. So a
 /// scan of `/` covers the volume group and the other volumes mounted under it (Preboot, VM,
 /// what is under `/Volumes`), which `os::volume_used` counts on at `/`. Firmlinks are followed,
 /// since they are the only route to what they point at.
 ///
 /// The iterator ends when the whole tree has been read. Dropping it early stops the workers.
+// The disk image's volume is `image_left_out`, private (kept out of the public docs, which
+// cannot link it).
 pub fn walk_macos(
     root: &Path,
     threads: usize,

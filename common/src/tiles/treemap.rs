@@ -79,9 +79,9 @@ impl Plan {
 
 /// A steady layout's shapes are kept while every tile is at least this square: squarify
 /// makes them better than 1:3 and a steady one drifts, so past 1:5 it lays out afresh.
-const STEADY_WORST_RATIO: f64 = 0.2;
+pub const STEADY_WORST_RATIO: f64 = 0.2;
 /// Nor while entries the plan did not have take more than this share of the area.
-const STEADY_NEW_SHARE: f64 = 0.25;
+pub const STEADY_NEW_SHARE: f64 = 0.25;
 
 /// What became of each steady layout's plan, for `tests/layout_stability.rs` to report: kept,
 /// dropped for new entries, for an entry too small for a tile, for a shape. Relaxed counters,
@@ -158,8 +158,8 @@ impl TreeMap {
     /// and shrink in place rather than being cut again, so a folder overtaking another does not
     /// send the tiles after it across the board. Entries the plan did not have are laid out
     /// after its rows, in what they leave. The plan is dropped, and the children squarified
-    /// afresh, when a tile would be worse than `STEADY_WORST_RATIO`, a planned entry would
-    /// get no tile, or the new entries take more than `STEADY_NEW_SHARE`. `key` names child
+    /// afresh, when a tile would be worse than [`STEADY_WORST_RATIO`], a planned entry would
+    /// get no tile, or the new entries take more than [`STEADY_NEW_SHARE`]. `key` names child
     /// `i` for the plan, stably across layouts (its name's hash). Returns this layout's plan.
     pub fn populate_steady(
         &mut self,

@@ -9,8 +9,11 @@
 //! The thread model is the Linux walker's (see `linux.rs`): one shared queue behind one mutex,
 //! workers that keep most of their findings local, results in batches over a bounded channel.
 //!
-//! What the directory listing does not have is a link count. See `links` for how hard links are
-//! counted once without it.
+//! What the directory listing does not have is a link count, so hard links are counted once
+//! another way.
+
+// How: `links`, private to this walker (a pointer kept out of the public docs, which cannot
+// link a private module).
 
 use ::std::ffi::{OsString, c_void};
 use ::std::os::windows::ffi::{OsStrExt, OsStringExt};
