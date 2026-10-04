@@ -200,18 +200,20 @@ fn write(nodes: &[Node], open: &[bool], at: usize, depth: usize, out: &mut Strin
     let indent = "  ".repeat(depth);
     let children = &nodes[at].children;
     for &child in children.iter().take(Places::BRANCHES) {
-        // A chain of folders of one each, on one line.
+        // A chain of folders of one each, on one line, joined and ended (a folder with more
+        // under it) by the platform's separator, as the root line's path is written: on
+        // Windows `\Data` then `private/var/db/` read as two kinds of path.
         let mut name = nodes[child].name.clone();
         let mut end = child;
         while open[end] && nodes[end].children.len() == 1 {
             end = nodes[end].children[0];
-            name.push('/');
+            name.push(::std::path::MAIN_SEPARATOR);
             name.push_str(&nodes[end].name);
         }
         let slash = if nodes[end].children.is_empty() {
             ""
         } else {
-            "/"
+            ::std::path::MAIN_SEPARATOR_STR
         };
         let _ = writeln!(out, "  {:>10}  {indent}{name}{slash}", nodes[child].total);
         write(nodes, open, end, depth + 1, out);
@@ -228,6 +230,11 @@ fn write(nodes: &[Node], open: &[bool], at: usize, depth: usize, out: &mut Strin
 mod tests {
     use super::*;
 
+    /// `report`'s text with the platform's separator, as `report` writes it.
+    fn native(text: &str) -> String {
+        text.replace('/', ::std::path::MAIN_SEPARATOR_STR)
+    }
+
     #[test]
     fn failures_are_rolled_up_into_the_folders_holding_them() {
         let mut places = Places::default();
@@ -243,11 +250,17 @@ mod tests {
         places.add(Path::new("/Data/.Trash"), 1);
         let report = places.report();
         let lines: Vec<&str> = report.lines().collect();
-        assert_eq!(lines[0], "          24  /Data", "{report}");
+        assert_eq!(lines[0], native("          24  /Data"), "{report}");
         // A folder of one folder alone shares its line.
-        assert_eq!(lines[1], "          20    private/var/db/", "{report}");
+        assert_eq!(
+            lines[1],
+            native("          20    private/var/db/"),
+            "{report}"
+        );
         assert!(
-            report.contains("           3    Users/me/Library/\n           1      Mail\n"),
+            report.contains(&native(
+                "           3    Users/me/Library/\n           1      Mail\n"
+            )),
             "{report}"
         );
         assert!(report.contains("           1    .Trash\n"), "{report}");
@@ -276,7 +289,10 @@ mod tests {
             "every one counted"
         );
         let report = places.report();
-        assert!(report.starts_with("        6000  /volume1\n"), "{report}");
+        assert!(
+            report.starts_with(&native("        6000  /volume1\n")),
+            "{report}"
+        );
         assert!(report.contains("        2000    share0\n"), "{report}");
     }
 
@@ -286,7 +302,7 @@ mod tests {
         places.add(Path::new("/Data/.Trash"), 1);
         assert_eq!(
             places.report(),
-            "           1  /Data\n           1    .Trash\n"
+            native("           1  /Data\n           1    .Trash\n")
         );
     }
 }
