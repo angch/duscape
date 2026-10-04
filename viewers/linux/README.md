@@ -6,7 +6,7 @@ state as the macOS viewer (`duscape-viewer`, in `viewers/shared/`), drawn with *
 natively on **Wayland** or on **X11**. `docs/features.md` compares it with the other viewers.
 
 FreeBSD should work in principle — the window code is built for it and type-checks there — but it
-has never been run on FreeBSD, and its scan would be `dua-core`'s portable walk: there is no native
+has never been run on FreeBSD, and its scan would be the portable walk on `std::fs`: there is no native
 BSD walker.
 
 ```sh
@@ -32,7 +32,7 @@ and clicks. So the viewer speaks the display protocols itself: Wayland through
 libwayland — a `wl_shm` buffer, `xdg-shell`, `xdg-decoration`, the seat, the data device) and X11
 through [`x11rb`](https://github.com/psychon/x11rb) (no Xlib — `PutImage`), behind one small
 `Backend` trait. It paints the frame in software and rasterises text with
-[`fontdue`](https://github.com/mooman219/fontdue) from the system's fonts. Nothing is linked from
+[`ab_glyph`](https://github.com/alexheretic/ab-glyph) from the system's fonts. Nothing is linked from
 the system, the binary is static, and it runs on any compositor or X server. The price is a fixed
 dark theme instead of the desktop's, no native file chooser or drag and drop, and — on a compositor
 that draws no title bars, like GNOME — a title bar of the viewer's own, plain but with move,
@@ -112,7 +112,7 @@ A dialog answers to its buttons, Enter/`y` and Esc/`n`.
 | `src/xkb.rs` | The compositor's xkb keymap read into keysyms, with a US fallback |
 | `src/x11.rs` | `X11` on `x11rb`: window, properties, events on a thread, `PutImage`, the keyboard mapping, the clipboard |
 | `src/canvas.rs` | The software framebuffer in points: fills, gradients, strokes, rounded rectangles, pictures |
-| `src/font.rs` | Finding the system's fonts, `fontdue` glyphs cached, text drawn aligned and cut with "…" |
+| `src/font.rs` | Finding the system's fonts, `ab_glyph` glyphs cached, text drawn aligned and cut with "…" |
 | `src/draw.rs` | Painting the frame by `state::Layout`, and the dialog |
 | `src/trash.rs` | The freedesktop Trash |
 

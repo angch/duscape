@@ -65,7 +65,7 @@ it would still have to decide:
 ## The static binary is the default
 
 - **One file runs everywhere.** musl linked in, no glibc floor, no system library for the
-  window (Wayland and X11 are spoken in pure Rust, fonts drawn by `fontdue`): old
+  window (Wayland and X11 are spoken in pure Rust, fonts drawn by `ab_glyph`): old
   distributions, Alpine, busybox, a NAS. `deploy.yml` checks that it is static.
 - **It is as fast as anything else measured.** The walk is the first of the performance goals,
   so the release's build settings were measured again for this decision (below).
@@ -184,13 +184,27 @@ different thing, and these are the considerations, roughly in the order they wou
   team in `debcargo-conf`), and an application builds against those, not against vendored
   sources. Each crate in our `Cargo.lock` that Debian lacks, or has at an incompatible
   version, must be packaged first, each through the NEW queue. `cargo debstatus` lists them
-  all. Checked on sources.debian.org (2026-10-04) for the main ones: already there at the
-  versions used — `ratatui` 0.30.2, `crossterm` 0.29, `wayland-client` and `wayland-cursor`
-  0.31, `x11rb` 0.13, `image` 0.25 with `zune-jpeg` and `moxcms`, `clap` 4.6, `toml` 1.1,
-  `rustix` 1.1, `unicode-width`. **Missing: `fontdue`** (the Linux window's text) and
-  **`dua-core`**, which `duscape-scan` depends on unconditionally although Linux uses it only
-  as the benchmark's baseline: package it, or put it behind a feature the Debian build leaves
-  off. The rest of `Cargo.lock` still needs the same check.
+  all, and `docs/probes/debian-deps.py` checks ours: each direct dependency of a glibc Linux
+  build against the versions sources.debian.org lists, by the requirement in `Cargo.toml`
+  (not `Cargo.lock`: Debian builds against requirements, and brings the indirect ones with
+  its packages of the direct). **2026-10-04: every one is in Debian.** Four were not, and
+  were dealt with rather than left to a Debian patch — an optional dependency, or one for
+  another platform, would still have needed one, since Cargo resolves those too:
+  - `fontdue` (the Linux window's text) → `ab_glyph`, which Debian packages: the same
+    sizes (by the em), a snapshot differing by anti-aliasing alone (3,695 pixels of
+    896,800, by at most 21 levels in 255), paint times alike (2.6–5.9 ms against
+    2.9–5.2 ms a frame on `/usr`).
+  - `dua-core` (the BSDs' walk, and the benchmark's baseline) → `scanners/src/portable.rs`,
+    a walk on `std::fs`: with `-x` on `/usr` the same 171,652 entries and bytes as the
+    native walk, in 0.43 s against `dua-core`'s 1.55 s (native: 0.11 s).
+  - `embed-manifest` (the MSVC build's manifest, a Windows-only build dependency that
+    every platform resolved) → the manifest written as a resource by our own
+    `resources.rs`, as the GNU build already did: one `RT_MANIFEST` in each exe, checked.
+  - `x11rb` 0.14 (Debian has 0.13.2) → the requirement opened to `>=0.13.2, <0.15`: the
+    window builds against 0.13.2 and ran on it (an X11 snapshot under WSLg). Our own
+    builds lock 0.14.
+  Run the probe after adding a dependency; the indirect ones Debian resolves itself, but
+  whether our code builds against Debian's versions only a Debian build shows.
 - Debian is often a version or two behind; duscape may need patches to build against older
   crates, or to wait for them.
 - Ubuntu sometimes accepts vendored crates for an application; Debian generally does not. An

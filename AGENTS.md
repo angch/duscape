@@ -11,14 +11,14 @@ disk usage via a squarify treemap, supports live scanning, and allows deleting l
 duscape/
 ├── common/            # libduscape: what every viewer shares — model, treemap, scan protocol,
 │                      #   delete, preview reading, native clipboard, formatting, os
-├── scanners/          # duscape-scan: the walkers (Linux, macOS, Windows, fallback), NTFS,
+├── scanners/          # duscape-scan: the walkers (Linux, macOS, Windows, portable), NTFS,
 │                      #   the parallel build, the second pass, rescan/refine threads
 ├── viewers/
 │   ├── tui/           # duscape: the ratatui viewer (primary) — CLI, UI, input, config;
 │   │                  #   its `duscape` binary holds the platform's window too (`front.rs`)
 │   ├── windows/       # duscape-windows: the Win32/GDI viewer
 │   ├── macos/         # duscape-mac: the AppKit viewer (objc2)
-│   ├── linux/         # duscape-linux: the Wayland/X11 viewer, no toolkit (wayland-client, x11rb, fontdue)
+│   ├── linux/         # duscape-linux: the Wayland/X11 viewer, no toolkit (wayland-client, x11rb, ab_glyph)
 │   ├── shared/        # duscape-viewer: what the desktop viewers share — the window's
 │   │                  #   state and layout (`Viewer`), the first scan with its outline, the previewer
 │   └── dos/           # not a crate: the MS-DOS treemap in 16-bit FASM assembly, `make dos`
@@ -313,7 +313,12 @@ out and painting.
 **`duscape-scan`** (`scanners/`) — reading the disk:
 - `lib.rs` — `scan_directories()`: per-directory batches, the seam every walker plugs into;
   `parallel::build_tree()`: the app's tree build — shard by path prefix, merge, replay;
-  `walk_would_enter`, `thread_count`, `scan_into_tree`, the `dua-core` `fallback`
+  `walk_would_enter`, `thread_count`, `scan_into_tree`
+- `portable.rs` — the portable walk on `std::fs`: a shared queue of directories, a few
+  workers, one `DirEntries` a directory. The BSDs' walker (no native one), the benchmark's
+  `portable-*` baseline (`scan_folder`), compiled and tested everywhere. It replaced
+  `dua-core` (2026-10-04), which Debian does not package; with `-x` on `/usr` it finds what
+  the native walk finds, 3.6x faster than `dua-core`'s walk did (`docs/scan-performance.md`)
 - `macos.rs` — macOS walker on `getattrlistbulk(2)` (see `docs/scan-performance.md`). APFS clones
   go through the ledger as reflinks do: the bulk call also asks `ATTR_CMNEXT_CLONEID` and
   `ATTR_CMNEXT_EXT_FLAGS` (`FSOPT_ATTR_CMN_EXTENDED`), and a file whose blocks are a clone's —
@@ -342,7 +347,7 @@ out and painting.
   survey alone. Last seconds of writes may be missing: it reads the device's page cache
 - `linux.rs` — Linux walker on `getdents64`/`statx`, own thread pool: the walk itself (`Job`,
   `inspect`, `read_directory`, `walk_linux`); what it asks along the way is in `linux/`, one file
-  each. `dua-core` is only the fallback for other platforms and the benchmark baseline.
+  each.
   - `linux/stat.rs` — every `statx` goes through its own `statx`, which on `ENOSYS` (a kernel
     before 4.11 — Synology DSM's 4.4) or a seccomp `EPERM` answers with `fstatat` in `statx`'s
     shape (`statx_from_stat`) and stays on it (`NO_STATX`): basic fields only, no attributes or
@@ -510,9 +515,12 @@ shared `Viewer`, not in `win/`:
   (`RT_VERSION`, from the package's: Explorer's Details tab, Task Manager's name for the
   process, the file version an installer compares) as a `.res` file for `link.exe` on MSVC; on
   GNU one COFF object with a `.rsrc` resource tree, the manifest in it too (a second `.rsrc`
-  object does not link), so neither binary on GNU uses `embed-manifest`. Both manifests
+  object does not link). The manifest is a resource there on both (`RT_MANIFEST` 1), as
+  `link.exe` makes none of its own unless asked; `embed-manifest`, which MSVC used before
+  2026-10-04, is gone (Debian does not package it). Both manifests
   (`viewers/tui/windows.manifest`, `duscape-windows.manifest`) say `asInvoker`: the program
-  raises itself through `runas` when a volume wants it, never at its start. `duscape.ico` is `duscape_viewer::icon` at ten sizes, PNG-compressed and
+  raises itself through `runas` when a volume wants it, never at its start. `duscape.ico` is
+  `duscape_viewer::icon` at ten sizes, PNG-compressed and
   checked in; `icon::tests::the_icon_file_is_the_one_drawn` fails when the drawing changed and
   the file did not (`DUSCAPE_WRITE_ICON=1` writes it). `src/resources_tests.rs` tests the
   writer on every platform
@@ -639,8 +647,10 @@ shared `Viewer`, not in `win/`:
 - `canvas.rs` — the software framebuffer in points: fills with alpha, gradients, strokes,
   anti-aliased rounded rectangles, and `blit` (a picture fitted by box-filtering)
 - `font.rs` — `Fonts::system` finds the sans, bold and mono faces through `fc-match` (else
-  well-known paths, else `DUSCAPE_FONT*`); `Face` caches `fontdue` glyphs by character and
-  quarter-pixel size; `Pen` draws into a rect, aligned, vertically centred, cut with "…"
+  well-known paths, else `DUSCAPE_FONT*`); `Face` caches `ab_glyph` glyphs by character and
+  quarter-pixel size, sized by the em as every toolkit is (`ab_glyph` scales by the line
+  height: `em_to_height`; `fontdue` before 2026-10-04, which Debian does not package — a
+  snapshot differs by anti-aliasing alone, at most 21 levels in 255); `Pen` draws into a rect, aligned, vertically centred, cut with "…"
 - `draw.rs` — the frame, by `Layout`: the same panels as `mac/draw.rs`, in a fixed dark theme —
   the list as the tree (`rows`: each level indented `ROW_INDENT`, a folder's expander where
   `Viewer::hit` looks for it), the treemap nested (`nested`, after the top-level tiles and
@@ -720,8 +730,8 @@ read through `cs:`.
   `-gui`/`-linux`/`-windows`/`-mac` the window; then a terminal on stdin *or* stdout is the
   terminal viewer (so a redirected benchmark stays one), neither with a display the window, and on
   Windows no console, or one the process has alone (`GetConsoleProcessList`), is Explorer's start:
-  the window, after `FreeConsole`. `windows.manifest`, embedded by `build.rs` (`embed-manifest`,
-  bins only, `gui` feature), sets `consoleAllocationPolicy` to `detached`, so from Windows 11 24H2
+  the window, after `FreeConsole`. `windows.manifest`, embedded by `build.rs` (a resource,
+  `viewers/windows/resources.rs`; bins only, `gui` feature), sets `consoleAllocationPolicy` to `detached`, so from Windows 11 24H2
   Explorer makes no console at all and nothing flashes; older Windows ignores it and makes one,
   which is let go. The terminal viewer with no console (`--tui` from a shortcut) gets one
   (`ensure_console`, `AllocConsole`). `lib.rs`'s `run` dispatches: the window gets the same `Opt`, parsed once
@@ -1000,7 +1010,7 @@ Exiting { app_loaded: bool }
   movement, drags, releases and scrolls too (`is_mouse_noise`): mouse capture reports every
   movement, and the warning modal closes on any event. CI runs on Linux only
   — check other targets with `cargo clippy --workspace --all-targets --target <triple>`.
-  The BSDs have no native walker: they scan with the `dua-core` fallback. The Linux window is
+  The BSDs have no native walker: they scan with the portable walk (`portable.rs`). The Linux window is
   gated to Linux and FreeBSD and type-checks for `x86_64-unknown-freebsd`, but has never been
   run there; say so rather than claim BSD support.
 - **musl**: the release is built for musl, and `libc` types differ there. `ioctl`'s request is
@@ -1033,8 +1043,9 @@ Exiting { app_loaded: bool }
 ### Adding a scan option
 1. Add field to `ScanOptions` in `common/src/scan/mod.rs`
 2. Thread it through **every** walker in `scanners/src/`: `macos.rs` (macOS), `linux.rs`, `windows.rs`,
-   and the `fallback` module in `lib.rs` (everywhere else). The fallback is `cfg`-selected away on macOS, so it is only
-   ever run by its tests here — do not assume compiling it means it works.
+   and `portable.rs` (everywhere else, on `std::fs`). The portable walk is selected only off
+   Linux, macOS and Windows, so there it is only ever run by its tests and the benchmark's
+   `portable-*` stages — do not assume compiling it means it works.
 3. Expose via CLI in `viewers/tui/src/cli/mod.rs` and config if persistent
 4. Add a `--benchmark` stage if it changes how the walk performs
 
@@ -1220,7 +1231,8 @@ Regenerated by hand from `wc -l` when this file is touched; `make quality` print
 | `common/src/tiles/treemap.rs` | ~560 lines — squarify, in a `Grid`; the steady layout (`Plan`) |
 | `common/src/tiles/nested.rs` | ~910 lines — the nesting, steady or not |
 | `common/src/model/files/file_tree.rs` | ~630 lines — folder tree, hard-link accounting, the build profile |
-| `scanners/src/lib.rs` | ~810 lines — walker selection, parallel build, fallback, `environment` |
+| `scanners/src/lib.rs` | ~770 lines — walker selection, parallel build, `environment` |
+| `scanners/src/portable.rs` | ~260 lines — the portable walk on `std::fs`: the BSDs, the benchmark's baseline |
 | `scanners/src/linux.rs` | ~720 lines — Linux `getdents64`/`statx` walker, inode order; `linux/` ~1190 more: mounts, filesystems, btrfs, reflinks, block prefetch, the `fstatat` fallback |
 | `scanners/src/macos.rs` | ~1140 lines — macOS `getattrlistbulk` walker, APFS clones |
 | `scanners/src/disk_image.rs` | ~330 lines — macOS: a mounted disk image's file, through IOKit |

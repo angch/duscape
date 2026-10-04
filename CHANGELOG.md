@@ -90,6 +90,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Every crate a Debian build of duscape needs is now packaged in Debian
+  (`docs/probes/debian-deps.py` checks it). The Linux window draws its text with `ab_glyph`
+  instead of `fontdue` (same sizes; a snapshot differs by anti-aliasing alone; paint times
+  alike). The BSDs' scan, and the benchmark's baseline, is a portable walk on `std::fs`
+  (`scanners/src/portable.rs`) instead of `dua-core`'s: the same entries as the native walk,
+  3.6x faster than `dua-core`'s on `/usr`; the `dua-walk` and `dua-tree` benchmark stages are
+  now `portable-walk` and `portable-tree`. The MSVC build's manifest is a resource written by
+  duscape's own resource writer, as the GNU build's was, not `embed-manifest`'s. `x11rb` 0.13,
+  Debian's, is accepted as well as 0.14.
 - `LICENSE` names the fork beside diskonaut's author, whose notice stays: "Copyright (c) 2026
   Ang Chin Han and duscape contributors". The exes' version and the installer carry both lines,
   a test holding them to the file.

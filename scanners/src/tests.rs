@@ -197,12 +197,13 @@ fn scan_directories_reports_every_entry_exactly_once() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The `dua-core` grouping is only reached off macOS, so exercise it directly everywhere.
+/// The portable walk is only selected off Linux, macOS and Windows, so exercise it directly
+/// everywhere.
 #[test]
-fn fallback_grouping_reports_every_entry_exactly_once() {
-    let (dir, expected) = fixture_tree("fallback_every_entry");
+fn portable_walk_reports_every_entry_exactly_once() {
+    let (dir, expected) = fixture_tree("portable_every_entry");
     let mut seen = Vec::new();
-    for directory in super::fallback::group_by_directory(&dir, ScanOptions::default()) {
+    for directory in super::portable::walk_directories(&dir, ScanOptions::default()) {
         let parent = directory.path.to_path_buf();
         seen.extend(directory.iter().map(|(name, _)| parent.join(name)));
     }
@@ -227,8 +228,8 @@ fn both_walkers_agree_on_the_same_tree() {
     };
 
     let native = collect_paths(&dir, options);
-    let fallback: std::collections::BTreeSet<PathBuf> =
-        super::fallback::group_by_directory(&dir, options)
+    let portable: std::collections::BTreeSet<PathBuf> =
+        super::portable::walk_directories(&dir, options)
             .flat_map(|directory| {
                 let parent = directory.path.to_path_buf();
                 let names: Vec<_> = directory
@@ -240,7 +241,7 @@ fn both_walkers_agree_on_the_same_tree() {
             .collect();
 
     assert_eq!(native, expected);
-    assert_eq!(fallback, expected);
+    assert_eq!(portable, expected);
 
     let (tree, failed) = scan_into_tree(&dir, options);
     assert_eq!(failed, 0);
@@ -497,8 +498,8 @@ fn one_file_system_scans_same_device() {
 
 /// The native Linux walker: the properties the rest of the pipeline relies on.
 ///
-/// These exercise the walker actually selected on Linux. The `fallback` tests above cover the
-/// `dua-core` grouping, which Linux no longer uses but other platforms still do.
+/// These exercise the walker actually selected on Linux. The `portable` tests above cover the
+/// portable walk, which Linux does not use but other platforms do.
 #[cfg(target_os = "linux")]
 mod linux_walker {
     use super::{ScanOptions, temp_scan_dir};
@@ -626,7 +627,8 @@ mod linux_walker {
     }
 
     /// One group per directory is what lets the tree builder resolve each parent once. The
-    /// `dua-core` grouping could not promise this — it emitted about two groups per directory.
+    /// `dua-core` grouping before the portable walk could not promise this — it emitted about
+    /// two groups per directory.
     #[test]
     fn emits_one_group_per_directory() {
         let root = tree("linux_groups");

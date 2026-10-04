@@ -1,12 +1,16 @@
 // The Windows binaries' own resources — the icon Explorer shows for the `.exe`, the version
 // (Explorer's Details tab, Task Manager's name for the process, what an installer reads as the
-// file's version), and on GNU targets the manifest beside them — written here, not by a
-// resource compiler, which the zig cross-build of the release does not have. Included by the build scripts of `duscape-windows`
-// and of `duscape` (`include!`), so both binaries carry the same icon and version.
+// file's version), and the manifest — written here, not by a resource compiler, which the zig
+// cross-build of the release does not have. Included by the build scripts of
+// `duscape-windows` and of `duscape` (`include!`), so both binaries carry the same icon and
+// version.
 //
 // On MSVC the resources go to the linker as a `.res` file, which `link.exe` converts itself;
-// the manifest is `embed-manifest`'s, by linker options. On GNU they go as one COFF object with
-// a `.rsrc` section — the manifest in it too, since a second `.rsrc` object would not link.
+// on GNU as one COFF object with a `.rsrc` section (a second `.rsrc` object would not link).
+// The manifest is a resource like the others on both (`RT_MANIFEST` 1, what the loader reads):
+// until 2026-10-04 MSVC's came from `embed-manifest`, by linker options, which Debian does not
+// package; `link.exe` makes no manifest of its own unless asked (`/MANIFEST`), so there is
+// only the one.
 
 use ::std::env;
 use ::std::fs;
@@ -17,32 +21,30 @@ const RT_ICON: u16 = 3;
 const RT_GROUP_ICON: u16 = 14;
 const RT_VERSION: u16 = 16;
 const RT_MANIFEST: u16 = 24;
-/// en-US, what `rc` and `embed-manifest` give when nothing is said.
+/// en-US, what `rc` gives when nothing is said.
 const LANGUAGE: u16 = 1033;
 
 /// A resource: its type, its id, and its bytes.
 type Resource = (u16, u16, Vec<u8>);
 
 /// Link `icon` (a `.ico` file) into the binaries as their icon, the package's version as the
-/// binary `name`'s (`name.exe`), and `manifest` on GNU targets.
-fn embed_resources(icon: &Path, name: &str, manifest: Option<&Path>) {
+/// binary `name`'s (`name.exe`), and `manifest` as their manifest.
+fn embed_resources(icon: &Path, name: &str, manifest: &Path) {
     println!("cargo:rerun-if-changed={}", icon.display());
+    println!("cargo:rerun-if-changed={}", manifest.display());
     let out = PathBuf::from(env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));
     let ico = fs::read(icon).unwrap_or_else(|error| panic!("{}: {error}", icon.display()));
     let mut resources = icon_resources(&ico);
     resources.push((RT_VERSION, 1, version_resource(&Version::of_package(name))));
+    let bytes =
+        fs::read(manifest).unwrap_or_else(|error| panic!("{}: {error}", manifest.display()));
+    resources.push((RT_MANIFEST, 1, bytes));
     let msvc = env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc");
     let path = if msvc {
         let path = out.join("duscape-resources.res");
         fs::write(&path, res_file(&resources)).expect("writing the resource file");
         path
     } else {
-        if let Some(manifest) = manifest {
-            println!("cargo:rerun-if-changed={}", manifest.display());
-            let bytes = fs::read(manifest)
-                .unwrap_or_else(|error| panic!("{}: {error}", manifest.display()));
-            resources.push((RT_MANIFEST, 1, bytes));
-        }
         let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
         let (machine, relocation) = match arch.as_str() {
             "x86" => (0x014c, 7),     // IMAGE_REL_I386_DIR32NB

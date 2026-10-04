@@ -24,8 +24,11 @@ image = { workspace = true }
 # The window is Linux and FreeBSD only (`lib.rs`; FreeBSD type-checks but has never been run);
 # elsewhere `run` is a stub that says so, and these (Unix-only) crates are not built at all.
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
-x11rb = { version = "0.14.0", features = ["image", "resource_manager"] }
-fontdue = "0.9.4"
+# 0.13 too: Debian packages 0.13.2 (2026-10-04), and the window builds and runs on it (an X11
+# snapshot under WSLg). Our own builds lock 0.14. docs/packaging.md, "Getting into Debian itself".
+x11rb = { version = ">=0.13.2, <0.15", features = ["image", "resource_manager"] }
+# Text: ab_glyph, which Debian packages (fontdue, before 2026-10-04, it does not).
+ab_glyph = "0.2.29"
 libc.workspace = true
 wayland-client = "0.31.15"
 wayland-protocols = { version = "0.32.13", features = ["client", "unstable", "staging"] }

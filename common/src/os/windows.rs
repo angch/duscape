@@ -99,66 +99,112 @@ struct BY_HANDLE_FILE_INFORMATION {
     nFileIndexLow: u32,
 }
 
+/// `struct FILE_STANDARD_INFO`, what `GetFileInformationByHandleEx(FileStandardInfo)` fills.
+#[repr(C)]
+#[derive(Default)]
+#[allow(non_snake_case)]
+struct FILE_STANDARD_INFO {
+    AllocationSize: i64,
+    EndOfFile: i64,
+    NumberOfLinks: u32,
+    DeletePending: u8,
+    Directory: u8,
+}
+
+#[link(name = "kernel32")]
+#[allow(non_snake_case)]
+unsafe extern "system" {
+    fn CreateFileW(
+        lpFileName: *const u16,
+        dwDesiredAccess: u32,
+        dwShareMode: u32,
+        lpSecurityAttributes: *mut core::ffi::c_void,
+        dwCreationDisposition: u32,
+        dwFlagsAndAttributes: u32,
+        hTemplateFile: *mut core::ffi::c_void,
+    ) -> *mut core::ffi::c_void;
+
+    fn GetFileInformationByHandle(
+        hFile: *mut core::ffi::c_void,
+        lpFileInformation: *mut BY_HANDLE_FILE_INFORMATION,
+    ) -> i32;
+
+    fn GetFileInformationByHandleEx(
+        hFile: *mut core::ffi::c_void,
+        FileInformationClass: i32,
+        lpFileInformation: *mut core::ffi::c_void,
+        dwBufferSize: u32,
+    ) -> i32;
+
+    fn CloseHandle(hObject: *mut core::ffi::c_void) -> i32;
+}
+
+/// A handle on `path` with no access rights — enough to ask what it is, without the right to
+/// read it — closed when dropped.
+struct InfoHandle(*mut core::ffi::c_void);
+
+impl InfoHandle {
+    fn open(path: &::std::path::Path) -> Option<InfoHandle> {
+        use ::std::os::windows::ffi::OsStrExt;
+        const FILE_SHARE_READ: u32 = 1;
+        const FILE_SHARE_WRITE: u32 = 2;
+        const FILE_SHARE_DELETE: u32 = 4;
+        const OPEN_EXISTING: u32 = 3;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        const INVALID_HANDLE_VALUE: *mut core::ffi::c_void = -1isize as *mut core::ffi::c_void;
+
+        let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+        wide.push(0);
+        // SAFETY: `wide` is NUL-terminated and outlives the call.
+        let handle = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                core::ptr::null_mut(),
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS,
+                core::ptr::null_mut(),
+            )
+        };
+        (handle != INVALID_HANDLE_VALUE).then_some(InfoHandle(handle))
+    }
+
+    fn file_info(&self) -> Option<BY_HANDLE_FILE_INFORMATION> {
+        let mut info = BY_HANDLE_FILE_INFORMATION::default();
+        // SAFETY: the handle is open, and `info` is a valid out-pointer.
+        let ok = unsafe { GetFileInformationByHandle(self.0, &mut info) };
+        (ok != 0).then_some(info)
+    }
+
+    /// What the file occupies on its volume (`FileStandardInfo`'s allocation size).
+    fn allocated(&self) -> Option<u64> {
+        const FILE_STANDARD_INFO_CLASS: i32 = 1;
+        let mut info = FILE_STANDARD_INFO::default();
+        // SAFETY: the handle is open, and `info` is a valid buffer of the size given.
+        let ok = unsafe {
+            GetFileInformationByHandleEx(
+                self.0,
+                FILE_STANDARD_INFO_CLASS,
+                (&raw mut info).cast(),
+                ::std::mem::size_of::<FILE_STANDARD_INFO>() as u32,
+            )
+        };
+        (ok != 0).then(|| u64::try_from(info.AllocationSize).unwrap_or(0))
+    }
+}
+
+impl Drop for InfoHandle {
+    fn drop(&mut self) {
+        // SAFETY: the handle was opened by `open` and is closed once, here.
+        unsafe {
+            CloseHandle(self.0);
+        }
+    }
+}
+
 fn query_file_info(path: &::std::path::Path) -> Option<BY_HANDLE_FILE_INFORMATION> {
-    use ::std::os::windows::ffi::OsStrExt;
-
-    const FILE_SHARE_READ: u32 = 1;
-    const FILE_SHARE_WRITE: u32 = 2;
-    const FILE_SHARE_DELETE: u32 = 4;
-    const OPEN_EXISTING: u32 = 3;
-    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
-    const INVALID_HANDLE_VALUE: *mut core::ffi::c_void = -1isize as *mut core::ffi::c_void;
-
-    #[link(name = "kernel32")]
-    #[allow(non_snake_case)]
-    unsafe extern "system" {
-        fn CreateFileW(
-            lpFileName: *const u16,
-            dwDesiredAccess: u32,
-            dwShareMode: u32,
-            lpSecurityAttributes: *mut core::ffi::c_void,
-            dwCreationDisposition: u32,
-            dwFlagsAndAttributes: u32,
-            hTemplateFile: *mut core::ffi::c_void,
-        ) -> *mut core::ffi::c_void;
-
-        fn GetFileInformationByHandle(
-            hFile: *mut core::ffi::c_void,
-            lpFileInformation: *mut BY_HANDLE_FILE_INFORMATION,
-        ) -> i32;
-
-        fn CloseHandle(hObject: *mut core::ffi::c_void) -> i32;
-    }
-
-    let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
-    wide.push(0);
-
-    // SAFETY: `wide` is NUL-terminated and outlives the call.
-    let handle = unsafe {
-        CreateFileW(
-            wide.as_ptr(),
-            0,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            core::ptr::null_mut(),
-            OPEN_EXISTING,
-            FILE_FLAG_BACKUP_SEMANTICS,
-            core::ptr::null_mut(),
-        )
-    };
-
-    if handle == INVALID_HANDLE_VALUE {
-        return None;
-    }
-
-    let mut info = BY_HANDLE_FILE_INFORMATION::default();
-    // SAFETY: `handle` is open, and `info` is a valid out-pointer.
-    let ok = unsafe { GetFileInformationByHandle(handle, &mut info) };
-    // SAFETY: the handle was opened above and is closed once.
-    unsafe {
-        CloseHandle(handle);
-    }
-
-    if ok != 0 { Some(info) } else { None }
+    InfoHandle::open(path)?.file_info()
 }
 
 /// Bytes in use on the volume whose root is `path`, or `None` when `path` is not a volume root — a
@@ -334,6 +380,37 @@ pub fn link_count(path: &::std::path::Path) -> u64 {
     query_file_info(path)
         .map(|info| u64::from(info.nNumberOfLinks))
         .unwrap_or(1)
+}
+
+/// A file as a walk whose listing does not say it (`std::fs`, duscape-scan's portable walk) needs
+/// it: its index on its volume, its link count, and what it occupies on disk, from one handle.
+pub struct FileIdentity {
+    pub index: u64,
+    pub links: u64,
+    pub allocated: Option<u64>,
+}
+
+/// [`FileIdentity`] of `path`: no index, one link and no allocation when it cannot be opened
+/// (counted once, its length standing for its size).
+pub fn file_identity(path: &::std::path::Path) -> FileIdentity {
+    let Some(handle) = InfoHandle::open(path) else {
+        return FileIdentity {
+            index: 0,
+            links: 1,
+            allocated: None,
+        };
+    };
+    let (index, links) = handle.file_info().map_or((0, 1), |info| {
+        (
+            (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+            u64::from(info.nNumberOfLinks),
+        )
+    });
+    FileIdentity {
+        index,
+        links,
+        allocated: handle.allocated(),
+    }
 }
 
 /// Mark `file` sparse, so that a length set beyond what is written occupies nothing: NTFS

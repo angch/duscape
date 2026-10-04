@@ -56,8 +56,9 @@ run() { # target emulator [emulator arguments]
         >"$CARGO_TARGET_DIR/$target.log" 2>&1; then
         echo "build failed: $CARGO_TARGET_DIR/$target.log"; return
     fi
-    for bin in $(ls -t "$CARGO_TARGET_DIR/$target/debug/deps/"{libduscape,duscape_scan}-* \
-        | grep -v '\.d$' | grep -v '\.[a-z]*$' | sort -u); do
+    for crate in libduscape duscape_scan; do
+        bin=$(ls -t "$CARGO_TARGET_DIR/$target/debug/deps/$crate"-* \
+            | grep -v '\.d$' | grep -v '\.[a-z]*$' | head -1)
         [ -x "$bin" ] || continue
         out=$("$TOOLS/qemu/usr/bin/$qemu" "$@" "$bin" --test-threads=4 2>&1)
         echo "$(basename "$bin"): $(echo "$out" | grep -E '^test result' | tail -1)"

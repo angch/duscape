@@ -10,8 +10,11 @@
 //!   the app runs (`parallel::build_tree`); its default shard count is the app's. On a walk-bound
 //!   volume where one builder keeps pace, `sharded` at one shard reduces to `pipeline`.
 //!
-//! The `dua-*` stages measure the general-purpose `dua-core` walker, the others the walker the app
-//! now uses. Comparing them is the point: they scan the same tree, so the difference is the walker.
+//! The `portable-*` stages measure the portable walk on `std::fs` (`duscape_scan::scan_folder`,
+//! the walker of the platforms with no native one), the others the walker the app uses.
+//! Comparing them is the point: they scan the same tree, so the difference is the walker. Until
+//! 2026-10-04 that baseline was `dua-core`'s walk (the `dua-*` stages in older measurements);
+//! to compare with dua-cli itself, time its binary, as `docs/probes/bench-diskus.sh` does diskus.
 
 use ::std::path::{Path, PathBuf};
 use ::std::sync::mpsc::{self, Receiver, SyncSender};
@@ -25,10 +28,10 @@ use libduscape::{DirEntries, FileTree, Folder, ScanItem, ScanOptions};
 /// Which part of the scan pipeline to measure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum BenchStage {
-    /// The `dua-core` walk with nothing layered on top.
-    DuaWalk,
-    /// The `dua-core` walk feeding the folder tree.
-    DuaTree,
+    /// The portable walk on `std::fs` with nothing layered on top.
+    PortableWalk,
+    /// The portable walk feeding the folder tree.
+    PortableTree,
     /// The current walk, entries counted but discarded.
     Walk,
     /// The current walk feeding the folder tree.
@@ -59,8 +62,8 @@ pub enum BenchStage {
 }
 
 const ALL_STAGES: &[BenchStage] = &[
-    BenchStage::DuaWalk,
-    BenchStage::DuaTree,
+    BenchStage::PortableWalk,
+    BenchStage::PortableTree,
     BenchStage::Walk,
     BenchStage::Tree,
     BenchStage::TreeOnly,
@@ -156,8 +159,8 @@ fn finish(
     result
 }
 
-/// The `dua-core` walk, optionally building the tree from it.
-fn bench_dua(path: &Path, options: ScanOptions, build_tree: bool) -> StageResult {
+/// The portable walk, optionally building the tree from it.
+fn bench_portable(path: &Path, options: ScanOptions, build_tree: bool) -> StageResult {
     let start = Instant::now();
     let mut tree = new_tree(path);
     let mut entries = 0u64;
@@ -177,10 +180,10 @@ fn bench_dua(path: &Path, options: ScanOptions, build_tree: bool) -> StageResult
         }
     }
     if build_tree {
-        return finish("dua-tree", start, entries, failed, tree);
+        return finish("portable-tree", start, entries, failed, tree);
     }
     StageResult {
-        stage: "dua-walk",
+        stage: "portable-walk",
         elapsed: start.elapsed(),
         entries,
         failed,
@@ -483,8 +486,8 @@ pub fn run(
     for _ in 0..repeat.max(1) {
         for stage in stages {
             let result = match stage {
-                BenchStage::DuaWalk => bench_dua(path, options, false),
-                BenchStage::DuaTree => bench_dua(path, options, true),
+                BenchStage::PortableWalk => bench_portable(path, options, false),
+                BenchStage::PortableTree => bench_portable(path, options, true),
                 BenchStage::Walk => bench_scan(path, options, false),
                 BenchStage::Tree => bench_scan(path, options, true),
                 BenchStage::TreeOnly => bench_tree_only(path, options),

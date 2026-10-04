@@ -1,13 +1,17 @@
 //! Text: the system's fonts, found through `fc-match` (or well-known paths, or `DUSCAPE_FONT`),
-//! rasterised by `fontdue` a glyph at a time and cached. Text is drawn into a rectangle in
+//! rasterised by `ab_glyph` a glyph at a time and cached. Text is drawn into a rectangle in
 //! points, centred vertically, aligned and truncated with "…" like the AppKit viewer's pens.
+//!
+//! `ab_glyph` since 2026-10-04, `fontdue` before: Debian packages `ab_glyph` (and the
+//! `ttf-parser` and rasteriser under it) and not `fontdue`, and this is all of a font this
+//! window uses — a glyph's coverage and metrics at a size, a line's ascent and descent.
 
 use ::std::cell::RefCell;
 use ::std::collections::HashMap;
 use ::std::path::{Path, PathBuf};
 use ::std::process::Command;
 
-use fontdue::{Font, FontSettings, Metrics};
+use ab_glyph::{Font, FontVec, PxScale, ScaleFont, point};
 
 use crate::canvas::{Canvas, Color, pack};
 use duscape_viewer::state::Rect;
@@ -26,23 +30,36 @@ pub enum Align {
     Center,
 }
 
+/// A glyph rasterised at one size: its ink as coverage, a row at a time, placed from the pen's
+/// position on the baseline (`left`, `top`: `top` negative above it), and how far it moves the
+/// pen.
 struct Glyph {
-    metrics: Metrics,
+    left: i64,
+    top: i64,
+    width: usize,
+    height: usize,
+    advance: f32,
     coverage: Vec<u8>,
 }
 
 /// One font file, with its rasterised glyphs kept by character and pixel size.
 pub struct Face {
-    font: Font,
+    font: FontVec,
+    /// The font's line height over its em: `ab_glyph` scales by the line height, where a size
+    /// in pixels (the toolkits', `fontdue`'s) is the em's.
+    em_to_height: f32,
     cache: RefCell<HashMap<(char, u32), Glyph>>,
 }
 
 impl Face {
     pub fn load(bytes: Vec<u8>) -> Result<Face, String> {
-        let font = Font::from_bytes(bytes, FontSettings::default())
+        let font = FontVec::try_from_vec(bytes)
             .map_err(|error| format!("could not read the font: {error}"))?;
+        let em = font.units_per_em().unwrap_or(1000.0);
+        let em_to_height = font.height_unscaled() / em;
         Ok(Face {
             font,
+            em_to_height,
             cache: RefCell::new(HashMap::new()),
         })
     }
@@ -52,19 +69,58 @@ impl Face {
         (px * 4.0).round() as u32
     }
 
+    /// `ab_glyph`'s scale for an em of `px` pixels.
+    fn scale(&self, px: f32) -> PxScale {
+        PxScale::from(px * self.em_to_height)
+    }
+
+    fn rasterize(&self, ch: char, px: f32) -> Glyph {
+        let scale = self.scale(px);
+        // A character the font lacks is its glyph 0, the "missing glyph" box, like any toolkit.
+        let id = self.font.glyph_id(ch);
+        let advance = self.font.as_scaled(scale).h_advance(id);
+        let glyph = id.with_scale_and_position(scale, point(0.0, 0.0));
+        let Some(outlined) = self.font.outline_glyph(glyph) else {
+            // No outline: a space, or a glyph with nothing to draw.
+            return Glyph {
+                left: 0,
+                top: 0,
+                width: 0,
+                height: 0,
+                advance,
+                coverage: Vec::new(),
+            };
+        };
+        let bounds = outlined.px_bounds();
+        let width = (bounds.max.x - bounds.min.x) as usize;
+        let height = (bounds.max.y - bounds.min.y) as usize;
+        let mut coverage = vec![0u8; width * height];
+        outlined.draw(|x, y, amount| {
+            if let Some(cell) = coverage.get_mut(y as usize * width + x as usize) {
+                *cell = (amount.clamp(0.0, 1.0) * 255.0).round() as u8;
+            }
+        });
+        Glyph {
+            left: bounds.min.x as i64,
+            top: bounds.min.y as i64,
+            width,
+            height,
+            advance,
+            coverage,
+        }
+    }
+
     fn with_glyph<R>(&self, ch: char, px: f32, use_glyph: impl FnOnce(&Glyph) -> R) -> R {
         let key = (ch, Self::key(px));
         let mut cache = self.cache.borrow_mut();
-        let glyph = cache.entry(key).or_insert_with(|| {
-            // A character the font lacks is drawn as its "missing glyph" box, like any toolkit.
-            let (metrics, coverage) = self.font.rasterize(ch, f32::from(key.1 as u16) / 4.0);
-            Glyph { metrics, coverage }
-        });
+        let glyph = cache
+            .entry(key)
+            .or_insert_with(|| self.rasterize(ch, f32::from(key.1 as u16) / 4.0));
         use_glyph(glyph)
     }
 
     fn advance(&self, ch: char, px: f32) -> f32 {
-        self.with_glyph(ch, px, |glyph| glyph.metrics.advance_width)
+        self.with_glyph(ch, px, |glyph| glyph.advance)
     }
 
     /// The text's width in pixels.
@@ -74,10 +130,8 @@ impl Face {
 
     /// Ascent above and descent below the baseline, in pixels (the descent positive).
     fn line(&self, px: f32) -> (f32, f32) {
-        match self.font.horizontal_line_metrics(px) {
-            Some(metrics) => (metrics.ascent, -metrics.descent),
-            None => (px * 0.8, px * 0.2),
-        }
+        let scaled = self.font.as_scaled(self.scale(px));
+        (scaled.ascent(), -scaled.descent())
     }
 
     /// Draw `text` with its baseline at `(x, baseline)` in pixels, in `ink`: a packed colour
@@ -93,20 +147,19 @@ impl Face {
         let mut pen_x = x;
         for ch in text.chars() {
             self.with_glyph(ch, px, |glyph| {
-                let metrics = &glyph.metrics;
-                let left = (pen_x + metrics.xmin as f32).round() as i64;
-                let top = (baseline - metrics.ymin as f32 - metrics.height as f32).round() as i64;
-                for row in 0..metrics.height {
+                let left = pen_x.round() as i64 + glyph.left;
+                let top = baseline.round() as i64 + glyph.top;
+                for row in 0..glyph.height {
                     let y = top + row as i64;
                     if y < 0 || y >= canvas.height as i64 {
                         continue;
                     }
-                    for column in 0..metrics.width {
+                    for column in 0..glyph.width {
                         let x = left + column as i64;
                         if x < 0 || x >= canvas.width as i64 {
                             continue;
                         }
-                        let coverage = glyph.coverage[row * metrics.width + column];
+                        let coverage = glyph.coverage[row * glyph.width + column];
                         if coverage > 0 {
                             canvas.blend_pixel(
                                 x as usize,
@@ -117,7 +170,7 @@ impl Face {
                         }
                     }
                 }
-                pen_x += metrics.advance_width;
+                pen_x += glyph.advance;
             });
         }
     }
@@ -224,8 +277,8 @@ fn find_font(env: &str, pattern: &str, well_known: &[&str]) -> Option<PathBuf> {
     None
 }
 
-/// fontconfig's answer for `pattern`, when it is a file `fontdue` can read (TrueType or OpenType;
-/// not a bitmap or Type 1 font).
+/// fontconfig's answer for `pattern`, when it is a file `ab_glyph` can read (TrueType or
+/// OpenType; not a bitmap or Type 1 font).
 fn fc_match(pattern: &str) -> Option<PathBuf> {
     let output = Command::new("fc-match")
         .args(["-f", "%{file}", pattern])

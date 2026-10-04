@@ -40,7 +40,7 @@ reasoning. The native windows came after, sharing everything but their drawing.
   running) uses logical file size
 - **Hard-link aware** — a file reached by several names counts once in each folder that holds it
 - **Native walkers** — Linux, macOS and Windows each get their own parallel directory walk; other
-  platforms, the BSDs included, use `dua-core`'s portable one
+  platforms, the BSDs included, use a portable one on `std::fs`
 - **Stays put on request** — `-x` keeps the scan on one filesystem, like `du -x`; on btrfs, on the
   filesystem and all its subvolumes (a Synology share is one), where `du -x` stops at each
 - **Snapshots left alone** — on Linux, read-only btrfs snapshots inside the folder (Synology's

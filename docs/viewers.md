@@ -42,7 +42,7 @@ cargo run -p duscape-mac --release -- ~   # or run with no argument, or drop a f
 type-checks there, but has never been run there), drawn with no
 toolkit at all: the frame is painted in software and put on the screen by one of two backends,
 native Wayland (`wayland-client`, `xdg-shell`, a `wl_shm` buffer) or X11 (`x11rb`), both pure
-Rust, with text from the system's fonts (`fontconfig`'s sans-serif, rasterised by `fontdue`).
+Rust, with text from the system's fonts (`fontconfig`'s sans-serif, rasterised by `ab_glyph`).
 Nothing is linked from the system — not libwayland, not Xlib — so it builds static
 (`--target x86_64-unknown-linux-musl`, about **1.7 MB**) and runs on any compositor or X server.
 It shares its state — the layout, what is in hand, marks, navigation, rescans — with the macOS

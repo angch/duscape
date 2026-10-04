@@ -30,7 +30,6 @@ gui = ["dep:duscape-linux", "dep:duscape-windows", "dep:duscape-mac"]
 clap = { workspace = true }
 libduscape = { workspace = true }
 duscape-scan = { workspace = true }
-dua-core = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }
@@ -60,6 +59,3 @@ libc = { workspace = true }
 [target.'cfg(all(target_env = "musl", target_pointer_width = "64"))'.dependencies]
 tikv-jemallocator = { version = "0.6", default-features = false }
 
-# Windows: the manifest that keeps Explorer from giving `duscape.exe` a console (`build.rs`).
-[build-dependencies]
-embed-manifest = "1.5.1"

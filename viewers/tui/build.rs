@@ -18,14 +18,6 @@ fn main() {
     }
     if windows && window_built {
         let icon = Path::new("../windows/duscape.ico");
-        if env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
-            // The manifest by linker options, the icon as a resource file.
-            embed_manifest::embed_manifest_file("windows.manifest")
-                .expect("embedding windows.manifest in the binaries");
-            embed_resources(icon, "duscape", None);
-        } else {
-            // One resource object for both: a second would not link.
-            embed_resources(icon, "duscape", Some(Path::new("windows.manifest")));
-        }
+        embed_resources(icon, "duscape", Path::new("windows.manifest"));
     }
 }

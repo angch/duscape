@@ -7,7 +7,7 @@
 //! * `windows` — one handle per directory, entries in bulk from
 //!   `GetFileInformationByHandleEx(FileIdExtdDirectoryInfo)`; NTFS metadata files when elevated
 //!   ([`ntfs`]).
-//! * a `dua-core` fallback everywhere else.
+//! * a portable walk on `std::fs` everywhere else (`portable`).
 //!
 //! Every walker yields the same thing, one [`DirEntries`] per directory ([`scan_directories`]),
 //! and [`parallel::build_tree`] turns that into a [`FileTree`] on several threads. [`refine`] is
@@ -18,8 +18,6 @@
 
 use ::std::num::NonZero;
 use ::std::path::Path;
-
-use ::dua_core::{Options, Order, walk};
 
 use libduscape::model::{FileTree, Folder};
 pub use libduscape::scan::*;
@@ -324,7 +322,7 @@ fn walker_words(root: &Path, options: ScanOptions) -> String {
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         let _ = (root, options);
-        "dua-core, the portable walk (there is no native walker here)".to_string()
+        "the portable walk on std::fs (there is no native walker here)".to_string()
     }
 }
 
@@ -358,8 +356,8 @@ pub fn walk_would_enter(scan_root: &Path, folder: &Path, options: ScanOptions) -
 /// On macOS this uses `macos`, which asks the kernel only for the attributes disk usage needs.
 /// On Linux it uses [`linux`], which owns its own thread pool because `dua-core`'s stops scaling
 /// well before the kernel does. On Windows it uses `windows`, which reads a directory's sizes
-/// in bulk rather than opening every file. Elsewhere it groups the `dua-core` walk, which reports a
-/// directory's entries consecutively.
+/// in bulk rather than opening every file. Elsewhere it uses the portable walk on `std::fs`
+/// ([`portable`]), a directory listed whole at a time.
 pub fn scan_directories(
     root: &Path,
     options: ScanOptions,
@@ -412,9 +410,9 @@ pub fn scan_directories(
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
-        // `dua-core` walks in its own order; the focus is not passed on.
+        // The portable walk keeps no order the focus could steer; it is not passed on.
         let _ = focus;
-        fallback::group_by_directory(root, options)
+        portable::walk_directories(root, options)
     }
 }
 
@@ -668,126 +666,14 @@ impl Iterator for LinuxScan {
     }
 }
 
-/// Compiled on every platform, though only selected on platforms that are neither macOS nor
-/// Linux, so that it cannot rot unnoticed. The tests call it directly everywhere.
+/// The portable walk on `std::fs` (`portable.rs`): the platforms with no native walker, and the
+/// benchmark's baseline. Compiled everywhere, so it cannot rot unnoticed.
 #[cfg_attr(
     any(target_os = "macos", target_os = "linux", windows),
     allow(dead_code)
 )]
-mod fallback {
-    use super::{
-        DirEntries, EntryMeta, Options, Order, ScanOptions, descend_predicate, dua_thread_count,
-        entry_identity, entry_size, walk,
-    };
-    use ::std::path::Path;
-    use ::std::sync::Arc;
-
-    /// Collect the `dua-core` walk into per-directory groups.
-    ///
-    /// `Order::Completion` reports a directory's entries together, so accumulating entries that
-    /// share a parent recovers whole directories without buffering the whole walk. A directory
-    /// whose entries arrive in several chunks simply yields several groups, which the tree builder
-    /// handles: each group carries only its own entries' sizes and counts.
-    pub fn group_by_directory(
-        root: &Path,
-        options: ScanOptions,
-    ) -> impl Iterator<Item = DirEntries> {
-        let root_canon = libduscape::os::canonical_root(root);
-        let root: Arc<Path> = Arc::from(root_canon.as_path());
-        let descend = descend_predicate(&root, options);
-        let mut walk = walk(
-            &root,
-            dua_thread_count(options),
-            Order::Completion,
-            Options::default(),
-            descend,
-        );
-
-        // Held across calls: the group being accumulated is only yielded once an entry for a
-        // different directory shows up, or the walk ends.
-        let mut open: Option<DirEntries> = None;
-
-        std::iter::from_fn(move || {
-            loop {
-                let Some(entry) = walk.next() else {
-                    return open.take();
-                };
-                let entry = match entry {
-                    Ok(entry) => entry,
-                    Err(error) => {
-                        // No entry, so nothing identifies which directory this belongs to.
-                        match &mut open {
-                            Some(open) => open.fail("walk", None, &error),
-                            None => {
-                                let mut lost = DirEntries::new(Arc::clone(&root));
-                                lost.fail("walk", None, &error);
-                                return Some(lost);
-                            }
-                        }
-                        continue;
-                    }
-                };
-                let ::dua_core::Entry {
-                    depth,
-                    file_name,
-                    file_type,
-                    metadata,
-                    parent_path,
-                    ..
-                } = entry;
-                if depth == 0 {
-                    // The walk root itself, reported with the root's *parent* as its parent path.
-                    // It is not an entry inside the tree being scanned.
-                    continue;
-                }
-                let metadata = match metadata {
-                    Some(Ok(metadata)) => Ok(metadata),
-                    Some(Err(error)) => Err(error.to_string()),
-                    None => Err("the walk gave no metadata".to_string()),
-                };
-                let named = metadata.map(|metadata| {
-                    let (inode, links) = entry_identity(
-                        Some(&parent_path.join(&file_name)),
-                        file_type.is_dir(),
-                        &metadata,
-                    );
-                    EntryMeta {
-                        size: entry_size(&metadata, false),
-                        apparent: entry_size(&metadata, true),
-                        inode,
-                        links,
-                        is_dir: file_type.is_dir(),
-                        shared_extent: 0,
-                    }
-                });
-
-                match &mut open {
-                    Some(open)
-                        if Arc::ptr_eq(&open.path, &parent_path) || open.path == parent_path =>
-                    {
-                        match named {
-                            Ok(meta) => open.push(&file_name, meta),
-                            Err(error) => open.fail("stat", Some(&file_name), error),
-                        }
-                    }
-                    // A different directory: start its group, and hand back the finished one.
-                    // The new group already holds this entry, so nothing is lost by returning.
-                    _ => {
-                        let mut group = DirEntries::with_capacity(parent_path, 32, 32 * 32);
-                        match named {
-                            Ok(meta) => group.push(&file_name, meta),
-                            Err(error) => group.fail("stat", Some(&file_name), error),
-                        }
-                        let finished = open.replace(group);
-                        if let Some(finished) = finished {
-                            return Some(finished);
-                        }
-                    }
-                }
-            }
-        })
-    }
-}
+mod portable;
+pub use portable::scan_folder;
 
 /// Workers for the walker the app actually uses: `--threads`, else `default_scan_threads`.
 pub fn thread_count(options: ScanOptions) -> usize {
@@ -796,23 +682,6 @@ pub fn thread_count(options: ScanOptions) -> usize {
     }
     if options.parallel {
         default_scan_threads()
-    } else {
-        1
-    }
-}
-
-/// Workers for the `dua-core` walk, wherever it is still reached.
-///
-/// It needs its own number. The cap is a property of a walker, not of a machine: raising the
-/// native walker's cap to 24 and letting `dua-core` inherit it made the `dua-*` benchmark stages —
-/// and `scan_folder`, which is public — 38% slower on this box, by running the one walker that
-/// collapses past eight workers at 24 of them.
-fn dua_thread_count(options: ScanOptions) -> usize {
-    if let Some(threads) = options.threads {
-        return threads.max(1);
-    }
-    if options.parallel {
-        cores().min(MAX_DUA_THREADS)
     } else {
         1
     }
@@ -860,162 +729,6 @@ fn default_scan_threads() -> usize {
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn default_scan_threads() -> usize {
     cores().min(8)
-}
-
-/// Worker cap for the `dua-core` walk, which collapses past eight on every machine measured.
-const MAX_DUA_THREADS: usize = 8;
-
-/// Walk `root` and yield each filesystem entry (or a read error marker).
-pub fn scan_folder(root: impl AsRef<Path>, options: ScanOptions) -> impl Iterator<Item = ScanItem> {
-    let root = libduscape::os::canonical_root(root.as_ref());
-    let threads = dua_thread_count(options);
-    let descend = descend_predicate(&root, options);
-
-    walk(
-        &root,
-        threads,
-        Order::Completion,
-        Options::default(),
-        descend,
-    )
-    .map(move |entry| match entry {
-        Ok(entry) => {
-            let path = entry.path();
-            match entry.metadata {
-                Some(Ok(metadata)) => {
-                    let (inode, links) =
-                        entry_identity(Some(&path), entry.file_type.is_dir(), &metadata);
-                    ScanItem::Entry {
-                        path,
-                        meta: EntryMeta {
-                            size: entry_size(&metadata, false),
-                            apparent: entry_size(&metadata, true),
-                            inode,
-                            links,
-                            is_dir: entry.file_type.is_dir(),
-                            shared_extent: 0,
-                        },
-                    }
-                }
-                Some(Err(_)) | None => ScanItem::ReadError,
-            }
-        }
-        Err(_) => ScanItem::ReadError,
-    })
-}
-
-/// Whether the walk should descend into a directory entry.
-///
-/// Unlike the native macOS walker, `dua-core` decides this from the entry as its parent listed it,
-/// which is enough for a device comparison: on platforms using this path a mount point really does
-/// report the mounted filesystem's device.
-fn descend_predicate(
-    root: &Path,
-    options: ScanOptions,
-) -> impl Fn(&::dua_core::Entry) -> bool + Send + Sync + 'static {
-    let max_depth = options.max_depth;
-    let snapshots = options.snapshots;
-    let root_device = options
-        .one_file_system
-        .then(|| libduscape::os::volume_id(root).unwrap_or_default());
-    move |entry| {
-        if !max_depth.is_none_or(|max| entry.depth < max) {
-            return false;
-        }
-        // A share's snapshots, seen over the network: listed, not entered — the scan's own
-        // root scanned whatever it is named, as every walker scans it.
-        if entry.depth > 0 && libduscape::nas::left_out(&entry.file_name, snapshots).is_some() {
-            return false;
-        }
-        match (root_device, &entry.metadata) {
-            (Some(root_device), Some(Ok(metadata))) => entry_device(metadata) == root_device,
-            _ => true,
-        }
-    }
-}
-
-/// The filesystem an entry lives on, however the platform's metadata spells it.
-#[cfg(target_os = "macos")]
-fn entry_device(metadata: &::dua_core::Metadata) -> u64 {
-    metadata.dev()
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn entry_device(metadata: &::dua_core::Metadata) -> u64 {
-    use ::std::os::unix::fs::MetadataExt;
-    metadata.dev()
-}
-
-#[cfg(windows)]
-fn entry_device(metadata: &::dua_core::Metadata) -> u64 {
-    metadata.hard_link_id().map(|(vol, _)| vol).unwrap_or(0)
-}
-
-/// Inode number and link count, however the platform's metadata spells them.
-#[cfg(target_os = "macos")]
-fn entry_identity(
-    _path: Option<&Path>,
-    _is_dir: bool,
-    metadata: &::dua_core::Metadata,
-) -> (u64, u64) {
-    (metadata.ino(), metadata.nlink())
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn entry_identity(
-    _path: Option<&Path>,
-    _is_dir: bool,
-    metadata: &::dua_core::Metadata,
-) -> (u64, u64) {
-    use ::std::os::unix::fs::MetadataExt;
-    (metadata.ino(), metadata.nlink())
-}
-
-#[cfg(windows)]
-fn entry_identity(
-    path: Option<&Path>,
-    is_dir: bool,
-    metadata: &::dua_core::Metadata,
-) -> (u64, u64) {
-    let id = metadata
-        .hard_link_id()
-        .map(|(_, file_id)| file_id)
-        .unwrap_or(0);
-    let links = if is_dir {
-        1
-    } else if let Some(path) = path {
-        libduscape::os::link_count(path)
-    } else {
-        1
-    };
-    (id, links)
-}
-
-#[cfg(target_os = "macos")]
-fn entry_size(metadata: &::dua_core::Metadata, apparent: bool) -> u64 {
-    if apparent {
-        metadata.len()
-    } else {
-        metadata.allocated_size()
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn entry_size(metadata: &::dua_core::Metadata, apparent: bool) -> u64 {
-    if apparent {
-        metadata.len()
-    } else {
-        metadata.allocated_size()
-    }
-}
-
-#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
-fn entry_size(metadata: &::dua_core::Metadata, apparent: bool) -> u64 {
-    if apparent {
-        metadata.len()
-    } else {
-        libduscape::os::size_on_disk_fast(metadata)
-    }
 }
 
 /// Walk `root` and populate a [`FileTree`]. Returns the tree and a count of read failures.

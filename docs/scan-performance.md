@@ -54,15 +54,16 @@ The stages nest, so subtracting one from the next attributes cost to a layer:
 
 | Stage | What it measures |
 | --- | --- |
-| `dua-walk` | the general-purpose `dua-core` walk alone, entries discarded |
-| `dua-tree` | that walk feeding the folder tree |
+| `portable-walk` | the portable walk on `std::fs` alone, entries discarded (`dua-walk`, `dua-core`'s walk, until 2026-10-04: the older figures below) |
+| `portable-tree` | that walk feeding the folder tree (`dua-tree` until then) |
 | `walk` | the walk duscape uses now, alone |
 | `tree` | that walk feeding the folder tree |
 | `tree-only` | the folder tree alone — entries are collected first, untimed, then fed to the model |
 | `pipeline` | scan and one tree builder on separate threads, over a channel |
 | `sharded` | scan feeding several tree builders, merged and replayed — the app's real path |
 
-`dua-*` against the others is a like-for-like walker comparison on the same tree. `walk` against
+`portable-*` (`dua-*` in the figures before 2026-10-04) against the others is a like-for-like
+walker comparison on the same tree. `walk` against
 `tree` is the cost of the data model. `tree` against `pipeline` is the cost of the channel, and
 `pipeline` against `sharded` the cost of parallelising the build — which is a saving where the build
 is the bottleneck (Linux) and a small loss where the walk is (Windows and macOS, one shard).
@@ -3719,3 +3720,35 @@ Not measured, since the run was cut: the warm walk, the metadata's whole footpri
 device read. Reproduce with the static musl `duscape` copied over and
 `--benchmark --bench-stage walk --no-cache /var`, watching `/proc/diskstats` (`sda`) and
 `Buffers` in `/proc/meminfo` beside it.
+
+## 2026-10-04: `dua-core` replaced by a portable walk on `std::fs`
+
+Debian does not package `dua-core`, and a dependency missing from Debian has to be patched out of
+a Debian build even when it is optional or for another platform, since Cargo resolves those too
+(`docs/packaging.md`). duscape used one part of it: the portable walk, which is the BSDs' scan and,
+on Linux, macOS and Windows, only the benchmark's baseline (`dua-walk`, `dua-tree`) and the
+public `scan_folder`. `scanners/src/portable.rs` replaces it: a shared queue of directories, the
+cores up to eight workers, each directory listed whole with `std::fs::read_dir` and sent as one
+`DirEntries`, the same rules (depth, a share's snapshot folders, `-x`). The stages are now
+`portable-walk` and `portable-tree`; the `dua-*` figures above stay as they were measured.
+
+WSL2 (kernel 6.6, ext4), `/usr` warm, `-x` (WSL keeps a 9p share at `/usr/lib/wsl/drivers`, which
+the native walker refuses as a network filesystem and neither portable walk does), three rounds:
+
+| Walk | Time | Entries | Bytes |
+| --- | --- | --- | --- |
+| `walk` (native, `getdents64`/`statx`) | 0.109–0.119 s | 171,652 | 27,217,653,760 |
+| `portable-walk` (`std::fs`) | 0.421–0.440 s | 171,652 | 27,217,653,760 |
+| `dua-walk` (`dua-core` 4.1.0, the commit before) | 1.522–1.600 s | 171,653 | 27,217,657,856 |
+
+The portable walk agrees with the native one exactly; `dua-core` counted the root as an entry
+(the one entry and 4 KiB more). Without `-x` all three portable walks also cross into the 9p
+share, which made `portable-walk` 3.5 s: a BSD has no such share, and the native walkers'
+mount rules (pseudo and network filesystems, bind duplicates) are the native walkers' alone.
+What `std` cannot give: on Windows no allocation size and no file id from a listing, so the
+portable walk opens each file once, with no access rights, for its index, link count and
+allocation (`os::file_identity`: `GetFileInformationByHandle` and `FileStandardInfo` on one
+handle), as the `dua-core` walk opened each for the link count. On
+`C:\Windows\System32\drivers` that gives the native walker's 686 entries and 263,955,648 bytes
+exactly; reading the length instead had come to 0.9 MiB less.
+

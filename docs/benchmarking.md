@@ -12,8 +12,8 @@ duscape --benchmark --threads 6 --bench-repeat 3 /
 
 | Stage       | What it measures                                                                  |
 | ----------- | --------------------------------------------------------------------------------- |
-| `dua-walk`  | the general-purpose `dua-core` walk alone                                         |
-| `dua-tree`  | that walk feeding the folder tree                                                 |
+| `portable-walk` | the portable walk on `std::fs` alone (the BSDs' walker; `dua-walk` before 2026-10-04, `dua-core`'s) |
+| `portable-tree` | that walk feeding the folder tree (`dua-tree` before)                          |
 | `walk`      | the walk duscape uses now, alone                                                |
 | `tree`      | that walk feeding the folder tree                                                 |
 | `tree-only` | the folder tree alone, from entries collected first                               |

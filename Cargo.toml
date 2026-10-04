@@ -37,7 +37,6 @@ version = "0.2.1"
 
 [workspace.dependencies]
 clap = { version = "4", features = ["derive"] }
-dua-core = "4"
 libc = "0.2"
 libduscape = { path = "common", version = "0.2.1" }
 duscape-scan = { path = "scanners", version = "0.2.1" }
