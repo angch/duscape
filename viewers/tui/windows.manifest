@@ -3,7 +3,13 @@
      program, so that it can be the terminal viewer; `detached` means it gets a console only by
      inheriting one — from a shell — and none when Explorer starts it, which opens the window with
      no console flashing first (`src/front.rs`). Windows 11 24H2 and Server 2025 on; older Windows
-     ignores it and makes the console, which `front.rs` lets go of. -->
+     ignores it and makes the console, which `front.rs` lets go of.
+     `<application>` here takes the assembly's namespace (asm.v1), where Microsoft's examples
+     write `xmlns="urn:schemas-microsoft-com:asm.v3"`: both are honoured. Checked 2026-10-04 on
+     Windows 10.0.26300, a console program with this file embedded as duscape embeds it (an
+     RT_MANIFEST from `viewers/windows/resources.rs`), started by Explorer and by WMI: no
+     console, as with the asm.v3 form; without a manifest, one. And `duscape.exe` started by
+     Explorer: its window, no console host. -->
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <!-- asInvoker: the program starts with the rights it is given, and asks for more only when a
        whole volume wants them (`duscape_windows::elevate`, through the shell's `runas`). Said
