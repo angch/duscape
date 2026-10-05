@@ -1328,9 +1328,12 @@ mod volume {
 
     /// How often the running totals go to the view while the table is read: the first chunk's
     /// at once, so the treemap is up as soon as the root's folders are read, then no oftener
-    /// than this — a flush resolves every directory charged since the last by its records, on
-    /// the reading thread, between two reads of the table.
-    const LIVE_EVERY: Duration = Duration::from_millis(250);
+    /// than this — a frame at 60 fps, the window's pace (`duscape_viewer::scan::FRAME`), so in
+    /// practice a flush a chunk, the charges coming a chunk at a time. A flush resolves only
+    /// the directories charged since the last (their places kept once found), on `mft_live`,
+    /// not the reading thread. At 250 ms (to 2026-10-05) the live view of an elevated volume
+    /// scan moved at 4 fps at best.
+    const LIVE_EVERY: Duration = Duration::from_millis(16);
 
     /// How deep the kernel's listing goes for the directories' records (`seed_places`): the
     /// outline's own depth, below which the view rolls folders up into the one above anyway.

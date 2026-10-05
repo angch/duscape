@@ -109,6 +109,20 @@ fn names(viewer: &Viewer) -> Vec<String> {
         .collect()
 }
 
+/// The marks, each as its row's path from the listed folder joined with `/`.
+fn marks(viewer: &Viewer) -> Vec<String> {
+    viewer
+        .marked
+        .iter()
+        .map(|path| {
+            path.iter()
+                .map(|name| name.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join("/")
+        })
+        .collect()
+}
+
 fn selected(viewer: &Viewer) -> Option<String> {
     viewer
         .selected
@@ -268,9 +282,9 @@ fn shift_marks_a_range_that_shrinks_when_reversed() {
     let mut viewer = viewer();
     viewer.arrow(Direction::Down, true);
     viewer.arrow(Direction::Down, true);
-    assert_eq!(viewer.marked, ["big", "medium.txt", "small"]);
+    assert_eq!(marks(&viewer), ["big", "medium.txt", "small"]);
     viewer.arrow(Direction::Up, true);
-    assert_eq!(viewer.marked, ["big", "medium.txt"]);
+    assert_eq!(marks(&viewer), ["big", "medium.txt"]);
     // A plain move clears them.
     viewer.arrow(Direction::Down, false);
     assert!(viewer.marked.is_empty());
@@ -290,20 +304,20 @@ fn a_shift_run_keeps_the_marks_it_started_from() {
     let (x, y) = row_center(&viewer, "tiny.bin");
     viewer.click(x, y, toggle);
     assert_eq!(
-        viewer.marked,
+        marks(&viewer),
         ["big", "tiny.bin"],
         "big was picked, so it joins"
     );
     viewer.arrow(Direction::Up, true);
     viewer.arrow(Direction::Up, true);
     assert_eq!(
-        viewer.marked,
+        marks(&viewer),
         ["big", "tiny.bin", "small", "medium.txt"],
         "swept from the anchor, on top of the marks there were"
     );
     viewer.arrow(Direction::Down, true);
     assert_eq!(
-        viewer.marked,
+        marks(&viewer),
         ["big", "tiny.bin", "small"],
         "the range shrinks; the mark it started from stays"
     );
@@ -323,7 +337,7 @@ fn a_shift_run_does_not_bring_back_marks_cleared_in_the_treemap() {
     let (x, y) = row_center(&viewer, "tiny.bin");
     viewer.click(x, y, toggle);
     viewer.arrow(Direction::Up, true);
-    assert_eq!(viewer.marked, ["tiny.bin", "small"]);
+    assert_eq!(marks(&viewer), ["tiny.bin", "small"]);
     viewer.toggle_focus();
     viewer.arrow(Direction::Left, false);
     assert!(
@@ -335,11 +349,7 @@ fn a_shift_run_does_not_bring_back_marks_cleared_in_the_treemap() {
     viewer.arrow(Direction::Down, true);
     let listing = names(&viewer);
     let to = (from + 1).min(listing.len() - 1);
-    let marked: Vec<String> = viewer
-        .marked
-        .iter()
-        .map(|name| name.to_string_lossy().into_owned())
-        .collect();
+    let marked = marks(&viewer);
     assert_eq!(
         marked,
         listing[from..=to],
@@ -360,21 +370,21 @@ fn command_click_seeds_the_marks_only_with_a_chosen_entry() {
     assert!(!viewer.chosen, "the scan placed `big` in hand");
     let (x, y) = center_of(&viewer, "small");
     viewer.click(x, y, toggle);
-    assert_eq!(viewer.marked, ["small"]);
+    assert_eq!(marks(&viewer), ["small"]);
     viewer.click(x, y, toggle);
     assert!(viewer.marked.is_empty(), "a second click takes it out");
-    assert_eq!(viewer.target_names(), ["small"]);
+    assert_eq!(viewer.target_rows(), [vec![OsString::from("small")]]);
 
     // Picked with an arrow, `medium.txt` joins a selection begun with a click elsewhere.
     viewer.jump(Jump::Home, false);
     viewer.arrow(Direction::Down, false);
     assert!(viewer.chosen);
     viewer.click(x, y, toggle);
-    assert_eq!(viewer.marked, ["medium.txt", "small"]);
+    assert_eq!(marks(&viewer), ["medium.txt", "small"]);
     // A plain click clears the marks.
     viewer.click(x, y, Mods::default());
     assert!(viewer.marked.is_empty());
-    assert_eq!(viewer.target_names(), ["small"]);
+    assert_eq!(viewer.target_rows(), [vec![OsString::from("small")]]);
     // The folder just left is placed, like a deleted entry's neighbour.
     viewer.enter(OsStr::new("big"));
     viewer.go_up();
@@ -988,7 +998,7 @@ fn the_expander_opens_a_folder_on_a_click() {
     // Its own rows are indented, so their expanders sit one level in.
     viewer.toggle_row(0);
     assert_eq!(rows_of(&viewer), ["big", "medium.txt", "small", "tiny.bin"]);
-    // Clicking a nested row takes it in hand; the marks are the top-level folder's.
+    // Clicking a nested row takes it in hand; a mark is the row's own.
     viewer.toggle_row(0);
     viewer.click(list.x + 100.0, y + ROW, Mods::default());
     assert_eq!(cursor_of(&viewer).as_deref(), Some("a"));
@@ -1001,9 +1011,9 @@ fn the_expander_opens_a_folder_on_a_click() {
         },
     );
     assert_eq!(
-        viewer.marked,
-        ["big", "small"],
-        "a picked nested row marks its folder"
+        marks(&viewer),
+        ["big/a", "small"],
+        "a picked nested row joins as itself"
     );
     let (left, _) = viewer.status();
     assert!(left.starts_with("2 marked"), "{left}");
@@ -1052,8 +1062,8 @@ fn a_tile_inside_a_folders_tile_is_pointed_at_and_reveals_its_row() {
     // A relayout moves the tiles: nothing is hovered until the pointer moves again.
     viewer.resize(1200.0, 800.0);
     assert_eq!(viewer.hover_nested, None);
-    // The modifiers apply to a nested tile as to any target: Ctrl+click marks its folder and
-    // keeps the marks there were.
+    // The modifiers apply to a nested tile as to any target: Ctrl+click marks it and keeps the
+    // marks there were.
     let toggle = Mods {
         toggle: true,
         range: false,
@@ -1066,9 +1076,9 @@ fn a_tile_inside_a_folders_tile_is_pointed_at_and_reveals_its_row() {
         .expect("a row");
     viewer.click(list.x + 10.0, list.y + ROW * (tiny as f64 + 0.5), toggle);
     assert_eq!(
-        viewer.marked,
-        ["big", "tiny.bin"],
-        "a's row was picked, so its folder joins first"
+        marks(&viewer),
+        ["big/a", "tiny.bin"],
+        "a's row was picked, so it joins first"
     );
     let a = viewer.nested().iter().find(|t| t.tile.name == "a").unwrap();
     let rect = viewer
@@ -1076,14 +1086,18 @@ fn a_tile_inside_a_folders_tile_is_pointed_at_and_reveals_its_row() {
         .cells_to_rect(a.tile.x, a.tile.y, a.tile.width, a.tile.height);
     let (ax, ay) = (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
     viewer.click(ax, ay, toggle);
-    assert_eq!(
-        viewer.marked,
-        ["tiny.bin"],
-        "big toggled off, tiny.bin kept"
-    );
+    assert_eq!(marks(&viewer), ["tiny.bin"], "a toggled off, tiny.bin kept");
     assert_eq!(cursor_of(&viewer).as_deref(), Some("a"));
     viewer.click(ax, ay, toggle);
-    assert_eq!(viewer.marked, ["tiny.bin", "big"], "and on again");
+    assert_eq!(marks(&viewer), ["tiny.bin", "big/a"], "and on again");
+    let a_tile = viewer.cursor_nested().expect("a's tile");
+    let marked = viewer.marked_nested();
+    assert_eq!(
+        marked.iter().filter(|marked| **marked).count(),
+        1,
+        "a's tile alone"
+    );
+    assert!(marked[a_tile]);
     // With marks present, hovering a nested tile still names it, as hovering any tile does.
     assert!(viewer.hover_at(ax, ay));
     let (left, _) = viewer.status();
@@ -1848,20 +1862,95 @@ fn a_shift_click_marks_the_range_from_the_entry_in_hand() {
     viewer.click(x, y, Mods::default());
     let (x, y) = row_center(&viewer, "small");
     viewer.click(x, y, shift);
-    let marked = |viewer: &Viewer| -> Vec<String> {
-        viewer
-            .marked
-            .iter()
-            .map(|name| name.to_string_lossy().into_owned())
-            .collect()
-    };
-    assert_eq!(marked(&viewer), ["big", "medium.txt", "small"]);
+    assert_eq!(marks(&viewer), ["big", "medium.txt", "small"]);
     let (x, y) = center_of(&viewer, "tiny.txt");
     viewer.click(x, y, shift);
-    assert_eq!(marked(&viewer), ["big", "medium.txt", "small", "tiny.txt"]);
+    assert_eq!(marks(&viewer), ["big", "medium.txt", "small", "tiny.txt"]);
     let (x, y) = row_center(&viewer, "medium.txt");
     viewer.click(x, y, shift);
-    assert_eq!(marked(&viewer), ["big", "medium.txt"], "shrunk back");
+    assert_eq!(marks(&viewer), ["big", "medium.txt"], "shrunk back");
     assert_eq!(viewer.targets().len(), 2, "what a delete takes");
     let _ = fs::remove_dir_all(&dir);
+}
+
+/// In the tree view a ⇧ range runs over the rows on show, a folder's opened in place with the
+/// rest, and marks those rows: a click, a ⇧+click and ⇧+arrows alike. A delete takes a folder
+/// and not also the rows marked inside it; closing a folder takes its rows' marks off.
+#[test]
+fn a_shift_range_marks_the_rows_of_a_folder_opened_in_place() {
+    let mut viewer = tree_viewer();
+    let shift = Mods {
+        toggle: false,
+        range: true,
+    };
+    viewer.toggle_row(0);
+    assert_eq!(
+        rows_of(&viewer),
+        ["big/", "  a", "  b", "medium.txt", "small", "tiny.bin"]
+    );
+    let list = viewer.layout.list.expect("a list");
+    let row = |index: usize| (list.x + 100.0, list.y + ROW * (index as f64 + 0.5));
+    let (x, y) = row(1);
+    viewer.click(x, y, Mods::default());
+    let (x, y) = row(2);
+    viewer.click(x, y, shift);
+    assert_eq!(marks(&viewer), ["big/a", "big/b"], "a's and b's, not big's");
+    let (left, _) = viewer.status();
+    assert!(left.starts_with("2 marked"), "{left}");
+    // On down past the folder's end: the range keeps its anchor, and runs on.
+    viewer.arrow(Direction::Down, true);
+    assert_eq!(marks(&viewer), ["big/a", "big/b", "medium.txt"]);
+    // Back up to the folder: its row joins, and a delete takes it whole, its rows with it.
+    let (x, y) = row(0);
+    viewer.click(x, y, shift);
+    assert_eq!(
+        marks(&viewer),
+        ["big/a", "big"],
+        "swept back up from the anchor"
+    );
+    let targets: Vec<String> = viewer
+        .target_rows()
+        .iter()
+        .map(|path| {
+            path.iter()
+                .map(|name| name.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join("/")
+        })
+        .collect();
+    assert_eq!(targets, ["big"], "big's rows go with it");
+    assert_eq!(viewer.targets().len(), 1);
+    // Closed, big's rows are off show and so are their marks; big's own stays.
+    viewer.toggle_row(0);
+    assert_eq!(marks(&viewer), ["big"]);
+}
+
+/// An unframed speck has the least tiles' grid over it, aligned to the board so the lines run
+/// on across a corner, and is darker under it; one with room for a frame has neither.
+#[test]
+fn a_speck_too_small_for_a_frame_has_the_least_tiles_grid_over_it() {
+    let speck = |x, y, width, height, framed| Dust {
+        x,
+        y,
+        width,
+        height,
+        color: (0.5, 0.5, 0.5),
+        framed,
+    };
+    let pitch = MIN_TILE_PIXELS;
+    // One pixel on a grid column: a line of its own height. Off it: nothing.
+    assert_eq!(speck(pitch, 1, 1, 1, false).grid(), [(pitch, 1, 1, 1)]);
+    assert!(speck(pitch + 1, 1, 1, 1, false).grid().is_empty());
+    // Wider than the pitch: a column and a row a pitch apart, at the board's multiples.
+    let lines = speck(pitch - 1, pitch - 1, pitch + 2, 2, false).grid();
+    assert_eq!(
+        lines,
+        [
+            (pitch, pitch - 1, 1, 2),
+            (2 * pitch, pitch - 1, 1, 2),
+            (pitch - 1, pitch, pitch + 2, 1),
+        ]
+    );
+    assert!(speck(0, 0, 2 * pitch, 2 * pitch, true).grid().is_empty());
+    const { assert!(SPECK_SHADE < 1.0 && SPECK_SHADE > 0.5) };
 }

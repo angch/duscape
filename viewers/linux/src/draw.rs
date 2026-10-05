@@ -217,10 +217,17 @@ fn treemap(canvas: &mut Canvas, viewer: &Viewer, pens: &Pens) {
         }
     }
     // The "small files" corners' entries — the board's, and each folder's — a speck each
-    // down to a pixel, in their tiles' colours.
+    // down to a pixel, in their tiles' colours: framed as a tile is where there is room for a
+    // frame and colour inside it, else with the least tiles' grid over it (`Dust::grid`).
     for dust in viewer.dust() {
         let speck = layout.cells_to_rect(dust.x, dust.y, dust.width, dust.height);
         canvas.fill(speck, dust.color, 1.0);
+        if dust.framed {
+            canvas.stroke(speck.inset(0.5, 0.5), BLACK, 0.35, 1.0);
+        }
+        for (x, y, width, height) in dust.grid() {
+            canvas.fill(layout.cells_to_rect(x, y, width, height), BLACK, 0.35);
+        }
     }
     let alpha = if viewer.focus() == Focus::Treemap {
         1.0
@@ -265,6 +272,18 @@ fn nested(canvas: &mut Canvas, viewer: &Viewer, pens: &Pens) {
         }
         if viewer.hover_nested == Some(index) {
             canvas.stroke(rect, WHITE, 0.8, 1.0);
+        }
+    }
+    // Marked rows' tiles, as the top-level tiles are marked, once all are drawn: a marked
+    // folder's own entries would cover it otherwise.
+    for (index, marked) in viewer.marked_nested().into_iter().enumerate() {
+        if marked {
+            let t = &viewer.nested()[index].tile;
+            let rect = layout
+                .cells_to_rect(t.x, t.y, t.width, t.height)
+                .inset(0.5, 0.5);
+            canvas.fill(rect, MARK, 0.30);
+            canvas.stroke(rect, MARK, 0.9, 1.5);
         }
     }
 }
@@ -337,7 +356,7 @@ fn rows(canvas: &mut Canvas, viewer: &Viewer, list: Rect, focused: bool, pens: &
         if in_hand {
             let color = if emphasised { ACCENT } else { ACCENT_QUIET };
             canvas.rounded(pill, 5.0, color, 1.0);
-        } else if row.depth == 0 && viewer.is_marked(&row.entry.name) {
+        } else if viewer.is_marked_row(&row.path) {
             canvas.rounded(pill, 5.0, ACCENT, 0.25);
         } else if viewer.hover_row == Some(index) {
             canvas.rounded(pill, 5.0, LABEL, 0.06);

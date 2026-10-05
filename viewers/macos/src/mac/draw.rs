@@ -348,10 +348,19 @@ fn treemap(viewer: &Viewer, pens: &Pens) {
             color = Some((dust.color, srgb(dust.color, 1.0)));
         }
         if let Some((_, ns)) = &color {
-            fill(
-                layout.cells_to_rect(dust.x, dust.y, dust.width, dust.height),
-                ns,
-            );
+            let rect = layout.cells_to_rect(dust.x, dust.y, dust.width, dust.height);
+            fill(rect, ns);
+            // Framed as a tile is where there is room, else the least tiles' grid over it
+            // (`Dust::grid`).
+            if dust.framed {
+                stroke(rect.inset(0.5, 0.5), &srgb((0.0, 0.0, 0.0), 0.35), 1.0);
+            }
+            for (x, y, width, height) in dust.grid() {
+                fill(
+                    layout.cells_to_rect(x, y, width, height),
+                    &srgb((0.0, 0.0, 0.0), 0.35),
+                );
+            }
         }
     }
     let alpha = if viewer.focus() == Focus::Treemap {
@@ -398,6 +407,18 @@ fn nested(viewer: &Viewer, pens: &Pens) {
                 &NSColor::whiteColor().colorWithAlphaComponent(0.8),
                 1.0,
             );
+        }
+    }
+    // Marked rows' tiles, as the top-level tiles are marked, once all are drawn: a marked
+    // folder's own entries would cover it otherwise.
+    for (index, marked) in viewer.marked_nested().into_iter().enumerate() {
+        if marked {
+            let t = &viewer.nested()[index].tile;
+            let rect = layout
+                .cells_to_rect(t.x, t.y, t.width, t.height)
+                .inset(0.5, 0.5);
+            fill(rect, &srgb(MARK, 0.30));
+            stroke(rect, &srgb(MARK, 0.9), 1.5);
         }
     }
 }
@@ -477,7 +498,7 @@ fn rows(viewer: &Viewer, list: Rect, key_window: bool, pens: &Pens) {
                 NSColor::unemphasizedSelectedContentBackgroundColor()
             };
             rounded(pill, 5.0, &color);
-        } else if row.depth == 0 && viewer.is_marked(&row.entry.name) {
+        } else if viewer.is_marked_row(&row.path) {
             rounded(
                 pill,
                 5.0,

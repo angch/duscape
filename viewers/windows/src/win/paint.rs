@@ -13,8 +13,7 @@ use duscape_viewer::chooser::Chooser;
 use duscape_viewer::deleting::{Deletion, DeletionLayout};
 use duscape_viewer::passes::LabelBudget;
 use duscape_viewer::state::{
-    EXPANDER, Focus, LIST_PAD, Layout, MIN_TILE_PIXELS, Preview, ROW, ROW_INDENT, Rect, TILE_LABEL,
-    describe,
+    EXPANDER, Focus, LIST_PAD, Layout, Preview, ROW, ROW_INDENT, Rect, TILE_LABEL, describe,
 };
 use libduscape::DisplaySize;
 use libduscape::format::without_verbatim_prefix;
@@ -636,14 +635,24 @@ fn draw_treemap(canvas: &Canvas, window: &Window, layout: &Layout) {
         }
     }
     // The "small files" corners' entries — the board's, and each folder's — a speck each
-    // down to a pixel, in their tiles' colours; framed where there is room for a frame and
-    // colour inside it, since a framed speck of a few pixels reads as a hollow box.
+    // down to a pixel, in their tiles' colours: framed where there is room for a frame and
+    // colour inside it, else with the least tiles' grid over it (`Dust::grid`).
     for dust in viewer.dust() {
         let rect = layout.cells_to_rect(dust.x, dust.y, dust.width, dust.height);
         canvas.fill(rect, colorref(dust.color));
-        if dust.width >= 2 * MIN_TILE_PIXELS && dust.height >= 2 * MIN_TILE_PIXELS {
+        if dust.framed {
             canvas.frame(rect, BORDER, 1);
         }
+        for (x, y, width, height) in dust.grid() {
+            canvas.fill(layout.cells_to_rect(x, y, width, height), BORDER);
+        }
+    }
+    // The board's corner framed as a tile is, over the specks at its edges.
+    if !viewer.dust().is_empty()
+        && let Some(corner) = board.corner()
+    {
+        let corner = layout.cells_to_rect(corner.x, corner.y, corner.width, corner.height);
+        canvas.frame(corner, BORDER, 1);
     }
     if let Some(tile) = board.currently_selected() {
         canvas.frame(
@@ -694,7 +703,7 @@ fn draw_list(canvas: &Canvas, window: &Window, list: Rect) {
         let rect = Rect::new(list.x, list.y + shown as f64 * ROW, list.w, ROW);
         // The tree: each level indented, a folder with its expander before its name.
         let indent = LIST_PAD + row.depth as f64 * ROW_INDENT;
-        let marked = row.depth == 0 && viewer.is_marked(&entry.name);
+        let marked = viewer.is_marked_row(&row.path);
         let in_hand = cursor == Some(index);
         let (background, ink) = if marked {
             (Some(MARK), INK)
@@ -769,10 +778,16 @@ fn draw_nested(canvas: &Canvas, window: &Window, layout: &Layout) {
     let viewer = &window.viewer;
     let fonts = &window.fonts;
     let pad = 3.0;
+    let marks = viewer.marked_nested();
     for (index, nested) in viewer.nested().iter().enumerate() {
         let t = &nested.tile;
         let rect = layout.cells_to_rect(t.x, t.y, t.width, t.height);
-        let color = colorref(viewer.nested_color(index));
+        let marked = marks.get(index).copied().unwrap_or(false);
+        let color = if marked {
+            MARK
+        } else {
+            colorref(viewer.nested_color(index))
+        };
         fill_tile(canvas, layout, t, nested.inside.as_ref(), color);
         canvas.frame(rect, BORDER, 1);
         if rect.w > 30.0
@@ -780,7 +795,8 @@ fn draw_nested(canvas: &Canvas, window: &Window, layout: &Layout) {
             && viewer.labelled(t)
             && let Some(_label) = canvas.labels.allows()
         {
-            draw_tile_label(canvas, fonts, rect, pad, t, rgb(235, 235, 235), fonts.label);
+            let ink = if marked { INK } else { rgb(235, 235, 235) };
+            draw_tile_label(canvas, fonts, rect, pad, t, ink, fonts.label);
         }
         if viewer.hover_nested == Some(index) {
             canvas.frame(rect, rgb(200, 200, 200), 1);
@@ -899,16 +915,10 @@ fn draw_preview(canvas: &Canvas, window: &Window, info: Rect) {
 
     // The caption: what is in hand and how big; how many are marked; what picture it is.
     let words = if viewer.marked.len() > 1 {
-        let size: u128 = viewer
-            .marked
-            .iter()
-            .filter_map(|name| viewer.entry_named(name))
-            .map(|entry| entry.size)
-            .sum();
         format!(
             "{} marked · {}",
             libduscape::DisplayCount(viewer.marked.len() as u64),
-            DisplaySize(size as f64)
+            DisplaySize(viewer.marked_size() as f64)
         )
     } else if let Some(entry) = viewer.shown_entry().or_else(|| viewer.selected_entry()) {
         let mut words = entry.name.to_string_lossy().into_owned();

@@ -13,10 +13,11 @@ use ::std::path::PathBuf;
 pub struct Volume {
     /// Where it is mounted: `/`, `/home`, `C:\`.
     pub path: PathBuf,
-    /// What it is: the device on Unix (`/dev/nvme0n1p2`), the label on Windows (`Local Disk`),
-    /// possibly empty.
+    /// What it is: the device on Unix (`/dev/nvme0n1p2`, `//server/share`), the label on
+    /// Windows (`Local Disk`) or a mapped drive's share (`\\server\share`), possibly empty.
     pub label: String,
-    /// The filesystem: `ext4`, `apfs`, `NTFS`.
+    /// The filesystem: `ext4`, `apfs`, `NTFS` — or, for a network drive on Windows, how it is
+    /// reached (`cifs`, `nfs`, `webdav`), by the network provider that serves it.
     pub filesystem: String,
     /// Bytes in all, and in use.
     pub total: u64,
@@ -249,17 +250,43 @@ mod imp {
     }
 }
 
+/// What to call a Windows network drive's filesystem, by the network provider that serves it
+/// (`NETRESOURCE::lpProvider`): `cifs` for the Windows network (SMB), as Linux names the same
+/// mount, `nfs` for an NFS client's, `webdav` for the Web Client's, else the provider's own
+/// name. Not the volume's filesystem name: for a share, Windows gives the server's (`NTFS` for
+/// a share on an NTFS disk), and a mapped drive was offered as a local NTFS volume.
+// Windows's alone, and tested everywhere.
+#[cfg_attr(not(windows), allow(dead_code))]
+#[must_use]
+pub fn network_filesystem(provider: &str) -> String {
+    let lower = provider.to_ascii_lowercase();
+    if lower.contains("nfs") {
+        "nfs".to_string()
+    } else if lower.contains("web client") || lower.contains("webdav") {
+        "webdav".to_string()
+    } else if lower.contains("microsoft windows network") || lower.contains("smb") {
+        "cifs".to_string()
+    } else if provider.is_empty() {
+        "network".to_string()
+    } else {
+        provider.to_string()
+    }
+}
+
 #[cfg(windows)]
 mod imp {
     use ::std::ffi::OsString;
     use ::std::os::windows::ffi::OsStringExt;
     use ::std::path::PathBuf;
 
+    use windows_sys::Win32::NetworkManagement::WNet::{
+        NETRESOURCEW, RESOURCETYPE_DISK, WNetGetConnectionW, WNetGetResourceInformationW,
+    };
     use windows_sys::Win32::Storage::FileSystem::{
         GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW,
     };
 
-    use super::Volume;
+    use super::{Volume, network_filesystem};
 
     const DRIVE_REMOVABLE: u32 = 2;
     const DRIVE_FIXED: u32 = 3;
@@ -309,11 +336,19 @@ mod imp {
                 filesystem.len() as u32,
             )
         };
-        let (label, filesystem) = if named != 0 {
+        let (mut label, mut filesystem) = if named != 0 {
             (until_nul(&label), until_nul(&filesystem))
         } else {
             (String::new(), String::new())
         };
+        // A network drive: the share, and how it is reached — not the server's filesystem.
+        if kind == DRIVE_REMOTE {
+            let (share, provider) = share_of(letter);
+            if let Some(share) = share {
+                label = share;
+            }
+            filesystem = network_filesystem(&provider.unwrap_or_default());
+        }
         Some(Volume {
             path: PathBuf::from(format!("{}:\\", letter as char)),
             label,
@@ -321,6 +356,67 @@ mod imp {
             total,
             used: total.saturating_sub(free),
         })
+    }
+
+    /// A mapped drive's share (`\\server\share`) and the network provider that serves it,
+    /// each if Windows says. Asked of the providers (`mpr.dll`) after `GetDiskFreeSpaceExW` has
+    /// reached the server already: the listing took 20 ms warm either way with three shares
+    /// mapped (2026-10-05), its first call 56 → 109 ms as `mpr.dll` loads.
+    fn share_of(letter: u8) -> (Option<String>, Option<String>) {
+        let local = [u16::from(letter), u16::from(b':'), 0];
+        let mut remote = [0u16; 1024];
+        let mut length = remote.len() as u32;
+        // SAFETY: `local` is NUL-terminated and `remote` holds `length` characters.
+        let connected =
+            unsafe { WNetGetConnectionW(local.as_ptr(), remote.as_mut_ptr(), &raw mut length) };
+        if connected != 0 {
+            return (None, None);
+        }
+        let share = until_nul(&remote);
+        let mut resource = NETRESOURCEW {
+            dwScope: 0,
+            dwType: RESOURCETYPE_DISK,
+            dwDisplayType: 0,
+            dwUsage: 0,
+            lpLocalName: ::std::ptr::null_mut(),
+            lpRemoteName: remote.as_mut_ptr(),
+            lpComment: ::std::ptr::null_mut(),
+            lpProvider: ::std::ptr::null_mut(),
+        };
+        // The answer is a NETRESOURCEW followed by the strings it points into; a buffer of
+        // `u64`s keeps it aligned for the struct.
+        let mut buffer = vec![0u64; 1024];
+        let mut bytes = (buffer.len() * 8) as u32;
+        let mut system: windows_sys::core::PWSTR = ::std::ptr::null_mut();
+        // SAFETY: `resource` names the share by a NUL-terminated string that outlives the call;
+        // `buffer` holds `bytes` bytes, aligned for a NETRESOURCEW.
+        let found = unsafe {
+            WNetGetResourceInformationW(
+                &raw mut resource,
+                buffer.as_mut_ptr().cast(),
+                &raw mut bytes,
+                &raw mut system,
+            )
+        };
+        if found != 0 {
+            return (Some(share), None);
+        }
+        // SAFETY: on success the buffer starts with a NETRESOURCEW, its strings inside it.
+        let provider = unsafe {
+            let answer = &*buffer.as_ptr().cast::<NETRESOURCEW>();
+            let provider = answer.lpProvider;
+            if provider.is_null() {
+                None
+            } else {
+                let len = (0..).take_while(|&i| *provider.add(i) != 0).count();
+                Some(
+                    OsString::from_wide(::std::slice::from_raw_parts(provider, len))
+                        .to_string_lossy()
+                        .into_owned(),
+                )
+            }
+        };
+        (Some(share), provider)
     }
 
     pub fn volumes() -> Vec<Volume> {
@@ -337,5 +433,23 @@ mod imp {
 mod imp {
     pub fn volumes() -> Vec<super::Volume> {
         Vec::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::network_filesystem;
+
+    /// A network drive is named by how it is reached, never by the server's filesystem.
+    #[test]
+    fn a_network_drive_is_named_by_its_provider() {
+        assert_eq!(network_filesystem("Microsoft Windows Network"), "cifs");
+        assert_eq!(network_filesystem("NFS Network"), "nfs");
+        assert_eq!(network_filesystem("Web Client Network"), "webdav");
+        assert_eq!(
+            network_filesystem("Some Other Provider"),
+            "Some Other Provider"
+        );
+        assert_eq!(network_filesystem(""), "network");
     }
 }

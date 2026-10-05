@@ -719,6 +719,9 @@ pub struct Outline {
     focus: FocusWatch,
     /// When the last batch went, for the early one under the focus.
     last_batch: Instant,
+    /// Send what there is once this has passed since the last batch, full or not
+    /// ([`Outline::flushing_every`]); `None` waits for a full batch.
+    flush_every: Option<Duration>,
 }
 
 impl Outline {
@@ -745,7 +748,19 @@ impl Outline {
             rolled: ::std::collections::HashMap::new(),
             focus,
             last_batch: Instant::now(),
+            flush_every: None,
         }
+    }
+
+    /// Send what has been batched once `every` has passed since the last batch, full or not:
+    /// a window that lays the view out at its frame rate gets a batch a frame. A batch is
+    /// sized by the screen, not the disk (the depth cap, the roll-up into the frontier), so
+    /// sending one a frame costs the window a frame's relayout and not a backlog; a full batch
+    /// still goes at once.
+    #[must_use]
+    pub fn flushing_every(mut self, every: Duration) -> Self {
+        self.flush_every = Some(every);
+        self
     }
 
     /// Follow `focus`, the folder the user is in, as described above.
@@ -817,9 +832,11 @@ impl Outline {
         // Full, or the last running total of a flush (the totals as of now: nothing more comes
         // for a while, and the first paint waits for the first batch), or `FOCUS_FLUSH` after
         // the last under the focus.
+        let since = self.last_batch.elapsed();
         let due = self.batched_entries >= self.batch_size
             || directory.audience == (Audience::View { last: true })
-            || (focus.is_some() && self.last_batch.elapsed() >= Self::FOCUS_FLUSH);
+            || (focus.is_some() && since >= Self::FOCUS_FLUSH)
+            || self.flush_every.is_some_and(|every| since >= every);
         due.then(|| self.take_batch())
     }
 

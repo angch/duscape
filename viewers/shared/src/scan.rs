@@ -10,6 +10,10 @@ use libduscape::{DirSummary, FileTree, Outline, ScanOptions};
 
 /// How many entries go into one batch of outlines sent to the window.
 const BATCH: usize = 4096;
+/// A frame at 60 fps: the outline sends what it has once this has passed, so the live view
+/// moves at the window's frame rate. Waiting for a full batch instead, a Windows walk's 4096
+/// entries took 120–300 ms each on `C:\Users` (2026-10-05), and the view moved at 3–8 fps.
+pub const FRAME: ::std::time::Duration = ::std::time::Duration::from_millis(16);
 
 /// Scan `root`. `batch` gets the outlines as they are ready and `done` the finished tree, both
 /// on the scan's thread; `None` if the scan was stopped. Clearing `running` stops it. `focus`
@@ -26,8 +30,9 @@ pub fn spawn(
     let _ = ::std::thread::Builder::new()
         .name("hd_scanner".to_string())
         .spawn(move || {
-            let mut outline =
-                Outline::new(root.clone(), Outline::DEFAULT_DEPTH, BATCH).following(&focus);
+            let mut outline = Outline::new(root.clone(), Outline::DEFAULT_DEPTH, BATCH)
+                .following(&focus)
+                .flushing_every(FRAME);
             let built = parallel::build_tree(
                 &root,
                 options,

@@ -149,10 +149,10 @@ out and painting.
 | Thread | Role |
 |--------|------|
 | `stdin_handler` | Reads crossterm events → `Instruction::Keypress` |
-| `hd_scanner` | Drives the walk (its own worker pool). Sends each directory to one `tree_builder` by path prefix, and feeds an `Outline` that sends **main** a folder-only view → `Instruction::AddScannedSummaries` (batched, ~4096 entries). Directories deeper than `Outline::DEFAULT_DEPTH` are rolled up into the frontier folder above them rather than sent, so main does O(visible) work, not O(directories) — except under the folder shown (`App::scan_focus`, a `scan::Focus` the walkers and the outline watch): the walk reads toward it first (`duscape_scan::focus`), the outline sends what is under it whole to `DEFAULT_DEPTH` below it, the folder itself with its files, and a batch holding any of it goes every `Outline::FOCUS_FLUSH`. When the walk ends: merges the builders' trees, replays deferred shared blocks → `Instruction::ScanComplete(tree)`, then `StartUi` |
+| `hd_scanner` | Drives the walk (its own worker pool). Sends each directory to one `tree_builder` by path prefix, and feeds an `Outline` that sends **main** a folder-only view → `Instruction::AddScannedSummaries` (batched, ~4096 entries). Directories deeper than `Outline::DEFAULT_DEPTH` are rolled up into the frontier folder above them rather than sent, so main does O(visible) work, not O(directories) — except under the folder shown (`App::scan_focus`, a `scan::Focus` the walkers and the outline watch): the walk reads toward it first (`duscape_scan::focus`), the outline sends what is under it whole to `DEFAULT_DEPTH` below it, the folder itself with its files, and a batch holding any of it goes every `Outline::FOCUS_FLUSH` (the desktop viewers': any batch every `scan::FRAME`). When the walk ends: merges the builders' trees, replays deferred shared blocks → `Instruction::ScanComplete(tree)`, then `StartUi` |
 | `tree_builder_N` | Owns a private `FileTree` in deferred-sharing mode and adds whatever `hd_scanner` sends it. Never touches another thread's memory |
 | `mft_reader` | Windows, elevated, a volume root: flushes the volume and reads the NTFS master file table (`mft::walk_mft`, `Reading::run`), handing each chunk's `Charges` (made on the parsers' threads) to `mft_live` and, once the table is read whole, the listing to `hd_scanner` as `Audience::Tree`. A read that fails part way reports through the walk and the kernel walk takes over |
-| `mft_live` | The view's *running totals* while the table is read (`mft::Running`): each directory's files so far, as one `DirEntries` of `Audience::View` with the sizes in its `unlisted`, every `LIVE_EVERY` (250 ms), the last of a flush marked so the outline sends the batch at once — so the treemap is up and growing from the first chunk, not after the last. On the reading thread the flushes were a quarter of the read; here they cost it nothing (measured both ways, `DUSCAPE_NO_LIVE_TOTALS`) |
+| `mft_live` | The view's *running totals* while the table is read (`mft::Running`): each directory's files so far, as one `DirEntries` of `Audience::View` with the sizes in its `unlisted`, every `LIVE_EVERY` (16 ms, a frame: in practice a flush a chunk), the last of a flush marked so the outline sends the batch at once — so the treemap is up and growing from the first chunk, not after the last. On the reading thread the flushes were a quarter of the read; here they cost it nothing (measured both ways, `DUSCAPE_NO_LIVE_TOTALS`) |
 | `mft_seeder` | Lists the top `SEED_DEPTH` (6) levels through the kernel, breadth first, beside the flush and the read, and seeds `Running` with each directory's record and place: the table's records are in no tree order (an upgraded Windows's `C:\Windows` is a late record, and every chain through it waited for its chunk), and through the kernel the levels the view shows are known in milliseconds. Ends with the read |
 | `event_executer` | Converts `Event` → `Instruction` (visual feedback). A clipboard flash gets a short-lived `clipboard_flash` thread that asks for a redraw when it expires; the flash carries its own deadline, so a lost redraw cannot leave it on screen |
 | `loading_loop` | Toggles loading indicator while scanning |
@@ -240,7 +240,11 @@ out and painting.
   targets; `Viewer::dust` colours them by the rule
   their tiles would have (`entry_color`: `tile_color` by name, `depth_shade` darker a level
   in; a file's extension looked up once, and a run of one kind not looked up again: 8.8 →
-  8.3 ms; no extension is not an empty one, `Makefile` grey and `notes.` hashed) and every desktop painter fills them in one pass.
+  8.3 ms; no extension is not an empty one, `Makefile` grey and `notes.` hashed) and every desktop painter fills them in one pass:
+  framed as a tile where one has room for a frame (`Dust::framed`), else `SPECK_SHADE` darker
+  under the least tiles' grid (`Dust::grid`, lines every `MIN_TILE_PIXELS` aligned to the
+  board) — plain, a corner read as a block of flat colour twice as bright as the framed tiles
+  beside it (measured on Windows, 2026-10-05; now within 5% of them).
   Each corner comes as a `Speck` (where, the entry, its rank, its depth): the board's from
   `Board::scatter_corner`, each nested folder's from `nest_with`'s `speck` (`Nesting::dust`).
   A folder is ranked once for its tiles and its corner (`Ranking`: one pass over the folder,
@@ -340,7 +344,9 @@ out and painting.
   separator left in front of a name anyway
 - `os/volumes.rs` — `volumes()`: what is mounted, its device or label, filesystem, size and
   use — `/proc/self/mounts` sifted (block devices and the known network filesystems, one line
-  a source, tested) and `statvfs`; `getmntinfo` on macOS; the drive letters on Windows. For
+  a source, tested) and `statvfs`; `getmntinfo` on macOS; the drive letters on Windows, a mapped network drive named by its
+  share and its provider (`network_filesystem`: `cifs`, `nfs`, `webdav`), never by the server's
+  filesystem, which Windows reports as the volume's (`NTFS`). For
   the windows' chooser
 
 **`duscape-scan`** (`scanners/`) — reading the disk:
@@ -546,9 +552,12 @@ shared `Viewer`, not in `win/`:
   Threads post one boxed `AppMsg`; one arriving during a modal loop (message box, context menu)
   is queued FIFO in `PENDING` and handled when the handler returns — order matters, the outline's
   last batch comes before the finished tree. Outline batches are absorbed as they come and the
-  view laid out once per burst, `OUTLINE_MS` after the first (`OUTLINE_TIMER`): the elevated
-  scan of a volume sends dozens a second, and laid out per batch (15–25 ms each) the window
-  answered nothing until the scan ended
+  view laid out once a frame (`scan::FRAME`, 16 ms): by the batch that finds the frame up, or
+  `OUTLINE_TIMER` for the last of a burst (`WM_TIMER` comes only when the queue is empty, on
+  15.6 ms ticks), then painted at once (`PAINT_NOW`, `UpdateWindow` once the guard is down,
+  since `WM_PAINT` too waits for an empty queue). Laid out per batch (15–25 ms each, then) the
+  window answered nothing until the scan ended; 100 ms after a burst it moved at 8 fps. Now
+  56 fps median on a warm `C:\Users` scan (2026-10-05: layout 2.6 ms, paint 7.7 ms)
 - `win/paint.rs` — double-buffered in a 32-bit DIB section, by `Viewer::layout`; returns the
   breadcrumbs for clicks. `Canvas::fill`/`frame` write the section's pixels directly (a
   `GdiFlush` first when GDI has drawn since): as `FillRect`/`FrameRect` calls, the nested
@@ -610,12 +619,17 @@ shared `Viewer`, not in `win/`:
   view, `tree_view`): `libduscape::tiles::tree_rows` keeps which folders are open in place
   and makes the rows (each open folder's entries indented under it, largest first, `Row::path`
   from the listed folder); the cursor is a row's path, its first name being `selected`, so the
-  treemap and the marks follow the row's top-level entry. → opens the folder in hand and then
+  board's selection follows the row's top-level entry. A mark is a row's path too (`marked`,
+  `is_marked_row`, `marked_nested` for the nested tiles, worked out once a paint): a ⇧ range runs
+  over the rows on show, a folder's opened in place with the rest; a folder closed takes the
+  marks inside it off; a delete or a size takes a marked folder and not also the rows marked
+  in it (`target_rows`). Until 2026-10-05 marks were top-level names, and a range among a
+  folder's rows marked the folder. → opens the folder in hand and then
   goes down into it, ← goes up to the folder and then closes it, a click on the expander
   (`Hit::Expander`) toggles; a nested row is what is previewed, copied, entered (down through
   the folders above it) or deleted. With it the treemap is nested (`nested`, rebuilt with the
   board): a tile inside a folder's (`Hit::Nested`) is a target like any other — a click opens
-  the folders above it and puts its row in hand, Ctrl and Shift mark its top-level folder —
+  the folders above it and puts its row in hand, Ctrl and Shift mark its row —
   and hovering one names it (`hover_nested`, cleared by every relayout since the tiles moved). Off by default (`set_tree_view`); all three
   desktop viewers turn it on for every scan, and a viewer that does not draw depth sees the flat
   listing and the flat tiles. At the root of a volume the volume's free space is on the board
@@ -896,8 +910,10 @@ Exiting { app_loaded: bool }
   (`App::finish_scan`). Keep the outline O(visible): the first version sent every directory and
   saturated the rendering thread, which back-pressured the dispatcher and slowed the walk. This is
   the goals' time to first paint: the treemap is up in the first batch, coarse, and filled in as
-  the walk goes; a desktop viewer lays the view out once per burst of batches (`OUTLINE_MS`,
-  `outline_behind`) so a scan never crowds out input. A folder entered during the scan is
+  the walk goes. The desktop viewers' outline sends what it has every frame as well
+  (`Outline::flushing_every(scan::FRAME)`), and a window lays the view out at most once a frame
+  (`OUTLINE_TIMER`, `outline_behind`), so the live view moves at the frame rate and a scan never
+  crowds out input. A folder entered during the scan is
   followed (`scan::Focus`, set by `App::render_and_update_board` and `Viewer::relayout`): the
   walkers read toward it before anything else, the outline is exempt from its depth cap under
   it and carries the folder's own files, and the treemap says "Scanning this folder…" rather

@@ -39,7 +39,7 @@ use libduscape::{DirSummary, FileTree, ScanOptions};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
     ClientToScreen, CreateBitmap, DeleteObject, GetDC, GetDeviceCaps, InvalidateRect, LOGPIXELSY,
-    ReleaseDC, ScreenToClient,
+    ReleaseDC, ScreenToClient, UpdateWindow,
 };
 use windows_sys::Win32::System::Com::CoTaskMemFree;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -73,7 +73,12 @@ use crate::preview::{Picture, PreviewRequest, prepare_picture};
 const WM_APP_MSG: u32 = WM_APP + 1;
 /// Ticks while the status bar has a message to take down.
 const FLASH_TIMER: usize = 1;
-/// Fires once after a burst of outline batches, to lay the live view out for them.
+/// Fires at the end of the frame a batch of the outline came in, to lay the live view out for
+/// the frame's batches (`scan::FRAME`). Laid out per batch, the elevated scan of a volume
+/// (dozens of batches a second, 15–25 ms a relayout then) left the window answering nothing
+/// until the scan ended; 100 ms after the first of a burst, the live view moved at 8 fps at
+/// best, and a 16 ms timer after each — a Windows timer's 15.6 ms ticks making it up to 31 —
+/// at 23.
 const OUTLINE_TIMER: usize = 2;
 /// Fires once input has stopped for `IDLE` while the second pass is owed — the viewer's
 /// (the deeper nesting, the specks), or a paint's (the labels a first paint had no time for).
@@ -83,10 +88,6 @@ const PEEK_TIMER: usize = 4;
 /// Every `REDRAW_EVERY` while a delete runs: its box shown once it has run `SHOW_AFTER`, and its
 /// count moving.
 const DELETE_TIMER: usize = 5;
-/// How long after a batch the live view is laid out — the elevated scan of a volume sends
-/// dozens of batches a second, and each relayout took 15–25 ms, so laid out per batch the
-/// window answered nothing until the scan ended.
-const OUTLINE_MS: u32 = 100;
 /// A mouse message's `wparam` flags for Ctrl and Shift held (`MK_CONTROL`, `MK_SHIFT`), named
 /// here rather than taking in another `windows-sys` feature for two numbers.
 const MK_SHIFT: usize = 0x0004;
@@ -146,6 +147,9 @@ struct Window {
     back_buffer: Option<paint::BackBuffer>,
     /// Outline batches have come in since the view was last laid out; `OUTLINE_TIMER` is set.
     outline_behind: bool,
+    /// When the live view was last laid out for the outline: a batch a frame or more after it
+    /// is laid out at once, one sooner when the frame is up.
+    outline_laid_out: Instant,
     /// Which layout was last painted in full, and so whether a paint may hurry.
     paints: Paints,
     /// Opened with no folder, or from the path bar's button: the volumes to choose from,
@@ -243,8 +247,8 @@ impl Window {
 
     fn on_app_message(&mut self, hwnd: HWND, message: AppMsg) {
         match message {
-            // Into the tree now, on screen when the timer fires: a burst of batches costs one
-            // relayout, not one each.
+            // Into the tree now, on screen at once if the last relayout was a frame ago, else
+            // when the frame is up: a burst of batches costs one relayout a frame, not one each.
             AppMsg::Summaries(scan_id, summaries) => {
                 if scan_id != self.viewer.scan_id {
                     return;
@@ -256,10 +260,19 @@ impl Window {
                     ));
                 }
                 self.viewer.absorb_summaries(summaries);
+                // Batches come every few milliseconds on a warm walk, and `WM_TIMER` only once
+                // the queue is empty, on the timer's 15.6 ms ticks: so the batch that finds the
+                // frame up lays the view out itself, and the timer is for the last of a burst.
+                let since = self.outline_laid_out.elapsed();
+                if since >= scan::FRAME {
+                    return self.lay_out_outline(hwnd);
+                }
                 if !self.outline_behind {
                     self.outline_behind = true;
+                    let left = scan::FRAME.saturating_sub(since).as_millis();
+                    let left = u32::try_from(left).unwrap_or(1).max(1);
                     // SAFETY: our own timer on our own window.
-                    unsafe { SetTimer(hwnd, OUTLINE_TIMER, OUTLINE_MS, None) };
+                    unsafe { SetTimer(hwnd, OUTLINE_TIMER, left, None) };
                 }
                 return;
             }
@@ -342,6 +355,22 @@ impl Window {
             invalidate(hwnd);
         }
         true
+    }
+
+    /// Lay the live view out for the batches absorbed since the last time, and draw it.
+    fn lay_out_outline(&mut self, hwnd: HWND) {
+        self.outline_caught_up(hwnd);
+        let started = Instant::now();
+        self.viewer.catch_up();
+        self.outline_laid_out = started;
+        PAINT_NOW.with(|flag| flag.set(true));
+        if paint_times() {
+            trace(&format!(
+                "outline laid out in {:.2} ms",
+                started.elapsed().as_secs_f64() * 1000.0
+            ));
+        }
+        self.changed(hwnd);
     }
 
     /// The outline timer's turn, or the finished tree's: nothing is behind any more.
@@ -868,6 +897,10 @@ thread_local! {
     /// taskbar or by another process with a dialog up. The `Window` is freed once the handler
     /// on the stack has let go of it, never under its `&mut`.
     static DESTROY: Cell<bool> = const { Cell::new(false) };
+    /// Paint as soon as the handler lets go (`UpdateWindow`), not when the queue next runs
+    /// empty: during a warm scan an outline batch is posted every few milliseconds, and
+    /// `WM_PAINT`, made only when nothing is posted, came for one live relayout in three.
+    static PAINT_NOW: Cell<bool> = const { Cell::new(false) };
 }
 
 /// The window is gone: free what it held, stop its threads, and end the message loop.
@@ -1033,8 +1066,14 @@ fn run_handler(state: *mut Window, handler: impl FnOnce(&mut Window) -> LRESULT)
     IN_HANDLER.with(|flag| flag.set(false));
     if DESTROY.with(Cell::take) {
         destroy(state, hwnd);
-    } else if REPAINT.with(Cell::take) {
-        invalidate(hwnd);
+    } else {
+        if REPAINT.with(Cell::take) {
+            invalidate(hwnd);
+        }
+        if PAINT_NOW.with(Cell::take) {
+            // SAFETY: our own window; the guard is down, so the paint it sends is handled.
+            unsafe { UpdateWindow(hwnd) };
+        }
     }
     result
 }
@@ -1102,18 +1141,7 @@ fn dispatch(window: &mut Window, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
         WM_MOUSEMOVE => window.on_mouse_move(hwnd, low_word(lparam), high_word(lparam)),
         WM_KEYDOWN => window.on_key(hwnd, wparam as u16),
         WM_CHAR => window.on_char(hwnd, wparam as u16),
-        WM_TIMER if wparam == OUTLINE_TIMER => {
-            window.outline_caught_up(hwnd);
-            let started = Instant::now();
-            window.viewer.catch_up();
-            if paint_times() {
-                trace(&format!(
-                    "outline laid out in {:.2} ms",
-                    started.elapsed().as_secs_f64() * 1000.0
-                ));
-            }
-            window.changed(hwnd);
-        }
+        WM_TIMER if wparam == OUTLINE_TIMER => window.lay_out_outline(hwnd),
         WM_TIMER if wparam == SECOND_PASS_TIMER => {
             // SAFETY: our own timer.
             unsafe { KillTimer(hwnd, SECOND_PASS_TIMER) };
@@ -1364,6 +1392,7 @@ pub fn run_with(folder: Option<PathBuf>, options: ScanOptions, no_elevate: bool)
         fonts: paint::Fonts::new(scale),
         back_buffer: None,
         outline_behind: false,
+        outline_laid_out: Instant::now(),
         paints: Paints::default(),
         chooser: (!given).then(|| Chooser::new(true)),
         no_elevate,

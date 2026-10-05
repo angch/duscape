@@ -1198,7 +1198,15 @@ impl DiskView {
             ("selected", lossy(viewer.selected.as_slice())),
             ("rows", rows.join(" | ")),
             ("cursor", cursor),
-            ("marked", lossy(&viewer.marked)),
+            (
+                "marked",
+                viewer
+                    .marked
+                    .iter()
+                    .map(|path| row_path(path))
+                    .collect::<Vec<_>>()
+                    .join(" | "),
+            ),
             ("focus", format!("{:?}", viewer.focus())),
             ("zoom", viewer.board.zoom_level.to_string()),
             ("apparent", viewer.showing_apparent().to_string()),
@@ -1395,7 +1403,7 @@ impl DiskView {
         if viewer.deleting().is_some() {
             return false;
         }
-        let has_target = !viewer.target_names().is_empty();
+        let has_target = !viewer.target_rows().is_empty();
         match action {
             a if a == sel!(moveToTrash:) || a == sel!(deleteImmediately:) => {
                 has_target && !viewer.scanning
