@@ -38,6 +38,7 @@ use super::appkit;
 use super::draw::{self, Frame, draw};
 use duscape_scan::rescan::{Outcome, Rescanner};
 use duscape_viewer::chooser::{Chooser, Target};
+use duscape_viewer::deleting::{self, DeletionLayout, Ended, REDRAW_EVERY};
 use duscape_viewer::menu::{Action, Entry, Platform};
 use duscape_viewer::preview::{Loaded, Previewer};
 use duscape_viewer::scan;
@@ -164,6 +165,17 @@ define_class!(
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
             let (x, y) = self.point(event);
+            if self.deleting() {
+                let on_cancel = self.with(|viewer| {
+                    viewer.deleting().is_some_and(|d| d.shown())
+                        && DeletionLayout::new(viewer.layout.bounds).cancel.contains(x, y)
+                });
+                if on_cancel == Some(true) {
+                    self.with(|viewer| viewer.cancel_delete());
+                    self.setNeedsDisplay(true);
+                }
+                return;
+            }
             if self.ivars().chooser.borrow().is_some() {
                 let row = self
                     .ivars()
@@ -234,8 +246,9 @@ define_class!(
         #[unsafe(method_id(menuForEvent:))]
         fn menu_for_event(&self, event: &NSEvent) -> Option<Retained<NSMenu>> {
             let (x, y) = self.point(event);
-            // Nothing over the chooser: the scan under it is not what is shown.
-            let chooser_up = self.ivars().chooser.borrow().is_some();
+            // Nothing over the chooser, the scan under it not being what is shown, nor while a
+            // delete runs.
+            let chooser_up = self.ivars().chooser.borrow().is_some() || self.deleting();
             let entries = self
                 .update(|viewer| {
                     if !chooser_up && viewer.context_click(x, y) {
@@ -252,6 +265,9 @@ define_class!(
 
         #[unsafe(method(mouseMoved:))]
         fn mouse_moved(&self, event: &NSEvent) {
+            if self.deleting() {
+                return;
+            }
             let (x, y) = self.point(event);
             if let Some(chooser) = self.ivars().chooser.borrow_mut().as_mut() {
                 let bounds = self.bounds();
@@ -278,7 +294,7 @@ define_class!(
 
         #[unsafe(method(scrollWheel:))]
         fn scroll_wheel(&self, event: &NSEvent) {
-            if self.ivars().chooser.borrow().is_some() {
+            if self.ivars().chooser.borrow().is_some() || self.deleting() {
                 return;
             }
             let (x, y) = self.point(event);
@@ -322,7 +338,7 @@ define_class!(
 
         #[unsafe(method(magnifyWithEvent:))]
         fn magnify_with_event(&self, event: &NSEvent) {
-            if self.ivars().chooser.borrow().is_some() {
+            if self.ivars().chooser.borrow().is_some() || self.deleting() {
                 return;
             }
             let (x, y) = self.point(event);
@@ -345,7 +361,7 @@ define_class!(
         /// The mouse's back (thumb) button goes up a folder.
         #[unsafe(method(otherMouseDown:))]
         fn other_mouse_down(&self, event: &NSEvent) {
-            if event.buttonNumber() == 3 && self.ivars().chooser.borrow().is_none() {
+            if event.buttonNumber() == 3 && self.ivars().chooser.borrow().is_none() && !self.deleting() {
                 self.update(Viewer::go_up);
             }
         }
@@ -594,6 +610,8 @@ thread_local! {
 
 /// Whether a wake for the details panel to follow the pointer is on its way (`arm_peek`).
 static PEEK_PENDING: AtomicBool = AtomicBool::new(false);
+/// While a delete runs: a thread redraws every `REDRAW_EVERY`, for its box and its count.
+static DELETE_TICKING: AtomicBool = AtomicBool::new(false);
 
 /// Whether frames are wanted, whether the frame thread is alive, and whether a frame is waiting
 /// on the main queue.
@@ -859,6 +877,15 @@ impl DiskView {
 
     /// A key, whether pressed here or in the Quick Look panel. Returns whether it meant anything.
     fn key(&self, event: &NSEvent) -> bool {
+        // While a delete runs, Escape stops it and no other key is taken: the tree still holds
+        // what is going.
+        if self.deleting() {
+            if event.keyCode() == 53 {
+                self.with(|viewer| viewer.cancel_delete());
+                self.setNeedsDisplay(true);
+            }
+            return true;
+        }
         if self.ivars().chooser.borrow().is_some() {
             return self.chooser_key(event.keyCode());
         }
@@ -1268,52 +1295,65 @@ impl DiskView {
             return;
         }
 
-        let mut removed = Vec::new();
-        let mut failures = Vec::new();
-        for file in files {
-            let result = if permanently {
-                libduscape::delete::remove(&file).map_err(|error| error.to_string())
+        let done = move |id, ended: Vec<Ended>| {
+            on_main(move |view| view.delete_done(scan_id, id, &ended));
+        };
+        let started = self.with(|viewer| {
+            if permanently {
+                viewer.start_delete(files, true, deleting::for_good, done)
             } else {
-                trash(&file.full_path())
-            };
-            match result {
-                Ok(()) => removed.push(file),
-                Err(error) => failures.push((file, error)),
-            }
-        }
-        let size: u128 = removed.iter().map(|file| file.size).sum();
-        self.update(|viewer| {
-            // A scan of another folder that began meanwhile has a tree these are not in.
-            if viewer.scan_id != scan_id {
-                return;
-            }
-            viewer.removed(&removed, permanently);
-            if !removed.is_empty() {
-                let items = match removed.len() {
-                    1 => "1 item".to_string(),
-                    n => format!("{} items", DisplayCount(n as u64)),
-                };
-                viewer.say(if permanently {
-                    format!("Deleted {items}, freeing {}", DisplaySize(size as f64))
-                } else {
-                    format!("Moved {items} ({}) to the Trash", DisplaySize(size as f64))
-                });
+                viewer.start_delete(
+                    files,
+                    false,
+                    |file, tally| deleting::moving(file, tally, trash),
+                    done,
+                )
             }
         });
+        match started {
+            Some(Ok(())) => self.tick_while_deleting(),
+            Some(Err(error)) => {
+                self.alert(NSAlertStyle::Warning, "Could not remove", &error, &["OK"]);
+            }
+            None => {}
+        }
+    }
+
+    /// Whether a delete is under way, when no other input is taken.
+    fn deleting(&self) -> bool {
+        self.with(|viewer| viewer.deleting().is_some()) == Some(true)
+    }
+
+    /// Redraw every `REDRAW_EVERY` until the delete under way reports: its box comes up once it
+    /// has run `SHOW_AFTER`, and its count moves.
+    fn tick_while_deleting(&self) {
+        if DELETE_TICKING.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let _ = ::std::thread::Builder::new()
+            .name("delete_ticks".to_string())
+            .spawn(|| {
+                while DELETE_TICKING.load(Ordering::Acquire) {
+                    ::std::thread::sleep(REDRAW_EVERY);
+                    on_main(|view| view.setNeedsDisplay(true));
+                }
+            });
+    }
+
+    /// A delete has ended: what went comes off the tree, and what failed is said. One started
+    /// under a scan since replaced is the old tree's, and dropped.
+    fn delete_done(&self, scan_id: u64, id: u64, ended: &[Ended]) {
+        DELETE_TICKING.store(false, Ordering::Release);
+        let failure = self
+            .update(|viewer| (viewer.scan_id == scan_id).then(|| viewer.delete_done(id, ended)))
+            .flatten()
+            .flatten();
         self.reload_quick_look();
-        if let Some((file, error)) = failures.first() {
-            let name = file.full_path().display().to_string();
-            let more = match failures.len() {
-                1 => String::new(),
-                n => format!(
-                    "\n\n{} more could not be removed either.",
-                    DisplayCount(n as u64 - 1)
-                ),
-            };
+        if let Some(failure) = failure {
             self.alert(
                 NSAlertStyle::Warning,
-                &format!("Could not remove {name}"),
-                &format!("{error}{more}"),
+                &failure.title,
+                &failure.detail,
                 &["OK"],
             );
         }
@@ -1351,6 +1391,10 @@ impl DiskView {
         let Some(viewer) = viewer.as_deref() else {
             return action == sel!(scanFolder:);
         };
+        // While a delete runs nothing is offered: the tree still holds what is going.
+        if viewer.deleting().is_some() {
+            return false;
+        }
         let has_target = !viewer.target_names().is_empty();
         match action {
             a if a == sel!(moveToTrash:) || a == sel!(deleteImmediately:) => {

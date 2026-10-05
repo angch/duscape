@@ -25,6 +25,7 @@ use libduscape::tiles::{FileType, Row, Tile};
 use libduscape::{DisplayCount, DisplaySize};
 
 use super::appkit;
+use duscape_viewer::deleting::{Deletion, DeletionLayout};
 
 pub fn ns_rect(rect: Rect) -> NSRect {
     NSRect::new(NSPoint::new(rect.x, rect.y), NSSize::new(rect.w, rect.h))
@@ -216,7 +217,40 @@ pub fn draw(frame: &Frame) -> Vec<(Rect, usize)> {
     let crumbs = path_bar(viewer, &pens);
     free_toggle(viewer, &pens);
     chooser_button(viewer.layout.chooser_button);
+    if let Some(deletion) = viewer.deleting().filter(|deletion| deletion.shown()) {
+        deleting(frame.bounds, deletion, &pens);
+    }
     crumbs
+}
+
+/// A delete under way, over the window: what it is on, how far it has got, and Cancel, where
+/// `DeletionLayout` puts them for the view's hit test too.
+fn deleting(bounds: Rect, deletion: &Deletion, pens: &Pens) {
+    fill(bounds, &srgb((0.0, 0.0, 0.0), 0.35));
+    let layout = DeletionLayout::new(bounds);
+    let (title, name, count) = deletion.words();
+    rounded(layout.panel, 10.0, &NSColor::windowBackgroundColor());
+    pens.strong.draw(&title, layout.title);
+    pens.secondary.draw(&name, layout.path);
+    rounded(layout.bar, 3.0, &NSColor::separatorColor());
+    let done = Rect::new(
+        layout.bar.x,
+        layout.bar.y,
+        layout.bar.w * deletion.fraction().clamp(0.0, 1.0),
+        layout.bar.h,
+    );
+    if done.w > 0.0 {
+        rounded(done, 3.0, &srgb((0.24, 0.50, 0.87), 1.0));
+    }
+    pens.secondary.draw(&count, layout.count);
+    rounded(layout.cancel, 6.0, &srgb((0.50, 0.50, 0.53), 0.35));
+    let words = Rect::new(
+        layout.cancel.x,
+        layout.cancel.y + (layout.cancel.h - 16.0) / 2.0,
+        layout.cancel.w,
+        16.0,
+    );
+    pens.center.draw("Cancel", words);
 }
 
 /// The button at the path bar's left that opens the chooser: a drive, drawn small.

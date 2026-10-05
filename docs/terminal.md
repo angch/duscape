@@ -22,7 +22,10 @@ quietly, in white, bold and underlined.
 
 To pick several entries, `Ctrl`+click them — in the list or on the treemap; a second
 `Ctrl`+click takes one out — or hold `Shift` and press `↑`/`↓` in the list to mark a run of
-rows. Every change copies the marked paths to the clipboard, quoted and separated by spaces in
+rows. `Shift`+click marks the run from the entry in hand to the one clicked, where the terminal
+passes it on: most (Windows Terminal, xterm, GNOME Terminal, kitty) keep `Shift`+click for
+selecting text, and duscape never sees it. Windows's console window (`conhost`) passes it, and
+iTerm2 and Terminal.app, which select with `Option` instead, should too. Every change copies the marked paths to the clipboard, quoted and separated by spaces in
 the order you picked them, ready to paste after a command: `cp 'my file' notes.txt ~/backup/`.
 The title shows what was copied. Marked entries are black on yellow in both panels. A plain
 click or arrow key, or changing folder, clears the marks.

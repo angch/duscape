@@ -69,6 +69,8 @@ state $out/victim
 key cmd+opt+backspace
 state $out/alert
 key return
+# The delete runs on a thread of its own and reports through the main queue.
+wait 200
 state $out/deleted
 key space
 wait 500

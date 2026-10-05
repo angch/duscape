@@ -11,6 +11,7 @@ use ::std::path::{MAIN_SEPARATOR, Path};
 use crate::canvas::{Canvas, Color, Rgba};
 use crate::font::{Align, Cut, Face, Fonts, Pen};
 use duscape_viewer::chooser::Chooser;
+use duscape_viewer::deleting::{Deletion, DeletionLayout};
 use duscape_viewer::menu::Entry;
 use duscape_viewer::passes::LabelBudget;
 use duscape_viewer::state::{
@@ -789,6 +790,41 @@ pub fn menu(
 
 /// A dialog's buttons, as drawn: each one's rectangle and whether it is the confirming one.
 pub type Buttons = Vec<(Rect, bool)>;
+
+/// A delete under way, over the window: what it is on, how far it has got, and Cancel, where
+/// `DeletionLayout` puts them for the app's hit test too.
+pub fn deletion(canvas: &mut Canvas, fonts: &Fonts, bounds: Rect, deletion: &Deletion) {
+    canvas.fill(bounds, BLACK, 0.45);
+    let pens = Pens::new(fonts);
+    let layout = DeletionLayout::new(bounds);
+    let (title, name, count) = deletion.words();
+    canvas.rounded(layout.panel, 10.0, (0.20, 0.20, 0.22), 1.0);
+    canvas.stroke(layout.panel, SEPARATOR, 1.0, 1.0);
+    let strong = pen(&fonts.bold, 14.0, LABEL, Align::Left, Cut::Middle);
+    strong.draw(canvas, &title, layout.title);
+    pens.secondary.draw(canvas, &name, layout.path);
+    canvas.rounded(layout.bar, 3.0, (0.30, 0.30, 0.33), 1.0);
+    let done = Rect::new(
+        layout.bar.x,
+        layout.bar.y,
+        layout.bar.w * deletion.fraction().clamp(0.0, 1.0),
+        layout.bar.h,
+    );
+    if done.w > 0.0 {
+        canvas.rounded(done, 3.0, ACCENT, 1.0);
+    }
+    pens.secondary.draw(canvas, &count, layout.count);
+    let cancelling = deletion.cancelling();
+    canvas.rounded(layout.cancel, 6.0, (0.30, 0.30, 0.33), 1.0);
+    let text = pen(
+        &fonts.sans,
+        12.5,
+        if cancelling { SECONDARY } else { WHITE },
+        Align::Center,
+        Cut::Tail,
+    );
+    text.draw(canvas, "Cancel", layout.cancel);
+}
 
 /// A question or a notice over the window: `title`, `detail` (wrapped), and the `confirm`
 /// button's label if there is a choice. Returns where the buttons went.

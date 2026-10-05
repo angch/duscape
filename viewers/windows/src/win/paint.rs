@@ -10,6 +10,7 @@ use ::std::mem::{size_of, zeroed};
 use ::std::ptr::{null, null_mut};
 
 use duscape_viewer::chooser::Chooser;
+use duscape_viewer::deleting::{Deletion, DeletionLayout};
 use duscape_viewer::passes::LabelBudget;
 use duscape_viewer::state::{
     EXPANDER, Focus, LIST_PAD, Layout, MIN_TILE_PIXELS, Preview, ROW, ROW_INDENT, Rect, TILE_LABEL,
@@ -578,6 +579,9 @@ pub fn paint(
         }
         draw_chooser_button(&canvas, layout.chooser_button);
         draw_status(&canvas, window, layout.status);
+        if let Some(deletion) = viewer.deleting().filter(|deletion| deletion.shown()) {
+            draw_deletion(&canvas, window, layout.bounds, deletion);
+        }
 
         GdiFlush();
         BitBlt(screen, 0, 0, width, height, dc, 0, 0, SRCCOPY);
@@ -1215,6 +1219,44 @@ fn draw_status(canvas: &Canvas, window: &Window, status: Rect) {
         ),
         &left,
         TEXT,
+        fonts.ui,
+        false,
+    );
+}
+
+/// A delete under way, over everything else: what it is on, how far it has got, and Cancel.
+fn draw_deletion(canvas: &Canvas, window: &Window, bounds: Rect, deletion: &Deletion) {
+    let fonts = &window.fonts;
+    let layout = DeletionLayout::new(bounds);
+    let (title, name, count) = deletion.words();
+    canvas.fill(layout.panel, rgb(44, 44, 48));
+    canvas.frame(layout.panel, ACCENT, 1);
+    canvas.text(layout.title, &title, TEXT, fonts.bold, false);
+    canvas.text(layout.path, &name, DIM, fonts.ui, false);
+    canvas.fill(layout.bar, BAR);
+    let done = Rect::new(
+        layout.bar.x,
+        layout.bar.y,
+        layout.bar.w * deletion.fraction().clamp(0.0, 1.0),
+        layout.bar.h,
+    );
+    canvas.fill(done, ACCENT);
+    canvas.text(layout.count, &count, DIM, fonts.ui, false);
+    let button = layout.cancel;
+    let cancelling = deletion.cancelling();
+    canvas.fill(button, rgb(60, 60, 64));
+    canvas.frame(button, if cancelling { BORDER } else { DIM }, 1);
+    let words = "Cancel";
+    let width = canvas.width(words, fonts.ui);
+    canvas.text(
+        Rect::new(
+            button.x + ((button.w - width) / 2.0).max(0.0),
+            button.y,
+            width.min(button.w),
+            button.h,
+        ),
+        words,
+        if cancelling { DIM } else { TEXT },
         fonts.ui,
         false,
     );

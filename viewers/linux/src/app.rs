@@ -16,6 +16,7 @@ use crate::font::Fonts;
 use crate::trash;
 use duscape_scan::rescan::{Outcome, Rescanner};
 use duscape_viewer::chooser::{Chooser, Target};
+use duscape_viewer::deleting::{self, DeletionLayout, Ended, REDRAW_EVERY};
 use duscape_viewer::menu::{Action, Entry, Platform};
 use duscape_viewer::passes::{Paints, paint_times};
 use duscape_viewer::preview::{Loaded, Previewer};
@@ -44,6 +45,8 @@ pub enum Msg {
     Done(u64, Option<Box<FileTree>>),
     Rescanned(u64, u64, Outcome),
     Preview(u64, Preview, Option<Rgba>),
+    /// A delete has ended: the scan it was started under, the delete's id, how each entry went.
+    Deleted(u64, u64, Vec<Ended>),
     /// Time to draw again: a status message has run its course.
     Tick,
     /// Write the window to `DUSCAPE_SNAPSHOT` and quit.
@@ -229,10 +232,15 @@ impl App {
                 .paints
                 .owed(&self.viewer)
                 .then(|| IDLE.saturating_sub(changed_at.elapsed()));
-            let wait = match (second_pass, self.viewer.peek_due()) {
-                (Some(a), Some(b)) => Some(a.min(b)),
-                (a, b) => a.or(b),
-            };
+            // And while a delete runs, until its box is shown and then each time it moves.
+            let deleting = self
+                .viewer
+                .deleting()
+                .map(|deletion| deletion.shown_in().unwrap_or(REDRAW_EVERY));
+            let wait = [second_pass, self.viewer.peek_due(), deleting]
+                .into_iter()
+                .flatten()
+                .min();
             let msg = if let Some(wait) = wait {
                 match self.rx.recv_timeout(wait) {
                     Ok(msg) => msg,
@@ -246,6 +254,9 @@ impl App {
                         }
                         if self.viewer.peek_tick() {
                             self.changed();
+                        }
+                        if self.viewer.deleting().is_some_and(|d| d.shown()) {
+                            self.dirty = true;
                         }
                         if self.dirty {
                             self.render()?;
@@ -378,6 +389,9 @@ impl App {
                 false,
             ),
         };
+        if let Some(deletion) = self.viewer.deleting().filter(|deletion| deletion.shown()) {
+            draw::deletion(&mut self.canvas, &self.fonts, bounds, deletion);
+        }
         let title = format!(
             "{} — {} — duscape",
             self.viewer.title(),
@@ -453,6 +467,18 @@ impl App {
                     self.dirty = true;
                 }
             }
+            Msg::Deleted(scan_id, id, ended) => {
+                if scan_id != self.viewer.scan_id {
+                    return;
+                }
+                if let Some(failure) = self.viewer.delete_done(id, &ended) {
+                    self.dialog = Dialog::Notice {
+                        title: failure.title,
+                        detail: failure.detail,
+                    };
+                }
+                self.changed();
+            }
             Msg::Tick => {
                 self.tick_due = None;
                 self.dirty = true;
@@ -480,6 +506,35 @@ impl App {
     }
 
     fn input(&mut self, input: Input) {
+        // While a delete runs, Esc or the box's Cancel stops it and no other key or click is
+        // taken: the tree still holds what is going. The window's own events go on.
+        if self.viewer.deleting().is_some() {
+            let cancel = match input {
+                Input::Key { keysym, .. } => keysym == keys::ESCAPE,
+                Input::Button {
+                    button: Button::Left,
+                    x,
+                    y,
+                    ..
+                } => {
+                    self.viewer.deleting().is_some_and(|d| d.shown())
+                        && DeletionLayout::new(self.viewer.layout.bounds)
+                            .cancel
+                            .contains(x, y)
+                }
+                Input::Button { .. } | Input::Motion { .. } => false,
+                _ => return self.window_input(input),
+            };
+            if cancel {
+                self.viewer.cancel_delete();
+                self.dirty = true;
+            }
+            return;
+        }
+        self.window_input(input);
+    }
+
+    fn window_input(&mut self, input: Input) {
         match input {
             Input::Redraw => self.dirty = true,
             Input::Resized {
@@ -957,43 +1012,25 @@ impl App {
         if !confirmed {
             return;
         }
-        let mut removed = Vec::new();
-        let mut failures = Vec::new();
-        for file in files {
-            let result = if permanently {
-                libduscape::delete::remove(&file).map_err(|error| error.to_string())
-            } else {
-                trash::trash(&file.full_path())
-            };
-            match result {
-                Ok(()) => removed.push(file),
-                Err(error) => failures.push((file, error)),
-            }
-        }
-        let size: u128 = removed.iter().map(|file| file.size).sum();
-        self.viewer.removed(&removed, permanently);
-        if !removed.is_empty() {
-            let items = match removed.len() {
-                1 => "1 item".to_string(),
-                n => format!("{} items", DisplayCount(n as u64)),
-            };
-            self.viewer.say(if permanently {
-                format!("Deleted {items}, freeing {}", DisplaySize(size as f64))
-            } else {
-                format!("Moved {items} ({}) to the Trash", DisplaySize(size as f64))
-            });
-        }
-        if let Some((file, error)) = failures.first() {
-            let more = match failures.len() {
-                1 => String::new(),
-                n => format!(
-                    "\n\n{} more could not be removed either.",
-                    DisplayCount(n as u64 - 1)
-                ),
-            };
+        let (tx, scan_id) = (self.tx.clone(), self.viewer.scan_id);
+        let done = move |id, ended| {
+            let _ = tx.send(Msg::Deleted(scan_id, id, ended));
+        };
+        let started = if permanently {
+            self.viewer
+                .start_delete(files, true, deleting::for_good, done)
+        } else {
+            self.viewer.start_delete(
+                files,
+                false,
+                |file, tally| deleting::moving(file, tally, trash::trash),
+                done,
+            )
+        };
+        if let Err(error) = started {
             self.dialog = Dialog::Notice {
-                title: format!("Could not remove {}", file.full_path().display()),
-                detail: format!("{error}{more}"),
+                title: "Could not remove".to_string(),
+                detail: error,
             };
         }
         self.changed();

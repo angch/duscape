@@ -1075,6 +1075,39 @@ fn ctrl_click_and_shift_arrow_events_reach_the_app() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// A Shift+click, where the terminal reports one, marks from the entry in hand to the one
+/// clicked, in the listing's order, the list's row or the treemap's tile alike; a further one
+/// moves the far end, the anchor staying.
+#[test]
+fn a_shift_click_marks_the_range_from_the_entry_in_hand() {
+    use ratatui::crossterm::event::{Event, KeyModifiers, MouseEvent, MouseEventKind};
+    let (dir, mut app) = app_with_two_folders("shift_click");
+    let _recorder = recording(&mut app, &dir);
+    let shift_click = |app: &mut App<TestBackend>, (column, row): (u16, u16)| {
+        crate::input::handle_keypress_normal_mode(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column,
+                row,
+                modifiers: KeyModifiers::SHIFT,
+            }),
+            app,
+        );
+    };
+    let (column, row) = list_row_of(&app, "big");
+    app.click(MouseButton::Left, column, row);
+    let at = list_row_of(&app, "small");
+    shift_click(&mut app, at);
+    assert_eq!(marked(&app), vec!["big", "loose.txt", "small"]);
+    let at = centre_of(&app, "loose.txt");
+    shift_click(&mut app, at);
+    assert_eq!(marked(&app), vec!["big", "loose.txt"], "shrunk back");
+    let (column, row) = list_row_of(&app, "small");
+    app.click(MouseButton::Left, column, row);
+    assert!(marked(&app).is_empty(), "a plain click starts over");
+    let _ = fs::remove_dir_all(&dir);
+}
+
 fn press(app: &mut App<TestBackend>, c: char) {
     use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     let evt = Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));

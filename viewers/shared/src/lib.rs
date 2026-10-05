@@ -13,6 +13,7 @@
 pub const APP_ID: &str = "io.github.angch.duscape";
 
 pub mod chooser;
+pub mod deleting;
 pub mod icon;
 pub mod menu;
 pub mod passes;

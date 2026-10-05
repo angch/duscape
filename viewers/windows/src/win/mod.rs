@@ -25,6 +25,7 @@ use ::std::time::Instant;
 use clap::Parser;
 use duscape_scan::rescan::{Outcome, Rescanner};
 use duscape_viewer::chooser::{Chooser, Target};
+use duscape_viewer::deleting::{self, DeletionLayout, Ended, REDRAW_EVERY};
 use duscape_viewer::menu::{Action, Entry, Platform};
 use duscape_viewer::passes::{Paints, paint_times, trace};
 use duscape_viewer::scan;
@@ -79,10 +80,17 @@ const OUTLINE_TIMER: usize = 2;
 const SECOND_PASS_TIMER: usize = 3;
 /// The details panel following the pointer, `PEEK` after it rests on a tile or leaves one.
 const PEEK_TIMER: usize = 4;
+/// Every `REDRAW_EVERY` while a delete runs: its box shown once it has run `SHOW_AFTER`, and its
+/// count moving.
+const DELETE_TIMER: usize = 5;
 /// How long after a batch the live view is laid out — the elevated scan of a volume sends
 /// dozens of batches a second, and each relayout took 15–25 ms, so laid out per batch the
 /// window answered nothing until the scan ended.
 const OUTLINE_MS: u32 = 100;
+/// A mouse message's `wparam` flags for Ctrl and Shift held (`MK_CONTROL`, `MK_SHIFT`), named
+/// here rather than taking in another `windows-sys` feature for two numbers.
+const MK_SHIFT: usize = 0x0004;
+const MK_CONTROL: usize = 0x0008;
 /// How many rows one notch of the wheel scrolls the list.
 const WHEEL_ROWS: isize = 3;
 
@@ -101,6 +109,8 @@ enum AppMsg {
     Rescanned(u64, u64, Outcome),
     /// A preview decoded: the scan it was asked under, then the request's generation.
     Preview(u64, u64, Ready<Picture>),
+    /// A delete has ended: the scan it was started under, the delete's id, how each entry went.
+    Deleted(u64, u64, Vec<Ended>),
 }
 
 /// Post `message` to the window at `hwnd`. If it cannot be posted — the window is gone — the
@@ -290,8 +300,48 @@ impl Window {
                 }
                 self.picture = picture;
             }
+            AppMsg::Deleted(scan_id, id, ended) => {
+                if scan_id != self.viewer.scan_id {
+                    return;
+                }
+                // SAFETY: our own timer.
+                unsafe { KillTimer(hwnd, DELETE_TIMER) };
+                let failure = self.viewer.delete_done(id, &ended);
+                self.changed(hwnd);
+                if let Some(failure) = failure {
+                    self::message(hwnd, &failure.message(), MB_OK | MB_ICONERROR);
+                }
+                return;
+            }
         }
         self.changed(hwnd);
+    }
+
+    /// Input while a delete runs: Escape or the box's Cancel stops it, and nothing else is
+    /// taken — the tree still holds what is going. Whether `msg` was input, and so handled.
+    fn deleting_input(&mut self, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> bool {
+        let cancel = match msg {
+            WM_KEYDOWN => wparam as u16 == VK_ESCAPE,
+            WM_LBUTTONDOWN => {
+                let (x, y) = (
+                    self.points(low_word(lparam)),
+                    self.points(high_word(lparam)),
+                );
+                let shown = self.viewer.deleting().is_some_and(|d| d.shown());
+                shown
+                    && DeletionLayout::new(self.viewer.layout.bounds)
+                        .cancel
+                        .contains(x, y)
+            }
+            WM_LBUTTONDBLCLK | WM_RBUTTONUP | WM_XBUTTONUP | WM_MOUSEWHEEL | WM_MOUSEMOVE
+            | WM_CHAR => false,
+            _ => return false,
+        };
+        if cancel {
+            self.viewer.cancel_delete();
+            invalidate(hwnd);
+        }
+        true
     }
 
     /// The outline timer's turn, or the finished tree's: nothing is behind any more.
@@ -365,8 +415,18 @@ impl Window {
             .map(|&(_, depth)| depth)
     }
 
-    fn on_click(&mut self, hwnd: HWND, x: i32, y: i32, double: bool) {
+    /// A left click, `keys` being the message's `MK_` flags: the modifiers as they were when
+    /// the button went down, which `GetKeyState` agrees with only while the queue is not behind.
+    fn on_click(&mut self, hwnd: HWND, x: i32, y: i32, double: bool, keys: usize) {
         let (x, y) = (self.points(x), self.points(y));
+        let mods = Mods {
+            toggle: keys & MK_CONTROL != 0,
+            range: keys & MK_SHIFT != 0,
+        };
+        // A second click with Ctrl or Shift held is another mark, not an Enter: Windows makes
+        // it a double click whenever it lands where the first did, and taken as one it cleared
+        // the marks and opened the entry.
+        let double = double && mods == Mods::default();
         if self.chooser.is_some() {
             if let Some(index) = self.crumb_at(x, y) {
                 self.choose_row(hwnd, index);
@@ -396,10 +456,6 @@ impl Window {
                 self.viewer.enter_selected();
             }
         } else {
-            let mods = Mods {
-                toggle: key_down(VK_CONTROL),
-                range: key_down(VK_SHIFT),
-            };
             if self.viewer.click(x, y, mods).is_none() {
                 if !matches!(self.viewer.hit(x, y), Hit::SmallFiles) {
                     return;
@@ -677,9 +733,21 @@ impl Window {
         {
             return;
         }
-        if let Err(error) = self.viewer.delete(&files) {
-            self.changed(hwnd);
-            message(hwnd, &error, MB_OK | MB_ICONERROR);
+        let (window, scan_id) = (hwnd as usize, self.viewer.scan_id);
+        let started =
+            self.viewer
+                .start_delete(files, true, deleting::for_good, move |id, ended| {
+                    post(window, AppMsg::Deleted(scan_id, id, ended));
+                });
+        match started {
+            Ok(()) => {
+                let ms = u32::try_from(REDRAW_EVERY.as_millis()).unwrap_or(100);
+                // SAFETY: our own timer, killed when the delete reports.
+                unsafe { SetTimer(hwnd, DELETE_TIMER, ms, None) };
+            }
+            Err(error) => {
+                message(hwnd, &error, MB_OK | MB_ICONERROR);
+            }
         }
     }
 
@@ -972,6 +1040,9 @@ fn run_handler(state: *mut Window, handler: impl FnOnce(&mut Window) -> LRESULT)
 }
 
 fn dispatch(window: &mut Window, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if window.viewer.deleting().is_some() && window.deleting_input(hwnd, msg, wparam, lparam) {
+        return 0;
+    }
     match msg {
         // Only ours reach here (`handles`); the system's go to it unguarded.
         WM_SYSCOMMAND => match wparam & 0xFFF0 {
@@ -1006,8 +1077,10 @@ fn dispatch(window: &mut Window, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
                 );
             }
         }
-        WM_LBUTTONDOWN => window.on_click(hwnd, low_word(lparam), high_word(lparam), false),
-        WM_LBUTTONDBLCLK => window.on_click(hwnd, low_word(lparam), high_word(lparam), true),
+        WM_LBUTTONDOWN => window.on_click(hwnd, low_word(lparam), high_word(lparam), false, wparam),
+        WM_LBUTTONDBLCLK => {
+            window.on_click(hwnd, low_word(lparam), high_word(lparam), true, wparam)
+        }
         WM_RBUTTONUP => window.on_context_menu(hwnd, low_word(lparam), high_word(lparam)),
         // The mouse's back button.
         WM_XBUTTONUP if high_word(wparam as isize) == 1 => {
@@ -1054,6 +1127,15 @@ fn dispatch(window: &mut Window, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
                 window.changed(hwnd);
             }
             window.arm_peek(hwnd);
+        }
+        WM_TIMER if wparam == DELETE_TIMER => {
+            if window
+                .viewer
+                .deleting()
+                .is_some_and(|deletion| deletion.shown())
+            {
+                invalidate(hwnd);
+            }
         }
         WM_TIMER if wparam == FLASH_TIMER => {
             if window.viewer.message_left().is_none() {

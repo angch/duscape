@@ -21,6 +21,7 @@ use ::std::time::{Duration, Instant};
 
 use duscape_scan::Focus as ScanFocus;
 use duscape_scan::rescan::{Outcome, Rescanner, Rescans};
+use libduscape::delete::Tally;
 use libduscape::format::copied_path;
 use libduscape::model::SizeKind;
 use libduscape::model::files::hash::FastBuildHasher;
@@ -31,6 +32,8 @@ use libduscape::tiles::{
 use libduscape::{
     DirSummary, DisplayCount, DisplaySize, FileOrFolder, FileToDelete, FileTree, Folder,
 };
+
+use crate::deleting::{Deletion, Ended, Failure};
 
 /// A layout cell, in points. The treemap lays tiles out in cells 2.5 times taller than wide (its
 /// `HEIGHT_WIDTH_RATIO`: a terminal's cell), so cells this shape come out as square-looking
@@ -535,6 +538,12 @@ pub struct Viewer {
     message: Option<(String, Instant)>,
     rescanner: Option<Rescanner>,
     rescans: Rescans,
+    /// The delete under way, if one is: while it runs a window takes no input but its box's
+    /// Cancel ([`Viewer::deleting`]).
+    deleting: Option<Deletion>,
+    /// Counts deletes, so the report of one that was replaced (by another scan's viewer) is
+    /// known.
+    deletions: u64,
     /// The file the preview was last asked for (and the pixels it may take, when the viewer says
     /// — see [`Viewer::wanted_preview_sized`]), and the request's number: an answer to an older
     /// one is dropped.
@@ -610,6 +619,8 @@ impl Viewer {
             message: None,
             rescanner: None,
             rescans: Rescans::default(),
+            deleting: None,
+            deletions: 0,
             preview_for: None,
             preview_generation: 0,
             preview: Preview::None,
@@ -1973,41 +1984,115 @@ impl Viewer {
         libduscape::delete::refused(files)
     }
 
-    /// Delete `files` from disk for good, going on past any that fail: only what left the disk
-    /// comes off the tree and counts as freed. NTFS's own metadata is refused before anything is
-    /// touched. The error names what failed — the first failure, and how many more.
-    pub fn delete(&mut self, files: &[FileToDelete]) -> Result<(), String> {
-        if let Some(refusal) = Self::refusal(files) {
+    /// Start removing `files` — for good when `freed`, else by `remove` to a Trash — on a thread
+    /// of its own, going on past any that fail; `done` is called there with the delete's id and
+    /// how each went, for the viewer to post back to its own thread and hand to
+    /// [`Viewer::delete_done`]. Refused (NTFS's own metadata, a snapshot) before anything is
+    /// touched, as when a delete is already under way or no thread can be started.
+    pub fn start_delete(
+        &mut self,
+        files: Vec<FileToDelete>,
+        freed: bool,
+        remove: impl Fn(&FileToDelete, &Tally) -> Result<(), String> + Send + 'static,
+        done: impl FnOnce(u64, Vec<Ended>) + Send + 'static,
+    ) -> Result<(), String> {
+        if let Some(refusal) = Self::refusal(&files) {
             return Err(refusal);
         }
-        let mut deleted = Vec::new();
+        if self.deleting.is_some() {
+            return Err("A delete is under way already".to_string());
+        }
+        self.deletions += 1;
+        let deletion = Deletion::spawn(self.deletions, files, freed, remove, done)
+            .map_err(|error| format!("Could not start deleting: {error}"))?;
+        self.deleting = Some(deletion);
+        Ok(())
+    }
+
+    /// The delete under way, for a window to draw once it is [`Deletion::shown`] and to cancel.
+    /// While there is one the window takes no other input: the tree still holds what is going.
+    #[must_use]
+    pub fn deleting(&self) -> Option<&Deletion> {
+        self.deleting.as_ref()
+    }
+
+    /// The delete numbered `id` has ended, each of its entries as `ended` says: what left the
+    /// disk comes off the tree, a folder that went only in part is rescanned (the tree's copy is
+    /// no longer what is on disk), and the status bar says what was freed. Returns what to tell
+    /// the user if anything failed — not what Cancel stopped. A report from another delete than
+    /// the one under way is dropped.
+    pub fn delete_done(&mut self, id: u64, ended: &[Ended]) -> Option<Failure> {
+        if self
+            .deleting
+            .as_ref()
+            .is_none_or(|deletion| deletion.id != id)
+        {
+            return None;
+        }
+        let deletion = self.deleting.take()?;
+        let files = &deletion.files;
+        let mut removed = Vec::new();
         let mut failures = Vec::new();
-        for file in files {
-            match libduscape::delete::remove(file) {
-                Ok(()) => deleted.push(file.clone()),
-                Err(error) => failures.push((file, error)),
+        let mut partly = Vec::new();
+        for (file, ended) in files.iter().zip(ended) {
+            match ended {
+                Ended::Removed => removed.push(file.clone()),
+                Ended::Failed {
+                    error,
+                    partly: some,
+                } => {
+                    if *some {
+                        partly.push(file.path_to_file.clone());
+                    }
+                    if let Some(error) = error {
+                        failures.push((file, error.clone()));
+                    }
+                }
             }
         }
-        self.removed(&deleted, true);
-        match failures.as_slice() {
-            [] => Ok(()),
-            [(file, error)] if files.len() == 1 => Err(format!(
-                "Could not delete {}: {error}",
-                file.full_path().display()
-            )),
-            [(file, error), rest @ ..] => {
-                let more = if rest.is_empty() {
-                    String::new()
-                } else {
-                    format!(" (and {} more)", DisplayCount(rest.len() as u64))
-                };
-                Err(format!(
-                    "Deleted {} of {}; {}: {error}{more}",
-                    DisplayCount(deleted.len() as u64),
-                    DisplayCount(files.len() as u64),
-                    last_name(file)
-                ))
-            }
+        self.removed(&removed, deletion.freed);
+        for relative in partly {
+            self.start_rescan(relative);
+        }
+        if !removed.is_empty() {
+            let size: u128 = removed.iter().map(|file| file.size).sum();
+            let items = match removed.len() {
+                1 => "1 item".to_string(),
+                n => format!("{} items", DisplayCount(n as u64)),
+            };
+            self.say(if deletion.freed {
+                format!("Deleted {items}, freeing {}", DisplaySize(size as f64))
+            } else {
+                format!("Moved {items} ({}) to the Trash", DisplaySize(size as f64))
+            });
+        }
+        let (file, error) = failures.first()?;
+        let more = match failures.len() {
+            1 => String::new(),
+            n => format!(
+                "\n\n{} more could not be removed either.",
+                DisplayCount(n as u64 - 1)
+            ),
+        };
+        let done = match removed.len() {
+            0 => String::new(),
+            n => format!(
+                "\n\n{} of {} were removed.",
+                DisplayCount(n as u64),
+                DisplayCount(files.len() as u64)
+            ),
+        };
+        Some(Failure {
+            title: format!("Could not remove {}", file.full_path().display()),
+            detail: format!("{error}{more}{done}"),
+        })
+    }
+
+    /// Cancel the delete under way, after the entry it is on; what it removed comes off the
+    /// tree when it reports.
+    pub fn cancel_delete(&self) {
+        if let Some(deletion) = &self.deleting {
+            deletion.cancel();
         }
     }
 

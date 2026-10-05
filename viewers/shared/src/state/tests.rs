@@ -3,6 +3,7 @@ use ::std::sync::atomic::AtomicBool;
 use ::std::sync::{Arc, Mutex, mpsc};
 
 use super::*;
+use crate::deleting;
 use duscape_scan::scan_into_tree;
 use libduscape::format::quote_path_for_shell;
 use libduscape::{EntryMeta, ScanOptions};
@@ -426,6 +427,21 @@ fn marking_copies_the_paths_and_ctrl_c_copies_what_is_in_hand() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// Delete `files` for good on the deleting thread, and wait for its report.
+fn delete_now(viewer: &mut Viewer, files: Vec<FileToDelete>) -> Option<Failure> {
+    let (sender, report) = mpsc::channel();
+    viewer
+        .start_delete(files, true, deleting::for_good, move |id, ended| {
+            let _ = sender.send((id, ended));
+        })
+        .expect("started");
+    assert!(viewer.deleting().is_some(), "under way");
+    let (id, ended) = report.recv().expect("reported");
+    let failure = viewer.delete_done(id, &ended);
+    assert!(viewer.deleting().is_none(), "over");
+    failure
+}
+
 #[test]
 fn deleting_removes_from_disk_going_on_past_a_failure() {
     let dir = on_disk("delete");
@@ -435,7 +451,7 @@ fn deleting_removes_from_disk_going_on_past_a_failure() {
     let files = viewer.targets();
     assert_eq!(files.len(), 1);
     assert!(Viewer::delete_prompt(&files).contains("medium.txt"));
-    viewer.delete(&files).expect("deleted");
+    assert_eq!(delete_now(&mut viewer, files), None, "deleted");
     assert!(!dir.join("medium.txt").exists());
     assert_eq!(names(&viewer), ["big", "small", "tiny.txt"]);
     assert_eq!(viewer.tree.space_freed.get(SizeKind::Apparent), 2000);
@@ -459,10 +475,58 @@ fn deleting_removes_from_disk_going_on_past_a_failure() {
     assert_eq!(files.len(), 2);
     assert!(Viewer::delete_prompt(&files).starts_with("Delete these 2 entries?"));
     fs::remove_file(dir.join("tiny.txt")).expect("gone behind its back");
-    let error = viewer.delete(&files).expect_err("one failed");
-    assert!(error.starts_with("Deleted 1 of 2; tiny.txt"), "{error}");
+    let failure = delete_now(&mut viewer, files).expect("one failed");
+    assert!(failure.title.ends_with("tiny.txt"), "{failure:?}");
+    assert!(
+        failure.detail.ends_with("1 of 2 were removed."),
+        "{failure:?}"
+    );
     assert!(!dir.join("small").exists());
     assert!(viewer.marked.is_empty());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// While a delete runs the viewer says so; Cancel stops it, and what it stopped is no failure to
+/// report and stays in the tree.
+#[test]
+fn a_cancelled_delete_reports_nothing_and_keeps_what_it_did_not_remove() {
+    let dir = on_disk("delete_cancel");
+    let (mut viewer, _) = viewer_on(&dir);
+    viewer.mark_all();
+    let files = viewer.targets();
+    let count = files.len();
+    let (sender, report) = mpsc::channel();
+    viewer
+        .start_delete(
+            files,
+            true,
+            |_, tally| {
+                while !tally.stopped() {
+                    ::std::thread::sleep(Duration::from_millis(1));
+                }
+                Err("stopped".to_string())
+            },
+            move |id, ended| {
+                let _ = sender.send((id, ended));
+            },
+        )
+        .expect("started");
+    let deletion = viewer.deleting().expect("under way");
+    assert_eq!(deletion.progress().0, 0);
+    assert!(!deletion.cancelling());
+    assert!(
+        viewer
+            .start_delete(Vec::new(), true, deleting::for_good, |_, _| {})
+            .is_err(),
+        "one at a time"
+    );
+    viewer.cancel_delete();
+    assert!(viewer.deleting().expect("still").cancelling());
+    let (id, ended) = report.recv().expect("reported");
+    assert_eq!(ended.len(), count);
+    assert_eq!(viewer.delete_done(id, &ended), None, "nothing to report");
+    assert!(viewer.deleting().is_none());
+    assert_eq!(names(&viewer).len(), count, "all still there");
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -1767,4 +1831,37 @@ fn no_free_space_is_shown_off_a_volumes_root() {
             .abs()
             < 1e-9
     );
+}
+
+/// A Shift+click marks every entry from the one in hand to the one clicked, in the list and on
+/// the treemap alike; a later Shift+click moves the range's far end, the anchor staying.
+#[test]
+fn a_shift_click_marks_the_range_from_the_entry_in_hand() {
+    let dir = on_disk("shift_click");
+    let (mut viewer, _) = viewer_on(&dir);
+    let shift = Mods {
+        toggle: false,
+        range: true,
+    };
+    assert_eq!(names(&viewer), ["big", "medium.txt", "small", "tiny.txt"]);
+    let (x, y) = row_center(&viewer, "big");
+    viewer.click(x, y, Mods::default());
+    let (x, y) = row_center(&viewer, "small");
+    viewer.click(x, y, shift);
+    let marked = |viewer: &Viewer| -> Vec<String> {
+        viewer
+            .marked
+            .iter()
+            .map(|name| name.to_string_lossy().into_owned())
+            .collect()
+    };
+    assert_eq!(marked(&viewer), ["big", "medium.txt", "small"]);
+    let (x, y) = center_of(&viewer, "tiny.txt");
+    viewer.click(x, y, shift);
+    assert_eq!(marked(&viewer), ["big", "medium.txt", "small", "tiny.txt"]);
+    let (x, y) = row_center(&viewer, "medium.txt");
+    viewer.click(x, y, shift);
+    assert_eq!(marked(&viewer), ["big", "medium.txt"], "shrunk back");
+    assert_eq!(viewer.targets().len(), 2, "what a delete takes");
+    let _ = fs::remove_dir_all(&dir);
 }

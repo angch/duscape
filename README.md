@@ -239,6 +239,7 @@ The defaults; the config file can rebind the keys.
 | `PgUp` `PgDn` `Home` `End`         | Jump through the list                 |
 | `Shift`+`↑` `↓`                    | Mark a run of rows, copy their paths  |
 | `Ctrl`+click                       | Mark or unmark, copy the marked paths |
+| `Shift`+click                      | Mark a run up to it (if the terminal passes Shift+click on) |
 | Click                              | Select the tile under the pointer     |
 | Double-click                       | Open that folder                      |
 | Right-click                        | Copy its path, relative to your shell |

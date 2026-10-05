@@ -846,11 +846,18 @@ where
             return;
         };
         self.move_list_cursor(delta);
+        let Some(to) = self.list_position() else {
+            return;
+        };
+        self.mark_from(&anchor, base, to, now);
+        self.render();
+    }
+    /// Mark every entry of the listing from `anchor` to the listing's `to`, on top of `base`,
+    /// the marks there were when the run began — so reversing it shrinks the range back towards
+    /// the anchor — and copy them.
+    fn mark_from(&mut self, anchor: &OsStr, base: Vec<OsString>, to: usize, now: Instant) {
         let listing = self.board.listing();
-        let (Some(from), Some(to)) = (
-            listing.iter().position(|entry| entry.name == anchor),
-            self.list_position(),
-        ) else {
+        let Some(from) = listing.iter().position(|entry| entry.name == anchor) else {
             return;
         };
         // From the anchor towards the cursor, so the copy lists them in the order swept.
@@ -872,6 +879,51 @@ where
         }
         self.marked = marked;
         self.copy_marked(now);
+    }
+    /// Shift+click: mark every entry from the one in hand to the one under the pointer, in the
+    /// listing's order, in either panel — the treemap's tiles are the listing's entries — as a
+    /// desktop file manager does; a further Shift+click moves the range's far end, the anchor
+    /// staying. Many terminals keep Shift+click for selecting text (Windows Terminal, xterm,
+    /// GNOME's, kitty) and never report it; where one does, this is what it does.
+    pub fn shift_click(&mut self, column: u16, row: u16) {
+        self.shift_click_at(column, row, Instant::now());
+    }
+    fn shift_click_at(&mut self, column: u16, row: u16, now: Instant) {
+        let Some((clicked_in, tile, name)) = self.target_at(column, row) else {
+            return;
+        };
+        let listing = self.board.listing();
+        let Some(to) = listing.iter().position(|entry| entry.name == name) else {
+            return;
+        };
+        if self.mark_range.is_none() {
+            let in_hand = match self.focus() {
+                Focus::List => self
+                    .list_position()
+                    .map(|index| listing[index].name.clone()),
+                Focus::Treemap => self
+                    .board
+                    .currently_selected()
+                    .map(|tile| tile.name.clone()),
+            };
+            let anchor = in_hand.unwrap_or_else(|| name.clone());
+            self.mark_range = Some((anchor, self.marked.clone()));
+        }
+        let Some((anchor, base)) = self.mark_range.clone() else {
+            return;
+        };
+        self.mark_from(&anchor, base, to, now);
+        self.last_click = None;
+        self.cursor_chosen = true;
+        self.focus = clicked_in;
+        if clicked_in == Focus::List {
+            self.list_cursor = Some(name);
+        }
+        match tile {
+            Some(index) => self.board.set_selected_index(&index),
+            None if clicked_in == Focus::List => self.board.reset_selected_index(),
+            None => {}
+        }
         self.render();
     }
     /// Ctrl+click: add the entry under the pointer to the multi-selection, or take it out, and

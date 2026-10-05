@@ -103,6 +103,9 @@ fn handle_mouse<B: Backend>(evt: &Event, app: &mut App<B>) -> bool {
         MouseEventKind::Down(MouseButton::Left) if modifiers.contains(KeyModifiers::CONTROL) => {
             app.ctrl_click(column, row);
         }
+        MouseEventKind::Down(MouseButton::Left) if modifiers.contains(KeyModifiers::SHIFT) => {
+            app.shift_click(column, row);
+        }
         MouseEventKind::Down(button) => app.click(button, column, row),
         _ => {}
     }
