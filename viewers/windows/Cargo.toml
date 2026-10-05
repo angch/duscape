@@ -18,7 +18,7 @@ path = "src/main.rs"
 [dependencies]
 libduscape = { workspace = true }
 duscape-scan = { workspace = true }
-duscape-viewer = { path = "../shared", version = "0.3.0-rc.5" }
+duscape-viewer = { path = "../shared", version = "0.3.0-rc.6" }
 clap = { workspace = true }
 
 [dev-dependencies]
