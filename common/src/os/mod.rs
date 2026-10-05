@@ -13,6 +13,18 @@ pub use self::windows::{
     size_on_disk_fast, volume_free, volume_id, volume_used,
 };
 
+#[cfg(target_os = "macos")]
+mod purgeable;
+#[cfg(target_os = "macos")]
+pub use purgeable::volume_purgeable;
+
+/// Elsewhere nothing says what a volume could free.
+#[cfg(not(target_os = "macos"))]
+#[must_use]
+pub fn volume_purgeable(_path: &Path) -> Option<u64> {
+    None
+}
+
 #[cfg(test)]
 mod tests;
 

@@ -412,9 +412,11 @@ where
         self.describe_rescans();
         // A fill's batch changes no size and moves nothing: only the folder shown, if it was
         // among those filled, is laid out again, and the file in hand is left as it is.
-        if let Some((filled, _left)) = finished.filled {
+        if let Some((filled, left)) = finished.filled {
             let here = self.file_tree.get_current_path();
-            if filled.contains(&here) {
+            // The last batch is the fill's end, and the snapshots' folder may come next.
+            let idle = left.is_none() && self.start_idle();
+            if filled.contains(&here) || idle {
                 let current_folder = self.file_tree.get_current_folder();
                 self.board.change_files(current_folder);
                 if let Some(tile) = selected
@@ -429,13 +431,13 @@ where
         if let Some((duration, small)) = finished.whole {
             self.scan_duration = Some(duration);
             self.start_refining(small);
-            // The tree is current now; what the saved scan trimmed is put back behind it.
-            self.start_fill();
         }
         if let Some(folder) = finished.refined_folder {
             self.refine_skip.push(folder);
         }
-        let changed = finished.changed;
+        // The tree is current now: what the saved scan trimmed is put back behind it, or the
+        // volume's snapshots read, if nothing else is under way.
+        let changed = self.start_idle() | finished.changed;
         if changed {
             // A whole rescan puts the user back at the root if their folder has gone; what was
             // chosen there, and the way back up from it, belong to the old place.
@@ -655,6 +657,8 @@ where
     pub fn start_ui(&mut self) {
         self.ui_mode = UiMode::Normal;
         self.loaded = true;
+        // The volume's snapshots, named before the first frame with the tree.
+        self.start_idle();
         self.render_and_update_board();
         // A tree read from the saved scan as it was is brought up to date behind itself.
         if self.file_tree.from_saved_scan {
@@ -671,17 +675,18 @@ where
             self.describe_rescans();
         }
     }
-    /// Put back the smaller files a saved scan trimmed, the folder in view first.
-    fn start_fill(&mut self) {
+    /// What is owed once nothing else reads the disk (`Rescans::start_idle`): the fill of
+    /// what a saved scan trimmed, the folder in view first, or the volume's local snapshots.
+    /// Returns whether the tree changed, for the caller to lay out again.
+    fn start_idle(&mut self) -> bool {
         let Some(rescanner) = &self.rescanner else {
-            return;
+            return false;
         };
-        if self
-            .rescans
-            .start_fill(rescanner, &self.file_tree, self.scan_focus.clone())
-        {
-            self.describe_rescans();
-        }
+        let changed =
+            self.rescans
+                .start_idle(rescanner, &mut self.file_tree, self.scan_focus.clone());
+        self.describe_rescans();
+        changed
     }
     /// Add the outlines of several scanned directories to the live view.
     pub fn add_scanned_summaries(&mut self, summaries: Vec<DirSummary>) {
@@ -1258,12 +1263,10 @@ where
     fn refuse_metafile(&mut self, files: &[FileToDelete]) -> bool {
         // All or nothing: deleting the rest of a selection and quietly skipping one would leave
         // it unclear what happened.
-        let Some(name) = libduscape::delete::refused(files) else {
+        let Some(why) = libduscape::delete::refused(files) else {
             return false;
         };
-        self.ui_mode = UiMode::ErrorMessage(format!(
-            "NTFS metadata belongs to the filesystem and cannot be deleted: {name}"
-        ));
+        self.ui_mode = UiMode::ErrorMessage(why);
         self.render();
         true
     }

@@ -111,6 +111,65 @@ on a typical Mac, measured on 2026-10-01 (814.6 GiB in use, 715 found unprivileg
   more of them). `duscape --issues` shows where, by folder.
 - The Recovery volume, which is not mounted, and APFS's own metadata.
 
+### Local snapshots
+
+At a volume's root on macOS (`/`, whose data volume's, or another APFS volume's mount point) the
+treemap holds a folder no directory lists: `(local snapshots)`, one folder in it per snapshot of
+the volume (Time Machine's `com.apple.TimeMachine.<date>.local`, and any other's), the last of
+the passes, once the scan, its catch-up and its fill are done. Nothing in it can be deleted
+from duscape: a snapshot's space is freed by deleting the snapshot (`tmutil
+deletelocalsnapshots`).
+
+Unprivileged the snapshots are only named — listing them needs no privilege, reading inside one
+does (its mount is refused) — and the status line says so. The window splits the unseen space:
+"Snapshots and purgeable, at most" is what the system says it could free (available for
+important use less free, 77.2 GB on the Mac this was written on), beside the free space, and
+"Not seen by the scan" the rest. *At most*, because the system's figure counts purgeable files
+(caches, iCloud copies kept locally), which the scan has found, as well as the snapshots, which
+it has not; and the rest is mostly the folders the scan could not read (`duscape --issues`
+says where).
+
+As root (`sudo duscape /`; the terminal needs Full Disk Access, which root does not bypass) each
+snapshot is mounted read-only out of the Finder's sight and read, and its folder holds what it
+alone keeps:
+
+- Files gone from the disk: a file whose id is nowhere on the live volume (APFS keeps a file's
+  id in its snapshots, and never gives it to another file), so one moved or renamed since is not
+  counted. A file several snapshots keep is counted once above them, in each one's folder all
+  the same.
+- Files written over in place since — a virtual machine's disk, a database, `Docker.raw` —
+  which keep their id: the blocks the snapshot keeps of the old contents, found by where they
+  are on the disk (the snapshot file's physical extents less the live file's, less what another
+  snapshot already counted). Likely the bulk of what Time Machine's snapshots hold on a machine
+  with a busy virtual machine — `Docker.raw` there went from 60.8 to 43.5 GB of blocks in an
+  hour — though not yet measured as root: `--issues` says how much each snapshot holds of each
+  kind.
+
+A *dataless* snapshot (`tmutil listlocalsnapshots` marks it so) is named and not read: macOS
+has trimmed it to its metadata, so it still lists every file it had at its size and holds none
+of their blocks. Read, the one on the Mac this was written on listed 267.6 GB of files gone from
+the disk, on a volume whose snapshots could hold 142 GB at most.
+
+Which folders are read is the volume's change log's to say: the folders it names since the
+snapshot was made, found by the log's own files (root only), streamed on `/` and taken back onto
+the data volume through its firmlinks. Where the log does not reach back to a snapshot, or lost
+events under the volume since, the snapshot is read whole, and what was written in place is
+not seen (a write leaves a folder's time as it was).
+
+What the folders cannot show, so some of a snapshot's space stays unseen:
+
+- A snapshot read whole (the log does not reach it): files written over in place.
+- A deleted file that was an APFS clone of one still live is counted in full, though its blocks
+  are the live one's.
+- A deleted file that changed size between two snapshots is counted once at each size: the
+  ledger takes two sizes for two files.
+- A live file deleted after the pass ran is held by the snapshots from then on, and shows in
+  their folders only after the next scan.
+
+`sudo duscape --issues /` reads every snapshot and says, for each, whether it mounted (and
+`mount_apfs`'s error if not), whether the log narrowed it, how many folders were read, and how
+much it holds in files gone and in blocks written over.
+
 It appears for a drive root on Windows, and on Unix for a mount point scanned with `-x` (without
 it, the scan may cross into other filesystems and the two stop being comparable). It is not shown
 with `--apparent-size`, since file lengths cannot be set against blocks in use.

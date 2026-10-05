@@ -684,20 +684,58 @@ fn image_left_out(path: &Path, real_root: &Path) -> Option<DirEntries> {
     Some(left)
 }
 
+/// The directory for a mount at `path` that is a volume's snapshot — Time Machine's local
+/// snapshots as the Finder browses them, or the snapshots' pass's own while it reads one
+/// (`crate::snapshots`): empty, and noted, unless `snapshots` (`--snapshots`), as a btrfs
+/// snapshot is. Walked, it is the volume's files again. `None` for any other mount.
+fn snapshot_left_out(path: &Path, snapshots: bool) -> Option<DirEntries> {
+    if snapshots || !crate::snapshots::is_snapshot_mount(path) {
+        return None;
+    }
+    let mut left = DirEntries::new(Arc::from(path));
+    left.note(
+        "left out",
+        None,
+        "a volume's snapshot, mounted: its files again (--snapshots walks it)",
+    );
+    Some(left)
+}
+
+/// The folders of `read` to walk, at `depth`, less those `left_out`.
+fn children(read: &DirRead, depth: usize, left_out: &[OsString]) -> Vec<Job> {
+    read.entries
+        .iter()
+        .zip(&read.listed)
+        .filter(|((name, meta), _)| meta.is_dir && !left_out.iter().any(|n| n == name))
+        .map(|((name, _), listed)| Job {
+            path: read.entries.path.join(name),
+            depth,
+            listed_inode: listed.inode,
+            firmlink: listed.firmlink,
+        })
+        .collect()
+}
+
+/// A mount the walk leaves empty and notes: a disk image's counted as a file, or a snapshot.
+fn mount_left_out(path: &Path, real_root: &Path, snapshots: bool) -> Option<DirEntries> {
+    image_left_out(path, real_root).or_else(|| snapshot_left_out(path, snapshots))
+}
+
 /// Walk `root` in parallel, yielding one message per directory read.
 ///
 /// Mount points are entered, as `du` enters them, except: under `-x`; a network share (no
 /// `MNT_LOCAL`); a mount of the root's own device, a second route to files already counted — on
 /// `/`, macOS mounts the data volume at `/System/Volumes/Data` *and* grafts it into `/` through
 /// firmlinks, so a walk that followed both would count nearly every file on the machine twice;
-/// and a disk image's volume whose image the scan counts as a file. So a
+/// a disk image's volume whose image the scan counts as a file; and a volume's snapshot, unless
+/// `snapshots`. So a
 /// scan of `/` covers the volume group and the other volumes mounted under it (Preboot, VM,
 /// what is under `/Volumes`), which `os::volume_used` counts on at `/`. Firmlinks are followed,
 /// since they are the only route to what they point at.
 ///
 /// The iterator ends when the whole tree has been read. Dropping it early stops the workers.
-// The disk image's volume is `image_left_out`, private (kept out of the public docs, which
-// cannot link it).
+// The disk image's volume is `image_left_out` and the snapshot `snapshot_left_out`, private
+// (kept out of the public docs, which cannot link them).
 pub fn walk_macos(
     root: &Path,
     threads: usize,
@@ -771,9 +809,10 @@ pub fn walk_macos(
                                     queue.finish();
                                     continue;
                                 }
-                                // A disk image's volume whose image the scan counts as a file:
-                                // walked, its blocks were counted twice (`disk_image`).
-                                if mounted && let Some(left) = image_left_out(&job.path, &real_root)
+                                // A counted disk image's volume, or a snapshot: walked, twice.
+                                if mounted
+                                    && let Some(left) =
+                                        mount_left_out(&job.path, &real_root, snapshots)
                                 {
                                     let stop = sender.send(left).is_err();
                                     queue.finish();
@@ -785,19 +824,7 @@ pub fn walk_macos(
                                 let descend = max_depth.is_none_or(|max| job.depth + 1 < max);
                                 let left_out = leave_out(&mut read.entries, descend, snapshots);
                                 let children = if descend {
-                                    read.entries
-                                        .iter()
-                                        .zip(&read.listed)
-                                        .filter(|((name, meta), _)| {
-                                            meta.is_dir && !left_out.iter().any(|n| n == name)
-                                        })
-                                        .map(|((name, _), listed)| Job {
-                                            path: read.entries.path.join(name),
-                                            depth: job.depth + 1,
-                                            listed_inode: listed.inode,
-                                            firmlink: listed.firmlink,
-                                        })
-                                        .collect()
+                                    children(&read, job.depth + 1, &left_out)
                                 } else {
                                     Vec::new()
                                 };

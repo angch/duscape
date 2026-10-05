@@ -1248,11 +1248,11 @@ impl DiskView {
             }
             return;
         }
-        if let Some(name) = libduscape::delete::refused(&files) {
+        if let Some(why) = libduscape::delete::refused(&files) {
             self.alert(
                 NSAlertStyle::Warning,
                 "This cannot be deleted",
-                &format!("NTFS metadata belongs to the filesystem: {name}"),
+                &why,
                 &["OK"],
             );
             return;

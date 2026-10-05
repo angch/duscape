@@ -113,10 +113,15 @@ pub fn left_out_note(known: &Known) -> String {
 }
 
 /// What a system's folder is, for a viewer to say beside its name: `Synology: the share's
-/// recycle bin`. `None` for any other name.
+/// recycle bin`, or a volume's local snapshots ([`crate::snapshots::describe`]). `None` for any
+/// other name.
 #[must_use]
 pub fn describe(name: &OsStr) -> Option<String> {
-    known(name).map(|known| format!("{}: {}", known.vendor, known.what))
+    known(name)
+        .map(|known| format!("{}: {}", known.vendor, known.what))
+        // The volume's local snapshots, as a scan's root shows them: every viewer's status line
+        // asks here.
+        .or_else(|| crate::snapshots::describe(name))
 }
 
 #[cfg(test)]

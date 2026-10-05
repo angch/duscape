@@ -1648,7 +1648,7 @@ fn no_volume(_: &Path) -> Option<(u64, u64)> {
 }
 
 /// The used space the scan has not found is a tile of its own before the free space, which
-/// is at the treemap's bottom right; neither is a target.
+/// is along the treemap's bottom; neither is a target.
 #[test]
 fn unscanned_space_is_shown_beside_the_free_space() {
     let viewer = viewer_with_free(half_unscanned);

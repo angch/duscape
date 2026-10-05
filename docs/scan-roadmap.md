@@ -240,6 +240,52 @@ does not need one.
   whole. On Windows the USN journal is read from the volume handle, elevated — the window
   elevates for a volume scan already — where FSEvents needs no privilege.
 
+### 10. A volume's local snapshots, read as root (done on macOS, unrun as root: 2026-10-05)
+
+*macOS.* Time Machine's hourly local snapshots hold tens of gigabytes no walk of the live
+files finds, shown as "Not seen by the scan". Listing them needs no privilege
+(`fs_snapshot_list`); mounting one does (`fs_snapshot_mount` and `mount_apfs -s` both `EPERM`
+unprivileged, measured). So the volume root gets a `(local snapshots)` folder with a folder per
+snapshot as the last idle pass (`Rescans::start_idle`), and as root each is mounted, walked and
+set against the live volume by file id through volfs (`/.vol/<device>/<id>`, unprivileged),
+the files gone from the live volume kept (`snapshots.rs`, `docs/sizes.md` "Local snapshots").
+- Result: a pass over a folder the same as live costs its walk — every folder listed, one volfs
+  lookup and two times each: `~` (1.12M folders, 8.2M entries) 30.3 s against the walk's
+  29.1, warm, six threads. Four snapshots are four walks behind everything else. The root path
+  (mount, walk, unmount, the graft) has not been run: no root on the machine it was written on.
+- Narrowed by FSEvents (done, 2026-10-05, the root path unrun): the folders the log names since
+  each snapshot are read, one level, with their subfolders moved or gone since walked whole;
+  nothing else is listed. Measured unprivileged: the last million ids replay in 1.6–4.2 s as
+  9.5k events, every one on the data volume once taken through the firmlinks; ten million in
+  10–12 s. `FSEventsGetLastEventIdForDeviceBeforeTime` returns 0 for any time and is no use: the
+  id before a snapshot comes from `.fseventsd`'s file names and times. A stream on the data
+  volume saw its paths as `/Users/…`, outside itself: the stream is on `/`. A replay of ten
+  million ids dropped 91–288 *live* events with `MustScanSubDirs` on `/`; events after the
+  replay's start are left out (`fsevents::events`), which the catch-up gains too.
+- Written over in place (done): in a folder the log named, a file still live whose size or time
+  differs is counted by its blocks — `F_LOG2PHYS_EXT` extents (`Docker.raw`, 43.5 GB in 106k
+  runs, 0.38 s), less the live file's, less what another snapshot counted. A root run on the
+  machine that wrote it still showed 128 GB unseen before this; `Docker.raw` alone went from
+  60.8 to 43.5 GB of blocks in an hour.
+- First root run (2026-10-05, `sudo duscape --issues /`): every snapshot refused by
+  `mount_apfs` with `Operation not permitted`, as unprivileged — most likely the terminal
+  without Full Disk Access, which root does not bypass. The mount now tries the volume's mount
+  point after its device node and keeps both errors, and `--issues` says whether the process
+  has Full Disk Access (it can read a TCC database).
+- Second and third root runs, with Full Disk Access: every snapshot mounted. The log narrowed
+  the three it reaches to about 97k folders each, 16–17 s apiece, against 1.49M folders and
+  57 s for the one it does not. But "held by the snapshots alone" came to 334.8 GB where at
+  most 142 GB is unseen: the oldest snapshot, 266.6 GB of it, is *dataless* — trimmed by
+  macOS to its metadata, listing files it no longer holds (`ATTR_CMN_FLAGS` 0x20 in
+  `fs_snapshot_list`, as `tmutil` marks it). Such a snapshot is now named and not read. The
+  other three's figures — about 68 GB more files gone than the dataless one listed, 13.5 GB of
+  old blocks written over (`Docker.raw` and the like) — fit under the bound.
+- Rerun with dataless snapshots skipped: the three read hold 128.3 GiB alone, in 56.6 s, against
+  128.6 GiB unseen (888.2 GB used, 698.6 GiB found). Close enough to be a little high, since
+  the 86 folders System Integrity Protection keeps from root and APFS's own metadata are unseen
+  too: 21 GiB of the files gone are clones, whose blocks may be a live twin's. Next: a clone's
+  blocks set against its family's live members by extents, as a file written over is.
+
 ## Not worth revisiting
 
 Measured dead, with the numbers in `scan-performance.md`: `statx` masks, `AT_STATX_DONT_SYNC`,

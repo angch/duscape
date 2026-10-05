@@ -926,10 +926,10 @@ impl App {
             }
             return;
         }
-        if let Some(name) = libduscape::delete::refused(&files) {
+        if let Some(why) = libduscape::delete::refused(&files) {
             self.dialog = Dialog::Notice {
                 title: "This cannot be deleted".to_string(),
-                detail: format!("NTFS metadata belongs to the filesystem: {name}"),
+                detail: why,
             };
             self.dirty = true;
             return;

@@ -1966,3 +1966,77 @@ fn a_fill_puts_the_trimmed_files_back_and_blocks_no_rescan() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The snapshots' folder in a tree: noted empty, refused to a rescan (it is not on disk, and a
+/// rescan would find it gone), then grafted with what the snapshots keep, which the volume's
+/// unseen space is no longer.
+#[test]
+fn the_snapshots_folder_is_noted_refused_a_rescan_and_filled_by_a_graft() {
+    use crate::rescan::{Rescanner, Rescans};
+    use libduscape::model::{FileTree, Folder};
+    use libduscape::snapshots::FOLDER;
+    let dir = temp_scan_dir("snapshots_folder");
+    std::fs::create_dir_all(dir.join("live")).unwrap();
+    std::fs::write(dir.join("live/kept"), vec![1u8; 100]).unwrap();
+    let mut tree = FileTree::new(Folder::new(&dir), dir.clone());
+    tree.add_dir_entries(crate::fill::list_for_tests(&dir).unwrap());
+    tree.add_dir_entries(crate::fill::list_for_tests(&dir.join("live")).unwrap());
+    let found = tree.get_total_size();
+    tree.volume_used = Some(found + 10_000);
+    assert_eq!(tree.outside_scan(), Some(10_000));
+
+    let names = [std::ffi::OsString::from("one"), "two".into()];
+    assert!(tree.note_snapshots(&names, false));
+    assert_eq!(tree.get_total_size(), found, "empty folders, no size");
+    let folder = vec![std::ffi::OsString::from(FOLDER), "one".into()];
+    assert!(tree.is_snapshot_path(&folder));
+    assert!(!tree.is_snapshot_path(&["live".into()]));
+    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let rescanner = Rescanner::new(ScanOptions::default(), running, |_, _| {});
+    let mut rescans = Rescans::default();
+    assert!(!rescans.start(&rescanner, &tree, folder), "not on disk");
+    assert!(rescans.is_empty());
+
+    // What the pass would report: the folder, `one` keeping a file of 4 KiB.
+    let container = dir.join(FOLDER);
+    let mut read = FileTree::new(Folder::new(&container), container.clone());
+    let mut kept =
+        libduscape::DirEntries::new(std::sync::Arc::from(container.join("one").as_path()));
+    kept.push(
+        std::ffi::OsStr::new("old.mov"),
+        libduscape::EntryMeta {
+            size: 4096,
+            apparent: 4000,
+            inode: 7,
+            links: libduscape::scan::LINKS_UNKNOWN,
+            ..libduscape::EntryMeta::default()
+        },
+    );
+    read.add_dir_entries(kept);
+    assert!(tree.graft(&[FOLDER.into()], read).is_some());
+    assert_eq!(tree.get_total_size(), found + 4096);
+    assert_eq!(tree.outside_scan(), Some(10_000 - 4096));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A folder that is no volume's root has no snapshots: the idle call notes none, adds nothing
+/// and starts nothing, and asks no more once noted.
+#[test]
+fn a_folder_that_is_no_volume_has_no_snapshots_folder() {
+    use crate::rescan::{Rescanner, Rescans};
+    use libduscape::model::{FileTree, Folder};
+    let dir = temp_scan_dir("snapshots_none");
+    let mut tree = FileTree::new(Folder::new(&dir), dir.clone());
+    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let rescanner = Rescanner::new(ScanOptions::default(), running, |_, _| {});
+    let mut rescans = Rescans::default();
+    assert!(!rescans.start_idle(&rescanner, &mut tree, crate::Focus::default()));
+    assert_eq!(
+        tree.snapshots,
+        Some(libduscape::snapshots::Noted::default()),
+        "noted: none"
+    );
+    assert!(rescans.is_empty());
+    assert!(!tree.is_snapshot_path(&[libduscape::snapshots::FOLDER.into()]));
+    let _ = std::fs::remove_dir_all(&dir);
+}

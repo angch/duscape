@@ -28,6 +28,10 @@ pub enum Outcome {
     /// A fill pass's batch: folders a saved scan had trimmed, listed again, and how many are
     /// still to come (`None` once it has finished; the pass reports under one id until then).
     Filled(Vec<(PathBuf, DirEntries)>, Option<usize>),
+    /// The volume's local snapshots read: their folder ([`libduscape::snapshots::FOLDER`]), each
+    /// snapshot's holding what it keeps that the live volume does not; `None` when the volume
+    /// could not be read, and the folders stay as they were.
+    Snapshots(Option<Box<FileTree>>),
 }
 
 /// What a rescan is for: one folder (its second pass run here, before it is handed over),
@@ -181,6 +185,34 @@ impl Rescanner {
                 );
             });
     }
+
+    /// Read `names`, the local snapshots of `volume`, for what each keeps that the live volume
+    /// does not ([`crate::snapshots::read`], root only), and report their folder for the tree
+    /// scanned from `root` as [`Outcome::Snapshots`] under `id`. Setting `cancel` stops it, and
+    /// then nothing is reported.
+    pub fn spawn_snapshots(
+        &self,
+        id: u64,
+        root: PathBuf,
+        volume: PathBuf,
+        names: Vec<OsString>,
+        cancel: Arc<AtomicBool>,
+    ) {
+        let options = self.options;
+        let running = Arc::clone(&self.running);
+        let done = Arc::clone(&self.done);
+        let _ = thread::Builder::new()
+            .name(format!("snapshots_{id}"))
+            .spawn(move || {
+                let keep_going =
+                    || running.load(Ordering::Acquire) && !cancel.load(Ordering::Acquire);
+                let read = crate::snapshots::read(&root, &volume, &names, options, &keep_going);
+                // Reported unread too, or the pass would stay under way for good.
+                if keep_going() {
+                    done(id, Outcome::Snapshots(read.map(|(tree, _)| Box::new(tree))));
+                }
+            });
+    }
 }
 
 /// The rescans a viewer has under way, and what their outcomes do to its tree.
@@ -193,6 +225,10 @@ impl Rescanner {
 pub struct Rescans {
     under_way: Vec<Rescan>,
     next_id: u64,
+    /// A catch-up's tree has landed and its fill not yet started: owed once, since a folder
+    /// that will not list keeps its sum unlisted, and a fill started whenever any were left
+    /// would start again for ever.
+    fill_owed: bool,
 }
 
 /// A rescan under way: its id, the folder's path from the scan root, and what stops it.
@@ -212,6 +248,8 @@ enum Kind {
     CatchUp,
     /// The folders a saved scan trimmed, listed again, a batch at a time.
     Fill,
+    /// The volume's local snapshots, read for what they keep; its `relative` is their folder.
+    Snapshots,
 }
 
 /// What a finished rescan did to the tree.
@@ -244,6 +282,10 @@ impl Rescans {
         tree: &FileTree,
         relative: Vec<OsString>,
     ) -> bool {
+        // The snapshots' folder is not on disk: a rescan would find it gone and take it away.
+        if tree.is_snapshot_path(&relative) {
+            return false;
+        }
         // A fill adds what the tree lacks, folder by folder, and covers nothing: it neither
         // stands in a rescan's way (it runs for minutes on a whole disk) nor is stopped by one.
         if self
@@ -359,6 +401,63 @@ impl Rescans {
         true
     }
 
+    /// Whatever is owed once nothing else reads the disk, the last of the passes: the fill, if
+    /// the tree came from a saved scan, and then the volume's local snapshots — their names
+    /// noted in the tree at once ([`FileTree::note_snapshots`]), what they keep read behind
+    /// that as root. Nothing while the tree is being replaced (a whole rescan or a catch-up
+    /// under way, or a saved scan's tree not yet caught up), nor while a fill or the snapshots'
+    /// pass runs; each viewer calls this whenever a tree lands and whenever a rescan reports,
+    /// so it runs when the last of those ends. Returns whether the tree changed.
+    pub fn start_idle(&mut self, rescanner: &Rescanner, tree: &mut FileTree, focus: Focus) -> bool {
+        let replacing = self
+            .under_way
+            .iter()
+            .any(|rescan| rescan.relative.is_empty() && rescan.kind != Kind::Fill);
+        if replacing || tree.from_saved_scan {
+            return false;
+        }
+        if ::std::mem::take(&mut self.fill_owed) && self.start_fill(rescanner, tree, focus) {
+            return false;
+        }
+        if tree.snapshots.is_some()
+            || self
+                .under_way
+                .iter()
+                .any(|rescan| matches!(rescan.kind, Kind::Fill | Kind::Snapshots))
+        {
+            return false;
+        }
+        // With `--max-depth` the tree stops short, and a snapshot's folders would not.
+        let volume = (rescanner.options.max_depth.is_none())
+            .then(|| crate::snapshots::volume_for(&tree.path_in_filesystem))
+            .flatten();
+        let names = volume
+            .as_deref()
+            .and_then(|volume| crate::snapshots::list(volume).ok())
+            .unwrap_or_default();
+        let readable = crate::snapshots::can_read();
+        let changed = tree.note_snapshots(&names, false);
+        if let (true, true, Some(volume)) = (changed, readable, volume) {
+            self.next_id += 1;
+            let id = self.next_id;
+            let cancel = Arc::new(AtomicBool::new(false));
+            rescanner.spawn_snapshots(
+                id,
+                tree.path_in_filesystem.clone(),
+                volume,
+                names,
+                Arc::clone(&cancel),
+            );
+            self.under_way.push(Rescan {
+                id,
+                relative: vec![OsString::from(libduscape::snapshots::FOLDER)],
+                cancel,
+                kind: Kind::Snapshots,
+            });
+        }
+        changed
+    }
+
     /// Start again every rescan whose folder holds one of `deleted`. Returns whether any was.
     pub fn restart_under(
         &mut self,
@@ -407,6 +506,7 @@ impl Rescans {
                 Some("the saved scan, being brought up to date".to_string())
             }
             [one] if one.kind == Kind::Fill => Some("filling in the smaller files".to_string()),
+            [one] if one.kind == Kind::Snapshots => Some("reading the local snapshots".to_string()),
             [one] if one.relative.is_empty() => {
                 Some(format!("{} (everything)", root.to_string_lossy()))
             }
@@ -418,15 +518,17 @@ impl Rescans {
                     .into_owned(),
             ),
             many => {
-                let folders = many.iter().filter(|r| r.kind != Kind::Fill).count();
-                let filling = folders < many.len();
-                Some(match (folders, filling) {
-                    (0, _) => "filling in the smaller files".to_string(),
-                    (1, true) => "1 folder, and filling in the smaller files".to_string(),
-                    (n, true) => format!(
-                        "{} folders, and filling in the smaller files",
-                        DisplayCount(n as u64)
-                    ),
+                let folders = many.iter().filter(|r| r.kind == Kind::Walk).count();
+                // The other is an idle pass: the fill or the snapshots', never both at once.
+                let idle = if many.iter().any(|r| r.kind == Kind::Snapshots) {
+                    "reading the local snapshots"
+                } else {
+                    "filling in the smaller files"
+                };
+                Some(match (folders, folders < many.len()) {
+                    (0, _) => idle.to_string(),
+                    (1, true) => format!("1 folder, and {idle}"),
+                    (n, true) => format!("{} folders, and {idle}", DisplayCount(n as u64)),
                     (n, false) => format!("{} folders", DisplayCount(n as u64)),
                 })
             }
@@ -485,6 +587,9 @@ impl Rescans {
         match outcome {
             Outcome::NotWalked => {}
             Outcome::Scanned(rescanned, duration, small) => {
+                if rescan.kind == Kind::CatchUp {
+                    self.fill_owed = true;
+                }
                 finished.old = tree.graft(&rescan.relative, *rescanned);
                 finished.changed = finished.old.is_some();
                 if rescan.relative.is_empty() {
@@ -501,6 +606,17 @@ impl Rescans {
                 }
             }
             Outcome::Gone => finished.changed = tree.remove_path(&rescan.relative),
+            Outcome::Snapshots(None) => {}
+            Outcome::Snapshots(Some(read)) => {
+                // A snapshot that would not mount is counted unreadable, which a graft does not
+                // carry over.
+                tree.failed_to_read += read.failed_to_read;
+                finished.old = tree.graft(&rescan.relative, *read);
+                finished.changed = finished.old.is_some();
+                if let Some(noted) = &mut tree.snapshots {
+                    noted.read = true;
+                }
+            }
             Outcome::Filled(..) => unreachable!("handled above"),
         }
         finished.relative = rescan.relative;

@@ -11,31 +11,52 @@ use ::std::path::Path;
 use crate::FileToDelete;
 use crate::metafiles::is_metafile_path;
 
-/// The name of the first of `files` that must not be deleted, if any: an NTFS metadata file the
-/// Windows walker added at a volume's root. The filesystem would refuse it anyway, but a viewer
-/// should refuse the whole request up front — deleting the rest of a selection and quietly
-/// skipping one would leave it unclear what happened.
+/// Why `files` must not be deleted, if one of them must not, naming the first such: an NTFS
+/// metadata file the Windows walker added at a volume's root, or anything in a volume's local
+/// snapshots ([`crate::snapshots::FOLDER`]), which is no path on disk. The filesystem would
+/// refuse the one and find nothing at the other, but a viewer should refuse the whole request
+/// up front — deleting the rest of a selection and quietly skipping one would leave it unclear
+/// what happened.
 #[must_use]
 pub fn refused(files: &[FileToDelete]) -> Option<String> {
-    files
+    let name = |file: &FileToDelete| {
+        file.path_to_file
+            .last()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
+    if let Some(file) = files
         .iter()
         .find(|file| is_metafile_path(&file.path_in_filesystem, &file.path_to_file))
-        .map(|file| {
-            file.path_to_file
-                .last()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_default()
-        })
+    {
+        return Some(format!(
+            "NTFS metadata belongs to the filesystem and cannot be deleted: {}",
+            name(file)
+        ));
+    }
+    files.iter().find(|file| in_snapshot(file)).map(|file| {
+        format!(
+            "{} is in a local snapshot, which is read-only: its space is freed by deleting the \
+             snapshot (tmutil deletelocalsnapshots)",
+            name(file)
+        )
+    })
+}
+
+/// Whether `file` is in the snapshots' folder: under its name at the root, and not on disk (a
+/// real folder of the name keeps the name, and the tree adds no snapshots there).
+fn in_snapshot(file: &FileToDelete) -> bool {
+    file.path_to_file
+        .first()
+        .is_some_and(|name| name == crate::snapshots::FOLDER)
+        && fs::symlink_metadata(file.full_path()).is_err()
 }
 
 /// Remove `file` from disk: a file, or a folder and everything in it. A symbolic link or junction
-/// is removed itself, never what it points to. NTFS metadata is refused, as [`refused`] would.
+/// is removed itself, never what it points to. What [`refused`] refuses is refused here too.
 pub fn remove(file: &FileToDelete) -> io::Result<()> {
-    if let Some(name) = refused(::std::slice::from_ref(file)) {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            format!("NTFS metadata belongs to the filesystem and cannot be deleted: {name}"),
-        ));
+    if let Some(why) = refused(::std::slice::from_ref(file)) {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, why));
     }
     remove_path(&file.full_path())
 }
@@ -69,6 +90,7 @@ fn is_directory_link(_file_type: fs::FileType) -> bool {
 mod tests {
     use ::std::ffi::OsString;
     use ::std::fs;
+    use ::std::io;
     use ::std::path::PathBuf;
 
     use super::{refused, remove};
@@ -136,9 +158,41 @@ mod tests {
             to_delete(root.clone(), &["Windows"], FileType::Folder),
             to_delete(root.clone(), &["$MFT"], FileType::File),
         ];
-        let expected = cfg!(windows).then(|| "$MFT".to_string());
-        assert_eq!(refused(&files), expected);
+        let refusal = refused(&files);
+        assert_eq!(refusal.is_some(), cfg!(windows));
+        assert!(refusal.is_none_or(|why| why.ends_with(": $MFT")));
         let below = to_delete(root.join("Users"), &["$MFT"], FileType::File);
         assert_eq!(refused(&[below]), None, "not at a volume's root");
+    }
+
+    /// The snapshots' folder is no path on disk: what is in it is refused, before a viewer asks,
+    /// and by `remove` itself. A real folder of the name is not.
+    #[test]
+    fn what_is_in_a_local_snapshot_is_refused_unless_the_folder_is_real() {
+        let dir = ::std::env::temp_dir().join("duscape_delete_snapshot_test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create");
+        let snapshot = crate::snapshots::FOLDER;
+        let inside = to_delete(
+            dir.clone(),
+            &[snapshot, "a snapshot", "old.mov"],
+            FileType::File,
+        );
+        let why = refused(&[
+            to_delete(dir.clone(), &["kept"], FileType::File),
+            inside.clone(),
+        ])
+        .expect("refused");
+        assert!(why.starts_with("old.mov is in a local snapshot"), "{why}");
+        assert_eq!(
+            remove(&inside).map_err(|error| error.kind()),
+            Err(io::ErrorKind::PermissionDenied)
+        );
+
+        fs::create_dir_all(dir.join(snapshot)).expect("a real folder of the name");
+        let real = to_delete(dir.clone(), &[snapshot], FileType::Folder);
+        assert_eq!(refused(::std::slice::from_ref(&real)), None);
+        remove(&real).expect("removed");
+        let _ = fs::remove_dir_all(&dir);
     }
 }

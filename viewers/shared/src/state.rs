@@ -757,7 +757,19 @@ impl Viewer {
             unscanned,
             unscanned_share: unscanned as f64 / total,
             scanned: !self.scanning,
+            purgeable: self.purgeable_unseen().min(unscanned),
         })
+    }
+
+    /// What may be the volume's snapshots and purgeable space among the unseen, once the scan
+    /// is over and while the snapshots are unread: once read they are in the tree, and the
+    /// system's figure would count them twice.
+    fn purgeable_unseen(&self) -> u64 {
+        let unread = self.tree.snapshots.is_none_or(|noted| !noted.read);
+        self.tree
+            .purgeable
+            .filter(|_| !self.scanning && unread)
+            .unwrap_or(0)
     }
 
     /// Where the volume's free and used bytes come from, in place of the OS's answer: for
@@ -976,6 +988,9 @@ impl Viewer {
         }
         if self.board.unscanned_tile() == Some(index) {
             return UNSCANNED_COLOR;
+        }
+        if self.board.purgeable_tile() == Some(index) {
+            return PURGEABLE_COLOR;
         }
         let tile = &self.board.tiles[index];
         entry_color(&tile.name, tile.file_type, 0)
@@ -1219,13 +1234,21 @@ impl Viewer {
         {
             self.rescans.start_catch_up(rescanner, &self.tree);
         }
+        self.start_idle();
     }
 
-    /// Put back the smaller files a saved scan trimmed, the folder in view first.
-    fn start_fill(&mut self) {
-        if let Some(rescanner) = &self.rescanner {
-            self.rescans
-                .start_fill(rescanner, &self.tree, self.scan_focus.clone());
+    /// What is owed once nothing else reads the disk (`Rescans::start_idle`): the fill of what
+    /// a saved scan trimmed, the folder in view first, or the volume's local snapshots — whose
+    /// folder, when it is added, is laid out at once.
+    fn start_idle(&mut self) {
+        let Some(rescanner) = &self.rescanner else {
+            return;
+        };
+        if self
+            .rescans
+            .start_idle(rescanner, &mut self.tree, self.scan_focus.clone())
+        {
+            self.refresh_steady();
         }
     }
 
@@ -1943,13 +1966,11 @@ impl Viewer {
         }
     }
 
-    /// Why `files` may not be deleted, if one of them is NTFS's own metadata — to say before
-    /// asking, as well as before touching anything.
+    /// Why `files` may not be deleted, if one of them is NTFS's own metadata or in a local
+    /// snapshot — to say before asking, as well as before touching anything.
     #[must_use]
     pub fn refusal(files: &[FileToDelete]) -> Option<String> {
-        libduscape::delete::refused(files).map(|name| {
-            format!("NTFS metadata belongs to the filesystem and cannot be deleted: {name}")
-        })
+        libduscape::delete::refused(files)
     }
 
     /// Delete `files` from disk for good, going on past any that fail: only what left the disk
@@ -2102,15 +2123,17 @@ impl Viewer {
         if let Some((duration, _small)) = finished.whole {
             self.scan_took = Some(duration);
             self.entries_scanned = self.tree.get_total_descendants();
-            // The tree is current now; what the saved scan trimmed is put back behind it.
-            self.start_fill();
         }
         // A fill's batch changes no size and moves nothing: only the folder shown, if it was
         // among those filled, is laid out again, and the preview is left as it is.
-        if let Some((filled, _left)) = finished.filled {
+        if let Some((filled, left)) = finished.filled {
             let here = self.tree.get_current_path();
             if filled.contains(&here) {
                 self.refresh_steady();
+            }
+            // The last batch is the fill's end, and the snapshots' folder may come next.
+            if left.is_none() {
+                self.start_idle();
             }
             return;
         }
@@ -2128,6 +2151,9 @@ impl Viewer {
                 self.select_first();
             }
         }
+        // The tree is current now: what the saved scan trimmed is put back behind it, or the
+        // volume's snapshots read, if nothing else is under way.
+        self.start_idle();
     }
 
     // ---------------------------------------------------------------- preview
@@ -2278,6 +2304,19 @@ impl Viewer {
                 DisplaySize(outside as f64)
             ));
         }
+        // The volume's local snapshots hold some of what no walk finds (the treemap's "Not
+        // seen by the scan"), and only root can read them.
+        if let Some(noted) = self
+            .tree
+            .snapshots
+            .filter(|noted| noted.count > 0 && !noted.read)
+            && !duscape_scan::snapshots::can_read()
+        {
+            words.push(format!(
+                "{} local snapshots, read as root",
+                DisplayCount(noted.count as u64)
+            ));
+        }
         if let Some(over) = self.tree.counted_beyond_volume() {
             words.push(format!(
                 "{} more than the volume holds: blocks shared or compressed, counted in full",
@@ -2360,14 +2399,17 @@ pub fn darker((r, g, b): (f64, f64, f64), shade: f64) -> (f64, f64, f64) {
     (r * shade, g * shade, b * shade)
 }
 
-/// How much darker an entry `depth` levels into the nesting is than on the board: a step a
-/// level, to four, so the nesting reads as depth.
 /// The free space's tile: dark and neutral beside the entries' colours, so what is used stands
 /// out and what is free reads as room.
 pub const FREE_SPACE_COLOR: (f64, f64, f64) = (0.30, 0.34, 0.32);
 /// The used space the scan has not found (yet): darker than the free space, and grey.
 pub const UNSCANNED_COLOR: (f64, f64, f64) = (0.22, 0.22, 0.24);
+/// The unseen space that may be snapshots and purgeable: between the two, a little warmer, as
+/// space the system could give back.
+pub const PURGEABLE_COLOR: (f64, f64, f64) = (0.30, 0.27, 0.22);
 
+/// How much darker an entry `depth` levels into the nesting is than on the board: a step a
+/// level, to four, so the nesting reads as depth.
 #[must_use]
 pub fn depth_shade(depth: usize) -> f64 {
     1.0 - 0.12 * depth.min(4) as f64

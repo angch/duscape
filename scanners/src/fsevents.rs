@@ -250,6 +250,28 @@ pub enum Replay {
 struct Batch {
     paths: Vec<PathBuf>,
     flags: Vec<u32>,
+    ids: Vec<u64>,
+}
+
+/// One event of a replay ([`events`]): the directory as the log spells it, the event's id, and
+/// whether the log lost events under it (`MustScanSubDirs`, dropped), so it is to be walked
+/// whole rather than listed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Event {
+    pub path: PathBuf,
+    pub id: u64,
+    pub whole: bool,
+}
+
+/// What a replay of events came to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Events {
+    /// Every event since the id, up to the one current when the replay began.
+    Events(Vec<Event>),
+    /// The ids started over, or the root itself moved: nothing since is known.
+    Lost,
+    /// `HistoryDone` never came, or CoreServices could not be loaded.
+    GaveUp,
 }
 
 extern "C" fn deliver(
@@ -258,7 +280,7 @@ extern "C" fn deliver(
     count: usize,
     paths: *mut c_void,
     flags: *const u32,
-    _ids: *const u64,
+    ids: *const u64,
 ) {
     // SAFETY: `info` is the `Sender<Batch>` boxed by `replay`, alive until the stream is
     // invalidated and released, after which no callback runs.
@@ -268,6 +290,8 @@ extern "C" fn deliver(
     let paths = unsafe { std::slice::from_raw_parts(paths.cast::<*const c_char>(), count) };
     // SAFETY: `flags` is `count` words, one an event.
     let flags = unsafe { std::slice::from_raw_parts(flags, count) };
+    // SAFETY: `ids` is `count` event ids, one an event.
+    let ids = unsafe { std::slice::from_raw_parts(ids, count) };
     let batch = Batch {
         paths: paths
             .iter()
@@ -278,6 +302,7 @@ extern "C" fn deliver(
             })
             .collect(),
         flags: flags.to_vec(),
+        ids: ids.to_vec(),
     };
     let _ = sender.send(batch);
 }
@@ -294,15 +319,64 @@ impl FromBytes for std::ffi::OsStr {
     }
 }
 
-/// Replay the log for `root` since `since`, for at most `give_up`.
+/// Replay the log for `root` since `since`, for at most `give_up`: the directories named,
+/// relative to `root`.
 #[must_use]
 pub fn replay(root: &Path, since: u64, give_up: Duration) -> Replay {
+    match events(root, since, give_up) {
+        Events::Events(events) => Replay::Changes(changes(root, &events)),
+        Events::Lost => Replay::Lost,
+        Events::GaveUp => Replay::GaveUp,
+    }
+}
+
+/// `events` as the directories to list and to walk again, relative to `root`. A path outside
+/// the root is the root itself in another spelling, or a volume-level event: all of it walked.
+fn changes(root: &Path, events: &[Event]) -> Changes {
+    let mut listed = std::collections::HashSet::new();
+    let mut walked = std::collections::HashSet::new();
+    for event in events {
+        // Paths come with a trailing separator, as directories.
+        match event.path.strip_prefix(root) {
+            Ok(relative) if event.whole => walked.insert(relative.to_path_buf()),
+            Ok(relative) => listed.insert(relative.to_path_buf()),
+            Err(_) => walked.insert(PathBuf::new()),
+        };
+    }
+    Changes {
+        listed: listed.into_iter().collect(),
+        walked: walked.into_iter().collect(),
+        events: events.len() as u64,
+    }
+}
+
+/// Every event of the log for `root` since `since`, with its id, for at most `give_up`. Only
+/// the history: events after the id current when the replay began are left out. While a busy
+/// machine replays a long history, live events arrive faster than they are taken, and the log
+/// drops them with `MustScanSubDirs` on the root — 91 to 288 of them in a replay of ten million
+/// ids here (2026-10-05), each saying "walk it all"; a history replayed since a stamp needs none
+/// of them, since whatever happens after is replayed from the next stamp.
+#[must_use]
+pub fn events(root: &Path, since: u64, give_up: Duration) -> Events {
+    events_while(root, since, give_up, &|| true)
+}
+
+/// [`events`], given up as soon as `keep_going` says to stop: a replay can take minutes.
+#[must_use]
+pub fn events_while(
+    root: &Path,
+    since: u64,
+    give_up: Duration,
+    keep_going: &dyn Fn() -> bool,
+) -> Events {
     let Some(api) = Api::load() else {
-        return Replay::GaveUp;
+        return Events::GaveUp;
     };
     let Ok(root_c) = CString::new(root.as_os_str().as_encoded_bytes()) else {
-        return Replay::GaveUp;
+        return Events::GaveUp;
     };
+    // SAFETY: no preconditions.
+    let until = unsafe { (api.get_current_event_id)() };
     let (sender, receiver): (Sender<Batch>, Receiver<Batch>) = channel();
     let sender = Box::into_raw(Box::new(sender));
     let context = Context {
@@ -345,7 +419,7 @@ pub fn replay(root: &Path, since: u64, give_up: Duration) -> Replay {
     if stream.is_null() {
         // SAFETY: the box was never handed to a stream.
         drop(unsafe { Box::from_raw(sender) });
-        return Replay::GaveUp;
+        return Events::GaveUp;
     }
     // SAFETY: a fresh serial queue for this stream; released after the stream.
     let queue = unsafe { dispatch_queue_create(c"duscape.fsevents".as_ptr(), std::ptr::null()) };
@@ -355,9 +429,9 @@ pub fn replay(root: &Path, since: u64, give_up: Duration) -> Replay {
         (api.start)(stream)
     };
     let outcome = if started == 0 {
-        Replay::GaveUp
+        Events::GaveUp
     } else {
-        collect(root, &receiver, give_up)
+        collect(&receiver, until, give_up, keep_going)
     };
     // SAFETY: stop, invalidate and release in FSEvents' order; then no callback can run and
     // the sender is freed; the queue is released last.
@@ -371,43 +445,73 @@ pub fn replay(root: &Path, since: u64, give_up: Duration) -> Replay {
     outcome
 }
 
-/// Take batches until `HistoryDone`, or the time is up.
-fn collect(root: &Path, receiver: &Receiver<Batch>, give_up: Duration) -> Replay {
+/// Take batches until `HistoryDone`, or the time is up, keeping events up to `until`.
+fn collect(
+    receiver: &Receiver<Batch>,
+    until: u64,
+    give_up: Duration,
+    keep_going: &dyn Fn() -> bool,
+) -> Events {
+    use std::sync::mpsc::RecvTimeoutError;
+    // How often a quiet replay looks whether it is still wanted.
+    const LOOK: Duration = Duration::from_millis(250);
     let deadline = Instant::now() + give_up;
-    let mut changes = Changes::default();
-    let mut listed = std::collections::HashSet::new();
-    let mut walked = std::collections::HashSet::new();
+    let mut events = Vec::new();
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            return Replay::GaveUp;
+        if left.is_zero() || !keep_going() {
+            return Events::GaveUp;
         }
-        let Ok(batch) = receiver.recv_timeout(left) else {
-            return Replay::GaveUp;
+        let batch = match receiver.recv_timeout(left.min(LOOK)) {
+            Ok(batch) => batch,
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => return Events::GaveUp,
         };
-        for (path, flags) in batch.paths.iter().zip(&batch.flags) {
+        for ((path, flags), &id) in batch.paths.into_iter().zip(&batch.flags).zip(&batch.ids) {
             if flags & HISTORY_DONE != 0 {
-                changes.listed = listed.into_iter().collect();
-                changes.walked = walked.into_iter().collect();
-                return Replay::Changes(changes);
+                return Events::Events(events);
             }
             if flags & (EVENT_IDS_WRAPPED | ROOT_CHANGED) != 0 {
-                return Replay::Lost;
+                return Events::Lost;
             }
-            changes.events += 1;
-            // Paths come with a trailing separator, as directories.
-            let Ok(relative) = path.strip_prefix(root) else {
-                // Named outside the root: the stream is on the root, so this is the root
-                // itself in another spelling, or a volume-level event; walk it all again.
-                walked.insert(PathBuf::new());
+            if id > until {
                 continue;
-            };
-            let relative = relative.to_path_buf();
-            if flags & (MUST_SCAN_SUBDIRS | USER_DROPPED | KERNEL_DROPPED) != 0 {
-                walked.insert(relative);
-            } else {
-                listed.insert(relative);
             }
+            events.push(Event {
+                path,
+                id,
+                whole: flags & (MUST_SCAN_SUBDIRS | USER_DROPPED | KERNEL_DROPPED) != 0,
+            });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use super::{Event, changes};
+
+    /// The catch-up's view of a replay: under the root listed or walked, once each; outside
+    /// it, the whole root walked.
+    #[test]
+    fn events_fold_into_the_folders_to_list_and_walk() {
+        let event = |path: &str, whole: bool| Event {
+            path: PathBuf::from(path),
+            id: 1,
+            whole,
+        };
+        let events = [
+            event("/Users/a/x/", false),
+            event("/Users/a/x/", false),
+            event("/Users/a/y/", true),
+            event("/Library/z/", false),
+        ];
+        let mut folded = changes(Path::new("/Users/a"), &events);
+        folded.listed.sort();
+        folded.walked.sort();
+        assert_eq!(folded.listed, [PathBuf::from("x")]);
+        assert_eq!(folded.walked, [PathBuf::new(), PathBuf::from("y")]);
+        assert_eq!(folded.events, 4);
     }
 }

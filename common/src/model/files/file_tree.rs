@@ -52,6 +52,13 @@ pub struct FileTree {
     /// Built from a saved scan as it was, so a catch-up is owed: the viewer starts one
     /// (`Cache::CatchUp`), and the tree that replaces this one is current.
     pub from_saved_scan: bool,
+    /// The volume's local snapshots, once noted ([`Self::note_snapshots`]): `None` until a
+    /// viewer has asked, which it does once nothing else is being read.
+    pub snapshots: Option<crate::snapshots::Noted>,
+    /// What the system says it could free on the volume a scan of its root covered — its
+    /// snapshots and purgeable files ([`crate::os::volume_purgeable`]), asked when the tree was
+    /// built, off the thread that draws: a bound on the unseen space snapshots hold.
+    pub purgeable: Option<u64>,
     pub path_in_filesystem: PathBuf,
     base_folder: Folder,
     hard_links: HardLinks,
@@ -85,6 +92,8 @@ impl FileTree {
             issues: crate::scan::Issues::default(),
             volume_used: None,
             from_saved_scan: false,
+            snapshots: None,
+            purgeable: None,
             hard_links: HardLinks::default(),
             size_at_depth: Vec::new(),
             positions: Vec::new(),
@@ -467,6 +476,50 @@ impl FileTree {
         }
         self.base_folder.delete_path(relative);
         true
+    }
+
+    /// Note the volume's local snapshots, `names`: an empty folder for each in
+    /// [`crate::snapshots::FOLDER`] at the root, for an idle pass to fill
+    /// ([`Self::graft`] at that folder). None, or a real entry of the folder's name at the root,
+    /// and nothing is added, though the snapshots are noted all the same, so they are not asked
+    /// about again. Returns whether the tree changed.
+    pub fn note_snapshots(&mut self, names: &[::std::ffi::OsString], read: bool) -> bool {
+        let folder = OsStr::new(crate::snapshots::FOLDER);
+        let taken = self.base_folder.contents.get(folder).is_some();
+        let count = if taken { 0 } else { names.len() };
+        self.snapshots = Some(crate::snapshots::Noted { count, read });
+        if count == 0 {
+            return false;
+        }
+        let mut listing = DirEntries::new(Arc::from(self.path_in_filesystem.join(folder)));
+        for name in names {
+            let meta = EntryMeta {
+                is_dir: true,
+                ..EntryMeta::default()
+            };
+            listing.push(name, meta);
+        }
+        let mut container = DirEntries::new(Arc::from(self.path_in_filesystem.as_path()));
+        container.push(
+            folder,
+            EntryMeta {
+                is_dir: true,
+                ..EntryMeta::default()
+            },
+        );
+        self.add_dir_entries(container);
+        self.add_dir_entries(listing);
+        true
+    }
+
+    /// Whether `relative`, a path from the root, is in the snapshots' folder, which is not on
+    /// disk: nothing there can be deleted or rescanned.
+    #[must_use]
+    pub fn is_snapshot_path(&self, relative: &[OsString]) -> bool {
+        self.snapshots.is_some_and(|noted| noted.count > 0)
+            && relative
+                .first()
+                .is_some_and(|name| name == crate::snapshots::FOLDER)
     }
 
     /// Whether the folder the user is in is still in the tree, which a graft or a removal can

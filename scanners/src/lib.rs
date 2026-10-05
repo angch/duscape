@@ -61,6 +61,7 @@ pub mod focus;
 pub mod fsevents;
 pub mod refine;
 pub mod rescan;
+pub mod snapshots;
 
 /// Building the tree on several threads at once.
 ///
@@ -153,6 +154,8 @@ pub mod parallel {
         let shards = shards.max(1);
         let root = libduscape::os::canonical_root(root);
         let start = Instant::now();
+        // Asked beside the walk, hidden behind it: the first answer is up to a second.
+        let purgeable = super::ask_purgeable(&root);
 
         // A single builder sees the whole tree, so no hard link can span shards and it can charge
         // shared blocks inline exactly as the serial walk does. Deferring would only add a serial
@@ -249,6 +252,7 @@ pub mod parallel {
 
         tree.replay_deferred();
         tree.volume_used = super::comparable_volume_used(&root, options);
+        tree.purgeable = purgeable.and_then(|asked| asked.join().ok()).flatten();
         tree.shown = options.shown();
         tree.from_saved_scan = from_saved_scan;
         let replayed = Instant::now();
@@ -756,6 +760,7 @@ fn default_scan_threads() -> usize {
 /// Walk `root` and populate a [`FileTree`]. Returns the tree and a count of read failures.
 pub fn scan_into_tree(root: impl AsRef<Path>, options: ScanOptions) -> (FileTree, u64) {
     let root_path = libduscape::os::canonical_root(root.as_ref());
+    let purgeable = ask_purgeable(&root_path);
     let mut tree = FileTree::new(Folder::new(&root_path), root_path.clone());
     let mut failed_to_read = 0u64;
 
@@ -768,6 +773,7 @@ pub fn scan_into_tree(root: impl AsRef<Path>, options: ScanOptions) -> (FileTree
         tree.add_dir_entries(directory);
     }
     tree.volume_used = comparable_volume_used(&root_path, options);
+    tree.purgeable = purgeable.and_then(|asked| asked.join().ok()).flatten();
     tree.shown = options.shown();
 
     (tree, failed_to_read)
@@ -779,6 +785,22 @@ pub fn scan_into_tree(root: impl AsRef<Path>, options: ScanOptions) -> (FileTree
 /// scan stayed on that volume. Windows never leaves it, since mounted folders are not followed; on
 /// Unix only `-x` promises that, and a scan of `/` that crossed into `/home` would otherwise be
 /// set against the root filesystem's usage alone.
+/// What the system could free on the volume whose snapshots a scan of `root` shows
+/// ([`snapshots::volume_for`]), asked off the thread that draws: the first answer in a process
+/// costs up to a second (CoreFoundation opened, 0.98 s in a test), the next 8–44 ms.
+fn volume_purgeable(root: &Path) -> Option<u64> {
+    snapshots::volume_for(root).and_then(|volume| libduscape::os::volume_purgeable(&volume))
+}
+
+/// [`volume_purgeable`] on a thread of its own, for the walk to hide.
+fn ask_purgeable(root: &Path) -> Option<std::thread::JoinHandle<Option<u64>>> {
+    let root = root.to_path_buf();
+    std::thread::Builder::new()
+        .name("purgeable".to_string())
+        .spawn(move || volume_purgeable(&root))
+        .ok()
+}
+
 fn comparable_volume_used(root: &Path, options: ScanOptions) -> Option<u128> {
     // Blocks either way; `FileTree::outside_scan` hides it while lengths are shown.
     let stays = cfg!(windows) || options.one_file_system;

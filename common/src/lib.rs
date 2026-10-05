@@ -21,6 +21,7 @@ pub mod os;
 pub mod placement;
 pub mod preview;
 pub mod scan;
+pub mod snapshots;
 pub mod tiles;
 
 pub use error::DuscapeError;

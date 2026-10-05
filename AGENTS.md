@@ -162,6 +162,7 @@ out and painting.
 | `scan_recorder` | macOS: deflates and writes the scan's stream, trimmed, to the saved-scan file as it goes (`cache::Recorder`), one record a directory over a bounded channel, so the walk pays the encoding alone; the recorder renames the file into place when the stream ends, and removes it if the scan stops |
 | `rescan_N` as the catch-up | macOS, after a tree read from the saved scan as it was is on screen: a whole-tree rescan through `Cache::CatchUp` (`Rescans::start_catch_up`), whose tree replaces it by `graft` as `R`'s would; the status line says "the saved scan, being brought up to date" |
 | `fill_N` | macOS, once the catch-up's tree has landed: lists the folders the saved scan trimmed, the one in view first, and reports batches of 256 (or every 100 ms) as `Outcome::Filled` under one id until `left` is `None` (`Rescanner::spawn_fill`, `fill::fill`); a delete does not restart it, and a fill adds only what the tree lacks |
+| `snapshots_N` | The last idle pass, macOS, root only (`Rescans::start_idle`, once nothing else reads the disk: the first scan, its catch-up and fill done; `Rescanner::spawn_snapshots`): each of the volume's local snapshots mounted read-only and `nobrowse` in a private folder (`mount_apfs -s` on the volume's device), read on the walk's thread count where the change log named folders since it (one replay on `/` for every snapshot, its id from `.fseventsd`; whole where the log does not reach) against the live volume by file id and, for a file written over in place, by its physical extents (`snapshots::gone_from_live`), unmounted, one tree for them all → `Outcome::Snapshots`, grafted at the root's `(local snapshots)` folder. A whole rescan cancels it; the new tree's idle call starts it again |
 | `previewer` | Reads the file in hand for the preview: first 64 KB as text, or a PNG/JPEG decoded and scaled after a 100 ms debounce (a newer request supersedes it) → `Instruction::PreviewReady(generation, _)`; answers to an older generation are dropped |
 | **main** | App state mutations + ratatui rendering. During the scan it renders from the *outline*; on `ScanComplete` it swaps in the finished tree, keeping the current folder |
 
@@ -217,11 +218,14 @@ out and painting.
 - `tiles/board.rs` — `Board`: tile selection, zoom stack, navigation; `hidden`, the entries in
   the "small files" corner (the treemap records them as it lays out, `TreeMap::hidden`);
   `set_free_space`, a volume's free space and the used space the scan has not found
-  (`FreeSpace`, unzoomed only): a strip cut first along the board's far side (the right of a
-  wide board, the bottom of a tall one, `cut_strip`), the free space at its bottom right and
-  the unscanned space before it, each its share of the volume's size, the entries laid out in
-  the rest — not ranked among them, so the free space keeps its place and its area through
-  the scan and the entries grow into the unscanned space. Both tiles come after the entries'
+  (`FreeSpace`, unzoomed only), cut first (`cut_strip`): the free space a band the board's
+  width along its bottom, as tall as its share of the volume — its place and both its sides
+  fixed through the scan, since they depend on nothing the scan finds (cut from one strip with
+  the unscanned space before 2026-10-05, it kept its area but changed shape, as if the free
+  space changed); the unscanned space a strip at the right of the rest, its share of the
+  board, narrowing as the scan goes; the entries laid out in what is left, not ranked among
+  them, growing into the unscanned space. Once the scan is over the unscanned strip's foot
+  may be the purgeable part (`purgeable_tile`). The tiles come after the entries'
   (`free_tile`, `unscanned_tile`, by index, named `FREE_SPACE_NAME` and `UNSCANNED_NAME`,
   `UNSEEN_NAME` once the scan is over), never in the listing and never a stop for the
   selection (`selectable`, `select_first`); `corner` is the "small files" corner bounded by
@@ -269,6 +273,18 @@ out and painting.
   per tile were half the nesting's time
 - `delete.rs` — `remove` (from disk, a link itself never its target) and `refused` (NTFS metadata)
 - `metafiles.rs` — NTFS metadata names, for the Windows walker and for `delete`
+- `snapshots.rs` — a volume's local snapshots as one *virtual* folder at its root (`FOLDER`,
+  `(local snapshots)`), a folder per snapshot: `Noted` (`FileTree::snapshots`, set by
+  `FileTree::note_snapshots`, which adds the folders empty; `is_snapshot_path`), `describe`
+  (asked by `nas::describe`, so every status line says what the folder is), and
+  `is_snapshot_source` (`<snapshot>@/dev/…`, a mount's source). Unprivileged, the windows
+  split the unseen space with `FileTree::purgeable` (`os::volume_purgeable`: available for
+  important use less free, through CoreFoundation `dlopen`ed, asked beside the walk since
+  its first answer costs up to a second), the board's `purgeable_tile` (`PURGEABLE_NAME`, "at
+  most": it counts purgeable files the scan found too), only while the snapshots are unread. Nothing is at the folder's path
+  on disk: `delete::refused` refuses what is in it, `Rescans::start` will not rescan it (a rescan
+  would find it gone and take it off the tree), and a real entry of the name at the root means
+  no folder is added
 - `nas.rs` — the folders a system keeps for itself, by name (`KNOWN`: Synology's `#snapshot`,
   `#recycle`, `@eaDir`, `@docker`, `@ActiveBackup`…, QNAP's `@Recently-Snapshot`, `@Recycle`,
   `.@__thumb`, `.qpkg`…, ZFS's `.zfs`, NetApp's `.snapshot`, Samba's `.recycle`, macOS's and
@@ -460,6 +476,31 @@ out and painting.
   `wait_for_saves` lets a process that ends with its scan (the terminal viewer, the
   benchmark's `cached` stage) wait for the writer: before it, a short scan's save was lost
   and its part file left. `clear` is `duscape --clear-cache`
+- `snapshots.rs` — macOS: a volume's local snapshots (`volume_for`: an APFS mount point, the
+  data volume for `/`; `list`/`list_with_times`, `fs_snapshot_list`, unprivileged) and, as
+  root (`can_read`), what each alone keeps (`read`, `snapshots/macos.rs`) — none for a
+  *dataless* one (`Listed::dataless`, `ATTR_CMN_FLAGS` 0x20: trimmed to its metadata, it lists
+  files it no longer holds; read, one listed 267.6 GB on a volume with 142 GB unseen): its `Scope` from
+  the change log (`snapshots/log.rs`: the id before it from `.fseventsd`'s names and times,
+  since `FSEventsGetLastEventIdForDeviceBeforeTime` gives 0; one replay on `/`, taken onto the
+  volume through `/usr/share/firmlinks`; whole where the log does not reach or lost events
+  under the root), mounted, read by `gone_from_live` — a folder the log named compared one
+  level and only its subfolders moved or gone walked (`same_place`), whole otherwise with a
+  folder the same by time as its live counterpart not compared; a seen-set so start points
+  and walks never add a folder twice, which still lets a walk whole take every subfolder of a
+  folder first reached as named (`Visit::Deeper`: else what was under it went unread, the
+  totals varying with the threads' order); a panic in a folder counted unreadable, since a
+  dead worker left the others waiting with the snapshot mounted; a file kept when its id is nowhere live (`LINKS_UNKNOWN`,
+  no `shared_extent`, so the ledger counts by id one several snapshots keep once above them),
+  and in a named folder a live file written over since counted by its blocks
+  (`written_over`: `snapshots/extents.rs`, `F_LOG2PHYS_EXT` extents less the live file's less
+  a `Ranges` of what the pass counted) — and unmounted (`Mounted`'s drop; a pass first unmounts what one in a process since gone
+  left behind, `sweep_left_behind`, since a quit does not wait for the pass). `build`, one tree
+  for every snapshot, and a `Reading` each, which `--issues` prints. The walk, the log's rules
+  and the extents' arithmetic are tested on plain folders everywhere unix; the mount and the
+  root path have not been run. The macOS walker leaves a snapshot mount empty unless
+  `--snapshots` (`macos.rs`, `snapshot_left_out`). What it cannot see is in `docs/sizes.md`,
+  "Local snapshots"
 - `fill.rs` — the fill pass: the folders a saved scan trimmed (`FileTree::unfilled_folders`)
   listed again on a pool, the folder in view first (`Focus`), a batch at a time as
   `rescan::Outcome::Filled` through the rescan channel every viewer has; `FileTree::fill`
@@ -933,6 +974,12 @@ Exiting { app_loaded: bool }
   so a change made during it is replayed next time. Not a cache of the tree: the tree is
   built from the stream as on any scan, so the ledger charges hard links as it would have.
   The stream's order — parent before child — is the file's order, and what the replay keeps
+- **The idle passes** (`Rescans::start_idle`, called by every viewer when a tree lands and
+  whenever a rescan reports): once nothing replaces the tree, a catch-up's fill (owed once per
+  catch-up, `fill_owed`: a folder that will not list keeps its sum, and a fill started whenever
+  one was left would never stop), then the volume's local snapshots — named at once, read as
+  root behind that. The snapshots' folder is the last pass because it is the slowest (a walk a
+  snapshot) and the least asked for.
 - **Two passes**: the walk probes shared extents only from 64 KiB; smaller files are noted in
   `DirEntries::later` and probed after the tree is shown (see the `refine_N` thread). The
   benchmark's `refined` stage is walk + second pass, and is what the fixtures measure. This is
@@ -1268,6 +1315,8 @@ Regenerated by hand from `wc -l` when this file is touched; `make quality` print
 | `scanners/src/cache.rs` | ~1290 lines — the saved scan: the trimmed format, the recorder, the stream as saved, the replay with the log's changes applied |
 | `scanners/src/fsevents.rs` | ~410 lines — macOS's change log through CoreServices, `dlopen`ed |
 | `scanners/src/fill.rs` | ~170 lines — the fill pass over the folders a saved scan trimmed |
+| `scanners/src/snapshots.rs` | ~620 lines — a volume's local snapshots read against the live volume: the narrowed walk, the tree; `snapshots/` ~760 more: macOS, the change log, extents |
+| `common/src/snapshots.rs` | ~100 lines — the snapshots' virtual folder: its name, what is noted, descriptions |
 | `viewers/tui/src/ui/display.rs` | ~360 lines — the frame: what every mode shows, each mode's modal, the nesting's cache |
 | `viewers/tui/src/ui/grid/rectangle_grid.rs` | ~220 lines — the terminal's treemap: tiles, the nesting, corners, highlight frames |
 | `common/src/scan/mod.rs` | ~1270 lines — the scan protocol: options, entries, whom they are for, issues, the outline, the focus |

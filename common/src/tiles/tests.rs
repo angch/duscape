@@ -384,6 +384,7 @@ fn volume_board() -> (Folder, Board) {
         unscanned: 400,
         unscanned_share: 0.2,
         scanned: false,
+        purgeable: 0,
     }));
     board.change_files(&root);
     (root, board)
@@ -409,19 +410,19 @@ fn free_space_takes_its_share_and_is_no_entry() {
     assert_eq!(f.size, 1000);
     assert_eq!(u.size, 400);
     assert_eq!(
-        (f.x + f.width, f.y + f.height),
-        (400, 200),
-        "the free space is at the bottom right"
+        (f.x, f.width, f.y + f.height),
+        (0, 400, 200),
+        "the free space is a band along the bottom, the board's width"
     );
     let whole = 400.0 * 200.0;
     assert!((cells(f) / whole - 0.5).abs() < 0.01, "{f:?}");
     assert!((cells(u) / whole - 0.2).abs() < 0.01, "{u:?}");
-    assert_eq!((u.x, u.width, u.y + u.height), (f.x, f.width, f.y));
+    assert_eq!((u.x + u.width, u.y, u.y + u.height), (400, 0, f.y));
     assert!(
         board.tiles[..unscanned]
             .iter()
-            .all(|tile| tile.x + tile.width <= f.x),
-        "the entries' tiles come first, left of the strip"
+            .all(|tile| tile.x + tile.width <= u.x && tile.y + tile.height <= f.y),
+        "the entries' tiles come first, left of the unscanned strip and above the free space"
     );
     assert!(
         board
@@ -477,6 +478,7 @@ fn free_space_keeps_its_place_as_the_scan_goes() {
         unscanned: 0,
         unscanned_share: 0.0,
         scanned: true,
+        purgeable: 0,
     }));
     board.change_files_steady(&root);
     assert!(board.unscanned_tile().is_none());
@@ -505,14 +507,123 @@ fn free_space_before_anything_is_found() {
         unscanned: 700,
         unscanned_share: 0.7,
         scanned: false,
+        purgeable: 0,
     }));
     board.change_files(&root);
     assert_eq!(board.tiles.len(), 2);
     assert!(board.corner().is_none());
     let f = &board.tiles[board.free_tile().expect("a free space")];
     let u = &board.tiles[board.unscanned_tile().expect("an unscanned space")];
-    // Taller than wide: the strip is the bottom, the free space at its right.
-    assert_eq!((f.x + f.width, f.y + f.height), (300, 400));
-    assert_eq!((u.x, u.y, u.height), (0, 0, 400));
-    assert_eq!(u.x + u.width, f.x);
+    // The free space along the bottom; the unscanned space all of the rest.
+    assert_eq!((f.x, f.width, f.y + f.height), (0, 300, 400));
+    assert_eq!((u.x, u.y, u.width, u.y + u.height), (0, 0, 300, f.y));
+}
+
+/// Once the scan is over, the part of the unseen space that may be snapshots and purgeable is a
+/// tile of its own, beside the free space, the rest of the unseen before it; neither is an
+/// entry. While the scan goes there is none.
+#[test]
+fn the_purgeable_part_of_the_unseen_space_is_a_tile_beside_the_free_space() {
+    use crate::tiles::{FreeSpace, PURGEABLE_NAME, UNSEEN_NAME};
+    let root = Folder::new(Path::new("/tmp/volume"));
+    let mut board = Board::new(&root);
+    board.set_grid(Grid::pixels(4));
+    board.change_area(&Area {
+        x: 0,
+        y: 0,
+        width: 300,
+        height: 400,
+    });
+    let space = |scanned: bool| FreeSpace {
+        bytes: 300,
+        share: 0.3,
+        unscanned: 700,
+        unscanned_share: 0.7,
+        scanned,
+        purgeable: 200,
+    };
+    board.set_free_space(Some(space(true)));
+    board.change_files(&root);
+    let f = &board.tiles[board.free_tile().expect("a free space")];
+    let u = &board.tiles[board.unscanned_tile().expect("the unseen")];
+    let p = &board.tiles[board.purgeable_tile().expect("the purgeable")];
+    assert_eq!((u.name.to_str(), u.size), (Some(UNSEEN_NAME), 500));
+    assert_eq!((p.name.to_str(), p.size), (Some(PURGEABLE_NAME), 200));
+    // Down the unscanned strip: the unseen, then the purgeable on the free space below.
+    assert_eq!((u.x, u.width), (p.x, p.width));
+    assert_eq!((u.y + u.height, p.y + p.height), (p.y, f.y));
+    assert!((f64::from(p.height) / f64::from(u.height + p.height) - 200.0 / 700.0).abs() < 0.01);
+    for index in 0..board.tiles.len() {
+        assert!(!board.selectable(index), "none is an entry");
+    }
+
+    board.set_free_space(Some(space(false)));
+    board.change_files(&root);
+    assert!(board.purgeable_tile().is_none(), "not while the scan goes");
+    assert_eq!(
+        board.tiles[board.unscanned_tile().expect("unscanned")].size,
+        700
+    );
+}
+
+/// The free space stands still: as the scan finds more and the unscanned space shrinks, its
+/// tile keeps its place, its width and its height, not only its area.
+#[test]
+fn the_free_space_does_not_move_or_change_shape_as_the_scan_goes() {
+    use crate::tiles::FreeSpace;
+    let mut root = Folder::new(Path::new("/tmp/volume"));
+    let mut board = Board::new(&root);
+    board.set_grid(Grid::pixels(4));
+    board.change_area(&Area {
+        x: 0,
+        y: 0,
+        width: 400,
+        height: 300,
+    });
+    let mut seen = None;
+    for (found, unscanned) in [(0u64, 700u64), (300, 400), (650, 50), (700, 0)] {
+        if found > 0 {
+            root.add_file(std::path::PathBuf::from(format!("f{found}")), found as u128);
+        }
+        board.set_free_space(Some(FreeSpace {
+            bytes: 300,
+            share: 0.3,
+            unscanned,
+            unscanned_share: unscanned as f64 / 1000.0,
+            scanned: false,
+            purgeable: 0,
+        }));
+        board.change_files_steady(&root);
+        let f = &board.tiles[board.free_tile().expect("a free space")];
+        let place = (f.x, f.y, f.width, f.height);
+        assert_eq!(*seen.get_or_insert(place), place, "at {found} found");
+    }
+}
+
+/// A board with no room — before it is given an area, or a window minimised to nothing — lays
+/// out no strip and does not underflow cutting one.
+#[test]
+fn free_space_on_a_board_with_no_room_is_nothing() {
+    use crate::tiles::FreeSpace;
+    let (root, mut board) = volume_board();
+    for (width, height) in [(0, 0), (400, 0), (0, 200), (1, 1)] {
+        board.change_area(&Area {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        });
+        board.set_free_space(Some(FreeSpace {
+            bytes: 1000,
+            share: 0.5,
+            unscanned: 400,
+            unscanned_share: 0.2,
+            scanned: true,
+            purgeable: 100,
+        }));
+        board.change_files(&root);
+        for tile in &board.tiles {
+            assert!(tile.x + tile.width <= width.max(1) && tile.y + tile.height <= height.max(1));
+        }
+    }
 }

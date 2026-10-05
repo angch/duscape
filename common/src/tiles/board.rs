@@ -21,6 +21,10 @@ pub struct FreeSpace {
     /// Whether the scan is over: the unscanned space is then what no walk could see, not what
     /// is still to be walked, and is named so ([`UNSEEN_NAME`]).
     pub scanned: bool,
+    /// Of the unseen space, once the scan is over, what may be the volume's snapshots and
+    /// purgeable space ([`PURGEABLE_NAME`]): a tile of its own beside the free space, the rest
+    /// of the unseen space before it. At most the unscanned space; zero for none.
+    pub purgeable: u64,
 }
 
 /// The name of the free space's tile. A real entry so named at a volume's root would share it;
@@ -32,6 +36,10 @@ pub const FREE_SPACE_NAME: &str = "Free space";
 pub const UNSCANNED_NAME: &str = "Unscanned";
 /// [`UNSCANNED_NAME`] once the scan is over: what is left is what no walk could see.
 pub const UNSEEN_NAME: &str = "Not seen by the scan";
+/// The tile of the unseen space that may be the volume's snapshots and purgeable space
+/// ([`Board::purgeable_tile`]): what the system says it could free, at most, since it counts
+/// purgeable files the scan has found too.
+pub const PURGEABLE_NAME: &str = "Snapshots and purgeable, at most";
 
 pub struct Board {
     pub tiles: Vec<Tile>,
@@ -44,6 +52,8 @@ pub struct Board {
     free_index: Option<usize>,
     /// The unscanned space's tile in `tiles`, when it got one.
     unscanned_index: Option<usize>,
+    /// The purgeable part of the unseen space's tile in `tiles`, when it got one.
+    purgeable_index: Option<usize>,
     /// Where the entries are laid out: the area, less the free and unscanned space's strip.
     entries_area: Area,
     pub selected_index: Option<usize>, // None means nothing is selected
@@ -73,6 +83,7 @@ impl Board {
             free: None,
             free_index: None,
             unscanned_index: None,
+            purgeable_index: None,
             entries_area: Area::default(),
             files: files_in_folder(folder, 0, SizeKind::Disk),
             listing: files_in_folder(folder, 0, SizeKind::Disk),
@@ -99,8 +110,8 @@ impl Board {
     }
     /// Show `free`, a volume's free space, as a tile of its own beside the folder's entries
     /// from the next [`Self::change_files`] on, unzoomed only, so the board shows the whole
-    /// volume in proportion: the free space at the bottom right, the unscanned space beside it,
-    /// the entries in the rest. `None` shows the entries alone, as the board does by default.
+    /// volume in proportion: the free space a band along the bottom, the unscanned space a strip
+    /// at the right above it, the entries in the rest. `None` shows the entries alone, as the board does by default.
     /// Neither is an entry: the listing never holds them, the selection never lands on them,
     /// and a hit on one is nothing.
     pub fn set_free_space(&mut self, free: Option<FreeSpace>) {
@@ -121,10 +132,15 @@ impl Board {
     pub fn unscanned_tile(&self) -> Option<usize> {
         self.unscanned_index
     }
+    /// The purgeable part of the unseen space's tile, when one is laid out: likewise no entry.
+    #[must_use]
+    pub fn purgeable_tile(&self) -> Option<usize> {
+        self.purgeable_index
+    }
     /// Whether the tile at `index` is an entry's, which the selection may land on.
     #[must_use]
     pub fn selectable(&self, index: usize) -> bool {
-        self.free_index != Some(index) && self.unscanned_index != Some(index)
+        ![self.free_index, self.unscanned_index, self.purgeable_index].contains(&Some(index))
     }
     /// The "small files" corner, when entries got no tile: from where the treemap put it to
     /// the far corner of the entries' area — never over the free space's strip.
@@ -191,7 +207,8 @@ impl Board {
         };
         let entry_tiles = self.tiles.len()
             - usize::from(self.free_index.is_some())
-            - usize::from(self.unscanned_index.is_some());
+            - usize::from(self.unscanned_index.is_some())
+            - usize::from(self.purgeable_index.is_some());
         let hidden: Vec<Share> = self
             .hidden
             .iter()
@@ -260,22 +277,11 @@ impl Board {
         self.hidden = tree_map.hidden;
         self.free_index = None;
         self.unscanned_index = None;
+        self.purgeable_index = None;
         // After the entries' tiles, so their indices are the treemap's.
         if let (Some(free), Some((unscanned, free_area))) = (free, strip) {
             if let Some(area) = unscanned {
-                self.unscanned_index = Some(self.tiles.len());
-                self.tiles.push(Tile::at(
-                    &area,
-                    &Self::space_entry(
-                        if free.scanned {
-                            UNSEEN_NAME
-                        } else {
-                            UNSCANNED_NAME
-                        },
-                        free.unscanned,
-                        free.unscanned_share,
-                    ),
-                ));
+                self.push_unscanned(&free, area);
             }
             self.free_index = Some(self.tiles.len());
             self.tiles.push(Tile::at(
@@ -284,71 +290,88 @@ impl Board {
             ));
         }
     }
-    /// The area cut for the free space: a strip along the far side of the longer way — the
-    /// right of a wide board, the bottom of a tall one — as wide as the free and unscanned
-    /// space's share, the free space at its far end (the bottom right) and the unscanned
-    /// space before it. Cut first, not ranked among the entries, so the free space keeps its
-    /// place and its area whatever the scan finds and whichever folder is largest: as the scan
-    /// goes, the unscanned space shrinks and the entries grow into it. Returns the entries'
-    /// area, and the strip's two parts (the unscanned one `None` when it rounds to nothing).
-    fn cut_strip(&self, free: &FreeSpace) -> (Area, Option<(Option<Area>, Area)>) {
-        let area = self.area;
-        let tail = free.share + free.unscanned_share;
-        // How far into the strip the free space starts, as a share of it.
-        let unscanned_part = if tail > 0.0 {
-            free.unscanned_share / tail
+    /// The unscanned space's tile in `area`, and when the scan is over and some of it may be
+    /// purgeable, that part's beside the free space (the far end of `area` along the strip).
+    fn push_unscanned(&mut self, free: &FreeSpace, area: Area) {
+        let purgeable = free.purgeable.min(free.unscanned);
+        let part = if free.scanned && free.unscanned > 0 {
+            purgeable as f64 / free.unscanned as f64
         } else {
             0.0
         };
-        let wide = f64::from(area.width) >= f64::from(area.height) * self.grid.ratio;
-        let cut = |length: u16, share: f64| -> u16 {
-            ((f64::from(length) * share).round() as u16).clamp(1, length.max(1))
-        };
-        if wide {
-            let strip = cut(area.width, tail).min(area.width);
-            let x = area.x + area.width - strip;
-            let gap = (f64::from(area.height) * unscanned_part).round() as u16;
-            let gap = gap.min(area.height.saturating_sub(1));
-            let entries = Area {
-                width: area.width - strip,
-                ..area
+        // Down the unscanned strip: the purgeable part at its foot, on the free space.
+        let (unseen, purgeable_area) = split_foot(area, part);
+        let share = |bytes: u64| free.unscanned_share * bytes as f64 / free.unscanned.max(1) as f64;
+        if let Some(unseen) = unseen {
+            let name = if free.scanned {
+                UNSEEN_NAME
+            } else {
+                UNSCANNED_NAME
             };
-            let unscanned = (gap > 0).then_some(Area {
-                x,
-                y: area.y,
-                width: strip,
-                height: gap,
-            });
-            let free = Area {
-                x,
-                y: area.y + gap,
-                width: strip,
-                height: area.height - gap,
+            // All of it, when the purgeable part rounded to nothing.
+            let bytes = if purgeable_area.is_some() {
+                free.unscanned - purgeable
+            } else {
+                free.unscanned
             };
-            (entries, Some((unscanned, free)))
-        } else {
-            let strip = cut(area.height, tail).min(area.height);
-            let y = area.y + area.height - strip;
-            let gap = (f64::from(area.width) * unscanned_part).round() as u16;
-            let gap = gap.min(area.width.saturating_sub(1));
-            let entries = Area {
-                height: area.height - strip,
-                ..area
-            };
-            let unscanned = (gap > 0).then_some(Area {
-                x: area.x,
-                y,
-                width: gap,
-                height: strip,
-            });
-            let free = Area {
-                x: area.x + gap,
-                y,
-                width: area.width - gap,
-                height: strip,
-            };
-            (entries, Some((unscanned, free)))
+            self.unscanned_index = Some(self.tiles.len());
+            self.tiles.push(Tile::at(
+                &unseen,
+                &Self::space_entry(name, bytes, share(bytes)),
+            ));
         }
+        if let Some(area) = purgeable_area {
+            self.purgeable_index = Some(self.tiles.len());
+            self.tiles.push(Tile::at(
+                &area,
+                &Self::space_entry(PURGEABLE_NAME, purgeable, share(purgeable)),
+            ));
+        }
+    }
+    /// The areas cut for the free and unscanned space, first, not ranked among the entries.
+    /// The free space is a band along the board's bottom, its whole width, as tall as its
+    /// share: its height and width are fixed by the free space and the volume's size, which
+    /// the scan does not change, so it stands still from the first frame to the last — cut
+    /// from a strip as wide as free and unscanned together, as it was before 2026-10-05, it
+    /// kept its area but changed shape as the scan found more, as if the free space changed.
+    /// The unscanned space is a strip at the right of the rest, its share of the whole board:
+    /// as the scan goes it narrows, and the entries grow into it. Returns the entries' area,
+    /// and the unscanned part (`None` when it rounds to nothing) and the free one.
+    fn cut_strip(&self, free: &FreeSpace) -> (Area, Option<(Option<Area>, Area)>) {
+        let area = self.area;
+        // No room at all (a board not given an area yet, a window minimised): no strip.
+        if area.width == 0 || area.height == 0 {
+            return (area, None);
+        }
+        let band = ((f64::from(area.height) * free.share).round() as u16).clamp(1, area.height);
+        let free_area = Area {
+            y: area.y + area.height - band,
+            height: band,
+            ..area
+        };
+        let rest = Area {
+            height: area.height - band,
+            ..area
+        };
+        // The unscanned space's share of the rest, so its area is its share of the board.
+        let rest_share = 1.0 - free.share;
+        let part = if rest_share > 0.0 {
+            (free.unscanned_share / rest_share).min(1.0)
+        } else {
+            0.0
+        };
+        let strip = (f64::from(rest.width) * part).round() as u16;
+        let strip = strip.min(rest.width);
+        let unscanned = (strip > 0 && rest.height > 0).then_some(Area {
+            x: rest.x + rest.width - strip,
+            width: strip,
+            ..rest
+        });
+        let entries = Area {
+            width: rest.width - strip,
+            ..rest
+        };
+        (entries, Some((unscanned, free_area)))
     }
     /// The free or unscanned space as what a tile is made of.
     fn space_entry(name: &str, bytes: u64, share: f64) -> FileMetadata {
@@ -526,5 +549,26 @@ impl Board {
     pub fn record_current_index_and_zoom_level(&mut self) {
         self.previous_indices_and_zoom_level
             .push((self.get_selected_index(), self.zoom_level));
+    }
+}
+
+/// `area` cut in two down its height: `part` of it at its foot, beside the free space below,
+/// and the rest above. Either is `None` when it rounds to nothing.
+fn split_foot(area: Area, part: f64) -> (Option<Area>, Option<Area>) {
+    let foot = (f64::from(area.height) * part).round() as u16;
+    match foot {
+        0 => (Some(area), None),
+        foot if foot >= area.height => (None, Some(area)),
+        foot => (
+            Some(Area {
+                height: area.height - foot,
+                ..area
+            }),
+            Some(Area {
+                y: area.y + area.height - foot,
+                height: foot,
+                ..area
+            }),
+        ),
     }
 }
