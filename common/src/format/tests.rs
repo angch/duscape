@@ -1,4 +1,4 @@
-use super::{DisplayCount, DisplaySize, truncate_middle};
+use super::{DisplayCount, DisplaySize, DisplaySizeRounded, truncate_middle};
 
 #[test]
 fn truncate_middle_char_boundary() {
@@ -34,6 +34,36 @@ fn display_count_honours_width() {
 #[test]
 fn display_size_formats_kilobytes() {
     assert_eq!(format!("{}", DisplaySize(2048.0)), "2.0K");
+}
+
+/// A volume of a few terabytes is shown in gigabytes, and its thousands are separated so
+/// `1,862.6G` cannot be read as `186.26G`; the decimal part is untouched, and bytes under a
+/// kilobyte stay as they are.
+#[test]
+fn display_size_separates_thousands() {
+    let gib = 1_073_741_824.0;
+    let cases = [
+        (0.0, "0"),
+        (512.0, "512"),
+        (999.0, "999"),
+        (999_999.0, "976.6K"),
+        (2.5 * gib, "2.5G"),
+        (999.95 * gib, "1,000.0G"),
+        (1862.6 * gib, "1,862.6G"),
+        (12_345.6 * gib, "12,345.6G"),
+        (1_234_567.8 * gib, "1,234,567.8G"),
+    ];
+    for (bytes, expected) in cases {
+        assert_eq!(DisplaySize(bytes).to_string(), expected, "{bytes}");
+    }
+    assert_eq!(DisplaySizeRounded(1862.6 * gib).to_string(), "1,863G");
+    assert_eq!(DisplaySizeRounded(2.5 * gib).to_string(), "2G");
+    assert_eq!(DisplaySizeRounded(512.0).to_string(), "512");
+}
+
+#[test]
+fn display_size_honours_width() {
+    assert_eq!(format!("{:>8}", DisplaySize(2048.0)), "    2.0K");
 }
 
 mod shell_quote {

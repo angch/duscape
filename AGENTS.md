@@ -308,7 +308,10 @@ out and painting.
   `org.freedesktop.FileManager1` over `dbus-send` elsewhere, the bus call on a thread of its own
   since a file manager being started to answer can take seconds. Nothing waits on the window's
   thread, and every child is reaped by a thread that waits for it
-- `format/display_size.rs` — byte → human-readable (B/KB/MB/GB/TB)
+- `format/display_size.rs` — byte → human-readable (B/K/M/G; G is the largest unit, so a volume
+  of terabytes shows as thousands of gigabytes, its whole part grouped in thousands —
+  `1,862.6G`, never `1862.6G`, which reads as a tenth of it); `display_count.rs` groups a
+  count the same way. The DOS port's `fmt_size` is a port of the former without the grouping
 - `os/unix.rs`, `os/windows.rs` — `is_user_admin()`, `size_on_disk_fast()`, `volume_id()`, `link_count()`,
   `volume_used()`/`volume_free()` (on APFS a volume's own use by `ATTR_VOL_SPACEUSED`, since
   `statvfs` gives the container's, except at `/`, whose scan reaches the other volumes);

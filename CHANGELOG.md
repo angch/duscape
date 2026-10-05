@@ -115,6 +115,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Sizes in gigabytes separate their thousands: a 2 TB volume's free space at the top right of
+  the window read `1862.6G`, which a glance takes for `186.26G`; it is `1,862.6G` now, and so
+  is every size in every viewer (`DisplaySize`, `DisplaySizeRounded`), as the counts always
+  were. The DOS port's `fmt_size` does not, yet.
 - The Linux window drew the tree's expander, the triangle before a folder's name, as the text
   glyphs U+25B8 and U+25BE, which Ubuntu's default sans fonts (Noto Sans, Ubuntu Sans) do not
   have: the .deb showed the font's missing-glyph box instead. It is drawn as a shape now
