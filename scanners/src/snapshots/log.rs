@@ -59,7 +59,9 @@ pub fn parse_firmlinks(text: &str) -> Vec<(PathBuf, PathBuf)> {
     text.lines()
         .filter_map(|line| line.split_once('\t'))
         .map(|(from, to)| (PathBuf::from(from.trim()), PathBuf::from(to.trim())))
-        .filter(|(from, _)| from.is_absolute())
+        // `has_root`, not `is_absolute`: the same on macOS, where the file is, and true of
+        // `/Users` on Windows too (where absolute wants a drive), so the tests run everywhere.
+        .filter(|(from, _)| from.has_root())
         .collect()
 }
 
