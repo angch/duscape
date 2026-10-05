@@ -176,3 +176,26 @@ h1 em,h2 em { color:var(--forest);font:italic 500 1.01em/1 var(--serif); }.hero-
 .hero-art { padding:22px; }
 .hero-art::before { border-width:11px; }
 .art-label,.art-index { color:#e5ece6;text-shadow:-.5px -.5px 0 #414944,0 -.5px 0 #414944,.5px -.5px 0 #414944,-.5px 0 0 #414944,.5px 0 0 #414944,-.5px .5px 0 #414944,0 .5px 0 #414944,.5px .5px 0 #414944; }
+
+/* Section 05: a kept trick's mark beside the lab note's crosses. */
+.experiment-mark.is-kept { background:#cfe8d3; color:#2c6a45; }
+.experiment-result.is-kept { color:#3f7a57; }
+.frames-section .experiments:first-of-type { margin-top:56px; }
+.experiment-list summary code, .experiment-list details>p code, .evidence-card code { font:0.95em var(--mono); }
+@media(prefers-color-scheme:dark) {
+	.experiment-mark.is-kept { background:#2d4a37; color:#b8e4bd; }
+	.experiment-result.is-kept { color:#9ac9a8; }
+}
+
+/* Screenshots of the window: framed like the cards, the picture's own dark kept in both themes. */
+.shot-figure { margin:0; border:1px solid var(--line); background:#181818; }
+.shot-figure img { display:block; width:100%; height:auto; }
+.shot-figure figcaption { padding:12px 15px 14px; background:var(--paper); border-top:1px solid var(--line); color:var(--muted); font-size:11px; line-height:1.6; }
+.shot-figure figcaption span { display:block; margin-bottom:4px; color:var(--ink); font:600 9px var(--mono); letter-spacing:.08em; }
+.shot-figure code { font:0.95em var(--mono); }
+.shot-wide { margin-top:28px; }
+.shot-grid { display:grid; grid-template-columns:repeat(2,1fr); align-items:start; gap:11px; margin-top:28px; }
+.shot-pair { max-width:640px; margin:11px auto 0; }
+.shot-pair img { image-rendering:pixelated; }
+.shot-grid .shot-figure:last-child img { image-rendering:pixelated; }
+@media(max-width:650px) { .shot-grid { grid-template-columns:1fr; } }
