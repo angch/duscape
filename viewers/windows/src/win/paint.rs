@@ -914,10 +914,10 @@ fn draw_preview(canvas: &Canvas, window: &Window, info: Rect) {
     canvas.fill(Rect::new(info.x, info.y, info.w, 1.0), BAR);
 
     // The caption: what is in hand and how big; how many are marked; what picture it is.
-    let words = if viewer.marked.len() > 1 {
+    let words = if viewer.marked_count() > 1 {
         format!(
             "{} marked · {}",
-            libduscape::DisplayCount(viewer.marked.len() as u64),
+            libduscape::DisplayCount(viewer.marked_count() as u64),
             DisplaySize(viewer.marked_size() as f64)
         )
     } else if let Some(entry) = viewer.shown_entry().or_else(|| viewer.selected_entry()) {

@@ -31,6 +31,32 @@ pub fn volume_free(path: &::std::path::Path) -> Option<u64> {
     Some(fs.f_bfree.saturating_mul(fs.f_frsize))
 }
 
+/// Whether `path` is on another machine's filesystem, as far as this platform says: on macOS a
+/// mount not marked local (`MNT_LOCAL`); elsewhere `false` — Linux's answer is the scanner's,
+/// which knows its network filesystems (`duscape_scan::is_network`).
+#[must_use]
+pub fn is_network(path: &::std::path::Path) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        use ::std::os::unix::ffi::OsStrExt;
+        let Ok(name) = ::std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+            return false;
+        };
+        // SAFETY: `name` is NUL-terminated, and `fs` a zeroed struct the call fills.
+        let mut fs: libc::statfs = unsafe { ::std::mem::zeroed() };
+        // SAFETY: as above; the struct outlives the call.
+        if unsafe { libc::statfs(name.as_ptr(), &raw mut fs) } != 0 {
+            return false;
+        }
+        fs.f_flags & libc::MNT_LOCAL as u32 == 0
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        false
+    }
+}
+
 /// Whether `path` is where a filesystem is mounted: its device differs from its parent's.
 fn is_mount_point(path: &::std::path::Path) -> bool {
     let Ok(device) = ::std::fs::metadata(path).map(|meta| meta.dev()) else {

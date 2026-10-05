@@ -455,7 +455,7 @@ impl Window {
         // A second click with Ctrl or Shift held is another mark, not an Enter: Windows makes
         // it a double click whenever it lands where the first did, and taken as one it cleared
         // the marks and opened the entry.
-        let double = double && mods == Mods::default();
+        let (second, double) = (double, double && mods == Mods::default());
         if self.chooser.is_some() {
             if let Some(index) = self.crumb_at(x, y) {
                 self.choose_row(hwnd, index);
@@ -473,9 +473,10 @@ impl Window {
             self.viewer.go_to_depth(depth);
             return self.changed(hwnd);
         }
-        // A folder row's expander opens it in place; a double click there is one click.
+        // A folder row's expander opens it in place; a double click there is one click,
+        // modifiers or not (the second click toggled it shut again).
         if let Hit::Expander(index) = self.viewer.hit(x, y) {
-            if !double {
+            if !second {
                 self.viewer.toggle_row(index);
             }
             return self.changed(hwnd);

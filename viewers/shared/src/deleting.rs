@@ -123,7 +123,17 @@ impl Deletion {
                             };
                         }
                         let before = tally.removed();
-                        match remove(file, tally) {
+                        // A panic is this entry's failure, not the thread's end: `done` must be
+                        // called, or the window would wait on the delete, taking no input, for
+                        // good. Where panics unwind — debug builds, tests: the release is built
+                        // with `panic = "abort"` (Cargo.toml), where a panic ends the process, so
+                        // a remove must not panic in the first place.
+                        let removed =
+                            ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+                                remove(file, tally)
+                            }))
+                            .unwrap_or_else(|_| Err("the delete failed unexpectedly".to_string()));
+                        match removed {
                             Ok(()) => Ended::Removed,
                             Err(error) => Ended::Failed {
                                 error: (!tally.stopped()).then_some(error),

@@ -251,7 +251,7 @@ pub mod parallel {
         let merged = Instant::now();
 
         tree.replay_deferred();
-        tree.volume_used = super::comparable_volume_used(&root, options);
+        super::note_volume(&mut tree, &root, options);
         tree.purgeable = purgeable.and_then(|asked| asked.join().ok()).flatten();
         tree.shown = options.shown();
         tree.from_saved_scan = from_saved_scan;
@@ -772,7 +772,7 @@ pub fn scan_into_tree(root: impl AsRef<Path>, options: ScanOptions) -> (FileTree
         failed_to_read += directory.failed;
         tree.add_dir_entries(directory);
     }
-    tree.volume_used = comparable_volume_used(&root_path, options);
+    note_volume(&mut tree, &root_path, options);
     tree.purgeable = purgeable.and_then(|asked| asked.join().ok()).flatten();
     tree.shown = options.shown();
 
@@ -799,6 +799,29 @@ fn ask_purgeable(root: &Path) -> Option<std::thread::JoinHandle<Option<u64>>> {
         .name("purgeable".to_string())
         .spawn(move || volume_purgeable(&root))
         .ok()
+}
+
+/// Whether `root` is on another machine — an NFS or SMB mount, a FUSE network filesystem, a
+/// mapped drive or a share by its path — whose volume holds what the server has, not only what
+/// is under `root`: for a share, the volume's used space less what the scan found is the
+/// server's other shares, not space the scan missed (`FileTree::on_network`).
+#[must_use]
+pub fn is_network(root: &Path) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        linux::filesystem::classify(root).network
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        libduscape::os::is_network(root)
+    }
+}
+
+/// What the tree is to know of the volume it was scanned from: its used space, where the two
+/// are comparable, and whether it is another machine's.
+fn note_volume(tree: &mut FileTree, root: &Path, options: ScanOptions) {
+    tree.volume_used = comparable_volume_used(root, options);
+    tree.on_network = is_network(root);
 }
 
 fn comparable_volume_used(root: &Path, options: ScanOptions) -> Option<u128> {

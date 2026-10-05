@@ -9,6 +9,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Deleting no longer freezes a window. The desktop viewers delete on a thread of their own;
+  after 100 ms a box shows the entry being removed, how many entries of how many are gone, and
+  Cancel (or Esc). What was removed comes off the tree, and a folder removed only in part —
+  stopped, or a failure inside it — is rescanned, so the treemap shows what is left. A package
+  cache of 40,000 files went in 7.2 s with the box counting; the delete itself is as fast as
+  before, and still removes read-only files (git objects, package caches).
+- Shift+click marks a range in the terminal viewer too, in the list or on the treemap, where
+  the terminal passes Shift+click on (most keep it for selecting text: Shift+↑/↓ still works
+  everywhere).
+- The interactive explainer (`docs/explainer`) has a section on what made the desktop viewers
+  fast and look right — the measurements, the techniques kept and the ones that lost — with
+  screenshots of the Windows window.
+
+### Changed
+
+- The live treemap during a scan moves at the window's frame rate: on Windows about 56 updates
+  a second on a warm scan, where it was 3–8 (the view laid out every 4,096 entries, 100 ms
+  after the batch). The elevated whole-volume scan's running totals go every frame rather than
+  every 250 ms.
+- In the windows' tree view a mark is the row's own: a Shift range among the rows of a folder
+  opened in place marks those rows (it marked the folder), Ctrl+click marks a nested row or tile,
+  closing a folder unmarks what is inside it, and a delete of a folder marked with rows inside
+  it takes the folder once. The nested tiles show the marks.
+- The "small files" corner of the treemap reads as more tiles of the same kinds, not as a flat
+  block twice as bright as the framed tiles around it: its specks have the smallest tile's grid
+  over them, a little darker; a speck with room for a frame gets one, as a tile does.
+
+### Fixed
+
+- On Windows a mapped network drive is listed by its share and protocol (`\\server\share ·
+  cifs`, `nfs`, `webdav`) in the volume chooser, not as an NTFS volume (the server's disk).
+- On Windows a second Ctrl- or Shift-click where the first landed — a double click to Windows —
+  marks, rather than clearing the marks and opening the entry; the click's modifiers are read
+  from the click itself.
+- The Windows window elevated for a whole volume lists the network drives you mapped too: an
+  elevated program runs in a session of its own, which Windows does not give your mapped
+  drives, so they were missing from its chooser. They are listed by their shares, read from
+  your saved mappings (`HKCU\Network`), with the letter beside, and scanned by the share's path.
+- A network share scanned from its root — a mapped drive or `\\server\share`, an NFS or SMB
+  mount — no longer shows the rest of the server's volume as "Not seen by the scan": that is
+  the server's other shares, not space the scan missed, and on a NAS of several it took nearly
+  all the treemap. The free space is still shown, and so is what the scan counted beyond the
+  volume (a share's snapshots).
+- Marks stay quick on large folders: Ctrl+A on a folder of tens of thousands of entries froze a
+  window, every paint comparing every mark with every other. A folder marked with rows inside it
+  is counted once in the status bar and the menu, as a delete or a copy takes it once.
+- Deleting a read-only file on Windows no longer clears the attribute: the file's other hard
+  links (a `git clone --local`'s objects) kept their attribute cleared, and so did a file whose
+  delete then failed.
+- During a delete the Linux window's own title bar still closes, minimises and moves it; on
+  macOS a dropped folder no longer replaces the view under a running delete.
+- A binary file's preview on Windows names its volume as `E:`, not `\\?\E:`.
+
 - About duscape in every viewer, from one source (`libduscape::about`): the version, both
   copyright lines, the licence, the homepage and where to report a problem. The Windows window
   menu (Alt+Space) has About duscape… and Licences…; the macOS app menu adds Licences… beside

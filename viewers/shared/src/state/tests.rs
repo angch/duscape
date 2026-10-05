@@ -1908,6 +1908,29 @@ fn a_shift_range_marks_the_rows_of_a_folder_opened_in_place() {
         ["big/a", "big"],
         "swept back up from the anchor"
     );
+    // Counted as what a command acts on: big, its row a with it.
+    assert_eq!(viewer.marked_count(), 1);
+    let (left, _) = viewer.status();
+    assert!(left.starts_with("1 marked"), "{left}");
+    let platform = crate::menu::Platform {
+        reveal: "Show",
+        quick_look: false,
+        pathname: false,
+        trash: false,
+        about: false,
+    };
+    let labels: Vec<String> = viewer
+        .context_menu(&platform)
+        .into_iter()
+        .filter_map(|entry| match entry {
+            crate::menu::Entry::Item { label, .. } => Some(label),
+            crate::menu::Entry::Separator => None,
+        })
+        .collect();
+    assert!(
+        labels.iter().all(|label| !label.contains('2')),
+        "one item, not two: {labels:?}"
+    );
     let targets: Vec<String> = viewer
         .target_rows()
         .iter()
@@ -1939,10 +1962,15 @@ fn a_speck_too_small_for_a_frame_has_the_least_tiles_grid_over_it() {
     };
     let pitch = MIN_TILE_PIXELS;
     // One pixel on a grid column: a line of its own height. Off it: nothing.
-    assert_eq!(speck(pitch, 1, 1, 1, false).grid(), [(pitch, 1, 1, 1)]);
-    assert!(speck(pitch + 1, 1, 1, 1, false).grid().is_empty());
+    assert_eq!(
+        speck(pitch, 1, 1, 1, false).grid().collect::<Vec<_>>(),
+        [(pitch, 1, 1, 1)]
+    );
+    assert_eq!(speck(pitch + 1, 1, 1, 1, false).grid().count(), 0);
     // Wider than the pitch: a column and a row a pitch apart, at the board's multiples.
-    let lines = speck(pitch - 1, pitch - 1, pitch + 2, 2, false).grid();
+    let lines: Vec<_> = speck(pitch - 1, pitch - 1, pitch + 2, 2, false)
+        .grid()
+        .collect();
     assert_eq!(
         lines,
         [
@@ -1951,6 +1979,93 @@ fn a_speck_too_small_for_a_frame_has_the_least_tiles_grid_over_it() {
             (pitch - 1, pitch, pitch + 2, 1),
         ]
     );
-    assert!(speck(0, 0, 2 * pitch, 2 * pitch, true).grid().is_empty());
+    assert_eq!(speck(0, 0, 2 * pitch, 2 * pitch, true).grid().count(), 0);
     const { assert!(SPECK_SHADE < 1.0 && SPECK_SHADE > 0.5) };
+}
+
+/// Ctrl+A on a folder of tens of thousands of entries, and what every frame then asks of the
+/// marks — the status's count and size, each tile's and row's mark, the delete's targets —
+/// costs a lookup a question, not a pass over the marks: quadratic, this was billions of
+/// comparisons on the keypress and again every paint.
+#[test]
+fn marking_a_folder_of_many_entries_stays_quick() {
+    const FILES: usize = 40_000;
+    let root = Path::new(ROOT);
+    let mut viewer = Viewer::new(root, SizeKind::Disk, 1);
+    let mut tree = FileTree::new(Folder::new(root), root.to_path_buf());
+    for index in 0..FILES {
+        tree.add_entry(
+            meta(1000 + index as u64, false),
+            &root.join(format!("f{index}")),
+        );
+    }
+    viewer.resize(1200.0, 800.0);
+    viewer.finish_scan(tree);
+    let started = Instant::now();
+    viewer.mark_all();
+    assert_eq!(viewer.marked.len(), FILES);
+    for _ in 0..3 {
+        let (left, _) = viewer.status();
+        assert!(left.starts_with("40,000 marked"), "{left}");
+        let names: Vec<OsString> = viewer
+            .board
+            .listing()
+            .iter()
+            .map(|entry| entry.name.clone())
+            .collect();
+        assert!(names.iter().all(|name| viewer.is_marked(name)));
+    }
+    assert_eq!(viewer.targets().len(), FILES);
+    let took = started.elapsed();
+    assert!(took < Duration::from_secs(5), "took {took:?}");
+}
+
+/// A remove that panics is that entry's failure, reported like any other: the delete still
+/// ends, and the window still gets its input back.
+#[test]
+fn a_panic_while_deleting_is_a_failure_not_a_stuck_window() {
+    let dir = on_disk("delete_panic");
+    let (mut viewer, _) = viewer_on(&dir);
+    viewer.mark_all();
+    let files = viewer.targets();
+    let (sender, report) = mpsc::channel();
+    viewer
+        .start_delete(
+            files,
+            true,
+            |_, _| panic!("a remove that panics"),
+            move |id, ended| {
+                let _ = sender.send((id, ended));
+            },
+        )
+        .expect("started");
+    let (id, ended) = report
+        .recv_timeout(Duration::from_secs(5))
+        .expect("reported");
+    let failure = viewer.delete_done(id, &ended).expect("a failure");
+    assert!(failure.detail.contains("unexpectedly"), "{failure:?}");
+    assert!(viewer.deleting().is_none(), "the window takes input again");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A share's volume is the server's: what of it the scan did not find is the server's other
+/// shares, so a share's root shows the free space and no "not seen by the scan" strip.
+#[test]
+fn a_network_share_shows_no_unscanned_strip() {
+    let root = Path::new(ROOT);
+    let mut viewer = Viewer::new(root, SizeKind::Disk, 1);
+    viewer.set_volume_free_source(half_unscanned);
+    viewer.set_network_root(true);
+    let mut tree = FileTree::new(Folder::new(root), root.to_path_buf());
+    tree.add_entry(meta(1450, false), &root.join("film.mkv"));
+    viewer.resize(1200.0, 800.0);
+    viewer.finish_scan(tree);
+    assert!(
+        viewer.board.free_tile().is_some(),
+        "the server's free space"
+    );
+    assert!(
+        viewer.board.unscanned_tile().is_none(),
+        "no strip of other shares"
+    );
 }

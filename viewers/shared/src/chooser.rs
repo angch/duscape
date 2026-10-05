@@ -77,7 +77,8 @@ impl Chooser {
                 Choice {
                     title: volume.path.display().to_string(),
                     detail,
-                    fullness: Some((volume.used, volume.total)),
+                    // A share an elevated session cannot size yet is listed without a size.
+                    fullness: (volume.total > 0).then_some((volume.used, volume.total)),
                     target: Target::Scan(volume.path),
                 }
             })

@@ -216,6 +216,31 @@ pub fn volume_used(path: &::std::path::Path) -> Option<u64> {
     volume_space(path).map(|(total, free)| total.saturating_sub(free))
 }
 
+/// Whether `path` is on another machine: a share by its path (`\\server\share`, verbatim or
+/// not), or a drive letter Windows calls remote — a mapped network drive.
+#[must_use]
+pub fn is_network(path: &::std::path::Path) -> bool {
+    use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
+    const DRIVE_REMOTE: u32 = 4;
+    let text = crate::format::without_verbatim_prefix(&path.to_string_lossy());
+    if text.starts_with(r"\\") && !text.starts_with(r"\\.\") {
+        return true;
+    }
+    let mut chars = text.chars();
+    let (Some(letter), Some(':')) = (chars.next(), chars.next()) else {
+        return false;
+    };
+    if !letter.is_ascii_alphabetic() {
+        return false;
+    }
+    let root: Vec<u16> = format!("{letter}:\\")
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    // SAFETY: `root` is NUL-terminated.
+    unsafe { GetDriveTypeW(root.as_ptr()) == DRIVE_REMOTE }
+}
+
 /// Bytes free on the volume whose root is `path`, or `None` when `path` is not a volume root:
 /// what a view of the whole volume shows beside what is used.
 pub fn volume_free(path: &::std::path::Path) -> Option<u64> {

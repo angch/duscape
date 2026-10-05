@@ -120,3 +120,18 @@ fn an_apfs_volume_reports_its_own_use_not_its_containers() {
     };
     assert!(own > 0 && own < container, "{own} of {container}");
 }
+
+/// A share by its path is another machine's, verbatim or not; a local drive and a device path
+/// are not.
+#[cfg(windows)]
+#[test]
+fn a_share_by_its_path_is_on_the_network_and_a_local_drive_is_not() {
+    use ::std::path::Path;
+    assert!(crate::os::is_network(Path::new(r"\\server\share")));
+    assert!(crate::os::is_network(Path::new(
+        r"\\?\UNC\server\share\folder"
+    )));
+    assert!(!crate::os::is_network(Path::new(r"C:\")));
+    assert!(!crate::os::is_network(Path::new(r"\\?\C:\Windows")));
+    assert!(!crate::os::is_network(Path::new(r"\\.\C:")));
+}

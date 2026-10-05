@@ -180,27 +180,103 @@ fn remove_folder(path: &Path) -> io::Result<()> {
     }
 }
 
-/// `remove(path)`, and if Windows refuses it for being read-only, again once that is cleared.
-/// Git's objects and package caches hold read-only files, and `remove_dir_all` deletes them
-/// regardless (it asks Windows to ignore the attribute), so a delete of ours must too.
-/// Elsewhere the attribute is no bar: removing an entry needs its folder writable, not it.
+/// `remove(path)`, and if Windows refuses it for being read-only, deleted ignoring the
+/// attribute. Git's objects and package caches hold read-only files, and `remove_dir_all`
+/// deletes them regardless, so a delete of ours must too. Elsewhere the attribute is no bar:
+/// removing an entry needs its folder writable, not it.
 fn writable_and_again(path: &Path, remove: impl Fn(&Path) -> io::Result<()>) -> io::Result<()> {
     match remove(path) {
         Err(error) if cfg!(windows) && error.kind() == io::ErrorKind::PermissionDenied => {
             let Ok(metadata) = fs::symlink_metadata(path) else {
                 return Err(error);
             };
-            let mut permissions = metadata.permissions();
-            if !permissions.readonly() {
+            if !metadata.permissions().readonly() {
                 return Err(error);
             }
-            // Windows alone, where it clears the read-only attribute and nothing else.
-            #[allow(clippy::permissions_set_readonly_false)]
-            permissions.set_readonly(false);
-            fs::set_permissions(path, permissions)?;
-            remove(path)
+            // The fallback's own error — "not empty yet", for a read-only folder, is what
+            // `remove_folder` retries — unless it is the same refusal again.
+            read_only_removed(path, metadata.permissions(), remove).map_err(|fallback| {
+                if fallback.kind() == io::ErrorKind::PermissionDenied {
+                    error
+                } else {
+                    fallback
+                }
+            })
         }
         done => done,
+    }
+}
+
+/// A read-only entry deleted as `remove_dir_all` deletes one: asking Windows to ignore the
+/// attribute (`FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE`), which changes nothing on the
+/// file. Clearing the attribute first, as this did until 2026-10-05, cleared it on every hard
+/// link of the file — a `git clone --local`'s objects are links of the original's — and left it
+/// cleared where the delete then failed. Where the flag is refused (FAT, which has no hard
+/// links, or a Windows before 10 1809), the attribute is cleared, and put back on a failure.
+#[cfg(windows)]
+fn read_only_removed(
+    path: &Path,
+    permissions: fs::Permissions,
+    remove: impl Fn(&Path) -> io::Result<()>,
+) -> io::Result<()> {
+    if ignoring_read_only(path).is_ok() {
+        return Ok(());
+    }
+    let mut writable = permissions.clone();
+    // Windows alone, where it clears the read-only attribute and nothing else.
+    #[allow(clippy::permissions_set_readonly_false)]
+    writable.set_readonly(false);
+    fs::set_permissions(path, writable)?;
+    remove(path).inspect_err(|_| {
+        let _ = fs::set_permissions(path, permissions);
+    })
+}
+
+#[cfg(not(windows))]
+fn read_only_removed(
+    _path: &Path,
+    _permissions: fs::Permissions,
+    _remove: impl Fn(&Path) -> io::Result<()>,
+) -> io::Result<()> {
+    Err(io::Error::from(io::ErrorKind::PermissionDenied))
+}
+
+/// Delete `path` — a file, a link, or an empty folder — with POSIX semantics, the read-only
+/// attribute ignored: through a handle opened for delete, never following a reparse point.
+#[cfg(windows)]
+fn ignoring_read_only(path: &Path) -> io::Result<()> {
+    use ::std::os::windows::fs::OpenOptionsExt;
+    use ::std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
+        FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO_EX,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, FileDispositionInfoEx, SetFileInformationByHandle,
+    };
+    let handle = fs::OpenOptions::new()
+        .access_mode(DELETE)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)?;
+    let info = FILE_DISPOSITION_INFO_EX {
+        Flags: FILE_DISPOSITION_FLAG_DELETE
+            | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS
+            | FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
+    };
+    // SAFETY: the handle is open for delete for the call; `info` is the struct the class names,
+    // alive for the call, and its size is passed.
+    let done = unsafe {
+        SetFileInformationByHandle(
+            handle.as_raw_handle(),
+            FileDispositionInfoEx,
+            (&raw const info).cast(),
+            ::std::mem::size_of::<FILE_DISPOSITION_INFO_EX>() as u32,
+        )
+    };
+    if done == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
     }
 }
 
@@ -281,6 +357,40 @@ mod tests {
         assert!(!dir.join("folder").exists());
         // folder, inner, deeper, a, b, c, locked.
         assert_eq!(tally.removed(), 7);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A read-only file deleted from one folder stays read-only where it is hard-linked from
+    /// another: the attribute belongs to the file, and is never cleared to delete it.
+    #[test]
+    fn a_read_only_files_other_links_stay_read_only() {
+        let dir = ::std::env::temp_dir().join("duscape_delete_link_test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("clone")).expect("create");
+        fs::create_dir_all(dir.join("original")).expect("create");
+        let original = dir.join("original").join("object");
+        fs::write(&original, b"x").expect("write");
+        let mut permissions = fs::metadata(&original).expect("metadata").permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&original, permissions).expect("read-only");
+        if fs::hard_link(&original, dir.join("clone").join("object")).is_err() {
+            // A filesystem with no hard links has nothing to show here.
+            let _ = fs::remove_dir_all(&dir);
+            return;
+        }
+        remove(&to_delete(dir.clone(), &["clone"], FileType::Folder)).expect("removed");
+        assert!(!dir.join("clone").exists());
+        assert!(
+            fs::metadata(&original)
+                .expect("still there")
+                .permissions()
+                .readonly(),
+            "the original's attribute untouched"
+        );
+        let mut permissions = fs::metadata(&original).expect("metadata").permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
+        let _ = fs::set_permissions(&original, permissions);
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -278,7 +278,9 @@ out and painting.
   per tile were half the nesting's time
 - `delete.rs` — `remove` (from disk, a link itself never its target) and `refused` (NTFS metadata);
   `remove_counting`, a walk of its own counting into a `Tally` and stoppable (`remove_dir_all`
-  says nothing until done), read-only files cleared and removed as `remove_dir_all` removes them
+  says nothing until done), a read-only file deleted ignoring the attribute as `remove_dir_all`
+  deletes it (`FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE`): cleared, it was cleared on every
+  hard link of the file
 - `metafiles.rs` — NTFS metadata names, for the Windows walker and for `delete`
 - `snapshots.rs` — a volume's local snapshots as one *virtual* folder at its root (`FOLDER`,
   `(local snapshots)`), a folder per snapshot: `Noted` (`FileTree::snapshots`, set by
@@ -345,7 +347,10 @@ out and painting.
 - `os/volumes.rs` — `volumes()`: what is mounted, its device or label, filesystem, size and
   use — `/proc/self/mounts` sifted (block devices and the known network filesystems, one line
   a source, tested) and `statvfs`; `getmntinfo` on macOS; the drive letters on Windows, a mapped network drive named by its
-  share and its provider (`network_filesystem`: `cifs`, `nfs`, `webdav`), never by the server's
+  share and its provider (`network_filesystem`: `cifs`, `nfs`, `webdav`), and the drives the user
+  mapped that this session has no letter for — an elevated window's, which Windows does not give
+  them — by their shares, from `HKCU\Network` (`with_mapped`, `MappedDrive`; scanned by the share's
+  path, listed unsized where an elevated session cannot reach it yet); never by the server's
   filesystem, which Windows reports as the volume's (`NTFS`). For
   the windows' chooser
 
@@ -619,8 +624,11 @@ shared `Viewer`, not in `win/`:
   view, `tree_view`): `libduscape::tiles::tree_rows` keeps which folders are open in place
   and makes the rows (each open folder's entries indented under it, largest first, `Row::path`
   from the listed folder); the cursor is a row's path, its first name being `selected`, so the
-  board's selection follows the row's top-level entry. A mark is a row's path too (`marked`,
-  `is_marked_row`, `marked_nested` for the nested tiles, worked out once a paint): a ⇧ range runs
+  board's selection follows the row's top-level entry. A mark is a row's path too (`marked`, a
+  `Marks`: the order and a set beside it, so a painter's question of a row or tile is a lookup —
+  passes over the marks after Ctrl+A on 87k entries were billions of comparisons a frame;
+  `is_marked_row`, `marked_nested` for the nested tiles, worked out once a paint; `marked_count`
+  and `marked_size`, the outermost marks, kept until the marks or the rows change): a ⇧ range runs
   over the rows on show, a folder's opened in place with the rest; a folder closed takes the
   marks inside it off; a delete or a size takes a marked folder and not also the rows marked
   in it (`target_rows`). Until 2026-10-05 marks were top-level names, and a range among a
@@ -968,7 +976,11 @@ Exiting { app_loaded: bool }
   status line of every viewer. Over the network no walker can see a snapshot's blocks shared
   with the live file's, so at a volume root `FileTree::counted_beyond_volume` — the scan's total
   over the volume's used space — is what says they are, in the status line and the panel; it
-  says "shared or compressed", since unprivileged btrfs sizes are uncompressed too. The rule
+  says "shared or compressed", since unprivileged btrfs sizes are uncompressed too. What of
+  the volume the scan did not find (`outside_scan`, the windows' "Not seen by the scan" strip)
+  is not said for a share (`duscape_scan::is_network`: Linux by its filesystem, macOS
+  `MNT_LOCAL`, Windows a UNC path or a remote drive; `FileTree::on_network`, the viewer's
+  `network_root`): the volume is the server's, and the rest of it the server's other shares. The rule
   itself is `DirEntries::leave_out` (noted only where the walk would have gone down), and the
   MFT reader asks it as the kernel walkers do.
 - **Bind mounts**: a mount root (`STATX_ATTR_MOUNT_ROOT`) is looked up in `/proc/self/mountinfo`

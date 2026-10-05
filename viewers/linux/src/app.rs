@@ -510,6 +510,10 @@ impl App {
         // taken: the tree still holds what is going. The window's own events go on.
         if self.viewer.deleting().is_some() {
             let cancel = match input {
+                // The app's own title bar stays the window's: close, minimise, drag.
+                Input::Button { y, .. } if y < self.viewer.top_inset => {
+                    return self.window_input(input);
+                }
                 Input::Key { keysym, .. } => keysym == keys::ESCAPE,
                 Input::Button {
                     button: Button::Left,

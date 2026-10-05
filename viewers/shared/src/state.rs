@@ -381,25 +381,30 @@ impl Dust {
     /// the corner 52% of their colour); darkened to the same average, they read darker still,
     /// the eye going by a tile's colour and not by its frame. Aligned to the board, not to
     /// each speck, so the lines run on across a corner whatever its specks' sizes.
-    #[must_use]
-    pub fn grid(&self) -> Vec<(u16, u16, u16, u16)> {
+    pub fn grid(&self) -> impl Iterator<Item = (u16, u16, u16, u16)> + use<> {
+        // An iterator, not a list: a painter asks it of every speck on every paint, tens of
+        // thousands, and most have no line or one.
         let pitch = MIN_TILE_PIXELS;
-        let mut lines = Vec::new();
-        if self.framed {
-            return lines;
-        }
-        let first = |start: u16| start.div_ceil(pitch) * pitch;
-        let mut column = first(self.x);
-        while column < self.x + self.width {
-            lines.push((column, self.y, 1, self.height));
-            column += pitch;
-        }
-        let mut row = first(self.y);
-        while row < self.y + self.height {
-            lines.push((self.x, row, self.width, 1));
-            row += pitch;
-        }
-        lines
+        let Dust {
+            x,
+            y,
+            width,
+            height,
+            framed,
+            ..
+        } = *self;
+        let first = move |start: u16| start.div_ceil(pitch) * pitch;
+        let (columns, rows) = if framed {
+            (0..0, 0..0)
+        } else {
+            (
+                first(x) / pitch..(x + width).div_ceil(pitch),
+                first(y) / pitch..(y + height).div_ceil(pitch),
+            )
+        };
+        columns
+            .map(move |column| (column * pitch, y, 1, height))
+            .chain(rows.map(move |row| (x, row * pitch, width, 1)))
     }
 }
 
@@ -490,6 +495,10 @@ pub struct Viewer {
     free_bytes: Option<(u64, u64)>,
     /// How the free and used bytes are asked for: the OS's, or a test's.
     volume_free: fn(&Path) -> Option<(u64, u64)>,
+    /// The scan root is on another machine: its volume is the server's, so the used space the
+    /// scan has not found is the server's other shares, and no "not seen by the scan" strip is
+    /// shown — on a NAS of several shares it took nearly all the board. Asked once, of the root.
+    network_root: bool,
     /// Points at the top left to the viewer for a title bar of its own; see [`Layout::with_top`].
     pub top_inset: f64,
     /// Pixels per point, when the viewer has said: the treemap is then in pixel cells.
@@ -511,7 +520,13 @@ pub struct Viewer {
     /// place, so a range or a Ctrl+click among a folder's rows marks those rows and not the
     /// folder. When there are any, they are what a delete, a copy or Show in Finder acts on;
     /// otherwise the entry in hand is.
-    pub marked: Vec<Vec<OsString>>,
+    pub marked: Marks,
+    /// How many outermost marks there are and what they weigh ([`Viewer::marked_count`],
+    /// [`Viewer::marked_size`]), for the marks' and the rows' generations: the status bar asks
+    /// on every paint, and worked out afresh it was a pass over the rows each time.
+    marks_weighed: ::std::cell::Cell<Option<(u64, u64, usize, u128)>>,
+    /// Counts the rows rebuilt, so what is kept from them knows when it is stale.
+    rows_generation: u64,
     /// Where a ⇧ range starts: a row's path.
     anchor: Option<Vec<OsString>>,
     /// The marks there were when the run of ⇧ moves began: the range is added to them, so
@@ -622,13 +637,16 @@ impl Viewer {
             free_space: true,
             free_bytes: None,
             volume_free: volume_space,
+            network_root: duscape_scan::is_network(root),
             top_inset: 0.0,
             pixel_scale: None,
             nesting: Nesting::default(),
             focus: Focus::List,
             selected: None,
             chosen: false,
-            marked: Vec::new(),
+            marked: Marks::default(),
+            marks_weighed: ::std::cell::Cell::new(None),
+            rows_generation: 0,
             anchor: None,
             mark_run: None,
             clipboard: None,
@@ -816,7 +834,11 @@ impl Viewer {
         // On disk whatever is shown: the volume counts blocks, and lengths set against them
         // would call a folder of sparse files mostly unscanned, or a compressed one overfull.
         let found = self.tree.get_current_folder().sizes.get(SizeKind::Disk);
-        let unscanned = used.saturating_sub(u64::try_from(found).unwrap_or(u64::MAX));
+        let unscanned = if self.network_root {
+            0
+        } else {
+            used.saturating_sub(u64::try_from(found).unwrap_or(u64::MAX))
+        };
         Some(FreeSpace {
             bytes,
             share: bytes as f64 / total,
@@ -842,6 +864,12 @@ impl Viewer {
     /// tests, whose roots are no volume's.
     pub fn set_volume_free_source(&mut self, source: fn(&Path) -> Option<(u64, u64)>) {
         self.volume_free = source;
+    }
+
+    /// Whether the scan root is to be taken for another machine's, in place of asking: for
+    /// tests, whose roots are local.
+    pub fn set_network_root(&mut self, network: bool) {
+        self.network_root = network;
     }
 
     pub fn toggle_sidebar(&mut self) {
@@ -1133,6 +1161,7 @@ impl Viewer {
         self.rows = self
             .expansion
             .rows(self.tree.get_current_folder(), self.tree.shown);
+        self.rows_generation += 1;
         self.retain_shown_marks();
     }
 
@@ -1140,13 +1169,13 @@ impl Viewer {
     /// tree view deselects what it hides — a delete never takes what the user cannot see is
     /// marked. A top-level mark stays while its entry is listed (the treemap shows it).
     fn retain_shown_marks(&mut self) {
-        if self.marked.iter().all(|path| path.len() == 1) {
+        if !self.marked.has_deep() {
             return;
         }
         let shown: ::std::collections::HashSet<&[OsString]> =
             self.rows.iter().map(|row| row.path.as_slice()).collect();
         self.marked
-            .retain(|path| path.len() == 1 || shown.contains(path.as_slice()));
+            .retain(|path| path.len() == 1 || shown.contains(path));
     }
 
     /// Keep the entry in hand and the marks to entries that exist, and put the board's
@@ -1158,7 +1187,13 @@ impl Viewer {
             self.selected = None;
             self.chosen = false;
         }
-        self.marked.retain(|path| path.first().is_some_and(listed));
+        if !self.marked.is_empty() {
+            // A set of the names, not `listed` a mark: after Ctrl+A that was marks × entries.
+            let names: ::std::collections::HashSet<&OsString> =
+                listing.iter().map(|entry| &entry.name).collect();
+            self.marked
+                .retain(|path| path.first().is_some_and(|name| names.contains(name)));
+        }
         if self.hover.as_ref().is_some_and(|name| !listed(name)) {
             self.hover = None;
         }
@@ -1380,15 +1415,13 @@ impl Viewer {
 
     /// Whether the folder's own entry `name` is marked (a board tile, a top-level row).
     pub fn is_marked(&self, name: &OsStr) -> bool {
-        self.marked
-            .iter()
-            .any(|marked| marked.len() == 1 && marked[0] == name)
+        self.marked.contains_name(name)
     }
 
     /// Whether the row at `path` (from the listed folder) is marked.
     #[must_use]
     pub fn is_marked_row(&self, path: &[OsString]) -> bool {
-        self.marked.iter().any(|marked| marked.as_slice() == path)
+        self.marked.contains(path)
     }
 
     /// Which nested tiles are marked rows', by index: for a painter, once a frame. Empty when
@@ -1399,6 +1432,10 @@ impl Viewer {
     #[must_use]
     pub fn marked_nested(&self) -> Vec<bool> {
         use ::std::collections::HashSet;
+        // Asked every frame: no pass over the marks when none is nested (after Ctrl+A, 87k).
+        if !self.marked.has_deep() {
+            return Vec::new();
+        }
         let deep: Vec<&[OsString]> = self
             .marked
             .iter()
@@ -1439,37 +1476,40 @@ impl Viewer {
         marked
     }
 
-    /// The entry at `path` from the listed folder: its row's, or the folder's own entry — a
-    /// look-up a mark, where `entry_at` would list the folder for each.
-    fn row_entry(&self, path: &[OsString]) -> Option<&FileMetadata> {
-        match path {
-            [name] => self.entry_named(name),
-            _ => self
-                .rows
-                .iter()
-                .find(|row| row.path.as_slice() == path)
-                .map(|row| &row.entry),
+    /// How many entries the marks are — a folder marked with rows inside it once — and what
+    /// they weigh, as shown: kept until the marks or the rows change. Every mark is a row on
+    /// show (`retain_shown_marks`), so one pass over the rows finds them all.
+    fn marks_weighed(&self) -> (usize, u128) {
+        let key = (self.marked.generation(), self.rows_generation);
+        if let Some((marks, rows, count, size)) = self.marks_weighed.get()
+            && (marks, rows) == key
+        {
+            return (count, size);
         }
+        let (mut count, mut size) = (0, 0u128);
+        if !self.marked.is_empty() {
+            for row in &self.rows {
+                if self.marked.is_outermost(&row.path) {
+                    count += 1;
+                    size += row.entry.size;
+                }
+            }
+        }
+        self.marks_weighed.set(Some((key.0, key.1, count, size)));
+        (count, size)
+    }
+
+    /// How many entries a delete or a copy of the marks acts on: a folder marked with rows
+    /// inside it counts once, as it goes once.
+    #[must_use]
+    pub fn marked_count(&self) -> usize {
+        self.marks_weighed().0
     }
 
     /// What the marks weigh, as shown: a mark inside another marked folder counted once, in it.
     #[must_use]
     pub fn marked_size(&self) -> u128 {
-        self.marked_outermost()
-            .filter_map(|path| self.row_entry(path))
-            .map(|entry| entry.size)
-            .sum()
-    }
-
-    /// The marks with none of their folders marked too: a folder and rows inside it marked
-    /// are the folder, for a delete (its rows would be gone before their turn) and a size.
-    fn marked_outermost(&self) -> impl Iterator<Item = &Vec<OsString>> {
-        self.marked.iter().filter(|path| {
-            !self
-                .marked
-                .iter()
-                .any(|other| other.len() < path.len() && path.starts_with(other))
-        })
+        self.marks_weighed().1
     }
 
     /// Move the entry in hand. In the list, ↑ and ↓ go by row (with `extend`, marking the range
@@ -1594,7 +1634,7 @@ impl Viewer {
     fn mark_range(&mut self, anchor: Option<&[OsString]>, to: usize) {
         let base: Vec<Vec<OsString>> = self
             .mark_run
-            .get_or_insert_with(|| self.marked.clone())
+            .get_or_insert_with(|| self.marked.as_slice().to_vec())
             .clone();
         let rows = &self.rows;
         let from = anchor
@@ -1608,13 +1648,8 @@ impl Viewer {
                 .map(|row| rows[row].path.clone())
                 .collect()
         };
-        let mut marked = base;
-        for path in swept {
-            if !marked.contains(&path) {
-                marked.push(path);
-            }
-        }
-        self.marked = marked;
+        // Each once, by the set: `contains` on the list was quadratic in a range to the end.
+        self.marked.replace(base.into_iter().chain(swept));
         // Marks from the run's start that have since gone (a delete, a rescan, a folder
         // closed) stay gone.
         self.sync_board();
@@ -1641,12 +1676,13 @@ impl Viewer {
 
     /// Mark every entry in the folder.
     pub fn mark_all(&mut self) {
-        self.marked = self
+        let all: Vec<Vec<OsString>> = self
             .board
             .listing()
             .iter()
             .map(|entry| vec![entry.name.clone()])
             .collect();
+        self.marked.replace(all);
         self.mark_run = None;
         self.copy_marked();
     }
@@ -1792,11 +1828,8 @@ impl Viewer {
             {
                 self.marked.push(cursor);
             }
-            match self.marked.iter().position(|marked| *marked == path) {
-                Some(at) => {
-                    self.marked.remove(at);
-                }
-                None => self.marked.push(path.clone()),
+            if !self.marked.remove(&path) {
+                self.marked.push(path.clone());
             }
             // Placed, not picked: a click that marks does not choose what a later one adds.
             self.reveal(path, false);
@@ -2063,7 +2096,7 @@ impl Viewer {
                 (None, None) => Vec::new(),
             };
         }
-        self.marked_outermost().cloned().collect()
+        self.marked.outermost().cloned().collect()
     }
 
     pub fn target_paths(&self) -> Vec<PathBuf> {
@@ -2079,10 +2112,28 @@ impl Viewer {
         if self.scanning {
             return Vec::new();
         }
-        self.target_rows()
-            .iter()
+        let rows = self.target_rows();
+        // Each target's entry from its row, by a map of the rows: a search of the rows a
+        // target was rows × marks after Ctrl+A.
+        let entries: HashMap<&[OsString], &FileMetadata> = if rows.len() > 1 {
+            self.rows
+                .iter()
+                .map(|row| (row.path.as_slice(), &row.entry))
+                .collect()
+        } else {
+            HashMap::new()
+        };
+        rows.iter()
             .filter_map(|path| {
-                let entry = self.row_entry(path)?;
+                let entry = match rows.len() {
+                    1 => self
+                        .rows
+                        .iter()
+                        .find(|row| &row.path == path)
+                        .map(|row| &row.entry)
+                        .or_else(|| self.entry_named(&path[0]).filter(|_| path.len() == 1))?,
+                    _ => *entries.get(path.as_slice())?,
+                };
                 Some(FileToDelete::in_current_tree(&self.tree, path, entry))
             })
             .collect()
@@ -2480,7 +2531,7 @@ impl Viewer {
             _ if !self.marked.is_empty() && self.hover.is_none() && self.hover_nested.is_none() => {
                 format!(
                     "{} marked, {}",
-                    DisplayCount(self.marked.len() as u64),
+                    DisplayCount(self.marked_count() as u64),
                     DisplaySize(self.marked_size() as f64)
                 )
             }
@@ -2704,9 +2755,11 @@ fn hsl(hue: f64, saturation: f64, lightness: f64) -> (f64, f64, f64) {
     (r + m, g + m, b + m)
 }
 
+mod marks;
 #[cfg(test)]
 mod tests;
 mod tween;
+pub use marks::Marks;
 pub use tween::TWEEN;
 
 /// The volume whose root is `path`: its free bytes and its used, or `None` when `path` is no

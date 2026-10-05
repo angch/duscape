@@ -1108,3 +1108,15 @@ fn what_the_scan_counted_beyond_the_volume_is_reported() {
     tree.volume_used = None;
     assert_eq!(tree.counted_beyond_volume(), None);
 }
+
+/// On a share the volume is the server's: what of it the scan did not find is the server's
+/// other shares, said nowhere; what the scan counted beyond it is still said.
+#[test]
+fn on_a_share_the_rest_of_the_volume_is_not_called_missed() {
+    let mut tree = tree_of(&[("live", 600)]);
+    tree.on_network = true;
+    tree.volume_used = Some(5000);
+    assert_eq!(tree.outside_scan(), None);
+    tree.volume_used = Some(100);
+    assert_eq!(tree.counted_beyond_volume(), Some(500));
+}

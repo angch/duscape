@@ -583,7 +583,9 @@ define_class!(
     unsafe impl NSDraggingDestination for DiskView {
         #[unsafe(method(draggingEntered:))]
         fn dragging_entered(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
-            if dropped_folder(sender).is_some() {
+            // Not while a delete runs: a new scan would replace the viewer and leave the delete
+            // going with no box and no Cancel.
+            if dropped_folder(sender).is_some() && !self.deleting() {
                 NSDragOperation::Generic
             } else {
                 NSDragOperation::None
@@ -946,8 +948,13 @@ impl DiskView {
 
     // ---------------------------------------------------------------- scanning
 
-    /// Scan `root`, in place of whatever the window showed.
+    /// Scan `root`, in place of whatever the window showed. Not while a delete runs: the
+    /// viewer it replaced would take the delete's box and Cancel with it, the delete going on.
     pub fn start_scan(&self, root: PathBuf) {
+        if self.deleting() {
+            self.update(|viewer| viewer.say("A new scan waits for the delete to finish"));
+            return;
+        }
         let root = root.canonicalize().unwrap_or(root);
         // The walk reports a missing root as an empty folder; say what is wrong instead.
         if !root.is_dir() {

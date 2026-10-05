@@ -2,15 +2,16 @@
 mod unix;
 #[cfg(unix)]
 pub use unix::{
-    is_user_admin, link_count, set_sparse, size_on_disk_fast, volume_free, volume_id, volume_used,
+    is_network, is_user_admin, link_count, set_sparse, size_on_disk_fast, volume_free, volume_id,
+    volume_used,
 };
 
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
 pub use self::windows::{
-    FileIdentity, enable_backup_privilege, file_identity, is_user_admin, link_count, set_sparse,
-    size_on_disk_fast, volume_free, volume_id, volume_used,
+    FileIdentity, enable_backup_privilege, file_identity, is_network, is_user_admin, link_count,
+    set_sparse, size_on_disk_fast, volume_free, volume_id, volume_used,
 };
 
 #[cfg(target_os = "macos")]

@@ -769,9 +769,11 @@ mod imp {
         let Some(extents) = volume_extents(&root) else {
             return lines;
         };
-        let mut in_volume = OsString::from_wide(&root[..root.len() - 1])
-            .to_string_lossy()
-            .into_owned();
+        // Named as a person would: the scan's paths are verbatim (`\\?\E:\`), and the volume's
+        // path came out of one, so the panel said "(in \\?\E:)".
+        let mut in_volume = crate::format::without_verbatim_prefix(
+            &OsString::from_wide(&root[..root.len() - 1]).to_string_lossy(),
+        );
         if in_volume.len() > 2 && in_volume.ends_with('\\') {
             in_volume.pop();
         }
@@ -809,5 +811,22 @@ mod imp {
 mod imp {
     pub fn describe(_path: &::std::path::Path) -> Vec<String> {
         Vec::new()
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    /// The volume is named as a person writes it, not by the verbatim path the scan holds.
+    #[test]
+    fn a_files_volume_is_named_without_the_verbatim_prefix() {
+        let dir = ::std::env::temp_dir().join("duscape_placement_prefix_test");
+        let _ = ::std::fs::remove_dir_all(&dir);
+        ::std::fs::create_dir_all(&dir).expect("create");
+        let file = dir.join("data.bin");
+        ::std::fs::write(&file, vec![1u8; 256 * 1024]).expect("write");
+        let verbatim = crate::os::canonical_root(&file);
+        let lines = super::describe(&verbatim);
+        assert!(lines.iter().all(|line| !line.contains(r"\?\")), "{lines:?}");
+        let _ = ::std::fs::remove_dir_all(&dir);
     }
 }

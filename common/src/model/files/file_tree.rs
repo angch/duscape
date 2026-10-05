@@ -49,6 +49,11 @@ pub struct FileTree {
     /// Bytes in use on the volume the scan covered, when it covered a whole volume in disk-usage
     /// mode and stayed on it, so that the two are comparable. See [`Self::outside_scan`].
     pub volume_used: Option<u128>,
+    /// The scan root is on another machine (`duscape_scan::is_network`): its volume is the
+    /// server's, holding the server's other shares too, so what of it the scan did not find is
+    /// no space the scan missed ([`FileTree::outside_scan`] says nothing). What the scan counted
+    /// beyond it is still said ([`FileTree::counted_beyond_volume`]): a share's snapshots.
+    pub on_network: bool,
     /// Built from a saved scan as it was, so a catch-up is owed: the viewer starts one
     /// (`Cache::CatchUp`), and the tree that replaces this one is current.
     pub from_saved_scan: bool,
@@ -91,6 +96,7 @@ impl FileTree {
             failed_to_read: 0,
             issues: crate::scan::Issues::default(),
             volume_used: None,
+            on_network: false,
             from_saved_scan: false,
             snapshots: None,
             purgeable: None,
@@ -334,7 +340,7 @@ impl FileTree {
     /// Only while sizes on disk are shown: the volume's figure is blocks, and lengths are not
     /// comparable with it.
     pub fn outside_scan(&self) -> Option<u128> {
-        if self.shown != SizeKind::Disk {
+        if self.shown != SizeKind::Disk || self.on_network {
             return None;
         }
         let found = self.base_folder.sizes.disk + self.freed_since_scan.disk;

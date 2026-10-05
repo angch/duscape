@@ -99,7 +99,8 @@ impl Viewer {
     /// running greys out what would change the tree.
     #[must_use]
     pub fn context_menu(&self, platform: &Platform) -> Vec<Entry> {
-        let marked = self.marked.len();
+        // What the commands act on: a folder marked with rows inside it is one.
+        let marked = self.marked_count();
         let in_hand = self.cursor_entry().map(|row| &row.entry);
         if marked == 0 && in_hand.is_none() {
             return if platform.about {
