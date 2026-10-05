@@ -39,13 +39,13 @@ unicode-width = { workspace = true }
 image = { workspace = true }
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
-duscape-linux = { path = "../linux", version = "0.3.0-rc.1", optional = true }
+duscape-linux = { path = "../linux", version = "0.3.0-rc.2", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-duscape-mac = { path = "../macos", version = "0.3.0-rc.1", optional = true }
+duscape-mac = { path = "../macos", version = "0.3.0-rc.2", optional = true }
 
 [target.'cfg(windows)'.dependencies]
-duscape-windows = { path = "../windows", version = "0.3.0-rc.1", optional = true }
+duscape-windows = { path = "../windows", version = "0.3.0-rc.2", optional = true }
 # Whether Explorer started the program, with a console of its own (`front`).
 windows-sys = { workspace = true, features = ["Win32_System_Console"] }
 
