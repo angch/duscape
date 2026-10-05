@@ -207,6 +207,81 @@ impl Canvas {
         }
     }
 
+    /// A filled triangle with corners at `points` (in points), anti-aliased at its edges by
+    /// sampling each pixel 4×4. For the shapes a font cannot be relied on for: the tree's
+    /// expander is U+25B8/U+25BE, which Ubuntu's default sans fonts (Noto Sans, Ubuntu Sans) do
+    /// not have, so drawn as text it was the "missing glyph" box.
+    pub fn triangle(&mut self, points: [(f64, f64); 3], color: Color, alpha: f64) {
+        let px: Vec<(f64, f64)> = points
+            .iter()
+            .map(|&(x, y)| (x * self.scale, y * self.scale))
+            .collect();
+        let min_x = px
+            .iter()
+            .map(|p| p.0)
+            .fold(f64::INFINITY, f64::min)
+            .floor()
+            .max(0.0);
+        let min_y = px
+            .iter()
+            .map(|p| p.1)
+            .fold(f64::INFINITY, f64::min)
+            .floor()
+            .max(0.0);
+        let max_x = px
+            .iter()
+            .map(|p| p.0)
+            .fold(f64::NEG_INFINITY, f64::max)
+            .ceil();
+        let max_y = px
+            .iter()
+            .map(|p| p.1)
+            .fold(f64::NEG_INFINITY, f64::max)
+            .ceil();
+        if !(min_x < max_x && min_y < max_y) {
+            return;
+        }
+        let (x0, y0) = (min_x as usize, min_y as usize);
+        let x1 = (max_x as usize).min(self.width);
+        let y1 = (max_y as usize).min(self.height);
+        // Signed area, so the test below works whichever way the corners go round.
+        let edge = |a: (f64, f64), b: (f64, f64), x: f64, y: f64| {
+            (b.0 - a.0) * (y - a.1) - (b.1 - a.1) * (x - a.0)
+        };
+        let orientation = edge(px[0], px[1], px[2].0, px[2].1);
+        if orientation == 0.0 {
+            return;
+        }
+        let inside = |x: f64, y: f64| {
+            let sides = [
+                edge(px[0], px[1], x, y),
+                edge(px[1], px[2], x, y),
+                edge(px[2], px[0], x, y),
+            ];
+            sides.iter().all(|&side| side * orientation >= 0.0)
+        };
+        const SAMPLES: usize = 4;
+        let over = pack(color);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let mut hits = 0;
+                for sy in 0..SAMPLES {
+                    for sx in 0..SAMPLES {
+                        let fx = x as f64 + (sx as f64 + 0.5) / SAMPLES as f64;
+                        let fy = y as f64 + (sy as f64 + 0.5) / SAMPLES as f64;
+                        if inside(fx, fy) {
+                            hits += 1;
+                        }
+                    }
+                }
+                if hits > 0 {
+                    let coverage = f64::from(hits) / (SAMPLES * SAMPLES) as f64;
+                    self.blend_pixel(x, y, over, alpha * coverage);
+                }
+            }
+        }
+    }
+
     /// A picture fitted into `room` (never enlarged), centred horizontally at its top, scaled by
     /// averaging the source pixels under each destination pixel. Returns where it went.
     pub fn blit(&mut self, picture: &Rgba, room: Rect) -> Option<Rect> {
@@ -284,6 +359,39 @@ mod tests {
         assert_eq!(canvas.pixels[2 * 20 + 2], 0xff0000);
         assert_eq!(canvas.pixels[5 * 20 + 5], 0xff0000);
         assert_eq!(canvas.pixels[6 * 20 + 6], 0);
+    }
+
+    #[test]
+    fn triangle_fills_its_inside_and_not_its_outside() {
+        let mut canvas = Canvas::new(20, 20, 1.0);
+        canvas.clear((0.0, 0.0, 0.0));
+        // Pointing right: the left edge is tall, the point is at the right.
+        canvas.triangle(
+            [(2.0, 2.0), (2.0, 18.0), (18.0, 10.0)],
+            (1.0, 1.0, 1.0),
+            1.0,
+        );
+        assert_eq!(
+            canvas.pixels[10 * 20 + 4],
+            0xffffff,
+            "near the left edge, inside"
+        );
+        assert_eq!(
+            canvas.pixels[2 * 20 + 16],
+            0,
+            "the top right corner is outside"
+        );
+        assert_eq!(
+            canvas.pixels[18 * 20 + 16],
+            0,
+            "the bottom right corner is outside"
+        );
+        assert_eq!(canvas.pixels[10 * 20 + 1], 0, "left of the triangle");
+        let (r, ..) = unpack(canvas.pixels[5 * 20 + 9]);
+        assert!(
+            r > 0 && r < 255,
+            "a pixel on the slope is partly covered, got {r}"
+        );
     }
 
     #[test]

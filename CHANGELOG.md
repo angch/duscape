@@ -115,6 +115,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Linux window drew the tree's expander, the triangle before a folder's name, as the text
+  glyphs U+25B8 and U+25BE, which Ubuntu's default sans fonts (Noto Sans, Ubuntu Sans) do not
+  have: the .deb showed the font's missing-glyph box instead. It is drawn as a shape now
+  (`Canvas::triangle`), whatever fonts are installed.
 - On big-endian Linux (s390x), btrfs's compressed sizes, read as root, were byte-swapped:
   the extent items' fields were read in the CPU's byte order, where btrfs stores them
   little-endian. Found by running the tests on s390x under QEMU

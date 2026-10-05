@@ -57,7 +57,6 @@ struct Pens<'a> {
     nested_name: Pen<'a>,
     tile_size: Pen<'a>,
     tile_size_right: Pen<'a>,
-    expander: Pen<'a>,
     row: Pen<'a>,
     row_right: Pen<'a>,
     row_selected: Pen<'a>,
@@ -90,7 +89,6 @@ impl<'a> Pens<'a> {
                 alpha: 0.8,
                 ..pen(&fonts.sans, 10.5, WHITE, right, tail)
             },
-            expander: pen(&fonts.sans, 11.0, SECONDARY, Align::Center, tail),
             row: pen(&fonts.sans, 12.5, LABEL, left, middle),
             row_right: pen(&fonts.sans, 11.5, SECONDARY, right, tail),
             row_selected: pen(&fonts.sans, 12.5, WHITE, left, middle),
@@ -361,9 +359,25 @@ fn row_words(canvas: &mut Canvas, pens: &Pens, row: &Row, rect: Rect, selected: 
     // Where `Viewer::hit` looks for the expander.
     let indent = rect.x + LIST_PAD + row.depth as f64 * ROW_INDENT;
     if is_dir {
-        let glyph = if row.open { "▾" } else { "▸" };
+        // Drawn as a shape, not U+25B8/U+25BE: Ubuntu's default sans fonts (Noto Sans, Ubuntu
+        // Sans) have no glyph for them, and the font's missing-glyph box showed instead.
         let expander = Rect::new(indent, rect.y + (ROW - 16.0) / 2.0, EXPANDER, 16.0);
-        pens.expander.draw(canvas, glyph, expander);
+        let (cx, cy) = (expander.x + expander.w / 2.0, expander.y + expander.h / 2.0);
+        let (half_w, half_h) = (2.5, 3.5);
+        let points = if row.open {
+            [
+                (cx - half_h, cy - half_w),
+                (cx + half_h, cy - half_w),
+                (cx, cy + half_w),
+            ]
+        } else {
+            [
+                (cx - half_w, cy - half_h),
+                (cx - half_w, cy + half_h),
+                (cx + half_w, cy),
+            ]
+        };
+        canvas.triangle(points, SECONDARY, 1.0);
     }
     let swatch_x = indent + EXPANDER + 1.0;
     let name_x = swatch_x + 15.0;
