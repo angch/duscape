@@ -92,7 +92,26 @@ impl Viewer {
         if self.enter_selected() {
             return None;
         }
-        self.cursor_entry().map(|row| self.row_path(&row.path))
+        // An entry of an archive is no file to open: the archive is.
+        self.cursor_entry()
+            .map(|row| libduscape::archive::on_disk(&self.row_path(&row.path)))
+    }
+
+    /// What Show in the file manager (and Quick Look) acts on: [`Viewer::target_paths`], an
+    /// archive's entry by its archive, which the file manager can select, each once.
+    #[must_use]
+    pub fn reveal_paths(&self) -> Vec<PathBuf> {
+        // A set beside the list: after Ctrl+A on tens of thousands of entries a `contains` on
+        // the list was billions of comparisons, on the window's thread.
+        let mut seen: ::std::collections::HashSet<PathBuf> = ::std::collections::HashSet::new();
+        let mut paths: Vec<PathBuf> = Vec::new();
+        for path in self.target_paths() {
+            let path = libduscape::archive::on_disk(&path);
+            if seen.insert(path.clone()) {
+                paths.push(path);
+            }
+        }
+        paths
     }
 
     /// The context menu for what is targeted now: nothing when nothing is, the scan still

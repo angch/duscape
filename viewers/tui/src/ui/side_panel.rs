@@ -139,6 +139,12 @@ pub fn list_window(entries: usize, selected: Option<usize>, rows: usize) -> Rang
     start..start + shown
 }
 
+/// Which entries of a listing of `entries` the panel shows, as `entry_at` reads them.
+pub fn shown_entries(entries: usize, selected: Option<usize>, panel: Rect) -> Range<usize> {
+    let rows = usize::from(panel.height.saturating_sub(HEADER_ROWS));
+    list_window(entries, selected, rows)
+}
+
 /// The index in `listing` of the entry drawn at a screen cell, if the cell is on one.
 pub fn entry_at(
     listing: &[FileMetadata],

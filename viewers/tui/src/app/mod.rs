@@ -606,6 +606,7 @@ where
         if self.focus() == Focus::List {
             self.sync_board_to_list();
         }
+        self.want_visible_archives();
         // Measured before the preview is asked for, so the very first request is sized for the
         // real cells and is not superseded by a second one as soon as the frame is drawn.
         self.display.refresh_cell_pixels();
@@ -674,6 +675,48 @@ where
         if self.rescans.start_catch_up(rescanner, &self.file_tree) {
             self.describe_rescans();
         }
+    }
+    /// Tell the archive pass which unread archives are on screen, the biggest tile first: one of
+    /// at least 18×9 cells — room inside for two of the least (8×3) tiles each way, under the
+    /// nesting's label rows and within its margin — then a row of the list on screen. Only those
+    /// are read; the rest wait for a folder, a zoom or the list to show them.
+    fn want_visible_archives(&self) {
+        if !self.rescans.has_unread_archives() {
+            return;
+        }
+        let here: PathBuf = self.file_tree.current_folder_names.iter().collect();
+        let is_archive =
+            |name: &OsStr| libduscape::archive::is_archive_name(name.as_encoded_bytes());
+        let mut wanted: Vec<(u32, PathBuf)> = self
+            .board
+            .tiles
+            .iter()
+            .filter(|tile| {
+                tile.file_type == libduscape::tiles::FileType::File
+                    && tile.width >= 18
+                    && tile.height >= 9
+                    && is_archive(&tile.name)
+            })
+            .map(|tile| {
+                (
+                    u32::from(tile.width) * u32::from(tile.height),
+                    here.join(&tile.name),
+                )
+            })
+            .collect();
+        if let Some(panel) = self.display.areas().side_panel {
+            let listing = self.board.listing();
+            let shown =
+                side_panel::shown_entries(listing.len(), self.highlighted_listing_index(), panel);
+            for entry in &listing[shown] {
+                if entry.file_type == libduscape::tiles::FileType::File && is_archive(&entry.name) {
+                    wanted.push((0, here.join(&entry.name)));
+                }
+            }
+        }
+        wanted.sort_by_key(|(area, _)| ::std::cmp::Reverse(*area));
+        self.rescans
+            .want_archives(wanted.into_iter().map(|(_, path)| path));
     }
     /// What is owed once nothing else reads the disk (`Rescans::start_idle`): the fill of
     /// what a saved scan trimmed, the folder in view first, or the volume's local snapshots.

@@ -49,7 +49,7 @@ repeat is the client's job on Wayland, and is done here.
   offers the volumes and the home folder to scan instead; Cancel, or Esc, is back to this scan.
 - **The list** on the left: the folder's entries, largest first, each with its share of the
   folder as a bar. Under it, the entry in hand: its size, item count and share, and a preview of
-  a file — its first lines of text, or the picture (PNG, JPEG).
+  a file — its first lines of text, or the picture (PNG, JPEG, WebP, GIF, BMP, ICO, TIFF, QOI, HDR, PNM, DDS).
 - **The treemap** on the right: folders in blues, files coloured by extension, so files of a kind
   look alike from folder to folder. Entries too small for a tile are folded into "small files",
   and are all in the list.

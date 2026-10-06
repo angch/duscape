@@ -47,7 +47,25 @@ thiserror = "2"
 toml = "1"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 unicode-width = "0.2"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# The picture formats a preview decodes (`libduscape::preview`), measured on the Windows window
+# (2026-10-06): PNG, JPEG and WebP 1.68 MB; with the formats `image` holds itself (BMP, ICO, HDR,
+# PNM, DDS) +104 KB; with QOI, GIF and TIFF +344 KB. Left out: OpenEXR (+442 KB more, a niche
+# whose files are mostly too large to preview), AVIF (`image`'s `avif` encodes only; decoding
+# is `avif-native`, libdav1d in C, for every static target) and TGA (no magic bytes to know it
+# by). Every crate here is in Debian.
+image = { version = "0.25", default-features = false, features = [
+    "png",
+    "jpeg",
+    "webp",
+    "gif",
+    "bmp",
+    "ico",
+    "tiff",
+    "qoi",
+    "hdr",
+    "pnm",
+    "dds",
+] }
 flate2 = "1"
 
 # The release build with symbols kept and line tables, for profilers (`--profile profiling`).

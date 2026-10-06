@@ -1062,11 +1062,11 @@ fn a_share_root_without_its_separator_still_places_every_directory() {
     let mut tree = FileTree::new(Folder::new(&bare), bare.clone());
     assert_eq!(tree.path_in_filesystem, Path::new(r"\\?\UNC\server\share\"));
 
-    let file = |size| EntryMeta {
+    let file = |size| crate::scan::EntryMeta {
         size,
         apparent: size,
         links: 1,
-        ..EntryMeta::default()
+        ..crate::scan::EntryMeta::default()
     };
     // The walker names its directories from the bare root: the root itself, then `sub`.
     let mut root = DirEntries::new(Arc::from(bare.as_path()));
@@ -1119,4 +1119,126 @@ fn on_a_share_the_rest_of_the_volume_is_not_called_missed() {
     assert_eq!(tree.outside_scan(), None);
     tree.volume_used = Some(100);
     assert_eq!(tree.counted_beyond_volume(), Some(500));
+}
+
+/// Archives are noted by name as the tree is built, and one expanded becomes a folder of its
+/// entries at their sizes in it, the folder keeping the file's size: nothing above it changes
+/// but the count of entries.
+#[test]
+fn an_archive_is_noted_and_expanded_into_its_entries() {
+    let root = PathBuf::from("/nonexistent/archive_root");
+    let mut tree = FileTree::new(Folder::new(&root), root.clone());
+    let file = |size| crate::scan::EntryMeta {
+        size,
+        apparent: size,
+        ..crate::scan::EntryMeta::default()
+    };
+    tree.add_entry(file(1000), &root.join("libs").join("app.JAR"));
+    tree.add_entry(file(50), &root.join("libs").join("notes.txt"));
+    tree.add_entry(file(70), &root.join("top.zip"));
+    let mut noted = tree.archives.clone();
+    noted.sort();
+    assert_eq!(
+        noted,
+        [
+            PathBuf::from("libs").join("app.JAR"),
+            PathBuf::from("top.zip")
+        ]
+    );
+    let total = tree.get_total_size();
+    let descendants = tree.get_total_descendants();
+    let member = |path: &[&str], compressed, is_dir| {
+        crate::archive::Member::for_test(path, compressed, is_dir)
+    };
+    let members = [
+        member(&["META-INF"], 0, true),
+        member(&["META-INF", "MANIFEST.MF"], 40, false),
+        member(&["com", "a", "Main.class"], 900, false),
+    ];
+    assert!(tree.expand_archive(&PathBuf::from("libs").join("app.JAR"), &members));
+    assert_eq!(tree.get_total_size(), total, "sizes unchanged");
+    assert!(tree.get_total_descendants() > descendants, "more entries");
+    let archive = folder_at(&tree, &["libs", "app.JAR"]);
+    assert_eq!(archive.sizes.disk, 1000, "the file's size, headers and all");
+    let class = folder_at(&tree, &["libs", "app.JAR", "com", "a"]);
+    assert_eq!(class.sizes.disk, 900);
+    assert!(
+        !tree.expand_archive(&PathBuf::from("libs").join("app.JAR"), &members),
+        "a folder already"
+    );
+    assert!(!tree.expand_archive(&PathBuf::from("gone.zip"), &members));
+}
+
+/// A rescan's archives replace those noted under its folder, under the folder's path.
+#[test]
+fn a_grafted_folder_brings_its_archives() {
+    let root = PathBuf::from("/nonexistent/archive_graft");
+    let mut tree = FileTree::new(Folder::new(&root), root.clone());
+    let file = crate::scan::EntryMeta {
+        size: 10,
+        apparent: 10,
+        ..crate::scan::EntryMeta::default()
+    };
+    tree.add_entry(file, &root.join("a").join("old.zip"));
+    tree.add_entry(file, &root.join("b").join("kept.whl"));
+    let sub = root.join("a");
+    let mut rescanned = FileTree::new(Folder::new(&sub), sub.clone());
+    rescanned.add_entry(file, &sub.join("new.zip"));
+    tree.graft(&[OsString::from("a")], rescanned)
+        .expect("grafted");
+    let mut noted = tree.archives.clone();
+    noted.sort();
+    assert_eq!(
+        noted,
+        [
+            PathBuf::from("a").join("new.zip"),
+            PathBuf::from("b").join("kept.whl")
+        ]
+    );
+}
+
+/// A zip that names `a` a file and also holds `a/b`, in either order, or names an entry twice,
+/// is shown, not the end of the program: the first of a name kept, a file where a folder is
+/// left out, and the counts those of what is shown.
+#[test]
+fn an_archive_naming_a_file_and_a_folder_alike_is_shown() {
+    let root = PathBuf::from("/nonexistent/archive_clash");
+    let mut tree = FileTree::new(Folder::new(&root), root.clone());
+    tree.add_entry(
+        crate::scan::EntryMeta {
+            size: 500,
+            apparent: 500,
+            ..crate::scan::EntryMeta::default()
+        },
+        &root.join("odd.zip"),
+    );
+    let member = |path: &[&str], compressed, is_dir| {
+        crate::archive::Member::for_test(path, compressed, is_dir)
+    };
+    let members = [
+        member(&["a"], 10, false),
+        member(&["a", "b"], 20, false),
+        member(&["c", "d"], 30, false),
+        member(&["c"], 40, false),
+        member(&["e"], 50, false),
+        member(&["e"], 60, false),
+        member(&["f"], 0, true),
+        member(&["f"], 70, false),
+    ];
+    let descendants = tree.get_total_descendants();
+    assert!(tree.expand_archive(::std::path::Path::new("odd.zip"), &members));
+    let archive = folder_at(&tree, &["odd.zip"]);
+    assert_eq!(archive.sizes.disk, 500, "the file's size");
+    assert_eq!(folder_at(&tree, &["odd.zip", "a"]).sizes.disk, 20);
+    assert_eq!(folder_at(&tree, &["odd.zip", "c"]).sizes.disk, 30);
+    assert!(matches!(
+        archive.contents.get(::std::ffi::OsStr::new("e")),
+        Some(entry @ FileOrFolder::File(_)) if entry.sizes().disk == 50
+    ));
+    assert!(matches!(
+        archive.contents.get(::std::ffi::OsStr::new("f")),
+        Some(FileOrFolder::Folder(_))
+    ));
+    // a/b, c/d, e and f: four entries.
+    assert_eq!(tree.get_total_descendants(), descendants + 4);
 }

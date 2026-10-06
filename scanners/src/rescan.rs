@@ -1,5 +1,6 @@
 //! Scanning part of the tree again, on a thread of its own, while the old figures stay on screen.
 
+use ::std::collections::HashSet;
 use ::std::ffi::OsString;
 use ::std::path::{Path, PathBuf};
 use ::std::sync::Arc;
@@ -32,6 +33,10 @@ pub enum Outcome {
     /// snapshot's holding what it keeps that the live volume does not; `None` when the volume
     /// could not be read, and the folders stay as they were.
     Snapshots(Option<Box<FileTree>>),
+    /// Archives read by the archive pass, a gathering at a time: each one's path from the root,
+    /// and its entries or why it could not be read ([`crate::archives`]). The pass reports
+    /// under one id until it is stopped.
+    Archives(Vec<crate::archives::Read>),
 }
 
 /// What a rescan is for: one folder (its second pass run here, before it is handed over),
@@ -186,6 +191,32 @@ impl Rescanner {
             });
     }
 
+    /// Read the archives under `root` that `wanted` asks for, as the viewer asks, on a few
+    /// threads, and report each gathering as [`Outcome::Archives`] under `id` until `cancel`
+    /// is set.
+    pub fn spawn_archives(
+        &self,
+        id: u64,
+        root: PathBuf,
+        wanted: Arc<crate::archives::Wanted>,
+        cancel: Arc<AtomicBool>,
+    ) {
+        let running = Arc::clone(&self.running);
+        let done = Arc::clone(&self.done);
+        let _ = thread::Builder::new()
+            .name(format!("archives_{id}"))
+            .spawn(move || {
+                let keep_going =
+                    || running.load(Ordering::Acquire) && !cancel.load(Ordering::Acquire);
+                // A few: an index is a read or two near a file's end, and what is wanted is a
+                // screen's worth.
+                crate::archives::run(&root, &wanted, 4, &keep_going, &mut |batch| {
+                    done(id, Outcome::Archives(batch));
+                    true
+                });
+            });
+    }
+
     /// Read `names`, the local snapshots of `volume`, for what each keeps that the live volume
     /// does not ([`crate::snapshots::read`], root only), and report their folder for the tree
     /// scanned from `root` as [`Outcome::Snapshots`] under `id`. Setting `cancel` stops it, and
@@ -229,6 +260,20 @@ pub struct Rescans {
     /// that will not list keeps its sum unlisted, and a fill started whenever any were left
     /// would start again for ever.
     fill_owed: bool,
+    /// The archive pass, while the tree has archives unread: kept beside the rescans, not
+    /// among them — it covers no folder, stands in no rescan's way, and is no "rescanning" for
+    /// a status line; it waits for the viewer to say what is on screen ([`Self::want_archives`]).
+    archive_pass: Option<ArchivePass>,
+    /// The archives noted in the tree (`FileTree::archives`, taken by [`Self::start_idle`])
+    /// and not yet read, by their paths from the root: what the viewer may ask for.
+    unread_archives: HashSet<PathBuf>,
+}
+
+/// The archive pass under way: its id, what it is asked to read, and what stops it.
+struct ArchivePass {
+    id: u64,
+    wanted: Arc<crate::archives::Wanted>,
+    cancel: Arc<AtomicBool>,
 }
 
 /// A rescan under way: its id, the folder's path from the scan root, and what stops it.
@@ -285,6 +330,27 @@ impl Rescans {
         // The snapshots' folder is not on disk: a rescan would find it gone and take it away.
         if tree.is_snapshot_path(&relative) {
             return false;
+        }
+        // An archive is a file on disk, and what is in one no path at all: the folder holding
+        // the archive is what a walk can read again.
+        let mut relative = relative;
+        let full = relative
+            .iter()
+            .fold(tree.path_in_filesystem.clone(), |path, name| {
+                path.join(name)
+            });
+        if let Some(archive) = libduscape::archive::archive_of(&full)
+            && let Ok(inside) = archive.strip_prefix(&tree.path_in_filesystem)
+        {
+            relative = inside
+                .parent()
+                .map(|parent| {
+                    parent
+                        .components()
+                        .map(|c| c.as_os_str().to_os_string())
+                        .collect()
+                })
+                .unwrap_or_default();
         }
         // A fill adds what the tree lacks, folder by folder, and covers nothing: it neither
         // stands in a rescan's way (it runs for minutes on a whole disk) nor is stopped by one.
@@ -416,6 +482,7 @@ impl Rescans {
         if replacing || tree.from_saved_scan {
             return false;
         }
+        self.start_archives(rescanner, tree);
         if ::std::mem::take(&mut self.fill_owed) && self.start_fill(rescanner, tree, focus) {
             return false;
         }
@@ -488,9 +555,76 @@ impl Rescans {
         restarted
     }
 
+    /// Take the archives noted in `tree` as unread, and start the pass that reads them as the
+    /// viewer asks, if it is not running already.
+    fn start_archives(&mut self, rescanner: &Rescanner, tree: &mut FileTree) {
+        self.unread_archives.extend(tree.archives.drain(..));
+        if self.unread_archives.is_empty() || self.archive_pass.is_some() {
+            return;
+        }
+        self.next_id += 1;
+        let pass = ArchivePass {
+            id: self.next_id,
+            wanted: Arc::default(),
+            cancel: Arc::new(AtomicBool::new(false)),
+        };
+        rescanner.spawn_archives(
+            pass.id,
+            tree.path_in_filesystem.clone(),
+            Arc::clone(&pass.wanted),
+            Arc::clone(&pass.cancel),
+        );
+        self.archive_pass = Some(pass);
+    }
+
+    /// The archives on screen, by their paths from the root, the most visible first: those still
+    /// unread are what the archive pass reads next, and nothing else is read. Called by a viewer
+    /// whenever what is on screen changes; an empty list (or one of archives read already) lets
+    /// the pass wait.
+    pub fn want_archives(&self, visible: impl IntoIterator<Item = PathBuf>) {
+        let Some(pass) = &self.archive_pass else {
+            return;
+        };
+        let unread: Vec<PathBuf> = visible
+            .into_iter()
+            .filter(|path| self.unread_archives.contains(path))
+            .collect();
+        pass.wanted.set(unread);
+    }
+
+    /// Whether `relative` is an archive noted and not read yet: a viewer asks before it works
+    /// out a tile's path, to ask the pass only for those.
+    #[must_use]
+    pub fn is_unread_archive(&self, relative: &Path) -> bool {
+        self.unread_archives.contains(relative)
+    }
+
+    /// Whether any archive is noted and not read yet.
+    #[must_use]
+    pub fn has_unread_archives(&self) -> bool {
+        !self.unread_archives.is_empty()
+    }
+
+    /// Stop the archive pass and forget what it had left: the tree it was reading for is being
+    /// replaced, and the new one notes its own.
+    fn stop_archives(&mut self) {
+        self.end_archive_pass();
+        self.unread_archives.clear();
+    }
+
+    /// Stop the archive pass's threads, keeping what is unread: the next idle call starts a
+    /// pass again if there is any.
+    fn end_archive_pass(&mut self) {
+        if let Some(pass) = self.archive_pass.take() {
+            pass.cancel.store(true, Ordering::Release);
+            pass.wanted.wake();
+        }
+    }
+
     /// Stop every rescan under way, as the viewer moves on to another folder; their outcomes are
     /// dropped when they report.
     pub fn cancel_all(&mut self) {
+        self.stop_archives();
         for rescan in self.under_way.drain(..) {
             rescan.cancel.store(true, Ordering::Release);
         }
@@ -559,6 +693,9 @@ impl Rescans {
     /// Where the user is navigated to may have gone with it; the viewer moves them out to the
     /// nearest folder that is still there (see [`FileTree::current_folder_exists`]).
     pub fn finish(&mut self, id: u64, outcome: Outcome, tree: &mut FileTree) -> Option<Finished> {
+        if let Outcome::Archives(batch) = outcome {
+            return self.archives_read(id, batch, tree);
+        }
         let index = self.under_way.iter().position(|rescan| rescan.id == id)?;
         let mut finished = Finished {
             changed: false,
@@ -590,6 +727,10 @@ impl Rescans {
                 if rescan.kind == Kind::CatchUp {
                     self.fill_owed = true;
                 }
+                if rescan.relative.is_empty() {
+                    // The archives noted were the old tree's; the new one has its own.
+                    self.stop_archives();
+                }
                 finished.old = tree.graft(&rescan.relative, *rescanned);
                 finished.changed = finished.old.is_some();
                 if rescan.relative.is_empty() {
@@ -617,9 +758,66 @@ impl Rescans {
                     noted.read = true;
                 }
             }
-            Outcome::Filled(..) => unreachable!("handled above"),
+            Outcome::Filled(..) | Outcome::Archives(..) => unreachable!("handled above"),
         }
         finished.relative = rescan.relative;
+        Some(finished)
+    }
+}
+
+impl Rescans {
+    /// A gathering of the archive pass: each archive read becomes a folder of its entries in
+    /// `tree`, one that would not read stays a file, and neither is asked for again. Reported
+    /// as a fill's batch is ([`Finished::filled`]): the folders above each archive changed,
+    /// for a viewer to lay out again if it shows one, and the pass still running.
+    fn archives_read(
+        &mut self,
+        id: u64,
+        batch: Vec<crate::archives::Read>,
+        tree: &mut FileTree,
+    ) -> Option<Finished> {
+        if self.archive_pass.as_ref().is_none_or(|pass| pass.id != id) {
+            return None;
+        }
+        let mut finished = Finished {
+            changed: false,
+            whole: None,
+            refined_folder: None,
+            old: None,
+            relative: Vec::new(),
+            filled: None,
+        };
+        let mut folders: HashSet<PathBuf> = HashSet::new();
+        let wanted = self
+            .archive_pass
+            .as_ref()
+            .map(|pass| Arc::clone(&pass.wanted));
+        for (relative, read) in batch {
+            self.unread_archives.remove(&relative);
+            if let Some(wanted) = &wanted {
+                wanted.done(&relative);
+            }
+            let Ok(members) = read else {
+                continue;
+            };
+            if tree.expand_archive(&relative, &members) {
+                finished.changed = true;
+                let mut above = relative.parent();
+                while let Some(folder) = above {
+                    folders.insert(tree.path_in_filesystem.join(folder));
+                    above = folder.parent();
+                }
+            }
+        }
+        finished.filled = Some((
+            folders.into_iter().collect(),
+            Some(self.unread_archives.len()),
+        ));
+        if self.unread_archives.is_empty() {
+            // Nothing left to ask for: the threads go, and a rescan that notes archives again
+            // starts a pass of its own (`start_archives`).
+            self.end_archive_pass();
+        }
         Some(finished)
     }
 }

@@ -21,8 +21,8 @@ use duscape_viewer::state::{
     EXPANDER, Focus, LIST_PAD, Preview, ROW, ROW_INDENT, Rect, TILE_LABEL, Viewer, lighter,
     tile_color,
 };
+use libduscape::DisplaySize;
 use libduscape::tiles::{FileType, Row, Tile};
-use libduscape::{DisplayCount, DisplaySize};
 
 use super::appkit;
 use duscape_viewer::deleting::{Deletion, DeletionLayout};
@@ -572,8 +572,8 @@ fn details(viewer: &Viewer, info: Rect, image: Option<&NSImage>, pens: &Pens) {
     );
     let summary = match (entry.file_type, entry.descendants) {
         (FileType::Folder, Some(count)) => format!(
-            "Folder · {} items · {} · {:.1}%",
-            DisplayCount(count),
+            "Folder · {} · {} · {:.1}%",
+            libduscape::format::items(count),
             DisplaySize(entry.size as f64),
             entry.percentage * 100.0
         ),

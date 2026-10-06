@@ -1,5 +1,5 @@
 //! What the panel below the list shows for the entry in hand: the first lines of a text file, or
-//! a picture of a PNG or JPEG, scaled down and drawn with the kitty graphics protocol — or, in a
+//! a picture (PNG, JPEG, WebP, GIF, BMP, TIFF…: `libduscape::preview`), scaled down and drawn with the kitty graphics protocol — or, in a
 //! terminal without it, as sixels, or failing those in cells as half blocks, two pixels to a
 //! cell.
 //!

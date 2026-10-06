@@ -53,7 +53,7 @@ cargo run -p duscape-linux --release -- ~   # or run with no argument for the cu
 ```
 
 - **The same window as the Mac's:** breadcrumbs, the list beside the treemap with the entry in hand
-  previewed under it (text, PNG and JPEG, a binary file as a hex dump under where its blocks
+  previewed under it (text, pictures — PNG, JPEG, WebP, GIF, BMP, TIFF and more — a binary file as a hex dump under where its blocks
   are), live while the scan runs; a status bar. The list is a tree (→ opens a folder in place,
   ← closes it, or its expander) and the treemap is nested, as on Windows.
 - **Keys:** arrows, Enter/Esc, Tab, Page Up/Down, Home/End; `d` or Delete moves to the Trash
@@ -108,8 +108,8 @@ its master file table and every folder opens.
   started and quoted for PowerShell; Ctrl+Shift+C the full path.
 - **Delete:** Del or `d` deletes what is marked, or the entry in hand, after saying what and how
   much; NTFS's own metadata files are refused.
-- **Preview:** a file in hand is shown under the list — text in a monospace font, a PNG or JPEG
-  as a picture.
+- **Preview:** a file in hand is shown under the list — text in a monospace font, a PNG, JPEG
+  or WebP as a picture.
 - **Right-click** opens a menu: open, copy, rescan, delete.
 - **Keys:** `a` switches disk usage and apparent size, `+` / `-` / `0` zoom (or the wheel over
   the treemap), `r` / `R` (or F5 / Shift+F5) rescan the folder or everything, `s` hides the panel.

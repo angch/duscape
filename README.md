@@ -213,7 +213,8 @@ default (see [example/config.toml](example/config.toml)); the windows take only 
 
 On a terminal 80 columns or wider, the left third of the screen lists the current folder and every
 entry in it, largest first, with a bar, size and share; below it, a preview of the file in hand
-(text, or a PNG or JPEG drawn with kitty graphics, sixels or half blocks). `Tab` moves the
+(text, or a picture — PNG, JPEG, WebP, GIF, BMP, TIFF and more — drawn with kitty graphics,
+sixels or half blocks). `Tab` moves the
 keyboard between the list and the treemap. `Ctrl`+click or `Shift`+arrows mark several entries
 and copy their paths, quoted, to the clipboard; `d` deletes what is marked. Narrower terminals
 give the whole width to the treemap. [`docs/terminal.md`](docs/terminal.md) has the details:

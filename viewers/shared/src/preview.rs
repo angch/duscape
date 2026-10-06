@@ -14,8 +14,10 @@ const DEBOUNCE: Duration = Duration::from_millis(60);
 /// Pictures larger than this are described, not shown.
 const MAX_PICTURE: u64 = 64 * 1024 * 1024;
 /// Picture formats the system decodes that `libduscape::preview` does not recognise; it calls
-/// them binary files, and they are handed over as pictures by their extension instead.
-const OTHER_PICTURES: [&str; 8] = ["heic", "heif", "gif", "tif", "tiff", "bmp", "webp", "avif"];
+/// them binary files, and they are handed over as pictures by their extension instead: macOS
+/// decodes them, the Linux window says it cannot. The rest (GIF, TIFF, BMP, WebP…) are known by
+/// their bytes now.
+const OTHER_PICTURES: [&str; 3] = ["heic", "heif", "avif"];
 
 /// What was read.
 pub enum Loaded {
@@ -82,13 +84,10 @@ fn other_picture(path: &Path) -> Option<String> {
 }
 
 fn picture(path: &Path, caption: String) -> Loaded {
-    let size = path.metadata().map(|meta| meta.len()).unwrap_or(0);
-    if size > MAX_PICTURE {
-        return Loaded::Info(format!("{caption}, too large to preview"));
-    }
-    match ::std::fs::read(path) {
+    // The file, or an archive's entry unpacked in memory, here on the previewer's thread.
+    match libduscape::preview::picture_bytes(path, MAX_PICTURE) {
         Ok(bytes) => Loaded::Picture { bytes, caption },
-        Err(error) => Loaded::Info(format!("{caption}, unreadable: {error}")),
+        Err(why) => Loaded::Info(format!("{caption}, {why}")),
     }
 }
 

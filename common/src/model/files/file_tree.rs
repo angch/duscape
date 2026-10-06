@@ -1,3 +1,4 @@
+use ::std::collections::HashSet;
 use ::std::ffi::{OsStr, OsString};
 use ::std::path::{Component, Path, PathBuf};
 
@@ -60,6 +61,11 @@ pub struct FileTree {
     /// The volume's local snapshots, once noted ([`Self::note_snapshots`]): `None` until a
     /// viewer has asked, which it does once nothing else is being read.
     pub snapshots: Option<crate::snapshots::Noted>,
+    /// The archives found ([`crate::archive::is_archive_name`]), as paths from the root, that
+    /// are still files in the tree: noted as each directory is added, a name check a file, and
+    /// read by an idle pass after the tree is on screen ([`Self::expand_archive`]), so the walk
+    /// pays nothing for them. A pass takes the list; a rescan's tree brings its own.
+    pub archives: Vec<PathBuf>,
     /// What the system says it could free on the volume a scan of its root covered — its
     /// snapshots and purgeable files ([`crate::os::volume_purgeable`]), asked when the tree was
     /// built, off the thread that draws: a bound on the unseen space snapshots hold.
@@ -99,6 +105,7 @@ impl FileTree {
             on_network: false,
             from_saved_scan: false,
             snapshots: None,
+            archives: Vec::new(),
             purgeable: None,
             hard_links: HardLinks::default(),
             size_at_depth: Vec::new(),
@@ -121,7 +128,8 @@ impl FileTree {
     ///
     /// The other tree's folders add to this one's, and its deferred sightings — if either side
     /// has any — are carried over so that one `replay_deferred` on the result settles everything.
-    pub fn merge_from(&mut self, other: FileTree) {
+    pub fn merge_from(&mut self, mut other: FileTree) {
+        self.archives.append(&mut other.archives);
         // The other tree's folders get ids in this tree's ledger as they come in; `remap` says
         // what each of their old ids became, so their sightings can follow.
         let mut remap = vec![DirRef::NONE; other.hard_links.directories()];
@@ -435,8 +443,13 @@ impl FileTree {
         let FileTree {
             base_folder: mut new_folder,
             hard_links: new_ledger,
+            archives: new_archives,
             ..
         } = rescanned;
+        let under: PathBuf = relative.iter().collect();
+        self.archives.retain(|archive| !archive.starts_with(&under));
+        self.archives
+            .extend(new_archives.into_iter().map(|archive| under.join(archive)));
         let (old_size, old_descendants) = match self.base_folder.path(relative.to_vec())? {
             FileOrFolder::Folder(folder) => (folder.sizes, folder.num_descendants),
             FileOrFolder::File(_) => return None,
@@ -481,6 +494,75 @@ impl FileTree {
             return false;
         }
         self.base_folder.delete_path(relative);
+        true
+    }
+
+    /// The archive file at `relative` (from the root) as a folder of its entries, `members`
+    /// from its index: each entry at its size in the archive — compressed, on disk and as its
+    /// length alike, since that is what it takes of the file — its folders made as its paths
+    /// need. The folder keeps the file's sizes, so nothing above it changes but the count of
+    /// entries; the archive's own headers are in the folder's size and no entry's. A path that
+    /// is no longer a file (gone, or expanded already) is left alone. Returns whether the tree
+    /// changed.
+    pub fn expand_archive(&mut self, relative: &Path, members: &[crate::archive::Member]) -> bool {
+        let names: Vec<OsString> = relative
+            .components()
+            .map(|c| c.as_os_str().to_os_string())
+            .collect();
+        let Some((name, parents)) = names.split_last() else {
+            return false;
+        };
+        let Some(parent) = self.base_folder.folder_at_mut_path(parents) else {
+            return false;
+        };
+        let Some(entry @ FileOrFolder::File(_)) = parent.contents.get_mut(name) else {
+            return false;
+        };
+        let sizes = entry.sizes();
+        // A zip can name `a` a file and also hold `a/b`, or name one entry twice: a file where a
+        // folder is would end the build (a file in the middle of a path), and a name twice would
+        // count twice. The first of a name is kept, and a file where a folder is is left out.
+        let folders: HashSet<&[String]> = members
+            .iter()
+            .flat_map(|member| {
+                let depth = member.path.len() - usize::from(!member.is_dir);
+                (1..=depth).map(|len| &member.path[..len])
+            })
+            .collect();
+        let mut seen: HashSet<&[String]> = HashSet::new();
+        let mut inside = Folder::default();
+        for member in members {
+            let path = member.path.as_slice();
+            if !seen.insert(path) || (!member.is_dir && folders.contains(path)) {
+                continue;
+            }
+            let meta = if member.is_dir {
+                EntryMeta {
+                    is_dir: true,
+                    ..EntryMeta::default()
+                }
+            } else {
+                EntryMeta {
+                    size: member.compressed,
+                    apparent: member.compressed,
+                    ..EntryMeta::default()
+                }
+            };
+            inside.add_entry(meta, member.path.iter());
+        }
+        inside.sizes = sizes;
+        let added = inside.num_descendants;
+        *entry = FileOrFolder::Folder(Box::new(inside));
+        // The count runs up the path; the sizes are the file's, as they were.
+        let mut folder = &mut self.base_folder;
+        folder.num_descendants += added;
+        for name in parents {
+            folder = match folder.contents.get_mut(name) {
+                Some(FileOrFolder::Folder(next)) => next,
+                _ => unreachable!("the path was just found"),
+            };
+            folder.num_descendants += added;
+        }
         true
     }
 
@@ -669,6 +751,7 @@ impl FileTree {
             last_dir,
             deferred,
             profile,
+            archives,
             ..
         } = self;
         let started = profile.as_ref().map(|_| Instant::now());
@@ -696,6 +779,13 @@ impl FileTree {
         for entry in &entries {
             if entry.meta.is_dir {
                 continue;
+            }
+            let name = &names[entry.name_range()];
+            if crate::archive::is_archive_name(name) {
+                // SAFETY: a name's whole range in the buffer the walk packed it into from an
+                // `OsStr` (`DirEntries::push`), so the bytes are an `OsStr`'s.
+                let name = unsafe { OsStr::from_encoded_bytes_unchecked(name) };
+                archives.push(relative_dir.join(name));
             }
             // Both kinds go the same way: which folders a shared file is charged to depends on
             // where else its blocks are, not on how they are measured.

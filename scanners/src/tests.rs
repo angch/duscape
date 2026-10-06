@@ -2040,3 +2040,210 @@ fn a_folder_that_is_no_volume_has_no_snapshots_folder() {
     assert!(!tree.is_snapshot_path(&[libduscape::snapshots::FOLDER.into()]));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The archive pass reads only what the viewer asks for: the archives a scan noted wait as
+/// files until wanted, one wanted becomes a folder of its entries, sizes unchanged, and one
+/// that is no zip stays a file and is not asked for again.
+#[test]
+fn the_archive_pass_reads_only_the_archives_wanted() {
+    use crate::rescan::{Outcome, Rescanner, Rescans};
+    use libduscape::model::FileOrFolder;
+    let dir = temp_scan_dir("archive_pass");
+    std::fs::create_dir_all(dir.join("libs")).expect("create");
+    let zip = |entries: &[(&str, &[u8])]| libduscape::archive::stored_zip(entries);
+    std::fs::write(
+        dir.join("libs").join("app.jar"),
+        zip(&[
+            ("META-INF/MANIFEST.MF", b"Manifest"),
+            ("com/Main.class", &[7u8; 900]),
+        ]),
+    )
+    .expect("write");
+    std::fs::write(dir.join("unwanted.zip"), zip(&[("a.txt", b"a")])).expect("write");
+    std::fs::write(dir.join("fake.zip"), b"no zip at all").expect("write");
+    let (mut tree, _) = scan_into_tree(&dir, ScanOptions::default());
+    let total = tree.get_total_size();
+    let mut noted = tree.archives.clone();
+    noted.sort();
+    let app = PathBuf::from("libs").join("app.jar");
+    assert_eq!(
+        noted,
+        [
+            PathBuf::from("fake.zip"),
+            app.clone(),
+            PathBuf::from("unwanted.zip")
+        ]
+    );
+
+    let outcomes: std::sync::Arc<std::sync::Mutex<Vec<(u64, Outcome)>>> = Default::default();
+    let record = std::sync::Arc::clone(&outcomes);
+    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let rescanner = Rescanner::new(ScanOptions::default(), running, move |id, outcome| {
+        record.lock().unwrap().push((id, outcome));
+    });
+    let mut rescans = Rescans::default();
+    rescans.start_idle(&rescanner, &mut tree, crate::Focus::default());
+    assert!(tree.archives.is_empty(), "taken by the pass");
+    assert!(rescans.is_empty(), "the pass is no rescan");
+    assert!(rescans.is_unread_archive(&app));
+    rescans.want_archives([app.clone(), PathBuf::from("fake.zip")]);
+    let read = archives_read(&outcomes, &mut rescans, &mut tree, &dir, 2);
+    assert_eq!(read, 2, "the two wanted, and only those");
+    assert_eq!(tree.get_total_size(), total, "sizes unchanged");
+    let libs = match tree
+        .get_current_folder()
+        .contents
+        .get(std::ffi::OsStr::new("libs"))
+    {
+        Some(FileOrFolder::Folder(libs)) => libs,
+        _ => panic!("libs is a folder"),
+    };
+    assert!(
+        matches!(
+            libs.contents.get(std::ffi::OsStr::new("app.jar")),
+            Some(FileOrFolder::Folder(_))
+        ),
+        "the jar is a folder of its entries"
+    );
+    let root = tree.get_current_folder();
+    assert!(matches!(
+        root.contents.get(std::ffi::OsStr::new("fake.zip")),
+        Some(FileOrFolder::File(_))
+    ));
+    assert!(matches!(
+        root.contents.get(std::ffi::OsStr::new("unwanted.zip")),
+        Some(FileOrFolder::File(_))
+    ));
+    assert!(
+        !rescans.is_unread_archive(std::path::Path::new("fake.zip")),
+        "not asked again"
+    );
+    assert!(
+        rescans.is_unread_archive(std::path::Path::new("unwanted.zip")),
+        "still waits"
+    );
+    // A rescan of an archive, or of what is in it, is a rescan of the folder holding it.
+    let inside = vec!["libs".into(), "app.jar".into(), "com".into()];
+    assert!(rescans.start(&rescanner, &tree, inside));
+    assert_eq!(
+        rescans
+            .iter()
+            .map(|(_, relative)| relative.to_vec())
+            .collect::<Vec<_>>(),
+        [vec![std::ffi::OsString::from("libs")]]
+    );
+    rescans.cancel_all();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// How many archives the pass still has unread, as the test sees them.
+/// An archive a folder's rescan brings back as a file is read again when it is on screen again,
+/// and a pass with nothing left to read ends, a new one starting for what a rescan notes.
+#[test]
+fn an_archive_rescanned_is_read_again() {
+    use crate::rescan::{Outcome, Rescanner, Rescans};
+    use libduscape::model::FileOrFolder;
+    let dir = temp_scan_dir("archive_reread");
+    std::fs::create_dir_all(dir.join("libs")).expect("create");
+    let app = PathBuf::from("libs").join("app.jar");
+    std::fs::write(
+        dir.join(&app),
+        libduscape::archive::stored_zip(&[("com/Main.class", &[7u8; 300])]),
+    )
+    .expect("write");
+    let (mut tree, _) = scan_into_tree(&dir, ScanOptions::default());
+    let outcomes: std::sync::Arc<std::sync::Mutex<Vec<(u64, Outcome)>>> = Default::default();
+    let record = std::sync::Arc::clone(&outcomes);
+    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let rescanner = Rescanner::new(ScanOptions::default(), running, move |id, outcome| {
+        record.lock().unwrap().push((id, outcome));
+    });
+    let mut rescans = Rescans::default();
+    let is_folder = |tree: &libduscape::model::FileTree| {
+        let libs = tree
+            .get_current_folder()
+            .contents
+            .get(std::ffi::OsStr::new("libs"));
+        matches!(
+            libs,
+            Some(FileOrFolder::Folder(libs))
+                if matches!(
+                    libs.contents.get(std::ffi::OsStr::new("app.jar")),
+                    Some(FileOrFolder::Folder(_))
+                )
+        )
+    };
+    for round in 0..2 {
+        rescans.start_idle(&rescanner, &mut tree, crate::Focus::default());
+        assert!(rescans.is_unread_archive(&app), "round {round}: unread");
+        rescans.want_archives([app.clone()]);
+        assert_eq!(
+            archives_read(&outcomes, &mut rescans, &mut tree, &dir, 1),
+            1
+        );
+        assert!(
+            is_folder(&tree),
+            "round {round}: read and shown as a folder"
+        );
+        assert!(!rescans.has_unread_archives());
+        // The folder rescanned: the archive comes back a file, noted for the next pass.
+        assert!(rescans.start(&rescanner, &tree, vec!["libs".into()]));
+        for _ in 0..300 {
+            let taken = std::mem::take(&mut *outcomes.lock().unwrap());
+            for (id, outcome) in taken {
+                rescans.finish(id, outcome, &mut tree);
+            }
+            if rescans.is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(rescans.is_empty(), "round {round}: the rescan landed");
+        assert!(!is_folder(&tree), "round {round}: a file again");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The archive pass's reports handed to `rescans` until `wanted` archives are read (or three
+/// seconds pass), each checked as a viewer would take it; how many were read.
+fn archives_read(
+    outcomes: &std::sync::Mutex<Vec<(u64, crate::rescan::Outcome)>>,
+    rescans: &mut crate::rescan::Rescans,
+    tree: &mut libduscape::model::FileTree,
+    dir: &std::path::Path,
+    wanted: usize,
+) -> usize {
+    let mut read = 0;
+    for _ in 0..300 {
+        let taken = std::mem::take(&mut *outcomes.lock().unwrap());
+        for (id, outcome) in taken {
+            if let crate::rescan::Outcome::Archives(batch) = &outcome {
+                read += batch.len();
+            }
+            let finished = rescans
+                .finish(id, outcome, tree)
+                .expect("the pass is known");
+            let (folders, left) = finished.filled.expect("reported as a fill's batch");
+            assert_eq!(left, Some(rescans_unread(rescans, dir)));
+            if finished.changed {
+                assert!(folders.contains(&dir.join("libs")), "{folders:?}");
+                assert!(
+                    folders.contains(&dir.to_path_buf()),
+                    "and every folder above it"
+                );
+            }
+        }
+        if read == wanted {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    read
+}
+
+fn rescans_unread(rescans: &crate::rescan::Rescans, _dir: &std::path::Path) -> usize {
+    ["fake.zip", "unwanted.zip", "libs/app.jar"]
+        .iter()
+        .filter(|path| rescans.is_unread_archive(&PathBuf::from(path)))
+        .count()
+}

@@ -6,6 +6,8 @@ exportfs = "exportfs"
 paeth = "paeth"
 # xkb's name for the Again key (`xkb_keycodes`), in the Linux viewer's test keymap.
 AGAI = "AGAI"
+# The `flate2` crate (deflate), named in the docs.
+flate = "flate"
 
 [default.extend-identifiers]
 # Win32's `ExtTextOutW` option, in the Windows viewer's painting.

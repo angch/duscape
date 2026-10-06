@@ -4,6 +4,16 @@ use ::std::fmt;
 /// 11341063 reads as 11,341,063.
 pub struct DisplayCount(pub u64);
 
+/// `count` items, in words: `1 item`, `0 items`, `12,140 items`. A folder of one entry said
+/// "1 items".
+#[must_use]
+pub fn items(count: u64) -> String {
+    match count {
+        1 => "1 item".to_string(),
+        count => format!("{} items", DisplayCount(count)),
+    }
+}
+
 impl fmt::Display for DisplayCount {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let digits = self.0.to_string();

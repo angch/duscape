@@ -13,7 +13,9 @@ readme = "../README.md"
 workspace = true
 
 [dependencies]
-# Previews (`preview`): PNG and JPEG only.
+# Zip archives' entries unpacked for a preview (`archive`): deflate.
+flate2 = { workspace = true }
+# Previews (`preview`): the formats `Cargo.toml`'s `image` features name.
 image = { workspace = true }
 rustix = { workspace = true }
 thiserror = { workspace = true }

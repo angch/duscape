@@ -1,6 +1,13 @@
 use super::{DisplayCount, DisplaySize, DisplaySizeRounded, truncate_middle};
 
 #[test]
+fn one_item_is_counted_in_the_singular() {
+    assert_eq!(super::items(1), "1 item");
+    assert_eq!(super::items(0), "0 items");
+    assert_eq!(super::items(12_140), "12,140 items");
+}
+
+#[test]
 fn truncate_middle_char_boundary() {
     assert_eq!(
         truncate_middle("굿걸 - 누가 방송국을 털었나 E06.mp4", 44),

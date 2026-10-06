@@ -92,7 +92,9 @@ mod tests {
             max_pixels: (200, 200),
         };
         let size = fs::metadata(&request.path).expect("metadata").len();
-        let Ready::Picture(scaled) = prepare_picture(&request, Kind::Png, size) else {
+        let Ready::Picture(scaled) =
+            prepare_picture(&request, Kind::Picture(image::ImageFormat::Png), size)
+        else {
             panic!("expected a picture");
         };
         assert_eq!((scaled.width, scaled.height), (200, 50));
@@ -111,7 +113,9 @@ mod tests {
             max_pixels: (4000, 4000),
             ..request
         };
-        let Ready::Picture(unscaled) = prepare_picture(&small, Kind::Png, size) else {
+        let Ready::Picture(unscaled) =
+            prepare_picture(&small, Kind::Picture(image::ImageFormat::Png), size)
+        else {
             panic!("expected a picture");
         };
         assert_eq!(

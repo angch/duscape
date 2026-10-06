@@ -926,6 +926,68 @@ impl Viewer {
         self.clamp_list_top();
         self.following = false;
         self.tween_to(from);
+        self.want_visible_archives();
+    }
+
+    /// Tell the archive pass which unread archives are on screen, the biggest first: a tile big
+    /// enough to show what is in one (three of the least tiles either way), on the board or
+    /// nested, then a row of the list on screen. Only those are read; an archive whose contents
+    /// would change nothing visible waits until a zoom, a folder or a scroll shows it. Cheap
+    /// when nothing is unread, and a tile's path is made only for an archive's name.
+    fn want_visible_archives(&self) {
+        if !self.rescans.has_unread_archives() {
+            return;
+        }
+        let least = 3 * MIN_TILE_PIXELS;
+        let here: PathBuf = self.tree.current_folder_names.iter().collect();
+        let archive = |tile: &Tile| {
+            tile.file_type == FileType::File
+                && tile.width >= least
+                && tile.height >= least
+                && libduscape::archive::is_archive_name(tile.name.as_encoded_bytes())
+        };
+        let mut wanted: Vec<(u32, PathBuf)> = Vec::new();
+        let mut want = |area: u32, path: PathBuf| {
+            if self.rescans.is_unread_archive(&path) {
+                wanted.push((area, path));
+            }
+        };
+        for tile in self.board.tiles.iter().filter(|tile| archive(tile)) {
+            want(
+                u32::from(tile.width) * u32::from(tile.height),
+                here.join(&tile.name),
+            );
+        }
+        for (index, nested) in self.nested.iter().enumerate() {
+            if archive(&nested.tile) {
+                let path = self.nested_path(index);
+                want(
+                    u32::from(nested.tile.width) * u32::from(nested.tile.height),
+                    path.iter().fold(here.clone(), |path, name| path.join(name)),
+                );
+            }
+        }
+        let shown = self.layout.list_rows();
+        for row in self.rows.iter().skip(self.list_top).take(shown) {
+            if row.entry.file_type == FileType::File
+                && libduscape::archive::is_archive_name(row.entry.name.as_encoded_bytes())
+            {
+                want(
+                    0,
+                    row.path
+                        .iter()
+                        .fold(here.clone(), |path, name| path.join(name)),
+                );
+            }
+        }
+        wanted.sort_by_key(|(area, _)| ::std::cmp::Reverse(*area));
+        let mut seen = ::std::collections::HashSet::new();
+        self.rescans.want_archives(
+            wanted
+                .into_iter()
+                .map(|(_, path)| path)
+                .filter(|path| seen.insert(path.clone())),
+        );
     }
 
     /// The tiles inside the folder tiles, when the tree view is on; none otherwise. `started`
@@ -974,6 +1036,8 @@ impl Viewer {
         if std::mem::take(&mut self.second_pass_owed) {
             self.end_tween();
             self.lay_nesting(true, None, Instant::now());
+            // Deeper tiles, maybe archives big enough to show what is in them.
+            self.want_visible_archives();
         }
     }
 
@@ -1299,6 +1363,8 @@ impl Viewer {
     pub fn scroll_list(&mut self, rows: isize) {
         self.list_top = self.list_top.saturating_add_signed(rows);
         self.clamp_list_top();
+        // Rows scrolled into view may be archives to read.
+        self.want_visible_archives();
     }
 
     // ---------------------------------------------------------------- the scan
@@ -1366,6 +1432,8 @@ impl Viewer {
         {
             self.refresh_steady();
         }
+        // The archive pass may have just started: what is on screen is what it reads first.
+        self.want_visible_archives();
     }
 
     // ---------------------------------------------------------------- what is in hand
@@ -2557,14 +2625,11 @@ impl Viewer {
     fn totals(&self) -> String {
         let mut words = Vec::new();
         if self.scanning {
-            words.push(format!(
-                "scanning, {} entries",
-                DisplayCount(self.entries_scanned)
-            ));
+            words.push(format!("scanning, {}", entries(self.entries_scanned)));
         } else if let Some(took) = self.scan_took {
             words.push(format!(
-                "{} entries in {:.1}s",
-                DisplayCount(self.entries_scanned),
+                "{} in {:.1}s",
+                entries(self.entries_scanned),
                 took.as_secs_f64()
             ));
         }
@@ -2637,7 +2702,9 @@ pub fn describe_tile(tile: &libduscape::tiles::Tile) -> String {
 /// One line on an entry: name, size, share of its folder, and what it is.
 pub fn describe(entry: &FileMetadata) -> String {
     let kind = match (entry.file_type, entry.descendants) {
-        (FileType::Folder, Some(count)) => format!("folder, {} items", DisplayCount(count)),
+        (FileType::Folder, Some(count)) => {
+            format!("folder, {}", libduscape::format::items(count))
+        }
         (FileType::Folder, None) => "folder".to_string(),
         (FileType::File, _) => "file".to_string(),
     };
@@ -2761,6 +2828,14 @@ mod tests;
 mod tween;
 pub use marks::Marks;
 pub use tween::TWEEN;
+
+/// `count` entries, as words: `1 entry`, `12,140 entries`.
+fn entries(count: u64) -> String {
+    match count {
+        1 => "1 entry".to_string(),
+        count => format!("{} entries", DisplayCount(count)),
+    }
+}
 
 /// The volume whose root is `path`: its free bytes and its used, or `None` when `path` is no
 /// volume's root. Both are asked, the used for the share of it the scan has not found yet.

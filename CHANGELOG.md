@@ -18,6 +18,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Shift+click marks a range in the terminal viewer too, in the list or on the treemap, where
   the terminal passes Shift+click on (most keep it for selecting text: Shift+↑/↓ still works
   everywhere).
+- A zip archive is a folder of its entries: `.zip`, and the formats that are zips by another
+  name — `.jar`, `.war`, `.ear`, `.aar`, `.apk`, `.aab`, `.whl`, `.egg`, `.nupkg`, `.vsix`,
+  `.xpi`, `.appx`, `.msix`… Its index (the central directory, at the end of the file) is read
+  once the archive is on screen — a tile large enough to show what is in it, or a row of the
+  list — largest first, so an archive no layout would change for waits until a zoom or a folder
+  change brings it into view. Its entries are tiles and rows like files, each sized by its
+  compressed length, the archive's own size unchanged. An entry is previewed from inside it,
+  unpacked in memory on the previewer's thread (text, pictures up to 64 MiB, the hex dump, which
+  says what archive it is in and how it is packed). Open and Show in the file manager act on the
+  archive; an entry cannot be deleted (the archive can), and a rescan of one rescans the folder
+  holding the archive. Stored and deflated entries are previewed; others (bzip2, LZMA, zstd)
+  and encrypted ones are listed and not unpacked. An entry whose name points outside the
+  archive (`..`, or a drive on Windows) is left out.
+- More pictures are previewed, as PNG and JPEG are, in every viewer but the MS-DOS one: WebP
+  (lossy, lossless or with alpha), GIF (an animated one by its first frame), BMP, ICO, TIFF, QOI,
+  Radiance HDR, PNM and DDS — recognised by their first bytes, checked against the header where
+  a format's magic is a couple of letters a text file could start with ("BMW…", "P3 is…").
+  The decoders are `image`'s own, pure Rust and in Debian; the binaries grow by about 470 KB.
+  OpenEXR (another 440 KB, for a niche whose files are mostly too large to preview), AVIF
+  (whose decoder is libdav1d, in C) and TGA (no magic bytes) are left out. HEIC, HEIF and AVIF
+  are still shown on macOS, by the system.
 - The interactive explainer (`docs/explainer`) has a section on what made the desktop viewers
   fast and look right — the measurements, the techniques kept and the ones that lost — with
   screenshots of the Windows window.
@@ -38,6 +59,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A folder of one entry says "1 item", and a scan of one entry "1 entry", not "1 items" and
+  "1 entries".
 - On Windows a mapped network drive is listed by its share and protocol (`\\server\share ·
   cifs`, `nfs`, `webdav`) in the volume chooser, not as an NTFS volume (the server's disk).
 - On Windows a second Ctrl- or Shift-click where the first landed — a double click to Windows —

@@ -18,8 +18,8 @@ use duscape_viewer::state::{
     EXPANDER, Focus, LIST_PAD, Preview, ROW, ROW_INDENT, Rect, TILE_LABEL, Viewer, lighter,
     tile_color,
 };
+use libduscape::DisplaySize;
 use libduscape::tiles::{FileType, Row, Tile};
-use libduscape::{DisplayCount, DisplaySize};
 
 pub const WINDOW: Color = (0.13, 0.13, 0.14);
 const SEPARATOR: Color = (0.30, 0.30, 0.32);
@@ -440,8 +440,8 @@ fn details(canvas: &mut Canvas, viewer: &Viewer, info: Rect, picture: Option<&Rg
     );
     let summary = match (entry.file_type, entry.descendants) {
         (FileType::Folder, Some(count)) => format!(
-            "Folder · {} items · {} · {:.1}%",
-            DisplayCount(count),
+            "Folder · {} · {} · {:.1}%",
+            libduscape::format::items(count),
             DisplaySize(entry.size as f64),
             entry.percentage * 100.0
         ),

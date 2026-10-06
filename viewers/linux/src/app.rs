@@ -1149,7 +1149,7 @@ impl App {
                 .open_in_hand()
                 .and_then(|path| libduscape::launch::open(&path).err()),
             Action::Reveal => {
-                let paths = self.viewer.target_paths();
+                let paths = self.viewer.reveal_paths();
                 let paths: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
                 libduscape::launch::reveal(&paths).err()
             }
@@ -1267,7 +1267,7 @@ fn confirmation(files: &[FileToDelete], permanently: bool) -> (String, String) {
         [one] => {
             let contents = match one.num_descendants {
                 Some(count) if one.file_type == libduscape::FileType::Folder => {
-                    format!(", a folder of {} items", DisplayCount(count))
+                    format!(", a folder of {}", libduscape::format::items(count))
                 }
                 _ => String::new(),
             };

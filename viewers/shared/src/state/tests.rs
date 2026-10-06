@@ -2069,3 +2069,16 @@ fn a_network_share_shows_no_unscanned_strip() {
         "no strip of other shares"
     );
 }
+
+/// One entry is one entry: the status says so in the singular.
+#[test]
+fn a_single_entry_is_counted_in_the_singular() {
+    let root = Path::new(ROOT);
+    let mut viewer = Viewer::new(root, SizeKind::Disk, 1);
+    let mut tree = FileTree::new(Folder::new(root), root.to_path_buf());
+    tree.add_entry(meta(100, false), &root.join("only.txt"));
+    viewer.resize(1200.0, 800.0);
+    viewer.finish_scan(tree);
+    let (_, right) = viewer.status();
+    assert!(right.starts_with("1 entry in "), "{right}");
+}

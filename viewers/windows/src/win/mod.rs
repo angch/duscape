@@ -573,7 +573,7 @@ impl Window {
                 .open_in_hand()
                 .and_then(|path| libduscape::launch::open(&path).err()),
             Action::Reveal => {
-                let paths = self.viewer.target_paths();
+                let paths = self.viewer.reveal_paths();
                 let paths: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
                 libduscape::launch::reveal(&paths).err()
             }

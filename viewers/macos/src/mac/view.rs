@@ -1238,7 +1238,7 @@ impl DiskView {
     /// What a command acts on: the marked entries or the one in hand, else the folder shown.
     fn paths_or_folder(&self) -> Vec<PathBuf> {
         self.with(|viewer| {
-            let paths = viewer.target_paths();
+            let paths = viewer.reveal_paths();
             if paths.is_empty() {
                 vec![viewer.tree.get_current_path()]
             } else {
@@ -1442,7 +1442,7 @@ impl DiskView {
     // ---------------------------------------------------------------- Quick Look
 
     fn quick_look_paths(&self) -> Vec<PathBuf> {
-        self.with(|viewer| viewer.target_paths())
+        self.with(|viewer| viewer.reveal_paths())
             .unwrap_or_default()
     }
 
@@ -1514,7 +1514,7 @@ fn describe_files(files: &[FileToDelete], permanently: bool) -> String {
         [one] => {
             let contents = match one.num_descendants {
                 Some(count) if one.file_type == libduscape::FileType::Folder => {
-                    format!(", a folder of {} items", DisplayCount(count))
+                    format!(", a folder of {}", libduscape::format::items(count))
                 }
                 _ => String::new(),
             };

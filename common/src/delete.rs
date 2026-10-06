@@ -36,12 +36,22 @@ pub fn refused(files: &[FileToDelete]) -> Option<String> {
             name(file)
         ));
     }
-    files.iter().find(|file| in_snapshot(file)).map(|file| {
-        format!(
+    if let Some(file) = files.iter().find(|file| in_snapshot(file)) {
+        return Some(format!(
             "{} is in a local snapshot, which is read-only: its space is freed by deleting the \
              snapshot (tmutil deletelocalsnapshots)",
             name(file)
-        )
+        ));
+    }
+    // An archive's entry is no file on disk: the archive is one file, deleted whole or changed
+    // with an archive tool.
+    files.iter().find_map(|file| {
+        let (archive, _) = crate::archive::member_of(&file.full_path())?;
+        Some(format!(
+            "{} is inside {}, an archive: delete the archive, or change it with an archive tool",
+            name(file),
+            crate::archive::display_name(&archive)
+        ))
     })
 }
 
@@ -391,6 +401,29 @@ mod tests {
         #[allow(clippy::permissions_set_readonly_false)]
         permissions.set_readonly(false);
         let _ = fs::set_permissions(&original, permissions);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// What is inside an archive is no file on disk: refused, before anything is touched; the
+    /// archive itself is deleted like any file.
+    #[test]
+    fn what_is_inside_an_archive_is_refused_and_the_archive_is_not() {
+        let dir = ::std::env::temp_dir().join("duscape_delete_archive_test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create");
+        fs::write(
+            dir.join("lib.jar"),
+            crate::archive::stored_zip(&[("a/b.class", b"x")]),
+        )
+        .expect("write");
+        let inside = to_delete(dir.clone(), &["lib.jar", "a", "b.class"], FileType::File);
+        let why = refused(::std::slice::from_ref(&inside)).expect("refused");
+        assert!(why.starts_with("b.class is inside lib.jar"), "{why}");
+        assert!(remove(&inside).is_err());
+        let archive = to_delete(dir.clone(), &["lib.jar"], FileType::Folder);
+        assert_eq!(refused(::std::slice::from_ref(&archive)), None);
+        remove(&archive).expect("the archive deleted");
+        assert!(!dir.join("lib.jar").exists());
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -164,7 +164,9 @@ out and painting.
 | `fill_N` | macOS, once the catch-up's tree has landed: lists the folders the saved scan trimmed, the one in view first, and reports batches of 256 (or every 100 ms) as `Outcome::Filled` under one id until `left` is `None` (`Rescanner::spawn_fill`, `fill::fill`); a delete does not restart it, and a fill adds only what the tree lacks |
 | `snapshots_N` | The last idle pass, macOS, root only (`Rescans::start_idle`, once nothing else reads the disk: the first scan, its catch-up and fill done; `Rescanner::spawn_snapshots`): each of the volume's local snapshots mounted read-only and `nobrowse` in a private folder (`mount_apfs -s` on the volume's device), read on the walk's thread count where the change log named folders since it (one replay on `/` for every snapshot, its id from `.fseventsd`; whole where the log does not reach) against the live volume by file id and, for a file written over in place, by its physical extents (`snapshots::gone_from_live`), unmounted, one tree for them all → `Outcome::Snapshots`, grafted at the root's `(local snapshots)` folder. A whole rescan cancels it; the new tree's idle call starts it again |
 | `deleter` | The desktop viewers, one a delete (`duscape_viewer::deleting::Deletion`): removes the entries confirmed with `delete::remove_counting` (or a Trash's call), counting each into a shared `Tally`, and reports how each went → the window's `Viewer::delete_done`. Meanwhile the window takes no input but Esc and the box's Cancel (`Tally::stop`), and draws the box (`DeletionLayout`) once it has run `SHOW_AFTER` (100 ms), every `REDRAW_EVERY`; a folder removed only in part (stopped, or a failure inside it) is rescanned. On the window's thread, a package cache's thousands of files froze the window for seconds |
-| `previewer` | Reads the file in hand for the preview: first 64 KB as text, or a PNG/JPEG decoded and scaled after a 100 ms debounce (a newer request supersedes it) → `Instruction::PreviewReady(generation, _)`; answers to an older generation are dropped |
+| `archives_N` | The archives' pass (`Rescans::start_archives`, from `start_idle` once a tree is in hand and nothing replaces it; `archives::run`): idle until a viewer says which noted archives are on screen (`Rescans::want_archives`, after every relayout, from `Viewer::want_visible_archives` and the TUI's `App::want_visible_archives`: an archive's tile, nested or not, large enough to show a nested level — 3 × `MIN_TILE_PIXELS` either way — largest first, then the list's visible rows; the terminal's top-level tiles of 18×9 cells and up, and its rows), then reads those indexes on a few threads that block while nothing is asked (`Wanted`, woken by `want_archives` and by a stop) → `Outcome::Archives`, grafted by `Rescans::finish` (`FileTree::expand_archive`) and reported as a fill's batch (`filled`: the folders changed, the archives left). An archive no layout would change for is never read until one does: a zoom, a folder entered. It ends when none is left unread, and a stale pass's batches are dropped by id. Stopped by a whole-tree rescan, which notes the archives afresh; a folder's rescan brings its archives back unread (`FileTree::graft`), and they are read again when on screen (`Wanted::done` forgets an archive once reported: kept, a rescanned archive stayed a file). The graft is on the window's thread, its folder built whole there: not measured for an archive near `MAX_MEMBERS` (a million entries), owed |
+| `previewer` | Reads the file in hand for the preview: first 64 KB as text, or a picture decoded and scaled (PNG, JPEG, WebP, GIF, BMP, ICO, TIFF, QOI, HDR, PNM, DDS:
+the `image` features in `Cargo.toml`, with why EXR, AVIF and TGA are not) after a 100 ms debounce (a newer request supersedes it) → `Instruction::PreviewReady(generation, _)`; answers to an older generation are dropped |
 | **main** | App state mutations + ratatui rendering. During the scan it renders from the *outline*; on `ScanComplete` it swaps in the finished tree, keeping the current folder |
 
 **Synchronization**: `Arc<AtomicBool>` for `running`/`loaded` flags; bounded sync channels (capacity 1–100).
@@ -276,6 +278,20 @@ out and painting.
   moves, not every frame), drawn by `RectangleGrid::nested`. A `NestedTile` knows its
   `parent` and `top` by index, not its path (`nested_path`, `nested_path_is`): paths cloned
   per tile were half the nesting's time
+- `archive.rs` — zip archives and the formats that are zips by another name (`EXTENSIONS`:
+  jar, apk, whl, nupkg, vsix…), as folders: `read_index` reads the central directory from the
+  file's end (the end record searched in its last 64 KiB, Zip64, a self-extractor's stub before
+  it shifting every offset, CP437 names unless flagged UTF-8; at most `MAX_DIRECTORY` bytes and
+  `MAX_MEMBERS` entries, the rest `truncated`; a name going up (`..`) or with a part that is no plain name here — `C:` on Windows, which a join takes for the drive, so a delete of the entry reached it — is left out, `member_path`), never the entries; `member_of` splits a path
+  inside an archive into the archive and the inner path (no file at the path, an archive above
+  it), `on_disk` the file to open or reveal for it; `read_member` unpacks an entry's start or
+  whole, stored or deflated (`flate2`, pure Rust), in memory. The walk notes an archive by its
+  name (`FileTree::archives`) and reads nothing; `FileTree::expand_archive` turns the file into
+  a folder of its entries sized by their *compressed* lengths (the first of a name kept, a file where a folder is left out: a zip may name `a` a file and hold `a/b`, which ended the build), the folder's sizes the file's (the
+  headers stay in the folder's size, so a tiny archive's entry is a sliver beside them — honest,
+  and no `unlisted` sum, which would make the macOS fill take it for a trimmed folder). An entry
+  is refused by `delete::refused`, previewed by `preview::read`/`picture_bytes` from inside the
+  archive, and a rescan of it rescans the folder holding the archive (`Rescans::start`)
 - `delete.rs` — `remove` (from disk, a link itself never its target) and `refused` (NTFS metadata);
   `remove_counting`, a walk of its own counting into a `Tally` and stoppable (`remove_dir_all`
   says nothing until done), a read-only file deleted ignoring the attribute as `remove_dir_all`
@@ -532,6 +548,10 @@ out and painting.
   the focus (under it, or on the way down to it) where its stack pops them next, `take_toward` a
   steal's pick from the shared queue; the macOS walker partitions its one queue as it fills
   (`QueueState::toward`). With no focus, one atomic load a directory
+- `archives.rs` — the archives' pass (`run`, behind `Rescanner::spawn_archives`): `Wanted`, the
+  archives a viewer has on screen, replaced whole each time it asks (`Rescans::want_archives`, in
+  the order asked: the viewers ask largest tile first), a few workers reading indexes and a
+  coordinator that sends what they read every `GATHER` (30 ms) as one `Outcome::Archives`
 - `refine.rs` — the second pass (`SmallFiles`, `refine`)
 - `rescan.rs` — `Rescanner` and `Refiner`: rescans and the second pass on threads of their own,
   results through a callback, for any viewer
@@ -1357,4 +1377,6 @@ Regenerated by hand from `wc -l` when this file is touched; `make quality` print
 | `viewers/tui/src/ui/grid/rectangle_grid.rs` | ~220 lines — the terminal's treemap: tiles, the nesting, corners, highlight frames |
 | `common/src/scan/mod.rs` | ~1270 lines — the scan protocol: options, entries, whom they are for, issues, the outline, the focus |
 | `common/src/scan/places.rs` | ~290 lines — `--issues`' failures by where, rolled up into a tree |
+| `common/src/archive.rs` | ~430 lines — zip archives as folders: the central directory, an entry unpacked in memory |
+| `scanners/src/archives.rs` | ~140 lines — the archives' pass: the ones on screen read, largest first |
 | `common/src/nas.rs` | ~190 lines — the folders a NAS (or macOS, Windows) keeps for itself, by name: left out, described |

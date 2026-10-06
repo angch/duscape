@@ -9,6 +9,7 @@
 //! whole map, and which viewer offers what.
 
 pub mod about;
+pub mod archive;
 pub mod clipboard;
 pub mod delete;
 pub mod error;

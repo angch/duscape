@@ -54,7 +54,8 @@ them.
 Below the list is a preview of the file in hand, 16:9 in shape (worked out from the terminal's
 cell size in pixels, where it reports one) and never more than half the panel. A text file shows
 its first lines, with escape sequences and other control characters shown as `?` rather than
-passed to the terminal. A PNG or JPEG — recognised by its first bytes, not its name — is drawn
+passed to the terminal. A picture — PNG, JPEG, WebP, GIF, BMP, ICO, TIFF, QOI, HDR, PNM or DDS,
+recognised by its first bytes, not its name — is drawn
 as a picture in terminals that speak the kitty graphics protocol (kitty, Ghostty, WezTerm; known
 from the environment, or by asking the terminal when it says nothing, as over ssh), once
 the selection has rested on it for 100 ms, so moving quickly through a folder of photos decodes

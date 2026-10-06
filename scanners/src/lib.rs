@@ -54,6 +54,7 @@ pub mod mft;
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod ntfs;
 
+pub mod archives;
 pub mod cache;
 pub mod fill;
 pub mod focus;
