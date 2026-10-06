@@ -361,7 +361,7 @@ checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 
 [[package]]
 name = "duscape"
-version = "0.3.0-rc.7"
+version = "0.3.0-rc.8"
 dependencies = [
  "clap",
  "duscape-linux",
@@ -382,7 +382,7 @@ dependencies = [
 
 [[package]]
 name = "duscape-linux"
-version = "0.3.0-rc.7"
+version = "0.3.0-rc.8"
 dependencies = [
  "ab_glyph",
  "duscape-scan",
@@ -398,7 +398,7 @@ dependencies = [
 
 [[package]]
 name = "duscape-mac"
-version = "0.3.0-rc.7"
+version = "0.3.0-rc.8"
 dependencies = [
  "dispatch2",
  "duscape-scan",
@@ -413,7 +413,7 @@ dependencies = [
 
 [[package]]
 name = "duscape-scan"
-version = "0.3.0-rc.7"
+version = "0.3.0-rc.8"
 dependencies = [
  "flate2",
  "libc",
@@ -423,7 +423,7 @@ dependencies = [
 
 [[package]]
 name = "duscape-viewer"
-version = "0.3.0-rc.7"
+version = "0.3.0-rc.8"
 dependencies = [
  "duscape-scan",
  "image",
@@ -432,7 +432,7 @@ dependencies = [
 
 [[package]]
 name = "duscape-windows"
-version = "0.3.0-rc.7"
+version = "0.3.0-rc.8"
 dependencies = [
  "clap",
  "duscape-scan",
@@ -669,7 +669,7 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
 name = "libduscape"
-version = "0.3.0-rc.7"
+version = "0.3.0-rc.8"
 dependencies = [
  "flate2",
  "image",

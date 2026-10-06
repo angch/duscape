@@ -18,7 +18,7 @@ path = "src/main.rs"
 [dependencies]
 libduscape = { workspace = true }
 duscape-scan = { workspace = true }
-duscape-viewer = { path = "../shared", version = "0.3.0-rc.7" }
+duscape-viewer = { path = "../shared", version = "0.3.0-rc.8" }
 image = { workspace = true }
 
 # The window is Linux and FreeBSD only (`lib.rs`; FreeBSD type-checks but has never been run);
