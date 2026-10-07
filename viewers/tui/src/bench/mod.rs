@@ -454,7 +454,7 @@ pub fn run(
     if profile {
         libduscape::model::files::profile::enable();
     }
-    println!("benchmarking {}", path.display());
+    println!("benchmarking {}", libduscape::format::shown_path(path));
     if let Some(used) = libduscape::os::volume_used(path) {
         // What the stages' totals fall short of is what the walk could not see: unreadable
         // folders, filesystem metadata, snapshots.

@@ -2214,7 +2214,7 @@ impl Viewer {
         match files {
             [one] => format!(
                 "Delete {}?\n\n{} will be permanently removed from disk.",
-                one.full_path().display(),
+                libduscape::format::shown_path(&one.full_path()),
                 DisplaySize(size as f64)
             ),
             many => {
@@ -2348,7 +2348,10 @@ impl Viewer {
             ),
         };
         Some(Failure {
-            title: format!("Could not remove {}", file.full_path().display()),
+            title: format!(
+                "Could not remove {}",
+                libduscape::format::shown_path(&file.full_path())
+            ),
             detail: format!("{error}{more}{done}"),
         })
     }
@@ -2567,7 +2570,7 @@ impl Viewer {
         let path = self.tree.get_current_path();
         path.file_name()
             .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| path.to_string_lossy().into_owned())
+            .unwrap_or_else(|| libduscape::format::shown_path(&path))
     }
 
     /// Under the title: its size, and the whole scan's.

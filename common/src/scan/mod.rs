@@ -459,7 +459,7 @@ impl Issues {
             let _ = writeln!(
                 out,
                 "  {}: {}: {}",
-                issue.path.display(),
+                crate::format::shown_path(&issue.path),
                 issue.action,
                 issue.error
             );

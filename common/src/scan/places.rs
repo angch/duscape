@@ -176,7 +176,12 @@ impl Places {
                 waiting.push((nodes[child].total, ::std::cmp::Reverse(child)));
             }
         }
-        let _ = writeln!(out, "  {:>10}  {}", nodes[0].total, root.display());
+        let _ = writeln!(
+            out,
+            "  {:>10}  {}",
+            nodes[0].total,
+            crate::format::shown_path(&root)
+        );
         write(&nodes, &open, 0, 1, &mut out);
         out
     }

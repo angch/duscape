@@ -641,9 +641,10 @@ impl Rescans {
             }
             [one] if one.kind == Kind::Fill => Some("filling in the smaller files".to_string()),
             [one] if one.kind == Kind::Snapshots => Some("reading the local snapshots".to_string()),
-            [one] if one.relative.is_empty() => {
-                Some(format!("{} (everything)", root.to_string_lossy()))
-            }
+            [one] if one.relative.is_empty() => Some(format!(
+                "{} (everything)",
+                libduscape::format::shown_path(root)
+            )),
             [one] => Some(
                 one.relative
                     .iter()

@@ -305,7 +305,7 @@ impl Widget for SidePanel<'_> {
         line(
             buf,
             area.y,
-            &printable(&folder.path.to_string_lossy()),
+            &printable(&libduscape::format::shown_path(folder.path)),
             heading,
         );
 

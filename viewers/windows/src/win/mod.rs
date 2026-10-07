@@ -701,7 +701,7 @@ impl Window {
         if !root.is_dir() {
             message(
                 hwnd,
-                &format!("Not a folder: {}", root.display()),
+                &format!("Not a folder: {}", libduscape::format::shown_path(&root)),
                 MB_OK | MB_ICONERROR,
             );
             return;
@@ -1310,7 +1310,7 @@ fn resolve(folder: Option<PathBuf>) -> Option<PathBuf> {
     if !root.is_dir() {
         message(
             null_mut(),
-            &format!("Not a folder: {}", root.display()),
+            &format!("Not a folder: {}", libduscape::format::shown_path(&root)),
             MB_OK | MB_ICONERROR,
         );
         return None;

@@ -188,6 +188,13 @@ pub fn without_verbatim_prefix(path: &str) -> String {
     }
 }
 
+/// `path` as a person writes it, for a title, a dialog or a status line: on Windows without the
+/// `\\?\` prefix the scan's canonical paths carry (`\\?\C:\x` is shown `C:\x`).
+#[must_use]
+pub fn shown_path(path: &Path) -> String {
+    without_verbatim_prefix(&path.to_string_lossy())
+}
+
 /// The path from `base` to `target`, both absolute: `/home/user/bar/baz` from `/home/user/foo` is
 /// `../bar/baz`, and `base` itself is `.`.
 ///

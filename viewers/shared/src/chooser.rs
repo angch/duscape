@@ -75,7 +75,7 @@ impl Chooser {
                     (true, true) => String::new(),
                 };
                 Choice {
-                    title: volume.path.display().to_string(),
+                    title: libduscape::format::shown_path(&volume.path),
                     detail,
                     // A share an elevated session cannot size yet is listed without a size.
                     fullness: (volume.total > 0).then_some((volume.used, volume.total)),
@@ -86,7 +86,7 @@ impl Chooser {
         if let Some(home) = home {
             choices.push(Choice {
                 title: "Home folder".to_string(),
-                detail: home.display().to_string(),
+                detail: libduscape::format::shown_path(&home),
                 fullness: None,
                 target: Target::Scan(home),
             });

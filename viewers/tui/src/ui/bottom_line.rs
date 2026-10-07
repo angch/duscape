@@ -61,7 +61,7 @@ fn render_currently_selected(
 }
 
 fn render_last_read_path(buf: &mut Buffer, last_read_path: &Path, max_len: u16, y: u16) {
-    let last_read_path = last_read_path.to_string_lossy();
+    let last_read_path = libduscape::format::shown_path(last_read_path);
     if (last_read_path.chars().count() as u16) < max_len {
         buf.set_string(1, y, last_read_path, Style::default());
     } else {

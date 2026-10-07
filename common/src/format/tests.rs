@@ -214,6 +214,10 @@ mod shell_quote {
             r"\\server\share\x"
         );
         assert_eq!(without_verbatim_prefix(r"C:\plain"), r"C:\plain");
+        assert_eq!(
+            super::super::shown_path(::std::path::Path::new(r"\\?\C:\")),
+            r"C:\"
+        );
     }
 }
 

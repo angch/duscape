@@ -147,13 +147,7 @@ impl<'a> Widget for TitleLine<'a> {
             render_clipboard_flash(copied, rect, buf);
             return;
         }
-        let base_path = &self
-            .base_path_info
-            .path
-            .clone()
-            .into_os_string()
-            .into_string()
-            .expect("could not convert os string to string");
+        let base_path = &libduscape::format::shown_path(self.base_path_info.path);
         let current_path = {
             let mut current_path_relative_to_base = PathBuf::new();
             let base_path_len = self.base_path_info.path.iter().count();

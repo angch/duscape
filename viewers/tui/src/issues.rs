@@ -18,7 +18,7 @@ pub fn run(path: &Path, mut options: ScanOptions) {
         ::std::env::consts::OS,
         ::std::env::consts::ARCH
     );
-    println!("  folder: {}", path.display());
+    println!("  folder: {}", libduscape::format::shown_path(path));
     for (what, words) in duscape_scan::environment(path, options) {
         println!("  {what}: {words}");
     }

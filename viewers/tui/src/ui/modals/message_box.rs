@@ -29,7 +29,7 @@ fn file_name(file_to_delete: &FileToDelete) -> String {
 
 /// The full path if it fits, else the name, cut in the middle.
 fn truncated_file_name_line(file_to_delete: &FileToDelete, max_len: u16) -> String {
-    let full_path = printable(&file_to_delete.full_path().to_string_lossy());
+    let full_path = printable(&libduscape::format::shown_path(&file_to_delete.full_path()));
     if usize::from(max_len) > UnicodeWidthStr::width(full_path.as_str()) {
         full_path
     } else {
