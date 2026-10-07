@@ -359,7 +359,11 @@ the `image` features in `Cargo.toml`, with why EXR, AVIF and TGA are not) after 
   `os/mod.rs` — `canonical_root()`, what every scan root and `FileTree::new` go through: canonical,
   and a network share's root (`\\?\UNC\server\share`, which `canonicalize` gives with nothing after
   the prefix) with its separator, so paths under it strip to names; `scan::below_root` strips a
-  separator left in front of a name anyway
+  separator left in front of a name anyway. Canonical on Windows means verbatim (`\\?\C:\`),
+  which no person writes: every path *shown* — a window's title, a dialog, a status line, the
+  chooser, the terminal's title and panels, `--issues` — goes through `format::shown_path`
+  (`C:\`, `\\server\share`), and a copied path through `quote_path_for_shell`, which drops the
+  prefix too
 - `os/volumes.rs` — `volumes()`: what is mounted, its device or label, filesystem, size and
   use — `/proc/self/mounts` sifted (block devices and the known network filesystems, one line
   a source, tested) and `statvfs`; `getmntinfo` on macOS; the drive letters on Windows, a mapped network drive named by its
