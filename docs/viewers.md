@@ -73,8 +73,12 @@ cargo run -p duscape-linux --release -- ~   # or run with no argument for the cu
   or a path), else `wayland-0` there, which a shell over `ssh` or `su` is left with. On Wayland
   the compositor is asked for a title bar (`xdg-decoration`); where
   it draws none (GNOME) the window draws its own, with move, maximise and close.
-- **HiDPI:** on Wayland the compositor's scale; on X11 `Xft.dpi` (or `GDK_SCALE`, or
-  `DUSCAPE_SCALE`).
+- **HiDPI:** on Wayland the compositor's scale, followed as the window moves between outputs
+  or an output's scale changes (integer scales; fractional scaling is drawn at the integer above
+  and scaled down by the compositor); on X11 `Xft.dpi` (or `GDK_SCALE`, or `DUSCAPE_SCALE`),
+  followed when the desktop or `xrdb` changes it — X11 has one DPI for the whole server, as GTK
+  and Qt take it, so a display of another DPI shows when the desktop writes the new value.
+  Either way the window is laid out and drawn again in the new pixels at once.
 
 Why not GTK or Qt: both need their development packages to build and their libraries to run, which
 rules out the static binaries this fork ships, and their Rust bindings bring hundreds of crates for

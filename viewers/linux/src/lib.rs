@@ -54,7 +54,7 @@ pub fn run() {
                     "duscape-linux [-a|--apparent-size] [FOLDER]\n\n\
                      A window on where the disk space went. Without a folder, it offers the volumes.\n\n\
                      DUSCAPE_BACKEND=…    wayland or x11 (else Wayland if WAYLAND_DISPLAY is set)\n\
-                     DUSCAPE_SCALE=2      twice the size on X11 (else Xft.dpi, GDK_SCALE; Wayland scales itself)\n\
+                     DUSCAPE_SCALE=2      twice the size on X11 (else Xft.dpi, followed as it changes, or GDK_SCALE; Wayland scales itself)\n\
                      DUSCAPE_FONT=FILE    the font to use (else fontconfig's sans-serif)\n\
                      DUSCAPE_SNAPSHOT=PNG write the window to a PNG after the scan, and quit"
                 );

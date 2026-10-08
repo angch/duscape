@@ -3,6 +3,7 @@
 //! mapping, and the clipboard when no tool owns it.
 
 use ::std::borrow::Cow;
+use ::std::sync::atomic::{AtomicU64, Ordering};
 use ::std::sync::{Arc, Mutex};
 
 use x11rb::connection::Connection;
@@ -10,9 +11,9 @@ use x11rb::image::{BitsPerPixel, ColorComponent, Image, ImageOrder, PixelLayout,
 use x11rb::properties::WmSizeHints;
 use x11rb::protocol::Event;
 use x11rb::protocol::xproto::{
-    AtomEnum, ClientMessageEvent, ConnectionExt as _, CreateGCAux, CreateWindowAux, EventMask,
-    Gcontext, PropMode, SELECTION_NOTIFY_EVENT, SelectionNotifyEvent, SelectionRequestEvent,
-    VisualClass, Window, WindowClass,
+    AtomEnum, ChangeWindowAttributesAux, ClientMessageEvent, ConnectionExt as _, CreateGCAux,
+    CreateWindowAux, EventMask, Gcontext, PropMode, SELECTION_NOTIFY_EVENT, SelectionNotifyEvent,
+    SelectionRequestEvent, VisualClass, Window, WindowClass,
 };
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
@@ -96,9 +97,51 @@ impl Keymap {
 struct Shared {
     conn: RustConnection,
     window: Window,
+    root: Window,
     atoms: Atoms,
+    /// Pixels per point, as `f64` bits: read at the start and again whenever the server's
+    /// `Xft.dpi` changes, by the event thread.
+    scale: AtomicU64,
+    /// The least size the window may have, in points: its hints are set again at each scale.
+    min: (f64, f64),
     /// The text this window holds on the clipboard, when no clipboard tool took it.
     clipboard: Mutex<Option<Vec<u8>>>,
+}
+
+impl Shared {
+    fn scale(&self) -> f64 {
+        f64::from_bits(self.scale.load(Ordering::Acquire))
+    }
+
+    fn set_min_size(&self, scale: f64) -> Result<(), String> {
+        let mut hints = WmSizeHints::new();
+        hints.min_size = Some(((self.min.0 * scale) as i32, (self.min.1 * scale) as i32));
+        hints
+            .set_normal_hints(&self.conn, self.window)
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    /// The server's `Xft.dpi` changed (`xrdb`, or a desktop's scaling setting):
+    /// read the scale again and, if it moved, report the window at its new size in points, so
+    /// the app lays out and draws in the new pixels. `DUSCAPE_SCALE` and `GDK_SCALE` are
+    /// fixed for the process, as they are for GTK, and are not read again.
+    fn rescale(&self, size: &Mutex<(u16, u16)>, deliver: &impl Fn(Input)) {
+        let scale = scale_factor(&self.conn);
+        if self.scale.swap(scale.to_bits(), Ordering::AcqRel) == scale.to_bits() {
+            return;
+        }
+        let _ = self.set_min_size(scale);
+        let _ = self.conn.flush();
+        let (w, h) = *size.lock().unwrap_or_else(|e| e.into_inner());
+        if w > 0 && h > 0 {
+            deliver(Input::Resized {
+                width: f64::from(w) / scale,
+                height: f64::from(h) / scale,
+                scale,
+            });
+        }
+    }
 }
 
 pub struct X11 {
@@ -107,7 +150,6 @@ pub struct X11 {
     depth: u8,
     /// Where the window's visual keeps each colour in a pixel.
     layout: PixelLayout,
-    scale: f64,
     /// The window's size in pixels, as last drawn.
     size: Arc<Mutex<(u16, u16)>>,
 }
@@ -354,11 +396,15 @@ impl X11 {
                 ),
         )
         .map_err(|error| error.to_string())?;
-        let mut hints = WmSizeHints::new();
-        hints.min_size = Some(((min.0 * scale) as i32, (min.1 * scale) as i32));
-        hints
-            .set_normal_hints(&conn, window)
-            .map_err(|error| error.to_string())?;
+        // The root's `RESOURCE_MANAGER` property is where `Xft.dpi` lives (`xrdb` writes it,
+        // and so do GNOME's and KDE's settings daemons when the scaling is changed): told of
+        // its changes, the window follows the display's DPI while it runs. The mask is this
+        // client's own, so it takes nothing from the window manager's.
+        conn.change_window_attributes(
+            root,
+            &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE),
+        )
+        .map_err(|error| error.to_string())?;
         conn.change_property32(
             PropMode::REPLACE,
             window,
@@ -393,15 +439,18 @@ impl X11 {
         let shared = Arc::new(Shared {
             conn,
             window,
+            root,
             atoms,
+            scale: AtomicU64::new(scale.to_bits()),
+            min,
             clipboard: Mutex::new(None),
         });
+        shared.set_min_size(scale)?;
         let backend = X11 {
             shared,
             gc,
             depth,
             layout,
-            scale,
             size: Arc::new(Mutex::new((w, h))),
         };
         backend.set_title_inner(title)?;
@@ -449,7 +498,6 @@ impl X11 {
     fn spawn_events(&self, mut keymap: Keymap, deliver: impl Fn(Input) + Send + 'static) {
         let shared = Arc::clone(&self.shared);
         let size = Arc::clone(&self.size);
-        let scale = self.scale;
         let _ = ::std::thread::Builder::new()
             .name("x11_events".to_string())
             .spawn(move || {
@@ -463,6 +511,7 @@ impl X11 {
                             if now != *known && now.0 > 0 && now.1 > 0 {
                                 *known = now;
                                 drop(known);
+                                let scale = shared.scale();
                                 deliver(Input::Resized {
                                     width: f64::from(now.0) / scale,
                                     height: f64::from(now.1) / scale,
@@ -488,6 +537,7 @@ impl X11 {
                                 8 => Button::Back,
                                 _ => Button::Other,
                             };
+                            let scale = shared.scale();
                             deliver(Input::Button {
                                 button,
                                 x: f64::from(press.event_x) / scale,
@@ -495,10 +545,19 @@ impl X11 {
                                 mods: mods(u16::from(press.state)),
                             });
                         }
-                        Event::MotionNotify(motion) => deliver(Input::Motion {
-                            x: f64::from(motion.event_x) / scale,
-                            y: f64::from(motion.event_y) / scale,
-                        }),
+                        Event::MotionNotify(motion) => {
+                            let scale = shared.scale();
+                            deliver(Input::Motion {
+                                x: f64::from(motion.event_x) / scale,
+                                y: f64::from(motion.event_y) / scale,
+                            });
+                        }
+                        Event::PropertyNotify(property)
+                            if property.window == shared.root
+                                && property.atom == u32::from(AtomEnum::RESOURCE_MANAGER) =>
+                        {
+                            shared.rescale(&size, &deliver);
+                        }
                         Event::LeaveNotify(_) => deliver(Input::Leave),
                         Event::FocusIn(_) => deliver(Input::Focus(true)),
                         Event::FocusOut(_) => deliver(Input::Focus(false)),
@@ -529,11 +588,8 @@ impl X11 {
 impl Backend for X11 {
     fn size(&self) -> (f64, f64, f64) {
         let (w, h) = *self.size.lock().unwrap_or_else(|e| e.into_inner());
-        (
-            f64::from(w) / self.scale,
-            f64::from(h) / self.scale,
-            self.scale,
-        )
+        let scale = self.shared.scale();
+        (f64::from(w) / scale, f64::from(h) / scale, scale)
     }
 
     fn decorated(&self) -> bool {
@@ -662,6 +718,11 @@ fn selection_request(shared: &Shared, request: &SelectionRequestEvent) {
 }
 
 /// Pixels per point: `DUSCAPE_SCALE`, else `GDK_SCALE`, else `Xft.dpi` over 96, to a quarter.
+///
+/// One value for the whole server, as GTK and Qt take it on X11: X11 has no scale per
+/// output, and a monitor's own DPI from its RandR size in millimetres is not to be trusted (a
+/// television's, a projector's, a virtual display's). What moving the window to a display of
+/// another DPI changes is what the desktop writes to `Xft.dpi`, which the event thread follows.
 fn scale_factor(conn: &RustConnection) -> f64 {
     let from_env = |name: &str| {
         ::std::env::var(name)
@@ -677,6 +738,16 @@ fn scale_factor(conn: &RustConnection) -> f64 {
                 .map(|dpi| dpi / 96.0)
         })
         .unwrap_or(1.0);
+    to_quarter(scale)
+}
+
+/// A scale rounded to a quarter and kept between 1 and 4: the layout's cells stay whole
+/// pixels at the sizes a desktop offers (1.25, 1.5, 2), and no DPI, however odd, shrinks the
+/// window or makes a tile of hundreds of pixels.
+fn to_quarter(scale: f64) -> f64 {
+    if !scale.is_finite() {
+        return 1.0;
+    }
     ((scale * 4.0).round() / 4.0).clamp(1.0, 4.0)
 }
 
@@ -684,6 +755,18 @@ fn scale_factor(conn: &RustConnection) -> f64 {
 mod tests {
     use super::*;
     use crate::backend::keys;
+
+    #[test]
+    fn a_scale_is_a_quarter_between_one_and_four() {
+        assert_eq!(to_quarter(96.0 / 96.0), 1.0);
+        assert_eq!(to_quarter(120.0 / 96.0), 1.25);
+        assert_eq!(to_quarter(144.0 / 96.0), 1.5);
+        assert_eq!(to_quarter(163.0 / 96.0), 1.75);
+        assert_eq!(to_quarter(192.0 / 96.0), 2.0);
+        assert_eq!(to_quarter(0.5), 1.0);
+        assert_eq!(to_quarter(9.0), 4.0);
+        assert_eq!(to_quarter(f64::NAN), 1.0);
+    }
 
     #[test]
     fn the_core_mapping_is_read_by_column() {

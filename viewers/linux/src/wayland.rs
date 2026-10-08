@@ -100,8 +100,9 @@ struct State {
     seat: Option<WlSeat>,
     decoration_manager: Option<ZxdgDecorationManagerV1>,
     data_device_manager: Option<WlDataDeviceManager>,
-    /// Every output, with its scale; and the ones the surface is on.
-    outputs: Vec<(WlOutput, i32)>,
+    /// Every output — its global's name (what its removal is announced by), the object, and
+    /// its scale; and the ones the surface is on.
+    outputs: Vec<(u32, WlOutput, i32)>,
     on_outputs: Vec<ObjectId>,
     /// `wl_surface.preferred_buffer_scale`, which beats guessing from the outputs.
     preferred_scale: Option<i32>,
@@ -148,10 +149,10 @@ impl State {
         let on = self
             .outputs
             .iter()
-            .filter(|(output, _)| self.on_outputs.contains(&output.id()))
-            .map(|(_, scale)| *scale)
+            .filter(|(_, output, _)| self.on_outputs.contains(&output.id()))
+            .map(|(_, _, scale)| *scale)
             .max();
-        on.or_else(|| self.outputs.iter().map(|(_, scale)| *scale).max())
+        on.or_else(|| self.outputs.iter().map(|(_, _, scale)| *scale).max())
             .unwrap_or(1)
             .max(1)
     }
@@ -202,13 +203,23 @@ impl Dispatch<WlRegistry, ()> for State {
         _: &Connection,
         qh: &QueueHandle<State>,
     ) {
-        let wl_registry::Event::Global {
-            name,
-            interface,
-            version,
-        } = event
-        else {
-            return;
+        let (name, interface, version) = match event {
+            wl_registry::Event::Global {
+                name,
+                interface,
+                version,
+            } => (name, interface, version),
+            // An output unplugged: forgotten, so its scale is not what the window draws at
+            // once it is on no output at all (the surface's `leave` comes first).
+            wl_registry::Event::GlobalRemove { name } => {
+                let before = state.outputs.len();
+                state.outputs.retain(|(known, _, _)| *known != name);
+                if state.outputs.len() != before && state.shared.is_some() {
+                    state.rescale();
+                }
+                return;
+            }
+            _ => return,
         };
         match interface.as_str() {
             "wl_compositor" => {
@@ -225,7 +236,7 @@ impl Dispatch<WlRegistry, ()> for State {
             }
             "wl_output" => {
                 let output = registry.bind::<WlOutput, _, _>(name, version.min(4), qh, ());
-                state.outputs.push((output, 1));
+                state.outputs.push((name, output, 1));
             }
             "zxdg_decoration_manager_v1" => {
                 state.decoration_manager =
@@ -368,7 +379,7 @@ impl Dispatch<WlOutput, ()> for State {
         _: &QueueHandle<State>,
     ) {
         if let wl_output::Event::Scale { factor } = event {
-            for (known, scale) in &mut state.outputs {
+            for (_, known, scale) in &mut state.outputs {
                 if known.id() == output.id() {
                     *scale = factor;
                 }

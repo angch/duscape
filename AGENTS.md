@@ -760,7 +760,12 @@ shared `Viewer`, not in `win/`:
   thread of their own into `Input`), the frame put up whole with `PutImage` (re-encoded only for
   an unusual visual), the core keyboard mapping, and the clipboard: when no `wl-copy`/`xclip`/
   `xsel` is installed the window owns `CLIPBOARD` itself and answers `SelectionRequest`. The
-  scale (pixels per point) is `DUSCAPE_SCALE`, else `GDK_SCALE`, else `Xft.dpi`/96
+  scale (pixels per point) is `DUSCAPE_SCALE`, else `GDK_SCALE`, else `Xft.dpi`/96, read
+  again when the root's `RESOURCE_MANAGER` property changes (`xrdb`, a desktop's scaling
+  setting) and reported as a resize at the new scale: X11 has one DPI for the server, so that
+  change is what moving to another display amounts to; a monitor's RandR millimetres are not
+  trusted. Wayland's scale follows `wl_surface.enter`/`leave`, `preferred_buffer_scale` and
+  each output's `scale`, an unplugged output forgotten
 - `canvas.rs` — the software framebuffer in points: fills with alpha, gradients, strokes,
   anti-aliased rounded rectangles, and `blit` (a picture fitted by box-filtering)
 - `font.rs` — `Fonts::system` finds the sans, bold and mono faces through `fc-match` (else
