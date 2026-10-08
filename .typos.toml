@@ -10,6 +10,8 @@ AGAI = "AGAI"
 flate = "flate"
 
 [default.extend-identifiers]
+# POSIX's write-only open flag, exposed by rustix.
+WRONLY = "WRONLY"
 # Win32's `ExtTextOutW` option, in the Windows viewer's painting.
 ETO_CLIPPED = "ETO_CLIPPED"
 

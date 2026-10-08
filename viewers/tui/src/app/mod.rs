@@ -301,17 +301,19 @@ where
         let Some(rescanner) = &self.rescanner else {
             return;
         };
-        if self
+        let restarted = self
             .rescans
-            .restart_under(rescanner, &self.file_tree, files)
-        {
-            self.describe_rescans();
+            .restart_under(rescanner, &self.file_tree, files);
+        // Deleting a partial archive clears its notice even when no rescan was running.
+        self.describe_rescans();
+        if restarted {
             self.render();
         }
     }
     /// Say in the status line what is being rescanned.
     fn describe_rescans(&mut self) {
         self.ui_effects.rescanning = self.rescans.describe(&self.file_tree.path_in_filesystem);
+        self.ui_effects.archive_notice = self.rescans.archive_notice();
     }
     /// Switch between sizes on disk and apparent sizes. The tree holds both, so nothing is scanned
     /// again: the board is laid out anew and the entry in hand stays in hand.

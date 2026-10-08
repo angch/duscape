@@ -390,6 +390,7 @@ dependencies = [
  "image",
  "libc",
  "libduscape",
+ "rustix",
  "wayland-client",
  "wayland-cursor",
  "wayland-protocols",

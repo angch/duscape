@@ -352,6 +352,7 @@ pub struct BottomLine<'a> {
     last_read_path: Option<&'a PathBuf>,
     /// What is being rescanned, shown in place of the entry in hand until it is done.
     rescanning: Option<&'a str>,
+    archive_notice: Option<&'a str>,
     ticker: Ticker,
 }
 
@@ -364,6 +365,7 @@ impl<'a> BottomLine<'a> {
             switch_panel_hint: false,
             last_read_path: None,
             rescanning: ui_effects.rescanning.as_deref(),
+            archive_notice: ui_effects.archive_notice.as_deref(),
             ticker: ui_effects.ticker,
         }
     }
@@ -399,6 +401,13 @@ impl<'a> Widget for BottomLine<'a> {
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
+            );
+        } else if let Some(notice) = self.archive_notice {
+            buf.set_string(
+                1,
+                status_line_y,
+                truncate_middle(notice, max_status_len.saturating_sub(1)),
+                Style::default().fg(Color::Yellow),
             );
         } else if let Some(currently_selected) = self.currently_selected {
             render_currently_selected(buf, currently_selected, max_status_len, status_line_y);

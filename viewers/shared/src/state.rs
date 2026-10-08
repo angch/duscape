@@ -2627,6 +2627,9 @@ impl Viewer {
 
     fn totals(&self) -> String {
         let mut words = Vec::new();
+        if let Some(notice) = self.rescans.archive_notice() {
+            words.push(notice);
+        }
         if self.scanning {
             words.push(format!("scanning, {}", entries(self.entries_scanned)));
         } else if let Some(took) = self.scan_took {

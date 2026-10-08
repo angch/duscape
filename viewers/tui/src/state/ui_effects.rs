@@ -15,6 +15,7 @@ pub struct UiEffects {
     pub clipboard_flash: Option<(String, Instant)>,
     /// What is being rescanned, for the status line, while a rescan runs.
     pub rescanning: Option<String>,
+    pub archive_notice: Option<String>,
     /// How far the help line has scrolled.
     pub ticker: crate::ui::Ticker,
 }
@@ -29,6 +30,7 @@ impl UiEffects {
             last_read_path: None,
             clipboard_flash: None,
             rescanning: None,
+            archive_notice: None,
             ticker: crate::ui::Ticker::default(),
         }
     }

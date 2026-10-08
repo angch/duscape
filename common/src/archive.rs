@@ -190,30 +190,37 @@ pub fn read_index(path: &Path) -> io::Result<Index> {
     let len = file.metadata()?.len();
     let (offset, size, entries, shift) = directory(&mut file, len)?;
     let bytes = read_at(&mut file, offset, size as usize)?;
+    parse_index(&bytes, entries, shift, MAX_MEMBERS)
+}
+
+fn parse_index(bytes: &[u8], entries: u64, shift: u64, limit: usize) -> io::Result<Index> {
     let mut index = Index::default();
     let mut at = 0usize;
     let mut seen = 0u64;
-    while seen < entries && u32_at(&bytes, at) == Some(CENTRAL) {
-        if index.members.len() >= MAX_MEMBERS {
+    while seen < entries {
+        if seen >= limit as u64 {
             index.truncated = true;
             break;
         }
-        let field = |offset: usize| u16_at(&bytes, at + offset).unwrap_or(0);
+        if bytes.get(at..at + 46).is_none() || u32_at(bytes, at) != Some(CENTRAL) {
+            return Err(invalid("missing or malformed zip index entry"));
+        }
+        let field = |offset: usize| u16_at(bytes, at + offset).unwrap_or(0);
         let flags = field(8);
         let method = field(10);
-        let mut compressed = u64::from(u32_at(&bytes, at + 20).unwrap_or(0));
-        let mut uncompressed = u64::from(u32_at(&bytes, at + 24).unwrap_or(0));
+        let mut compressed = u64::from(u32_at(bytes, at + 20).unwrap_or(0));
+        let mut uncompressed = u64::from(u32_at(bytes, at + 24).unwrap_or(0));
         let (name_len, extra_len, comment_len) =
             (field(28) as usize, field(30) as usize, field(32) as usize);
-        let mut header = u64::from(u32_at(&bytes, at + 42).unwrap_or(0));
+        let mut header = u64::from(u32_at(bytes, at + 42).unwrap_or(0));
         let name_at = at + 46;
-        let Some(name) = bytes.get(name_at..name_at + name_len) else {
-            break;
-        };
-        let extra = bytes
-            .get(name_at + name_len..name_at + name_len + extra_len)
-            .unwrap_or(&[]);
-        zip64_sizes(extra, &mut uncompressed, &mut compressed, &mut header);
+        let end = name_at + name_len + extra_len + comment_len;
+        if end > bytes.len() {
+            return Err(invalid("truncated zip index entry"));
+        }
+        let name = &bytes[name_at..name_at + name_len];
+        let extra = &bytes[name_at + name_len..name_at + name_len + extra_len];
+        zip64_sizes(extra, &mut uncompressed, &mut compressed, &mut header)?;
         let text = name_text(name, flags & 0x0800 != 0);
         let is_dir = text.ends_with('/') || text.ends_with('\\');
         if let Some(path) = member_path(&text) {
@@ -230,29 +237,53 @@ pub fn read_index(path: &Path) -> io::Result<Index> {
         at = name_at + name_len + extra_len + comment_len;
         seen += 1;
     }
+    // An optional central-directory digital signature may follow the declared entries.
+    // Anything else means the entry count or record lengths disagree with the directory.
+    if !index.truncated && at != bytes.len() {
+        let signature = u32_at(bytes, at) == Some(0x0505_4b50)
+            && u16_at(bytes, at + 4).is_some_and(|len| at + 6 + usize::from(len) == bytes.len());
+        if !signature {
+            return Err(invalid("zip index entry count or size mismatch"));
+        }
+    }
     Ok(index)
 }
 
 /// Zip64's extra field (id 1): the full sizes and offset, those of them that did not fit, in
 /// that order.
-fn zip64_sizes(extra: &[u8], uncompressed: &mut u64, compressed: &mut u64, header: &mut u64) {
+fn zip64_sizes(
+    extra: &[u8],
+    uncompressed: &mut u64,
+    compressed: &mut u64,
+    header: &mut u64,
+) -> io::Result<()> {
     let mut at = 0;
-    while let (Some(id), Some(len)) = (u16_at(extra, at), u16_at(extra, at + 2)) {
-        let data = extra.get(at + 4..at + 4 + len as usize).unwrap_or(&[]);
-        if id == 1 {
+    let required =
+        *uncompressed == 0xFFFF_FFFF || *compressed == 0xFFFF_FFFF || *header == 0xFFFF_FFFF;
+    let mut found = false;
+    while at < extra.len() {
+        let id = u16_at(extra, at).ok_or_else(|| invalid("truncated zip extra field"))?;
+        let len = u16_at(extra, at + 2).ok_or_else(|| invalid("truncated zip extra field"))?;
+        let data = extra
+            .get(at + 4..at + 4 + len as usize)
+            .ok_or_else(|| invalid("truncated zip extra field"))?;
+        if id == 1 && !found {
             let mut field = 0;
-            for value in [uncompressed, compressed, header] {
-                if *value == 0xFFFF_FFFF
-                    && let Some(full) = u64_at(data, field)
-                {
-                    *value = full;
+            for value in [&mut *uncompressed, &mut *compressed, &mut *header] {
+                if *value == 0xFFFF_FFFF {
+                    *value = u64_at(data, field)
+                        .ok_or_else(|| invalid("missing Zip64 size or offset"))?;
                     field += 8;
                 }
             }
-            return;
+            found = true;
         }
         at += 4 + len as usize;
     }
+    if required && !found {
+        return Err(invalid("missing Zip64 extra field"));
+    }
+    Ok(())
 }
 
 /// An entry's name as the names of the folders it is in and its own, or `None` for a name that

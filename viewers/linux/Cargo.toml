@@ -29,7 +29,11 @@ image = { workspace = true }
 x11rb = { version = ">=0.13.2, <0.15", features = ["image", "resource_manager"] }
 # Text: ab_glyph, which Debian packages (fontdue, before 2026-10-04, it does not).
 ab_glyph = "0.2.29"
-libc.workspace = true
 wayland-client = "0.31.15"
 wayland-protocols = { version = "0.32.13", features = ["client", "unstable", "staging"] }
 wayland-cursor = "0.31.14"
+
+[target.'cfg(unix)'.dependencies]
+# Handle-relative, exclusive trash operations (also regression-tested on macOS).
+rustix.workspace = true
+libc.workspace = true

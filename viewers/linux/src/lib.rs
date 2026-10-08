@@ -19,7 +19,7 @@ mod canvas;
 mod draw;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 mod font;
-#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+#[cfg(any(target_os = "linux", target_os = "freebsd", all(test, unix)))]
 mod trash;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 mod wayland;

@@ -299,3 +299,53 @@ fn a_name_outside_the_archive_is_left_out() {
     assert_eq!(paths(&index.members), ["a/b/c.txt", "kept.txt"]);
     let _ = ::std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn malformed_index_records_are_errors_not_partial_successes() {
+    let bytes = super::stored_zip(&[("a", b"one"), ("b", b"two")]);
+    let central: Vec<_> = bytes
+        .windows(4)
+        .enumerate()
+        .filter_map(|(at, signature)| (signature == b"PK\x01\x02").then_some(at))
+        .collect();
+    let dir = temp("malformed_index");
+    let path = dir.join("bad.zip");
+    // Broken signature, name, extra and comment lengths, and a missing required Zip64 field.
+    for (offset, value) in [
+        (central[1], 0),
+        (central[1] + 28, 255),
+        (central[1] + 30, 255),
+        (central[1] + 32, 255),
+    ] {
+        let mut broken = bytes.clone();
+        broken[offset] = value;
+        std::fs::write(&path, broken).unwrap();
+        assert_eq!(
+            read_index(&path).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+    }
+    let mut broken = bytes.clone();
+    broken[central[1] + 20..central[1] + 24].fill(255);
+    std::fs::write(&path, broken).unwrap();
+    assert_eq!(
+        read_index(&path).unwrap_err().kind(),
+        std::io::ErrorKind::InvalidData
+    );
+    // The bounded parser reports intentional limits, including when rejected names consume
+    // the limit; malformed data must never be confused with this case.
+    let end = bytes.len() - 22;
+    assert!(super::parse_index(&bytes[central[0]..end], 1, 0, 2).is_err());
+    let index = super::parse_index(&bytes[central[0]..end], 2, 0, 1).unwrap();
+    assert!(index.truncated);
+    assert_eq!(index.members.len(), 1);
+    assert!(
+        !super::parse_index(&bytes[central[0]..end], 2, 0, 2)
+            .unwrap()
+            .truncated
+    );
+    for len in 0..46 {
+        assert!(super::parse_index(&bytes[central[0]..central[0] + len], 1, 0, 2).is_err());
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}

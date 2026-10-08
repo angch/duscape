@@ -14,11 +14,11 @@ use ::std::sync::{Condvar, Mutex};
 use ::std::thread;
 use ::std::time::{Duration, Instant};
 
-use libduscape::archive::Member;
+use libduscape::archive::Index;
 
 /// An archive read: its path from the scan root, and its entries, or why it could not be read
 /// (it is no zip, or not readable), when it stays a file.
-pub type Read = (PathBuf, Result<Vec<Member>, String>);
+pub type Read = (PathBuf, Result<Index, String>);
 
 /// What the viewer wants read, most wanted first, and what is being read.
 #[derive(Default)]
@@ -128,7 +128,6 @@ pub fn run(
                         continue;
                     };
                     let read = libduscape::archive::read_index(&root.join(&relative))
-                        .map(|index| index.members)
                         .map_err(|error| error.to_string());
                     if sender.send((relative, read)).is_err() {
                         return;

@@ -31,9 +31,9 @@ by copying it.
 | `model` | `FileTree`: the scanned folders and files, both sizes of each (on disk, and apparent length), navigation (enter, leave, current folder), deletion that corrects every ancestor, a folder rescanned and grafted back in (`graft`), and the second pass's findings folded in (`apply_found`). Sizes count each set of shared blocks once — hard links and reflinks — so a folder can be smaller than the sum of its entries. |
 | `tiles` | The squarified treemap (`TreeMap`) and `Board`: tiles for the current folder, the selection and moving it by direction, zoom, and `listing` — the folder's entries largest first, the same targets as the tiles, for a list beside them. Entries too small for a tile are folded into one "small files" marker, never dropped. |
 | `scan` | The protocol between a walker and the model: `ScanOptions` (apparent size, one filesystem, depth, threads, hard-link tracking), `EntryMeta` and `DirEntries` (one directory's entries as read), `Outline` and `DirSummary` (the folder-only live view shown while a scan runs), and `Found` (what the second pass found). |
-| `delete` | `remove`: a file, or a folder and everything in it, from disk — a link itself, never its target; `remove_counting`, the same counting each entry into a `Tally` that a window shows and can stop. `refused`, the sentence saying why: NTFS's own metadata files, which a whole-volume scan shows and no viewer may delete, and what is in a volume's local snapshots. |
+| `delete` | `remove`: a file, or a folder and everything in it, from disk — a link itself, never its target; `remove_counting`, the same counting each entry into a `Tally` that a window shows and can stop. Directory traversal resists concurrent symlink replacement (open directory handles on Unix, locked ancestors on Windows). `refused`, the sentence saying why: NTFS's own metadata files, which a whole-volume scan shows and no viewer may delete, and what is in a volume's local snapshots. |
 | `preview` | `read`: what a file is from its first 64 KiB — empty, text (its first lines, made safe to draw), a picture (PNG, JPEG, WebP, GIF, BMP, ICO, TIFF, QOI, HDR, PNM, DDS), or binary, for which `describe_binary` gives its size and, on Linux and Windows, where its blocks are: `placement::describe` — extents, sparseness, shared blocks, and the physical disk (model, SSD or HDD) and offset, through a partition; the members of an LVM or md volume; a loop device's file. On Windows the runs come from `FSCTL_GET_RETRIEVAL_POINTERS` (a file resident in its MFT record has none), the disk and offset from the volume's disk extents, its model and bus from `IOCTL_STORAGE_QUERY_PROPERTY`, none of it needing elevation; a compressed file says so, and a volume over several disks names them. `describe_picture` from the header alone, `decode_picture` within limits (40,000 pixels a side, 1 GiB), and `fit`, which scales down and never up. `Reader`: the preview thread — the latest request only, a picture decoded once the selection has rested on it 100 ms, prepared by whatever the viewer passes it. Only regular files are read, and on macOS never one that is only in iCloud. |
-| `archive` | Zip archives, and the formats that are zips by another name (`.jar`, `.apk`, `.whl`, `.nupkg`, `.vsix`…; `EXTENSIONS`): `read_index`, the entries from the central directory at the file's end (Zip64 too, a self-extractor's stub before it, CP437 or UTF-8 names), each with its compressed and unpacked size; `member_of`, the archive and the inner path of a path inside one; `read_member`, an entry's first bytes or the whole of it unpacked in memory (stored or deflated). `FileTree::expand_archive` makes an archive a folder of its entries, sized by their compressed lengths; `preview` reads an entry as it reads a file; `delete` refuses one. |
+| `archive` | Zip archives, and the formats that are zips by another name (`.jar`, `.apk`, `.whl`, `.nupkg`, `.vsix`…; `EXTENSIONS`): `read_index`, the entries from the central directory at the file's end (Zip64 too, a self-extractor's stub before it, CP437 or UTF-8 names), each with its compressed and unpacked size; `member_of`, the archive and the inner path of a path inside one; `read_member`, an entry's first bytes or the whole of it unpacked in memory (stored or deflated). `FileTree::expand_archive` makes an archive a folder of its entries, sized by their compressed lengths; `preview` reads an entry as it reads a file; `delete` refuses one. Malformed indexes are rejected; listings capped at the entry limit show a persistent partial-listing notice in the viewers. |
 | `launch` | `open`: a file with its default app; `reveal`: entries in the file manager, selected — `open`/`open -R` on macOS, `ShellExecuteW` and `explorer.exe /select` on Windows, `xdg-open` and `org.freedesktop.FileManager1` elsewhere. Neither makes the window wait. |
 | `clipboard` | `copy`: text on the native clipboard — `pbcopy`, Win32, `wl-copy`/`xclip`/`xsel` — saying whether it worked, so a viewer with another way (a terminal's OSC 52) can fall back. |
 | `format` | Sizes (`DisplaySize`: B to TB), counts, truncating names to a width, quoting a path for the shell the user is in (`quote_path_for_shell`), and `copied_path`: a path as a viewer copies it — relative to the working directory or absolute, `./` before a leading `-`, quoted. |
@@ -134,3 +134,38 @@ Anything about the screen or the input: layout, colours, fonts, key bindings, ho
 encoded for display (kitty graphics, sixels and half blocks are the terminal's own; the terminal
 also detects which it has), the terminal's OSC 52 clipboard fallback, and when to decode a
 picture (the terminal waits until the selection has rested on it for 100 ms).
+
+## Deletion and archive audit (2026-10-07)
+
+The Linux Trash fallback reserves metadata exclusively and moves files without overwriting
+an existing trash entry. Its directories must belong to the current user, have mode 0700,
+and not be symlinks. If an exclusive rename is unavailable, the source is left intact;
+on FreeBSD the fallback requires `gio` instead.
+
+Deletion regression measurement (2026-10-06, macOS, release build, temporary on-disk tree of
+20 folders with 1,000 files each): handle-relative counting deletion took 927 ms versus
+919 ms for `std::fs::remove_dir_all` in one run. Reproduce with
+`cargo test --release -p libduscape deletion_speed_on_disk -- --ignored --nocapture`.
+The Windows locking path still needs a native performance measurement.
+
+The review covered recursive deletion, trash collisions, ZIP record bounds, and propagation
+of partial listings through the archive pass. Regression tests replace a queued directory
+with a symlink, delete a bare relative directory, race two same-name trash operations, and
+exercise dangling metadata links and unsafe trash directories. ZIP tests reject broken
+signatures, truncated fields, missing Zip64 sizes and inconsistent entry counts. A duplicate
+archive result must not clear an existing partial notice; a deletion or replacement tree
+clears notices for the entries it removed.
+
+Unix deletion keeps directory descriptors while descending and uses no-follow opens and
+handle-relative unlinks. Its descriptor cost grows with nesting depth; an exhausted descriptor
+limit returns an error, leaving the rest for a later attempt. Windows holds path ancestors
+without write/delete sharing and rejects reparse-point ancestors; a sharing conflict or a
+path through a junction can therefore refuse deletion instead of traversing an unsafe path.
+This is protection against replacement during traversal, not an atomic snapshot of a changing
+filesystem. The existing Windows timing above the implementation predates these locks.
+
+Validation: the macOS workspace suite, native Clippy, Windows and Linux GNU cross-target
+Clippy, formatting, spelling and cargo-deny checks passed. The dependency check reports
+existing duplicate-version warnings. Linux ARM64 musl binaries additionally passed the deletion,
+archive and trash regression tests in an isolated container. Native Windows runtime tests,
+the full filesystem fixture matrix, and 32-bit/big-endian parser tests remain unrun here.

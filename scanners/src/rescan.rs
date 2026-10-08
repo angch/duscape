@@ -267,6 +267,8 @@ pub struct Rescans {
     /// The archives noted in the tree (`FileTree::archives`, taken by [`Self::start_idle`])
     /// and not yet read, by their paths from the root: what the viewer may ask for.
     unread_archives: HashSet<PathBuf>,
+    /// Listings stopped at the entry cap, retained after their reading pass ends.
+    partial_archives: HashSet<PathBuf>,
 }
 
 /// The archive pass under way: its id, what it is asked to read, and what stops it.
@@ -532,6 +534,11 @@ impl Rescans {
         tree: &FileTree,
         deleted: &[FileToDelete],
     ) -> bool {
+        self.partial_archives.retain(|path| {
+            !deleted
+                .iter()
+                .any(|file| path.starts_with(file.path_to_file.iter().collect::<PathBuf>()))
+        });
         let mut restart = Vec::new();
         self.under_way.retain(|rescan| {
             // A fill only adds what the tree lacks; a folder emptied since is listed as it is.
@@ -605,11 +612,26 @@ impl Rescans {
         !self.unread_archives.is_empty()
     }
 
+    /// Persistent status while the tree contains archive listings cut at the entry limit.
+    #[must_use]
+    pub fn archive_notice(&self) -> Option<String> {
+        let count = self.partial_archives.len();
+        (count > 0).then(|| {
+            let noun = if count == 1 {
+                "archive listing is"
+            } else {
+                "archive listings are"
+            };
+            format!("{count} {noun} partial: entry limit reached")
+        })
+    }
+
     /// Stop the archive pass and forget what it had left: the tree it was reading for is being
     /// replaced, and the new one notes its own.
     fn stop_archives(&mut self) {
         self.end_archive_pass();
         self.unread_archives.clear();
+        self.partial_archives.clear();
     }
 
     /// Stop the archive pass's threads, keeping what is unread: the next idle call starts a
@@ -761,6 +783,11 @@ impl Rescans {
             }
             Outcome::Filled(..) | Outcome::Archives(..) => unreachable!("handled above"),
         }
+        if finished.changed {
+            let replaced: PathBuf = rescan.relative.iter().collect();
+            self.partial_archives
+                .retain(|path| !path.starts_with(&replaced));
+        }
         finished.relative = rescan.relative;
         Some(finished)
     }
@@ -798,10 +825,14 @@ impl Rescans {
             if let Some(wanted) = &wanted {
                 wanted.done(&relative);
             }
-            let Ok(members) = read else {
+            let Ok(index) = read else {
                 continue;
             };
-            if tree.expand_archive(&relative, &members) {
+            if tree.expand_archive(&relative, &index.members) {
+                self.partial_archives.remove(&relative);
+                if index.truncated {
+                    self.partial_archives.insert(relative.clone());
+                }
                 finished.changed = true;
                 let mut above = relative.parent();
                 while let Some(folder) = above {
@@ -867,5 +898,72 @@ impl Refiner {
                     deliver(generation, Vec::new(), None);
                 }
             });
+    }
+}
+
+#[cfg(test)]
+mod archive_tests {
+    use super::*;
+
+    #[test]
+    fn partial_archive_notice_survives_the_pass_and_clears_with_the_tree() {
+        let root = PathBuf::from("archive-notice-test");
+        let mut tree = FileTree::new(Folder::new(&root), root.clone());
+        tree.add_entry(
+            libduscape::scan::EntryMeta {
+                size: 100,
+                apparent: 100,
+                ..Default::default()
+            },
+            &root.join("large.zip"),
+        );
+        let mut rescans = Rescans {
+            archive_pass: Some(ArchivePass {
+                id: 1,
+                wanted: Arc::default(),
+                cancel: Arc::new(AtomicBool::new(false)),
+            }),
+            ..Default::default()
+        };
+        rescans.unread_archives.insert(PathBuf::from("large.zip"));
+        rescans.unread_archives.insert(PathBuf::from("other.zip"));
+        let index = libduscape::archive::Index {
+            members: vec![libduscape::archive::Member::for_test(&["kept"], 10, false)],
+            truncated: true,
+        };
+        let result = rescans
+            .finish(
+                1,
+                Outcome::Archives(vec![(PathBuf::from("large.zip"), Ok(index))]),
+                &mut tree,
+            )
+            .unwrap();
+        assert!(result.changed);
+        // A duplicate response cannot change a folder already expanded or clear its notice.
+        let duplicate = rescans
+            .finish(
+                1,
+                Outcome::Archives(vec![(
+                    PathBuf::from("large.zip"),
+                    Ok(libduscape::archive::Index::default()),
+                )]),
+                &mut tree,
+            )
+            .unwrap();
+        assert!(!duplicate.changed);
+        rescans
+            .finish(
+                1,
+                Outcome::Archives(vec![(
+                    PathBuf::from("other.zip"),
+                    Err("not an archive".into()),
+                )]),
+                &mut tree,
+            )
+            .unwrap();
+        assert!(rescans.archive_pass.is_none());
+        assert!(rescans.archive_notice().unwrap().contains("partial"));
+        rescans.stop_archives();
+        assert!(rescans.archive_notice().is_none());
     }
 }

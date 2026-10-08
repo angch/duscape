@@ -120,26 +120,41 @@ pub fn remove_counting(file: &FileToDelete, tally: &Tally) -> io::Result<()> {
     }
 }
 
+#[cfg(unix)]
+mod unix;
+
+#[cfg(unix)]
+fn remove_tree(root: PathBuf, tally: &Tally) -> io::Result<()> {
+    unix::remove_tree(&root, tally)
+}
+
 /// Everything in the folder at `root`, and then the folder. A walk of our own, not
 /// `fs::remove_dir_all`, which says nothing until it is done: deleting a package cache's
 /// thousands of files froze the window with no word of how far it had got. Depth first with a
-/// stack, not recursion, so a deep tree cannot overflow the thread's stack; each folder is
-/// listed once, its subfolders pushed above it, and removed when it comes back round. The
-/// first failure ends it, as `remove_dir_all`'s did. As fast as `remove_dir_all`, measured on
-/// Windows (2026-10-05, NTFS, 20 folders of 1000 files: 2.9 s against 3.0 s).
+/// stack, not recursion, so a deep tree cannot overflow the thread's stack; Windows keeps
+/// the ancestors open without write/delete sharing to prevent replacement while traversing.
+/// Each folder is listed once, its subfolders pushed above it, and removed when it comes back round. The
+/// first failure ends it, as `remove_dir_all`'s did. Before the directory locks, measured on
+/// Windows (2026-10-05, NTFS, 20 folders of 1000 files): 2.9 s against 3.0 s for
+/// `remove_dir_all`. The locking path still needs a native Windows measurement.
+#[cfg(not(unix))]
 fn remove_tree(root: PathBuf, tally: &Tally) -> io::Result<()> {
     let stopped = || io::Error::new(io::ErrorKind::Interrupted, "stopped");
-    let mut stack = vec![(root, false)];
-    while let Some((folder, listed)) = stack.pop() {
+    #[cfg(windows)]
+    let _ancestors = lock_ancestors(&root)?;
+    let mut stack = vec![(root, None)];
+    while let Some((folder, locked)) = stack.pop() {
         if tally.stopped() {
             return Err(stopped());
         }
-        if listed {
+        if let Some(locked) = locked {
+            drop(locked);
             remove_folder(&folder)?;
             tally.add(1);
             continue;
         }
-        stack.push((folder.clone(), true));
+        let locked = lock_directory(&folder)?;
+        stack.push((folder.clone(), Some(locked)));
         for entry in fs::read_dir(&folder)? {
             if tally.stopped() {
                 return Err(stopped());
@@ -148,7 +163,7 @@ fn remove_tree(root: PathBuf, tally: &Tally) -> io::Result<()> {
             // Not followed: a link or junction is an entry of its own, removed itself.
             let file_type = entry.file_type()?;
             if file_type.is_dir() {
-                stack.push((entry.path(), false));
+                stack.push((entry.path(), None));
             } else {
                 remove_entry(&entry.path(), file_type)?;
                 tally.add(1);
@@ -156,6 +171,45 @@ fn remove_tree(root: PathBuf, tally: &Tally) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Hold every path ancestor against renames while the path-based Windows APIs use it.
+#[cfg(windows)]
+fn lock_ancestors(root: &Path) -> io::Result<Vec<fs::File>> {
+    let absolute = ::std::path::absolute(root)?;
+    let mut paths: Vec<_> = absolute.ancestors().skip(1).collect();
+    paths.reverse();
+    paths.into_iter().map(lock_directory).collect()
+}
+
+#[cfg(windows)]
+fn lock_directory(path: &Path) -> io::Result<fs::File> {
+    use ::std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_READ_ATTRIBUTES, FILE_SHARE_READ,
+    };
+    // No FILE_SHARE_DELETE: a directory held by this handle cannot be renamed or replaced.
+    // No FILE_SHARE_WRITE either: the directory cannot be turned into a reparse point.
+    // Inspect the opened handle, not a separate path stat, before allowing traversal.
+    let handle = fs::OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES)
+        .share_mode(FILE_SHARE_READ)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    let meta = handle.metadata()?;
+    if !meta.is_dir() || meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(io::Error::other("directory changed or is a reparse point"));
+    }
+    Ok(handle)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn lock_directory(_path: &Path) -> io::Result<fs::File> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "safe recursive deletion is unavailable",
+    ))
 }
 
 /// One entry that is no folder to walk: a file, or a link of any kind.
@@ -172,6 +226,7 @@ fn remove_entry(path: &Path, file_type: fs::FileType) -> io::Result<()> {
 /// An emptied folder. On Windows a folder whose last file was just deleted can still say it is
 /// not empty for a moment, while something that had the file open (an indexer, an antivirus
 /// scanner) lets go of it; `remove_dir_all` tries again for that, so this does too, briefly.
+#[cfg(not(unix))]
 fn remove_folder(path: &Path) -> io::Result<()> {
     const TRIES: u32 = 5;
     let mut tries = 0;
@@ -529,5 +584,52 @@ mod tests {
         assert_eq!(refused(::std::slice::from_ref(&real)), None);
         remove(&real).expect("removed");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn locked_directories_cannot_be_replaced_during_traversal() {
+        let root = std::env::temp_dir().join(format!("duscape-delete-lock-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("child")).unwrap();
+        let held = super::lock_directory(&root.join("child")).unwrap();
+        assert!(fs::rename(root.join("child"), root.join("moved")).is_err());
+        drop(held);
+        fs::rename(root.join("child"), root.join("moved")).unwrap();
+        if std::os::windows::fs::symlink_dir(root.join("moved"), root.join("child")).is_ok() {
+            assert!(super::lock_directory(&root.join("child")).is_err());
+        } // Symlink creation needs Developer Mode or elevation; the locking assertion ran above.
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "creates and deletes 20,000 files twice on the local disk"]
+    fn deletion_speed_on_disk() {
+        let root =
+            std::env::temp_dir().join(format!("duscape-delete-speed-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        for implementation in ["standard", "counting"] {
+            for folder in 0..20 {
+                let dir = root.join(implementation).join(folder.to_string());
+                fs::create_dir_all(&dir).unwrap();
+                for file in 0..1000 {
+                    fs::write(dir.join(file.to_string()), b"x").unwrap();
+                }
+            }
+            let now = std::time::Instant::now();
+            if implementation == "standard" {
+                fs::remove_dir_all(root.join(implementation)).unwrap();
+            } else {
+                let tally = Tally::default();
+                remove_counting(
+                    &to_delete(root.clone(), &[implementation], FileType::Folder),
+                    &tally,
+                )
+                .unwrap();
+                assert_eq!(tally.removed(), 20_021);
+            }
+            eprintln!("{implementation}: {:?}", now.elapsed());
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 }
