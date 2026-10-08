@@ -79,6 +79,11 @@ cargo run -p duscape-linux --release -- ~   # or run with no argument for the cu
   followed when the desktop or `xrdb` changes it — X11 has one DPI for the whole server, as GTK
   and Qt take it, so a display of another DPI shows when the desktop writes the new value.
   Either way the window is laid out and drawn again in the new pixels at once.
+- **Resizing:** every configure lays the view out again within the frame's budget, the deeper
+  nesting and the labels left to the second pass once the drag stops. On X11 the window has no
+  background and keeps its contents at the top left through a resize, so the last frame stays
+  up until the next covers it: with a background the server cleared the window at every
+  configure, a near-black flash a pixel of a slow drag.
 
 Why not GTK or Qt: both need their development packages to build and their libraries to run, which
 rules out the static binaries this fork ships, and their Rust bindings bring hundreds of crates for
