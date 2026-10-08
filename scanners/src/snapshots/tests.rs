@@ -95,6 +95,21 @@ mod on_folders {
         fs::hard_link(live, snapshot).expect("link");
     }
 
+    /// Every folder under `root`, `root` too, set a minute older than it is.
+    fn age(root: &Path) {
+        let meta = fs::metadata(root).expect("there");
+        let older = meta.modified().expect("a time") - ::std::time::Duration::from_secs(60);
+        for entry in fs::read_dir(root).expect("list") {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                age(&path);
+            }
+        }
+        fs::File::open(root)
+            .and_then(|folder| folder.set_modified(older))
+            .expect("set the time");
+    }
+
     fn id(path: &Path) -> u64 {
         use ::std::os::unix::fs::MetadataExt;
         fs::symlink_metadata(path).expect("there").ino()
@@ -145,6 +160,14 @@ mod on_folders {
             link(&first.join("gone.txt"), &second.join("gone.txt"));
             link(&live.join("kept.txt"), &second.join("kept.txt"));
             write(&second.join("other.txt"), 4000);
+            // A snapshot's folders are older than the live ones. Made in the same instant
+            // here they are not: Linux stamps a file from a coarse clock (a jiffy, 1–10 ms),
+            // so a snapshot folder and its live counterpart would share a time and the pass
+            // would take the one for the other and not compare them (6 of these tests failed
+            // on ext4, kernel 6.8, 2026-10-08; APFS stamps finer). A minute back, each.
+            for root in [&first, &second] {
+                age(root);
+            }
             Self { dir }
         }
 
@@ -462,6 +485,8 @@ mod on_folders {
             &first.join("docs/sub/here.txt"),
         );
         write(&first.join("docs/sub/lost.bin"), 600);
+        // Made in the same instant as the live `sub`: older, as the fixture's are.
+        age(&first.join("docs"));
         for threads in [1, 3] {
             let run = Run {
                 scope: changed(&["docs"], &[""]),
