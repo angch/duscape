@@ -765,7 +765,9 @@ shared `Viewer`, not in `win/`:
   setting) and reported as a resize at the new scale: X11 has one DPI for the server, so that
   change is what moving to another display amounts to; a monitor's RandR millimetres are not
   trusted. Wayland's scale follows `wl_surface.enter`/`leave`, `preferred_buffer_scale` and
-  each output's `scale`, an unplugged output forgotten
+  each output's `scale`, an unplugged output forgotten. The window has no background and
+  north-west bit gravity: with a background pixel and forget gravity the server cleared it at
+  every `ConfigureNotify`, a near-black flash a pixel of a slow drag on the resize handle
 - `canvas.rs` — the software framebuffer in points: fills with alpha, gradients, strokes,
   anti-aliased rounded rectangles, and `blit` (a picture fitted by box-filtering)
 - `font.rs` — `Fonts::system` finds the sans, bold and mono faces through `fc-match` (else

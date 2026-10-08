@@ -12,8 +12,8 @@ use x11rb::properties::WmSizeHints;
 use x11rb::protocol::Event;
 use x11rb::protocol::xproto::{
     AtomEnum, ChangeWindowAttributesAux, ClientMessageEvent, ConnectionExt as _, CreateGCAux,
-    CreateWindowAux, EventMask, Gcontext, PropMode, SELECTION_NOTIFY_EVENT, SelectionNotifyEvent,
-    SelectionRequestEvent, VisualClass, Window, WindowClass,
+    CreateWindowAux, EventMask, Gcontext, Gravity, PropMode, SELECTION_NOTIFY_EVENT,
+    SelectionNotifyEvent, SelectionRequestEvent, VisualClass, Window, WindowClass,
 };
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
@@ -383,7 +383,15 @@ impl X11 {
             WindowClass::INPUT_OUTPUT,
             root_visual,
             &CreateWindowAux::new()
-                .background_pixel(layout.encode((0x2222, 0x2222, 0x2424)))
+                // No background for the server to paint, and the contents kept at the top
+                // left through a resize: with a background pixel and the default (forget)
+                // gravity the server cleared the whole window to that pixel at every
+                // `ConfigureNotify` and only then, a frame later, did the new image land —
+                // a near-black flash a pixel of a slow drag. Now the old frame stays where
+                // it was until the new one covers it, and only the strip the drag added is
+                // undefined until then. GTK and Qt do the same.
+                .background_pixmap(x11rb::NONE)
+                .bit_gravity(Gravity::NORTH_WEST)
                 .event_mask(
                     EventMask::EXPOSURE
                         | EventMask::STRUCTURE_NOTIFY
