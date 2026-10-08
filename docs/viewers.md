@@ -64,8 +64,14 @@ cargo run -p duscape-linux --release -- ~   # or run with no argument for the cu
   context menu (the same as the Mac's and Windows's: open, show in the file manager, copy, rescan,
   trash or delete), the wheel scrolls the list and zooms the treemap, breadcrumbs or the back button to
   go up.
-- **Wayland or X11:** Wayland when `WAYLAND_DISPLAY` is set, else X11; `DUSCAPE_BACKEND=x11`
-  or `wayland` picks. On Wayland the compositor is asked for a title bar (`xdg-decoration`); where
+- **Wayland or X11:** Wayland when `WAYLAND_DISPLAY` or `WAYLAND_SOCKET` is set, else X11,
+  the other tried when the first fails; `DUSCAPE_BACKEND=x11` or `wayland` picks. The X server
+  is reached as Xlib reaches it: the socket file, TCP, or the Linux abstract socket of the same
+  name, which an Xorg started by a user (Chrome Remote Desktop's) listens on alone; `DISPLAY`
+  may be `:20`, `:20.1`, `unix:20`, a host and port, or a socket's path. The compositor as
+  libwayland reaches it: `WAYLAND_SOCKET`, `WAYLAND_DISPLAY` (a name under `XDG_RUNTIME_DIR`,
+  or a path), else `wayland-0` there, which a shell over `ssh` or `su` is left with. On Wayland
+  the compositor is asked for a title bar (`xdg-decoration`); where
   it draws none (GNOME) the window draws its own, with move, maximise and close.
 - **HiDPI:** on Wayland the compositor's scale; on X11 `Xft.dpi` (or `GDK_SCALE`, or
   `DUSCAPE_SCALE`).

@@ -827,6 +827,43 @@ pub struct Wayland {
     pool: Option<Pool>,
 }
 
+/// Connect to the compositor: `wayland-client`'s way (`WAYLAND_SOCKET`, a connection the parent
+/// made; else `WAYLAND_DISPLAY`, a path or a name under `XDG_RUNTIME_DIR`), else the default
+/// name `wayland-0` under `XDG_RUNTIME_DIR`, which libwayland takes when `WAYLAND_DISPLAY` is
+/// unset and `wayland-client` 0.31 does not — what a shell over `ssh` or `su` into a Wayland
+/// session is left with (`default_socket_is_wayland_0_under_the_runtime_dir` keeps it).
+fn connect() -> Result<Connection, String> {
+    let error = match Connection::connect_to_env() {
+        Ok(conn) => return Ok(conn),
+        Err(error) => error,
+    };
+    let fallback = default_socket(
+        ::std::env::var_os("WAYLAND_DISPLAY"),
+        ::std::env::var_os("XDG_RUNTIME_DIR"),
+    );
+    if let Some(path) = fallback
+        && let Ok(stream) = ::std::os::unix::net::UnixStream::connect(&path)
+        && let Ok(conn) = Connection::from_socket(stream)
+    {
+        return Ok(conn);
+    }
+    Err(format!("cannot connect to the compositor: {error}"))
+}
+
+/// The socket to try when `WAYLAND_DISPLAY` is unset: `wayland-0` in the runtime directory,
+/// which must be absolute as libwayland requires; `None` when `WAYLAND_DISPLAY` was set (it
+/// named the socket, and that failed) or there is no runtime directory.
+fn default_socket(
+    display: Option<::std::ffi::OsString>,
+    runtime_dir: Option<::std::ffi::OsString>,
+) -> Option<::std::path::PathBuf> {
+    if display.is_some_and(|value| !value.is_empty()) {
+        return None;
+    }
+    let dir = ::std::path::PathBuf::from(runtime_dir?);
+    dir.is_absolute().then(|| dir.join("wayland-0"))
+}
+
 impl Wayland {
     /// Connect to the compositor `WAYLAND_DISPLAY` names and open a window of `size` points, at
     /// least `min` points.
@@ -836,8 +873,7 @@ impl Wayland {
         min: (f64, f64),
         deliver: impl Fn(Input) + Send + Sync + 'static,
     ) -> Result<Wayland, String> {
-        let conn = Connection::connect_to_env()
-            .map_err(|error| format!("cannot connect to the compositor: {error}"))?;
+        let conn = connect()?;
         let display = conn.display();
         let mut queue: EventQueue<State> = conn.new_event_queue();
         let qh = queue.handle();
@@ -1029,5 +1065,28 @@ impl Backend for Wayland {
     fn minimize(&mut self) {
         self.shared.toplevel.set_minimized();
         let _ = self.shared.conn.flush();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::default_socket;
+
+    #[test]
+    fn default_socket_is_wayland_0_under_the_runtime_dir() {
+        let dir = Some("/run/user/1000".into());
+        assert_eq!(
+            default_socket(None, dir.clone()),
+            Some("/run/user/1000/wayland-0".into())
+        );
+        assert_eq!(
+            default_socket(Some("".into()), dir.clone()),
+            Some("/run/user/1000/wayland-0".into())
+        );
+        // Named, the socket was tried already.
+        assert_eq!(default_socket(Some("wayland-1".into()), dir), None);
+        // No runtime directory, or a relative one, names nothing.
+        assert_eq!(default_socket(None, None), None);
+        assert_eq!(default_socket(None, Some("run".into())), None);
     }
 }

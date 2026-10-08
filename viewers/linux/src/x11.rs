@@ -128,6 +128,167 @@ fn mods(state: u16) -> Mods {
     }
 }
 
+/// Open the display named by `$DISPLAY`: x11rb's way (the socket file, then TCP), else the
+/// abstract socket of the same name, which x11rb does not try.
+///
+/// Xlib tries the abstract socket first, so every other client works where this one did
+/// not: an Xorg started by a user — Chrome Remote Desktop's, `-nolisten tcp` — cannot make
+/// `/tmp/.X11-unix/X20` in root's `/tmp/.X11-unix` and listens on `@/tmp/.X11-unix/X20`
+/// alone (2026-10-08). `abstract_socket::connects_where_the_file_is_missing` keeps this.
+fn connect() -> Result<(RustConnection, usize), String> {
+    let error = match x11rb::connect(None) {
+        Ok(opened) => return Ok(opened),
+        Err(error) => error,
+    };
+    match abstract_socket::connect(None) {
+        Ok(opened) => Ok(opened),
+        Err(abstract_error) => Err(format!(
+            "cannot open the display: {error}; by its abstract socket: {abstract_error}"
+        )),
+    }
+}
+
+/// The display's Linux abstract socket, `@/tmp/.X11-unix/X<n>`.
+#[cfg(target_os = "linux")]
+mod abstract_socket {
+    use ::std::os::linux::net::SocketAddrExt as _;
+    use ::std::os::unix::net::{SocketAddr, UnixStream};
+
+    use x11rb::reexports::x11rb_protocol::parse_display::parse_display;
+    use x11rb::reexports::x11rb_protocol::xauth::{Family, get_auth};
+    use x11rb::rust_connection::{DefaultStream, RustConnection};
+
+    /// The display's name parsed: its abstract address, number and screen; an error for a
+    /// display on another host, which has no socket here.
+    pub fn address(display: Option<&str>) -> Result<(SocketAddr, u16, usize), String> {
+        let named = display
+            .map(str::to_owned)
+            .or_else(|| ::std::env::var("DISPLAY").ok());
+        // `unix:20` is display 20 over a local socket to Xlib; x11rb reads what follows
+        // `unix:` as a socket's path (launchd's form) and fails to find one.
+        let unix = named
+            .as_deref()
+            .and_then(|name| name.strip_prefix("unix:"))
+            .filter(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
+            .map(|rest| format!(":{rest}"));
+        let parsed = parse_display(unix.as_deref().or(named.as_deref()))
+            .map_err(|error| error.to_string())?;
+        let local = parsed.host.is_empty() || parsed.host == "unix";
+        let unix = parsed.protocol.is_none() || parsed.protocol.as_deref() == Some("unix");
+        if !local || !unix {
+            return Err("not a local display".into());
+        }
+        let address = SocketAddr::from_abstract_name(name(parsed.display))
+            .map_err(|error| error.to_string())?;
+        Ok((address, parsed.display, parsed.screen.into()))
+    }
+
+    /// The socket's name: the file's path, which Xorg binds as an abstract name too.
+    pub fn name(display: u16) -> String {
+        format!("/tmp/.X11-unix/X{display}")
+    }
+
+    /// Connect to the display (`$DISPLAY` when `None`) by its abstract socket, with the
+    /// `.Xauthority` cookie `x11rb::connect` would send for a local socket.
+    pub fn connect(display: Option<&str>) -> Result<(RustConnection, usize), String> {
+        let (address, number, screen) = address(display)?;
+        let stream = UnixStream::connect_addr(&address).map_err(|error| error.to_string())?;
+        let (stream, _) =
+            DefaultStream::from_unix_stream(stream).map_err(|error| error.to_string())?;
+        let (auth_name, auth_data) = get_auth(Family::LOCAL, &hostname(), number)
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let conn =
+            RustConnection::connect_to_stream_with_auth_info(stream, screen, auth_name, auth_data)
+                .map_err(|error| error.to_string())?;
+        Ok((conn, screen))
+    }
+
+    /// This machine's name, what a local `.Xauthority` entry is keyed on.
+    fn hostname() -> Vec<u8> {
+        let mut buffer = [0u8; 256];
+        // SAFETY: the buffer is as long as said; a name cut to fit is unterminated, so the
+        // length is found in the buffer, not by a terminator.
+        let rc = unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len()) };
+        if rc != 0 {
+            return Vec::new();
+        }
+        let end = buffer
+            .iter()
+            .position(|&byte| byte == 0)
+            .unwrap_or(buffer.len());
+        buffer[..end].to_vec()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use ::std::os::linux::net::SocketAddrExt as _;
+        use ::std::os::unix::net::{SocketAddr, UnixListener};
+
+        use super::{address, name};
+
+        /// A display number no server here uses, so the file socket is missing.
+        fn free_display() -> u16 {
+            let base = 9000 + (::std::process::id() % 1000) as u16;
+            (base..base + 1000)
+                .find(|number| {
+                    !::std::path::Path::new(&name(*number)).exists()
+                        && UnixListener::bind_addr(
+                            &SocketAddr::from_abstract_name(name(*number)).unwrap(),
+                        )
+                        .is_ok()
+                })
+                .expect("a free display number")
+        }
+
+        #[test]
+        fn connects_where_the_file_is_missing() {
+            let number = free_display();
+            let display = format!(":{number}.0");
+            let listener =
+                UnixListener::bind_addr(&SocketAddr::from_abstract_name(name(number)).unwrap())
+                    .unwrap();
+            listener.set_nonblocking(true).unwrap();
+
+            // x11rb's own connect finds nothing: no file, no TCP.
+            assert!(x11rb::connect(Some(&display)).is_err());
+
+            // Ours reaches the listener (and then fails the handshake, which it cannot
+            // give): what matters is that a connection arrives.
+            let (parsed, parsed_number, screen) = address(Some(&display)).unwrap();
+            assert_eq!(parsed_number, number);
+            assert_eq!(screen, 0);
+            assert_eq!(parsed.as_abstract_name(), Some(name(number).as_bytes()));
+            let _ = ::std::os::unix::net::UnixStream::connect_addr(&parsed).unwrap();
+            assert!(
+                listener.accept().is_ok(),
+                "the abstract socket was not connected to"
+            );
+        }
+
+        #[test]
+        fn another_host_has_no_abstract_socket() {
+            assert!(address(Some("otherhost:20")).is_err());
+            assert!(address(Some("tcp/localhost:20")).is_err());
+            assert!(address(Some(":20")).is_ok());
+            // Xlib's spelling of a local socket, which x11rb reads as a path.
+            let (_, number, screen) = address(Some("unix:20.1")).unwrap();
+            assert_eq!((number, screen), (20, 1));
+        }
+    }
+}
+
+/// FreeBSD has no abstract sockets: nothing to fall back to.
+#[cfg(not(target_os = "linux"))]
+mod abstract_socket {
+    use x11rb::rust_connection::RustConnection;
+
+    pub fn connect(_display: Option<&str>) -> Result<(RustConnection, usize), String> {
+        Err("no abstract sockets on this system".into())
+    }
+}
+
 impl X11 {
     /// Open the display and a window of `size` points, at least `min` points.
     #[allow(clippy::too_many_lines)] // quality debt: the X11 window's setup
@@ -137,8 +298,7 @@ impl X11 {
         min: (f64, f64),
         deliver: impl Fn(Input) + Send + 'static,
     ) -> Result<X11, String> {
-        let (conn, screen_num) =
-            x11rb::connect(None).map_err(|error| format!("cannot open the display: {error}"))?;
+        let (conn, screen_num) = connect()?;
         let screen = &conn.setup().roots[screen_num];
         let visual = screen
             .allowed_depths

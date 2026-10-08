@@ -734,8 +734,11 @@ shared `Viewer`, not in `win/`:
   maximise/minimise for the app's own title bar) and `Input`, what either windowing system
   reports, in points; `keys` has the non-character keysyms both speak; `level_keysym` picks the
   shifted level (Caps Lock only on letters); `open` chooses: `DUSCAPE_BACKEND`, else Wayland when
-  `WAYLAND_DISPLAY` is set, else X11, trying the other if the first fails
-- `wayland.rs` — `wayland-client`'s pure-Rust protocol: `wl_shm` double buffers in a memfd,
+  `WAYLAND_DISPLAY` or `WAYLAND_SOCKET` is set, else X11, trying the other if the first fails
+- `wayland.rs` — `wayland-client`'s pure-Rust protocol: the compositor by `connect_to_env`
+  (`WAYLAND_SOCKET`, else `WAYLAND_DISPLAY` under `XDG_RUNTIME_DIR` or a path), else
+  `wayland-0` there as libwayland defaults when `WAYLAND_DISPLAY` is unset and `wayland-client`
+  0.31 does not (`default_socket`, tested); `wl_shm` double buffers in a memfd,
   `xdg_shell` (configure → `Input::Resized`, close), `xdg-decoration` asking for a server title bar
   and reporting `Input::Decorated(false)` where there is none, `wl_seat` keyboard (xkb keymap by
   `xkb`, repeat done here since the compositor leaves it to clients) and pointer (cursor from the
@@ -746,7 +749,13 @@ shared `Viewer`, not in `win/`:
   and `xkb_symbols` first-group levels → keysyms, by name; keys it lacks fall back to a US
   layout by evdev code, keys it has but cannot name mean nothing. Tested against a keymap dumped
   by `xkbcomp` (`xkb_test_keymap.xkb`)
-- `x11.rs` — `X11` on `x11rb`: the window, its properties and size hints, the events (read on a
+- `x11.rs` — `X11` on `x11rb`: the display opened x11rb's way (the socket file, then TCP),
+  else by the Linux abstract socket of the same name (`abstract_socket`, with the `.Xauthority`
+  cookie), which x11rb never tries and Xlib tries first — a user's own Xorg (Chrome Remote
+  Desktop's, `-nolisten tcp`) cannot make the file in root's `/tmp/.X11-unix` and listens on
+  the abstract name alone, so every client worked there but this one; and `unix:20`, Xlib's
+  spelling of a local socket, which x11rb reads as a socket's path.
+  `connects_where_the_file_is_missing` keeps it. Then the window, its properties and size hints, the events (read on a
   thread of their own into `Input`), the frame put up whole with `PutImage` (re-encoded only for
   an unusual visual), the core keyboard mapping, and the clipboard: when no `wl-copy`/`xclip`/
   `xsel` is installed the window owns `CLIPBOARD` itself and answers `SelectionRequest`. The
@@ -776,8 +785,8 @@ shared `Viewer`, not in `win/`:
   pass (`Paints::second_pass`) runs once nothing has changed on screen for `IDLE`, a message
   that changes nothing not putting it off, as the Windows timer is put off by each change.
   `DUSCAPE_SNAPSHOT=out.png` writes the frame after the scan and quits — how the drawing was
-  checked here: X11 on an `Xvfb` (which `x11rb` reaches over TCP, `-listen tcp -ac`, since it
-  does not do abstract sockets) with `xdotool` for keys and clicks; Wayland on a headless
+  checked here: X11 on an `Xvfb` (`-listen tcp -ac`, from before the window could reach an
+  abstract socket; a plain `Xvfb` does now) with `xdotool` for keys and clicks; Wayland on a headless
   `weston --backend=headless-backend.so --shell=kiosk-shell.so`, unpacked from its .deb, with
   `weston-screenshooter` (it has no input to inject, so keys are covered by `xkb`'s tests)
 
