@@ -13,6 +13,7 @@
 //! viewers say what it is ([`describe`]).
 
 use ::std::ffi::OsStr;
+use ::std::path::{Path, PathBuf};
 
 /// What a system keeps a folder of the name for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -102,6 +103,46 @@ pub fn left_out(name: &OsStr, snapshots: bool) -> Option<&'static Known> {
     known(name).filter(|known| known.kind == Kind::Snapshots)
 }
 
+/// The snapshot folder a walk leaves out *beside* one of these names: the one whose presence
+/// says the folder they are listed in has snapshots, and they are not being walked. `None`
+/// under `snapshots`, or where none of the names is a snapshot folder's.
+///
+/// What it decides: a Linux walk does not probe shared extents (FIEMAP) under such a folder.
+/// Every file of a share with snapshots has every extent shared — with the snapshots, which
+/// are left out, so the sharing found changes nothing — and on a Synology's kernel 4.4 the
+/// probe costs 0.5–1.7 ms a file, a hundred times the `lstat`: 80% of the walk. Live reflinks
+/// inside the share (`cp --reflink`, a container's layers) are then counted once each rather
+/// than once in all, which `--snapshots` (probing on, the snapshots walked) gives back. See
+/// `docs/scan-performance.md`, "Synology: the probe under a share with snapshots".
+#[must_use]
+pub fn snapshots_left_out_among<'a>(
+    names: impl IntoIterator<Item = &'a OsStr>,
+    snapshots: bool,
+) -> Option<&'static Known> {
+    if snapshots {
+        return None;
+    }
+    names.into_iter().find_map(|name| left_out(name, false))
+}
+
+/// The snapshot folder left out beside an ancestor of `root`, up to `/`: a scan of
+/// `/volume1/homes/angch` is under `/volume1/homes/#snapshot`'s share as much as one of the
+/// share is, and a rescan of a folder must not probe where the first scan did not, or the
+/// folder grafted back would shrink. One `lstat` per snapshot name per ancestor, once a scan.
+#[must_use]
+pub fn snapshots_left_out_above(root: &Path, snapshots: bool) -> Option<PathBuf> {
+    if snapshots {
+        return None;
+    }
+    root.ancestors().skip(1).find_map(|ancestor| {
+        KNOWN
+            .iter()
+            .filter(|known| known.kind == Kind::Snapshots)
+            .map(|known| ancestor.join(known.name))
+            .find(|folder| folder.symlink_metadata().is_ok_and(|meta| meta.is_dir()))
+    })
+}
+
 /// What a walker notes in the directory holding a folder it left out (`DirEntries::note`, kind
 /// `left out`), for `--issues`.
 #[must_use]
@@ -128,7 +169,10 @@ pub fn describe(name: &OsStr) -> Option<String> {
 mod tests {
     use ::std::ffi::OsStr;
 
-    use super::{KNOWN, Kind, describe, known, left_out, left_out_note};
+    use super::{
+        KNOWN, Kind, describe, known, left_out, left_out_note, snapshots_left_out_above,
+        snapshots_left_out_among,
+    };
 
     #[test]
     fn snapshots_are_left_out_unless_asked_for_and_everything_else_is_walked() {
@@ -193,5 +237,37 @@ mod tests {
             left_out_note(left_out(OsStr::new("@Recently-Snapshot"), false).expect("left out")),
             "QNAP: the share's snapshots, a whole earlier copy each, left empty (--snapshots walks it)"
         );
+    }
+
+    #[test]
+    fn a_snapshot_folder_among_a_listing_or_above_the_root_says_so_unless_walked() {
+        let names = ["data", "#snapshot", "@eaDir"].map(OsStr::new);
+        assert_eq!(
+            snapshots_left_out_among(names, false).map(|known| known.name),
+            Some("#snapshot")
+        );
+        assert!(snapshots_left_out_among(names, true).is_none());
+        assert!(snapshots_left_out_among(["data", "@eaDir"].map(OsStr::new), false).is_none());
+
+        let dir =
+            ::std::env::temp_dir().join(format!("duscape_nas_above_{}", ::std::process::id()));
+        let _ = ::std::fs::remove_dir_all(&dir);
+        let share = dir.join("share");
+        let deep = share.join("angch").join("r");
+        ::std::fs::create_dir_all(&deep).expect("folders");
+        assert!(snapshots_left_out_above(&deep, false).is_none());
+        ::std::fs::create_dir(share.join("#snapshot")).expect("a snapshot folder");
+        assert_eq!(
+            snapshots_left_out_above(&deep, false),
+            Some(share.join("#snapshot"))
+        );
+        // The root's own listing decides for the root; only what is above it is asked here.
+        assert!(snapshots_left_out_above(&share, false).is_none());
+        assert!(snapshots_left_out_above(&deep, true).is_none());
+        // A file of the name is not a snapshot folder.
+        ::std::fs::remove_dir(share.join("#snapshot")).expect("removed");
+        ::std::fs::write(share.join("#snapshot"), b"").expect("a file");
+        assert!(snapshots_left_out_above(&deep, false).is_none());
+        let _ = ::std::fs::remove_dir_all(&dir);
     }
 }

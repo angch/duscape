@@ -4,7 +4,9 @@
 //! volume's extent ownership in one sweep, but the kernel redacts every owner for callers without
 //! `CAP_SYS_ADMIN`, and `XFS_IOC_BULKSTAT` is refused outright. `FS_IOC_FIEMAP` needs the file
 //! open, so the cost is an `openat` and an `ioctl` per file asked about — which is why only files
-//! big enough to matter are asked about at all.
+//! big enough to matter are asked about at all, and none under a folder whose snapshots are
+//! left out ([`libduscape::nas::snapshots_left_out_among`]): there every extent is shared with
+//! the snapshots, and on a Synology's kernel 4.4 the `ioctl` took 0.5–1.7 ms a file.
 
 use ::std::ffi::CStr;
 use ::std::os::fd::{AsRawFd, BorrowedFd};

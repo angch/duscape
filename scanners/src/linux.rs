@@ -69,6 +69,27 @@ struct Job {
     dirblocks: Option<Arc<dirblocks::Device>>,
 }
 
+impl Job {
+    /// This directory again, its files not probed for shared extents: see
+    /// [`libduscape::nas::snapshots_left_out_among`]. Its children inherit it.
+    fn unprobed(&self) -> Self {
+        Self {
+            path: Arc::clone(&self.path),
+            depth: self.depth,
+            device: self.device,
+            reflinks: false,
+            extent_space: self.extent_space,
+            compressed_sizes: self.compressed_sizes,
+            dirblocks: self.dirblocks.clone(),
+        }
+    }
+}
+
+/// What a directory notes when its files are not probed for shared extents.
+const NOT_PROBED: &str = "shared extents not probed under this folder: its snapshots are left \
+    out, and every extent is shared with them (--snapshots walks and probes them); a reflink \
+    inside it is counted once each";
+
 struct Shared {
     /// Directories no worker has claimed. Workers keep most of their own findings on a local
     /// stack and only publish here when nobody else has anything to do, so this lock is taken a
@@ -104,6 +125,10 @@ struct Shared {
     devices: Mutex<::std::collections::HashMap<u64, Option<Arc<dirblocks::Device>>>>,
     /// The folder the user is in, which the walk reads toward first (`crate::focus`).
     focus: Focus,
+    /// A snapshot folder left out beside an ancestor of the scan root, if there is one: the
+    /// root is under a share with snapshots, and nothing in the scan is probed for shared
+    /// extents ([`libduscape::nas::snapshots_left_out_above`]).
+    unprobed_above: Option<PathBuf>,
 }
 
 impl Shared {
@@ -453,6 +478,38 @@ fn read_directory(
         ::std::ffi::CStr::from_bytes_with_nul(&arena[start..start + l.len as usize])
             .expect("stored with its NUL")
     };
+
+    // A share whose snapshots are listed here and left out: none of its files, nor its
+    // folders', is probed for shared extents — every extent is shared with the snapshots,
+    // which are not counted, and on a NAS's kernel the probe is most of the walk. Decided
+    // from the names before any file is looked at, so the share's own files are spared too.
+    let unprobed_job;
+    let job = if job.reflinks
+        && let Some(known) = libduscape::nas::snapshots_left_out_among(
+            listed
+                .iter()
+                .map(|l| OsStr::from_bytes(name_of(l).to_bytes())),
+            options.snapshots,
+        ) {
+        directory.note(
+            "not probed",
+            None,
+            format!("{NOT_PROBED} ({} here)", known.name),
+        );
+        unprobed_job = job.unprobed();
+        &unprobed_job
+    } else {
+        if job.depth == 0
+            && let Some(above) = &shared.unprobed_above
+        {
+            directory.note(
+                "not probed",
+                None,
+                format!("{NOT_PROBED} ({} above)", above.display()),
+            );
+        }
+        job
+    };
     let look = |l: &Listed| {
         inspect(
             dir.as_fd(),
@@ -596,6 +653,11 @@ pub fn walk_linux(root: &Path, threads: usize, options: ScanOptions, focus: &Foc
 
     let threads = threads.max(1);
     let root_kind = filesystem::classify(&root);
+    let unprobed_above = if root_kind.reflinks {
+        libduscape::nas::snapshots_left_out_above(&root, options.snapshots)
+    } else {
+        None
+    };
     let shared = Arc::new(Shared {
         jobs: Mutex::new(Vec::new()),
         ready: Condvar::new(),
@@ -609,12 +671,13 @@ pub fn walk_linux(root: &Path, threads: usize, options: ScanOptions, focus: &Foc
         points: ::std::sync::OnceLock::new(),
         devices: Mutex::new(::std::collections::HashMap::new()),
         focus: focus.clone(),
+        unprobed_above,
     });
     shared.jobs.lock().expect("scan queue poisoned").push(Job {
         path: Arc::clone(&root),
         depth: 0,
         device: scan_device,
-        reflinks: root_kind.reflinks,
+        reflinks: root_kind.reflinks && shared.unprobed_above.is_none(),
         extent_space: root_kind.extent_space.unwrap_or(scan_device),
         compressed_sizes: root_kind.compressed_sizes,
         dirblocks: root_kind

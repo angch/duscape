@@ -437,7 +437,8 @@ the `image` features in `Cargo.toml`, with why EXR, AVIF and TGA are not) after 
     numbered 256 — only there is the directory opened to ask, never off btrfs, where opening an
     automount point would mount it. Synology keeps a share's snapshots under its `#snapshot`,
     one an hour, and walking them walked the share once each
-  - `linux/reflink.rs` — the `FS_IOC_FIEMAP` reflink probe; `linux/dirblocks.rs` — directory
+  - `linux/reflink.rs` — the `FS_IOC_FIEMAP` reflink probe, on files of 64 KiB and up, and
+    not at all under a folder whose snapshots are left out ("Snapshots" below); `linux/dirblocks.rs` — directory
     blocks read ahead through the device; `linux/environment.rs` — what `--issues` says about
     the machine
 - `ntfs.rs` — NTFS file-record parser: sizes `$MFT` and the other metadata files the Windows
@@ -1015,7 +1016,15 @@ Exiting { app_loaded: bool }
   `MNT_LOCAL`, Windows a UNC path or a remote drive; `FileTree::on_network`, the viewer's
   `network_root`): the volume is the server's, and the rest of it the server's other shares. The rule
   itself is `DirEntries::leave_out` (noted only where the walk would have gone down), and the
-  MFT reader asks it as the kernel walkers do.
+  MFT reader asks it as the kernel walkers do. Under a folder whose snapshots are left out —
+  one listing a snapshot folder by name, or under an ancestor that does
+  (`nas::snapshots_left_out_among`, `snapshots_left_out_above`, asked once a scan for the
+  root's ancestors, so a rescan agrees with the scan) — the Linux walk does not probe shared
+  extents at all: every extent there is shared with the snapshots, which are not counted, and
+  on a Synology's kernel 4.4 the FIEMAP probe cost 0.5–1.7 ms a file, 80–90% of the walk
+  (`/volume1/homes`, 200k entries: 2.0 s → 0.2 s; `--issues` notes `not probed`). A reflink
+  pair inside such a share counts twice, once each; `--snapshots` walks the snapshots and probes
+  again. The `synology` fixture asserts both.
 - **Bind mounts**: a mount root (`STATX_ATTR_MOUNT_ROOT`) is looked up in `/proc/self/mountinfo`
   by `stx_mnt_id` (`linux::mounts`); if an earlier mount of the same device shows the same
   directory at a path inside the scan — checked by device and inode — the mount is left empty.

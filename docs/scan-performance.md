@@ -3752,3 +3752,50 @@ handle), as the `dua-core` walk opened each for the link count. On
 `C:\Windows\System32\drivers` that gives the native walker's 686 entries and 263,955,648 bytes
 exactly; reading the length instead had come to 0.9 MiB less.
 
+## Synology: the probe under a share with snapshots (2026-09-29)
+
+The first run on a real Synology (DSM, kernel 4.4.302, btrfs, 8 cores, 52 TB used; the
+static musl binary copied over): the walker, the snapshot rules, `-x` on subvolumes, the
+mount of `@docker` onto itself and the shares mounted a second time under
+`@appdata/ContainerManager/all_shares` all behaved as the fixtures say, and every total
+matched `du -x` (as the same user, and as root: byte for byte). What did not hold was the
+cost of the reflink probe. The share `/volume1/homes` (200k entries, 239 GiB live, 129
+snapshots under `#snapshot`):
+
+| stage | before | after |
+| --- | --- | --- |
+| `dua-walk` (the baseline) | 0.40 s | — |
+| `walk` | 1.98 s | 0.21 s |
+| `pipeline` | 2.02 s | 0.27 s |
+| `refined` (walk + second pass) | 2.86 s | 0.22 s |
+
+`/volume1/cheggit` (602k entries, 26.5 TiB, 15 snapshots): `refined` 8.7 s → 0.65 s. And
+`--snapshots` on `homes` (25.8M entries) spent twelve minutes of system time.
+
+**Why.** Every file of a share with snapshots has every extent `SHARED` — with the
+snapshots — and to say so btrfs's FIEMAP walks the extent's backrefs, which on 4.4 has no
+cache. Measured one file at a time (1,500 files of 64 KiB and up, Python, warm):
+
+| share | snapshots | `lstat` | `open`+`close` | `open`+FIEMAP |
+| --- | --- | --- | --- | --- |
+| `/volume1/homes/angch` | 129 | 10 µs | 12 µs | 1,553 µs |
+| `/volume2/Software` | 27 | 20 µs | 46 µs | 1,745 µs |
+| `/volume1/Movies` (replicated) | — | 8 µs | 9 µs | 567 µs |
+
+A hundred times the `lstat`, against the 2 µs a file measured on a desktop kernel ("Measured
+on btrfs", above). And it found nothing that counted: the copies it matched were in the
+snapshots, which are left out, so the probe moved the share's total by 0.5 MB in 239 GiB.
+
+**What was done.** Under a folder whose snapshots are left out, the walk does not probe at
+all — the rule of the section "Snapshots" in `AGENTS.md`: a directory listing a snapshot folder
+by name (`nas::snapshots_left_out_among`, decided from the listing before any of its files
+is looked at, so the share's own files are spared too), and every folder under it; and a scan
+whose root is under such a folder (`snapshots_left_out_above`, the root's ancestors asked
+once, an `lstat` a snapshot name each), so a rescan of a folder inside the share probes
+exactly as the scan did and the folder grafted back keeps its size. The second pass has
+nothing to do there either (`later` is not noted). `--issues` notes `not probed` in the
+directory. What is given up: a reflink pair among the live files counts once each, which
+`--snapshots` — the snapshots walked, the probe on — gives back; the `synology` fixture
+holds a pair and asserts both figures. Not done: probing anyway and stopping when it is found
+slow, since here the probe answered nothing useful at any price.
+

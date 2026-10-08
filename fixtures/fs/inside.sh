@@ -236,16 +236,21 @@ synology_snapshots() {
   share=$at/share
   btrfs -q subvolume create "$share" && chown "$U:$U" "$share"
   # Files of 64 KiB and up: none inline, so all of it is in btrfs's data figure.
+  # And a reflink pair among the live files: under a share whose snapshots are left out the
+  # walk does not probe shared extents (every extent is shared with the snapshots, and on
+  # Synology's kernel the probe is most of the walk), so the pair counts twice, as the inode
+  # oracle counts it — and once, as btrfs's data figure has it, when the snapshots are walked.
   as_user bash -c "$(declare -f random_file)
     mkdir -p '$share/data/photos'
-    for i in \$(seq 24); do random_file '$share/data/photos/p'\$i \$(( 65536 * i )); done"
+    for i in \$(seq 24); do random_file '$share/data/photos/p'\$i \$(( 65536 * i )); done
+    cp --reflink=always '$share/data/photos/p24' '$share/data/p24-again'"
   mkdir "$share/#snapshot"
   sync
   for t in 21 22 23; do
     btrfs -q subvolume snapshot -r "$share" "$share/#snapshot/GMT+08-2026.09.$t-00.00.01"
   done
   sync
-  check "snapshots: a share's #snapshot, left out" \
+  check "snapshots: a share's #snapshot, left out, its live files not probed" \
     "$(inode_oracle disk "$share" -path "$share/#snapshot" -prune -o)" "$(duscape_total "$share")"
   check "snapshots: a share's #snapshot, walked, each block once" "$(btrfs_data_used "$at")" \
     "$(duscape_total "$share" --snapshots)" 65536
@@ -253,6 +258,10 @@ synology_snapshots() {
   check "snapshots: a share's #snapshot, left out, without statx" \
     "$(inode_oracle disk "$share" -path "$share/#snapshot" -prune -o)" \
     "$(DUSCAPE_NO_STATX=1 duscape_total "$share")"
+  # A scan (or a rescan) rooted inside the share is under its snapshots as much: not probed
+  # either, so a folder grafted back after a rescan is the size the first scan gave it.
+  check "snapshots: a folder inside the share, not probed either" \
+    "$(inode_oracle disk "$share/data")" "$(duscape_total "$share/data")"
   # Named as the root, a snapshot is scanned: it is what was asked for.
   check "snapshots: one snapshot named as the root" \
     "$(inode_oracle disk "$share/#snapshot/GMT+08-2026.09.21-00.00.01")" \
