@@ -128,18 +128,24 @@ Compressed File  ──►  Sub-Sampled IDCT Decode (1/8)  ──►  Render
 
 ### Empirical Binary Size Benchmarks of Decoder Crates
 
-To evaluate the feasibility of sub-sampled JPEG decoding in Duscape without relying on the generic `image` crate pipeline, we benchmarked potential crates against the release configuration (`opt-level = "s"`, `lto = true`, `codegen-units = 1`, `panic = "abort"`, stripped on macOS aarch64):
+To evaluate the feasibility of sub-sampled JPEG decoding in Duscape without relying on the generic `image` crate pipeline, we benchmarked potential configurations against the release configuration (`opt-level = "s"`, `lto = true`, `codegen-units = 1`, `panic = "abort"`, stripped on macOS aarch64):
 
-| Decoder Implementation | Release Binary Size | Delta vs Baseline | Sub-Sampling Support | Notes / Dependencies |
-|------------------------|---------------------|-------------------|----------------------|----------------------|
+| Decoder Configuration | Release Binary Size | Delta vs Baseline | Sub-Sampling Support | Notes / Optimization Details |
+|-----------------------|---------------------|-------------------|----------------------|------------------------------|
 | **Baseline (`duscape` with `image 0.25`)** | 2,596,160 bytes (~2.48 MB) | — | No (1/1 full decode) | Standard multi-format engine with bounded `image::Limits` |
-| **`zune-jpeg` 0.5 (direct API)** | 2,596,176 bytes | +16 B (+0.00%) | **No** (8×8 IDCT only) | Already transitively pulled by `image 0.25`; direct API does not expose fractional IDCT |
+| **`image` with `"jpeg"` feature removed** | 2,529,968 bytes | **-66 KiB (-2.55%)** | N/A | Drops `image`'s JPEG decoder and format parser |
+| **`zune-jpeg` 0.5 (direct API)** | 2,596,176 bytes | +16 B (+0.00%) | **No** (8×8 IDCT only) | Already transitively pulled via `image 0.25` / `tiff`; direct API lacks fractional IDCT |
 | **`libjpeg-turbo` (via `turbojpeg`)** | 2,832,640 bytes | **+231 KiB (+9.11%)** | **Yes** (1/1, 1/2, 1/4, 1/8) | Native C library; requires `cmake`, `cc`, and C toolchains |
-| **`libjpeg-turbo-rs` (pure Rust)** | 2,844,160 bytes | **+242 KiB (+9.55%)** | **Yes** (1/1, 1/2, 1/4, 1/8) | Pure Rust with SIMD; no C dependencies, but ~242 KiB size increase |
+| **`libjpeg-turbo-rs` (decode + encode)** | 2,860,608 bytes | **+258 KiB (+10.19%)** | **Yes** (1/1, 1/2, 1/4, 1/8) | Pure Rust with SIMD; with `image` `"jpeg"` removed |
+| **`libjpeg-turbo-rs` (decode only, LTO)** | 2,761,456 bytes | **+161 KiB (+6.37%)** | **Yes** (1/1, 1/2, 1/4, 1/8) | Pure Rust with SIMD; LTO dead-code-eliminates unused encoder |
 
 **Benchmark Conclusions**:
-- `zune-jpeg` offers negligible binary impact (+16 B) because it is already linked, but its current IDCT implementation lacks sub-sampling support.
-- Crates supporting sub-sampled IDCT (`libjpeg-turbo`, `libjpeg-turbo-rs`) add ~230–250 KiB (+9.1% to +9.5%) to the binary, running counter to Duscape's strict binary size budget.
+- **Removing `image`'s `"jpeg"` Feature**: If JPEG decoding is delegated to a dedicated crate, dropping `"jpeg"` from `image` saves **66,192 bytes (~64.6 KiB)**.
+- **Can `libjpeg-turbo-rs` be smaller without encoding?**:
+  - `libjpeg-turbo-rs` does not provide a Cargo feature flag to disable the encoder (its only features are `std`, `simd`, `full-c-parity`, `png`).
+  - However, because Duscape builds with Link-Time Optimization (`lto = true`), LLVM automatically performs whole-program dead code elimination (DCE). When only `decompress` / `Decoder` are called and `compress` / `Encoder` are unreferenced, the forward DCT, quantization scaling, and Huffman writer are stripped, saving **99,152 bytes (~96.8 KiB)**.
+  - Net increase of adding decode-only `libjpeg-turbo-rs` (offset by removing `image`'s `"jpeg"` feature) is **+161 KiB (+6.37%)** over baseline.
+- **Crates with sub-sampled IDCT**: Even after eliminating the encoder and dropping `image`'s `"jpeg"` feature, adding a dedicated sub-sampling JPEG crate costs **+161 to +231 KiB** in binary size.
 
 ### Native macOS Pipeline: OS-Accelerated Zero-Cost Decoding
 
