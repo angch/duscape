@@ -128,24 +128,45 @@ Compressed File  ──►  Sub-Sampled IDCT Decode (1/8)  ──►  Render
 
 ### Empirical Binary Size Benchmarks of Decoder Crates
 
-To evaluate the feasibility of sub-sampled JPEG decoding in Duscape without relying on the generic `image` crate pipeline, we benchmarked potential configurations against the release configuration (`opt-level = "s"`, `lto = true`, `codegen-units = 1`, `panic = "abort"`, stripped on macOS aarch64):
+To evaluate the feasibility of sub-sampled JPEG decoding in Duscape without relying on the generic `image` crate pipeline, we benchmarked potential configurations against the release configuration (`opt-level = "s"` vs `"z"`, `lto = true`, `codegen-units = 1`, `panic = "abort"`, stripped on macOS aarch64):
 
 | Decoder Configuration | Release Binary Size | Delta vs Baseline | Sub-Sampling Support | Notes / Optimization Details |
 |-----------------------|---------------------|-------------------|----------------------|------------------------------|
-| **Baseline (`duscape` with `image 0.25`)** | 2,596,160 bytes (~2.48 MB) | — | No (1/1 full decode) | Standard multi-format engine with bounded `image::Limits` |
+| **Baseline (`duscape` with `image 0.25`, `-Os`)** | 2,596,160 bytes (~2.48 MB) | — | No (1/1 full decode) | Standard multi-format engine with bounded `image::Limits` |
 | **`image` with `"jpeg"` feature removed** | 2,529,968 bytes | **-66 KiB (-2.55%)** | N/A | Drops `image`'s JPEG decoder and format parser |
 | **`zune-jpeg` 0.5 (direct API)** | 2,596,176 bytes | +16 B (+0.00%) | **No** (8×8 IDCT only) | Already transitively pulled via `image 0.25` / `tiff`; direct API lacks fractional IDCT |
 | **`libjpeg-turbo` (via `turbojpeg`)** | 2,832,640 bytes | **+231 KiB (+9.11%)** | **Yes** (1/1, 1/2, 1/4, 1/8) | Native C library; requires `cmake`, `cc`, and C toolchains |
 | **`libjpeg-turbo-rs` (decode + encode)** | 2,860,608 bytes | **+258 KiB (+10.19%)** | **Yes** (1/1, 1/2, 1/4, 1/8) | Pure Rust with SIMD; with `image` `"jpeg"` removed |
 | **`libjpeg-turbo-rs` (decode only, LTO)** | 2,761,456 bytes | **+161 KiB (+6.37%)** | **Yes** (1/1, 1/2, 1/4, 1/8) | Pure Rust with SIMD; LTO dead-code-eliminates unused encoder |
+| **Aggressive Size Optimization (`opt-level = "z"`)** | **2,141,168 bytes (~2.04 MB)** | **-455 KiB (-17.53%)** | No (baseline formats) | Passes all tests; maintains ~917,000 entries/sec scan throughput |
 
-**Benchmark Conclusions**:
-- **Removing `image`'s `"jpeg"` Feature**: If JPEG decoding is delegated to a dedicated crate, dropping `"jpeg"` from `image` saves **66,192 bytes (~64.6 KiB)**.
-- **Can `libjpeg-turbo-rs` be smaller without encoding?**:
-  - `libjpeg-turbo-rs` does not provide a Cargo feature flag to disable the encoder (its only features are `std`, `simd`, `full-c-parity`, `png`).
-  - However, because Duscape builds with Link-Time Optimization (`lto = true`), LLVM automatically performs whole-program dead code elimination (DCE). When only `decompress` / `Decoder` are called and `compress` / `Encoder` are unreferenced, the forward DCT, quantization scaling, and Huffman writer are stripped, saving **99,152 bytes (~96.8 KiB)**.
-  - Net increase of adding decode-only `libjpeg-turbo-rs` (offset by removing `image`'s `"jpeg"` feature) is **+161 KiB (+6.37%)** over baseline.
-- **Crates with sub-sampled IDCT**: Even after eliminating the encoder and dropping `image`'s `"jpeg"` feature, adding a dedicated sub-sampling JPEG crate costs **+161 to +231 KiB** in binary size.
+### Detailed Symbol Breakdown: Where `libjpeg-turbo-rs`'s Size Goes
+
+A symbol-level inspection via `llvm-nm` on unstripped Mach-O arm64 release binaries reveals where `libjpeg-turbo-rs`'s ~247.5 KiB footprint resides:
+
+| Component / Submodule | Binary Footprint | % of Crate | Description / Contents |
+|-----------------------|------------------|------------|------------------------|
+| **`decode::pipeline` (Core)** | **108.3 KiB** | 43.8% | `decode_baseline_planes` (23.9 KiB), `decode_progressive_planes` (19.7 KiB), `decode_image_inner` (25.1 KiB), MCU dispatch |
+| **Color Lookup Tables (`__const`)** | **41.5 KiB** | 16.8% | `CR_R_TAB`, `CB_B_TAB`, `RANGE_LIMIT` precomputed tables for branchless scalar color conversion |
+| **`decode::marker`** | **20.3 KiB** | 8.2% | JPEG marker parser (`read_markers`: SOF, SOS, DQT, DHT, APP markers, EXIF, XMP, IPTC) |
+| **`decode::arithmetic`** | **18.9 KiB** | 7.6% | Arithmetic entropy decoding (`decode_arithmetic_planes`, progressive arithmetic) |
+| **`simd::aarch64` & `simd::scalar`** | **17.5 KiB** | 7.1% | Explicit NEON SIMD kernels (14.1 KiB) and scalar fallbacks (3.4 KiB) |
+| **`decode::lossless`** | **13.5 KiB** | 5.5% | Lossless JPEG mode (SOF3 / SOF11 predictive coding) |
+| **`decode::idct_extended`** | **13.3 KiB** | 5.4% | Extended DCT block sizes (9×9, 10×10, ..., 16×16 SmartScale) |
+| **`api::precision` (12-bit)** | **12.8 KiB** | 5.2% | 12-bit sample precision decompression & 12-bit upsampling |
+| **Metadata Sorting & Error Types** | **~10.0 KiB** | 4.0% | Multi-segment XMP/ICC chunk sorting, error string formatting |
+
+#### Trimming Opportunities & Analysis
+1. **Niche Modes Account for ~70 KiB (28%)**:
+   - Arithmetic coding (18.9 KiB), Lossless JPEG (13.5 KiB), SmartScale extended IDCT (13.3 KiB), and 12-bit precision (12.8 KiB) represent over 34% of the decoder's executable code.
+   - Because `Decoder::decode_image_inner` is a monolithic dispatcher referencing each path unconditionally, LLVM cannot dead-code-eliminate them.
+   - Feature-gating these niche modes in upstream `libjpeg-turbo-rs` (e.g. `feature = "arithmetic"`, `feature = "12bit"`) would shrink its decode-only footprint from **~200 KiB down to ~130 KiB**.
+2. **Replacing 41.5 KiB Tables on 64-bit Targets**:
+   - Precomputed lookup tables (`CR_R_TAB`) were introduced to eliminate multiplies on weak scalar architectures (RISC-V/s390x). On modern x86_64 and AArch64 targets where integer multiplication takes a single cycle, calculating the transform directly in registers would reclaim up to ~40 KiB of static data.
+3. **SIMD Efficiency**:
+   - Disabling `libjpeg-turbo-rs`'s `simd` feature actually **increased** stripped binary size by **+472 bytes** (due to scalar loop unrolling and auto-vectorization expansion). SIMD should remain enabled.
+4. **General Binary Space Saving in Duscape (`opt-level = "z"`)**:
+   - Switching `opt-level = "s"` to `"z"` in `Cargo.toml` saves **455 KiB (-17.5%)** across the entire workspace binary with zero functional regressions and indistinguishable scan speed.
 
 ### Native macOS Pipeline: OS-Accelerated Zero-Cost Decoding
 

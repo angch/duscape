@@ -14,7 +14,7 @@ resolver = "3"
 # unwinding tables; the CLI stays safe because its terminal is restored by a panic hook, not only by
 # unwinding a drop guard (see `viewers/tui/src/lib.rs`).
 [profile.release]
-opt-level = "s"
+opt-level = "z"
 lto = true
 codegen-units = 1
 strip = true
