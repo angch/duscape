@@ -1106,7 +1106,7 @@ impl DiskView {
                     Some(image) if image.size().width > 0.0 => match pixels(&image) {
                         // Decoding happens when it is drawn, so an enormous picture — a few
                         // megabytes that expand to gigabytes — is refused before then.
-                        Some((w, h)) if w.saturating_mul(h) > MAX_PICTURE_PIXELS => (
+                        Some((w, h)) if w.max(0).saturating_mul(h.max(0)) > MAX_PICTURE_PIXELS => (
                             Preview::Info(format!("{caption}, too large to preview")),
                             None,
                         ),
@@ -1486,7 +1486,7 @@ fn pixels(image: &NSImage) -> Option<(isize, isize)> {
         .representations()
         .iter()
         .map(|rep| (rep.pixelsWide(), rep.pixelsHigh()))
-        .max_by_key(|&(w, h)| w.saturating_mul(h))
+        .max_by_key(|&(w, h)| w.max(0).saturating_mul(h.max(0)))
 }
 
 /// The question and the button a removal asks with.
