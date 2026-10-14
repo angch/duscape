@@ -2,7 +2,9 @@ use ::std::ffi::OsString;
 use ::std::io::Write;
 use ::std::path::{Path, PathBuf};
 
-use super::{Member, archive_of, is_archive_name, member_of, read_index, read_member};
+use super::{
+    Member, archive_of, is_archive_name, member_of, read_index, read_member, read_member_whole,
+};
 
 /// One entry for [`zip`]: its name, its bytes, whether deflated, and whether it is marked as
 /// UTF-8 (a name in code page 437 is not).
@@ -189,6 +191,31 @@ fn the_index_lists_every_entry_with_its_sizes() {
     )
     .expect("stored");
     assert_eq!(manifest, b"Manifest-Version: 1.0\n");
+    let (whole, _) = read_member_whole(
+        &path,
+        &[
+            OsString::from("com"),
+            OsString::from("example"),
+            OsString::from("Main.class"),
+        ],
+        text.len() as u64,
+    )
+    .expect("unpacked whole");
+    assert_eq!(whole, text);
+    assert_eq!(
+        read_member_whole(
+            &path,
+            &[
+                OsString::from("com"),
+                OsString::from("example"),
+                OsString::from("Main.class"),
+            ],
+            (text.len() - 1) as u64,
+        )
+        .unwrap_err()
+        .kind(),
+        ::std::io::ErrorKind::InvalidData
+    );
     let _ = ::std::fs::remove_dir_all(&dir);
 }
 

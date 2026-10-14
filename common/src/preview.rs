@@ -343,15 +343,9 @@ fn picture_reader(path: &Path) -> Result<image::ImageReader<Box<dyn Source>>, St
 fn picture_member(path: &Path) -> Option<Result<Vec<u8>, String>> {
     let (archive, inner) = crate::archive::member_of(path)?;
     Some(
-        crate::archive::read_member(&archive, &inner, MAX_MEMBER_PICTURE + 1)
-            .map_err(|error| error.to_string())
-            .and_then(|(bytes, member)| {
-                if member.uncompressed > MAX_MEMBER_PICTURE {
-                    Err("too large to unpack from an archive for a preview".to_string())
-                } else {
-                    Ok(bytes)
-                }
-            }),
+        crate::archive::read_member_whole(&archive, &inner, MAX_MEMBER_PICTURE)
+            .map(|(bytes, _)| bytes)
+            .map_err(|error| error.to_string()),
     )
 }
 

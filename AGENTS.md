@@ -23,7 +23,8 @@ duscape/
 │   │                  #   state and layout (`Viewer`), the first scan with its outline, the previewer
 │   └── dos/           # not a crate: the MS-DOS treemap in 16-bit FASM assembly, `make dos`
 ├── docs/              # features.md (every feature, per viewer), sizes.md (how sizes are counted),
-│                      #   terminal.md, viewers.md, benchmarking.md, scan-performance.md (the measurements),
+│                      #   security.md (defenses against malicious/bad files), terminal.md, viewers.md,
+│                      #   benchmarking.md, scan-performance.md (the measurements),
 │                      #   packaging.md (static binary first; deb/rpm, Flatpak, Snap weighed),
 │                      #   probes/ (bench-matrix.sh and .ps1, drop-cache.ps1, bench-diskus.sh, cross-arch-tests.sh
 │                      #   (32-bit and big-endian under QEMU), the C/Python probes behind the measurements)

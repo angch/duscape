@@ -388,6 +388,31 @@ pub fn read_member(
     inner: &[OsString],
     limit: u64,
 ) -> io::Result<(Vec<u8>, Member)> {
+    read_member_capped(archive, inner, limit, None)
+}
+
+/// An entry unpacked whole, up to `max_uncompressed` bytes: for an archive's picture, on the
+/// previewer's thread. An entry whose uncompressed size or unpacked stream exceeds the limit
+/// fails before taking memory.
+pub fn read_member_whole(
+    archive: &Path,
+    inner: &[OsString],
+    max_uncompressed: u64,
+) -> io::Result<(Vec<u8>, Member)> {
+    read_member_capped(
+        archive,
+        inner,
+        max_uncompressed.saturating_add(1),
+        Some(max_uncompressed),
+    )
+}
+
+fn read_member_capped(
+    archive: &Path,
+    inner: &[OsString],
+    limit: u64,
+    max_uncompressed: Option<u64>,
+) -> io::Result<(Vec<u8>, Member)> {
     let index = read_index(archive)?;
     let wanted: Vec<String> = inner
         .iter()
@@ -398,6 +423,14 @@ pub fn read_member(
         .into_iter()
         .find(|member| !member.is_dir && member.path == wanted)
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "not in the archive"))?;
+    if let Some(max) = max_uncompressed
+        && member.uncompressed > max
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "too large to unpack from an archive for a preview",
+        ));
+    }
     if member.encrypted {
         return Err(io::Error::new(io::ErrorKind::Unsupported, "encrypted"));
     }
@@ -409,7 +442,7 @@ pub fn read_member(
     let skip = 30
         + u64::from(u16_at(&local, 26).unwrap_or(0))
         + u64::from(u16_at(&local, 28).unwrap_or(0));
-    file.seek(SeekFrom::Start(member.header + skip))?;
+    file.seek(SeekFrom::Start(member.header.saturating_add(skip)))?;
     let packed = (&mut file).take(member.compressed);
     let mut bytes = Vec::new();
     match member.method {
@@ -424,6 +457,14 @@ pub fn read_member(
             ));
         }
     };
+    if let Some(max) = max_uncompressed
+        && bytes.len() as u64 > max
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "too large to unpack from an archive for a preview",
+        ));
+    }
     Ok((bytes, member))
 }
 
