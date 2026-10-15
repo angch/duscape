@@ -196,3 +196,24 @@ Crucially, **macOS desktop builds (`duscape-mac`) already bypass third-party ras
 | **Windows Desktop (`duscape-windows`)** | `libduscape` + `image` crate + GDI DIB | `image::Limits` (1 GiB alloc, 40,000 px side); `MAX_IMAGE_BYTES` (256 MiB) | Bounded by 1 GiB; immediate `fit` downscaling |
 | **Terminal (`viewers/tui`)** | `libduscape` + `image` crate | `image::Limits` (1 GiB alloc, 40,000 px side); `MAX_IMAGE_BYTES` (256 MiB) | Bounded by 1 GiB; immediate `fit` to cell matrix |
 
+### Linux Considerations & The Strategic Path Forward: `zune-jpeg`
+
+While macOS relies on operating-system frameworks for zero-cost image downscaling, the equation on Linux is distinct:
+
+1. **Linux Software-Only Reality**:
+   - `duscape-linux` purposefully avoids heavy GUI toolkits (GTK/Qt) to remain a lean, self-contained Wayland/X11 static binary (`make static`) with zero shared-library dependencies.
+   - Consequently, all image previews on Linux must be software-rendered in user space via `libduscape` and the `image` crate.
+   - On a Linux filesystem, high-resolution JPEGs (>1080p) represent roughly 1%–2% of image files (concentrated in user photo directories like `~/Pictures`). However, when previewing a 48 MP photograph (8000×6000 px), the current pipeline transiently allocates **~192 MB of heap memory** before resizing to `PICTURE_SIDE` (1024 px).
+
+2. **The Core Objective: Memory Footprint Optimization**:
+   - The primary goal of direct IDCT sub-sampling is **optimal memory usage (RAM footprint)**, rather than binary size or decoding speed.
+   - By decoding only the top-left 1×1 or 2×2 DCT coefficients, peak memory drops from **~192 MB to ~3 MB (-98.4%)**, eliminating temporary memory spikes on RAM-constrained machines, single-board computers (Raspberry Pi), or containerized environments.
+
+3. **`zune-jpeg` as the Architectural Future**:
+   - `zune-jpeg` is already linked transitively into Duscape (via `image 0.25` / `tiff`) at **0 bytes of extra binary size**.
+   - It is written in pure Rust, provides SIMD acceleration without C toolchains, and avoids the binary bloat of `libjpeg-turbo-rs`'s monolithic dispatchers.
+   - **The Roadmap**:
+     - The optimal path is to avoid adopting heavy third-party crates now, and instead **wait until `zune-jpeg` natively exposes IDCT fractional scaling (1/2, 1/4, 1/8) in its public API**, OR
+     - **Fork / clone `zune-jpeg`** to add the fractional IDCT sub-sampling feature specifically needed for memory-optimal thumbnail generation in Duscape, contributing the enhancement upstream.
+
+
