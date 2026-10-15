@@ -215,5 +215,3 @@ While macOS relies on operating-system frameworks for zero-cost image downscalin
    - **The Roadmap**:
      - The optimal path is to avoid adopting heavy third-party crates now, and instead **wait until `zune-jpeg` natively exposes IDCT fractional scaling (1/2, 1/4, 1/8) in its public API**, OR
      - **Fork / clone `zune-jpeg`** to add the fractional IDCT sub-sampling feature specifically needed for memory-optimal thumbnail generation in Duscape, contributing the enhancement upstream.
-
-

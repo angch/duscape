@@ -1299,11 +1299,15 @@ that each create the release race. The repository's Actions permission must allo
 outside it (`actions/checkout`…): set to local actions only, every run fails to start.
 The version is the workspace's (`Cargo.toml`), with the path dependencies' `version` beside it.
 - Build settings are chosen by measured speed first (the performance goals), size second:
-- **`opt-level = "s"`**: the release profile is size-optimised for the viewers' binaries, but
-  `"z"` cost the scan 13% and the tree build 30%; `"s"` is as fast as `3` at 2% more size. With
-  `lto = true` a per-crate `opt-level` does nothing, the final codegen uses the top level's.
-  `--profile profiling` is the release with symbols, for samplers. PGO (`make pgo`) is worth
-  2–3% wall, 6–8% CPU, and is not in the release pipeline; thin LTO is slower than fat.
+- **`opt-level = "z"`**: the release profile is size-optimised for the monolithic viewer binaries,
+  shaving 455 KiB (−17.5%) off the binary (down to ~2.14 MB) under fat LTO (`codegen-units = 1`,
+  `panic = "abort"`, `strip = true`) while maintaining ~917k–1M+ entries/s scan throughput (see
+  `docs/security.md`). Earlier single-threaded Linux benchmarks showed `"s"` faster on synthetic
+  tree-build micro-benchmarks (`docs/scan-performance.md`), but in practice `"z"` remains well
+  within the interactive budget. With `lto = true` a per-crate `opt-level` does nothing, the final
+  codegen uses the top level's. `--profile profiling` is the release with symbols, for samplers.
+  PGO (`make pgo`) is worth 2–3% wall, 6–8% CPU, and is not in the release pipeline; thin LTO is
+  slower than fat.
 - **Allocator**: musl builds use jemalloc (`tikv-jemallocator`, 64-bit musl only). musl's own
   malloc made the scan 7x slower and mimalloc 2x. Do not swap it without rerunning the
   `--bench-stage sharded` comparison in `docs/scan-performance.md`. glibc builds use the system

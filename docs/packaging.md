@@ -100,10 +100,12 @@ ordered them differently (glibc −5%, opt 3 −13%). Read: **no build is reliab
 release.** glibc is not; `x86-64-v3` (AVX2) gains nothing, since the walk waits on the kernel and
 the build on memory, and would refuse to start on older CPUs; `opt-level = 3` may be a few
 percent of CPU for a binary 30% bigger — inside the noise here, and `docs/scan-performance.md`
-found `"s"` as fast as `3` on bare metal. Before changing any of it, measure on bare metal with
-`docs/probes/bench-matrix.sh`; WSL2's filesystem path is not a Linux disk's. What stands from
-before: musl's own malloc made the scan 7x slower and mimalloc 2x, so musl without jemalloc is
-never the release.
+found `"s"` as fast as `3` on bare metal. The release profile was subsequently updated to
+`opt-level = "z"` (saving 455 KiB / −17.5% binary size, down to ~2.14 MB stripped; see
+`docs/security.md`), with scan speed indistinguishable on modern systems. Before changing any
+of it, measure on bare metal with `docs/probes/bench-matrix.sh`; WSL2's filesystem path is not
+a Linux disk's. What stands from before: musl's own malloc made the scan 7x slower and mimalloc
+2x, so musl without jemalloc is never the release.
 
 ## Desktop integration (`packaging/linux/`)
 
